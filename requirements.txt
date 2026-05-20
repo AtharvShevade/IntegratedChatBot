@@ -1,0 +1,35 @@
+# ── Core framework ──────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0       # includes httptools + uvloop for performance
+
+# ── Database ─────────────────────────────────────────────────────────────────
+oracledb>=2.2.0                  # Oracle DB driver (thin mode — no Oracle Client needed)
+
+# ── HTTP client (async calls to Ollama + Sarvam AI) ─────────────────────────
+httpx>=0.27.0
+
+# ── File upload support (multipart/form-data) ────────────────────────────────
+python-multipart>=0.0.9
+
+# ── Data validation ──────────────────────────────────────────────────────────
+pydantic>=2.7.0
+
+# ── Environment / configuration ──────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── Semantic intent classification ───────────────────────────────────────────
+# sentence-transformers and numpy removed: intent is now extracted by the LLM
+# (Ollama / phi4-mini).  Install whichever model you prefer via:
+#   ollama pull phi4-mini     # ~3 GB, fastest
+#   ollama pull qwen2.5:7b    # ~6 GB, balanced
+#   ollama pull mistral:7b    # ~7 GB, most capable
+
+# ── Flexible date parsing ─────────────────────────────────────────────────────
+python-dateutil>=2.9.0         # fuzzy date parsing: "26 Jan 2021", "March 2026", etc.
+
+# ── Fuzzy keyword matching ────────────────────────────────────────────────────
+rapidfuzz>=3.0.0               # typo-tolerant keyword escape guards in agent
+
+# ── XBRL variance analysis ───────────────────────────────────────────────────
+arelle-release                 # Arelle XBRL toolkit (compare_reports intent)
+pandas>=2.0.0                  # variance DataFrame / CSV export (optional)
