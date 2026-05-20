@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Configurable attribute names
 # ---------------------------------------------------------------------------
 _USER_LOGIN_ATTR: str = os.getenv("XML_USER_LOGIN_ATTR", "LoginId")
-_USER_DEPT_ATTR:  str = os.getenv("XML_USER_DEPT_ATTR",  "DeptId")
+_USER_DEPT_ATTR:  str = os.getenv("XML_USER_DEPT_ATTR",  "DepartmentId")
 
 # TTL in seconds — override via AUTH_TTL_SEC env var (default 1 hour)
 _AUTH_TTL: float = float(os.getenv("AUTH_TTL_SEC", "3600"))
