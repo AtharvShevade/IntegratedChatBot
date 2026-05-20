@@ -44,7 +44,7 @@ export default function App() {
     setIsLoading(true)
 
     try {
-      const result = await sendMessage(trimmed, sessionId.current, _aspSession || null)
+      const result = await sendMessage(trimmed, sessionId.current, _aspSession || null, _loginId || null)
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)
@@ -66,7 +66,7 @@ export default function App() {
     setIsLoading(true)
 
     try {
-      const result = await sendGuidedMessage(trimmed, sessionId.current, _aspSession || null)
+      const result = await sendGuidedMessage(trimmed, sessionId.current, _aspSession || null, _loginId || null)
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)
@@ -86,7 +86,7 @@ export default function App() {
     setMessages((prev) => [...prev, { role: 'user', text: action }])
     setIsLoading(true)
     try {
-      const result = await sendGuidedMessage(action, sessionId.current, _aspSession || null)
+      const result = await sendGuidedMessage(action, sessionId.current, _aspSession || null, _loginId || null)
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)

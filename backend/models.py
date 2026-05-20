@@ -11,6 +11,7 @@ class ChatRequest(BaseModel):
     message:     str           = Field(..., min_length=1, max_length=2000)
     session_id:  Optional[str] = Field(None, max_length=128)
     asp_session: Optional[str] = Field(None, max_length=1024)  # forwarded .AspNetCore.Session cookie
+    login_id:    Optional[str] = Field(None, max_length=256)   # user login ID for report authorisation
 
 
 class ChatResponse(BaseModel):

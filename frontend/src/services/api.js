@@ -48,10 +48,11 @@ export async function compareInstances(sessionId, instanceA, instanceB) {
  * @returns {Promise<{intent: string, report_name: string|null, response_text: string, need_clarification: boolean}>}
  * @throws {Error} - With a user-friendly message on failure.
  */
-export async function sendMessage(message, sessionId = null, aspSession = null) {
+export async function sendMessage(message, sessionId = null, aspSession = null, loginId = null) {
   const body = { message }
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
+  if (loginId)    body.login_id    = loginId
 
   const res = await fetch(`${BASE_URL}/chat`, {
     method: 'POST',
@@ -76,10 +77,11 @@ export async function sendMessage(message, sessionId = null, aspSession = null) 
  * @param {string|null} aspSession
  * @returns {Promise<object>}
  */
-export async function sendGuidedMessage(message, sessionId = null, aspSession = null) {
+export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null) {
   const body = { message }
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
+  if (loginId)    body.login_id    = loginId
 
   const res = await fetch(`${BASE_URL}/guided`, {
     method: 'POST',

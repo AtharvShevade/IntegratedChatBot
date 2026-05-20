@@ -62,6 +62,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             request.message,
             session_id=request.session_id,
             asp_session=request.asp_session,
+            login_id=request.login_id,
         )
         elapsed = time.monotonic() - start
         logger.info(
@@ -198,6 +199,7 @@ async def guided(request: ChatRequest) -> ChatResponse:
             request.message,
             session_id=request.session_id,
             asp_session=request.asp_session,
+            login_id=request.login_id,
         )
         elapsed = time.monotonic() - start
         logger.info(

@@ -1,0 +1,138 @@
+# auth_service.py — User → Department → Allowed FormIds lookup.
+#
+# Flow:
+#   1. Parse XML_User.xml  : LoginId  → DeptId
+#   2. Parse XML_Dept.xml  : DeptId   → pipe-separated FormIds  (e.g. "2001|2007|2035")
+#   3. Return set[str] of allowed FormIds for the user.
+#
+# Returns:
+#   None         — user not found in XML_User.xml (caller should deny access)
+#   set[str]     — allowed FormId strings (may be empty if dept has no Forms)
+#
+# Results are TTL-cached per login_id (default 1 hour) to avoid repeated XML reads.
+#
+# Attribute names can be overridden via environment variables if your XML schema differs:
+#   XML_USER_LOGIN_ATTR  (default: "LoginId")   — attribute holding the login identifier
+#   XML_USER_DEPT_ATTR   (default: "DeptId")    — attribute holding the department ID
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+
+from backend.config import XML_DEPT_PATH, XML_USER_PATH
+from backend.tools.xml_loader import load_xml_tree
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Configurable attribute names
+# ---------------------------------------------------------------------------
+_USER_LOGIN_ATTR: str = os.getenv("XML_USER_LOGIN_ATTR", "LoginId")
+_USER_DEPT_ATTR:  str = os.getenv("XML_USER_DEPT_ATTR",  "DeptId")
+
+# TTL in seconds — override via AUTH_TTL_SEC env var (default 1 hour)
+_AUTH_TTL: float = float(os.getenv("AUTH_TTL_SEC", "3600"))
+
+# Per-login cache: { login_id: (allowed_form_ids | None, timestamp) }
+_cache: dict[str, tuple[set[str] | None, float]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def get_allowed_form_ids(login_id: str) -> set[str] | None:
+    """Return the set of FormIds this user may access.
+
+    Parameters
+    ----------
+    login_id:
+        The login identifier sent from the .NET application (``loginId`` URL param).
+
+    Returns
+    -------
+    ``None``
+        User was not found in XML_User.xml — caller should deny access.
+    ``set[str]``
+        Set of FormId strings the user's department is allowed to access.
+        An empty set means the department exists but has no forms assigned.
+    """
+    clean = login_id.strip()
+    if not clean:
+        return None
+
+    entry = _cache.get(clean)
+    if entry and (time.monotonic() - entry[1]) < _AUTH_TTL:
+        return entry[0]
+
+    result = _lookup(clean)
+    _cache[clean] = (result, time.monotonic())
+    logger.info(
+        "[AUTH_CACHE] login_id=%r result=%s",
+        clean,
+        f"{len(result)} forms" if result is not None else "NOT FOUND",
+    )
+    return result
+
+
+def invalidate(login_id: str) -> None:
+    """Remove a cached entry so the next request re-reads the XML."""
+    _cache.pop(login_id.strip(), None)
+
+
+# ---------------------------------------------------------------------------
+# Internal lookup
+# ---------------------------------------------------------------------------
+
+def _lookup(login_id: str) -> set[str] | None:
+    """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids."""
+    # ── Step 1: resolve DeptId from XML_User.xml ────────────────────────────
+    user_root = load_xml_tree(XML_USER_PATH, "XML_User.xml")
+    if user_root is None:
+        logger.error(
+            "[AUTH] Cannot load XML_User.xml (path=%s) — denying all access", XML_USER_PATH
+        )
+        return None
+
+    login_lower = login_id.lower()
+    dept_id: str | None = None
+
+    for el in user_root.findall("Row"):
+        if el.attrib.get(_USER_LOGIN_ATTR, "").strip().lower() == login_lower:
+            dept_id = el.attrib.get(_USER_DEPT_ATTR, "").strip()
+            logger.debug("[AUTH] login_id=%r → dept_id=%r", login_id, dept_id)
+            break
+
+    if dept_id is None:
+        logger.warning(
+            "[AUTH] login_id=%r not found in XML_User.xml (attr=%s)",
+            login_id, _USER_LOGIN_ATTR,
+        )
+        return None
+
+    # ── Step 2: resolve Forms from XML_Dept.xml ─────────────────────────────
+    dept_root = load_xml_tree(XML_DEPT_PATH, "XML_Dept.xml")
+    if dept_root is None:
+        logger.error(
+            "[AUTH] Cannot load XML_Dept.xml (path=%s) — denying access for login_id=%r",
+            XML_DEPT_PATH, login_id,
+        )
+        return None
+
+    for el in dept_root.findall("Row"):
+        if el.attrib.get("DeptId", "").strip() == dept_id:
+            forms_raw = el.attrib.get("Forms", "")
+            form_ids  = {f.strip() for f in forms_raw.split("|") if f.strip()}
+            logger.info(
+                "[AUTH] login_id=%r dept_id=%r allowed_form_count=%d",
+                login_id, dept_id, len(form_ids),
+            )
+            return form_ids
+
+    logger.warning(
+        "[AUTH] DeptId=%r not found in XML_Dept.xml for login_id=%r",
+        dept_id, login_id,
+    )
+    return set()  # user exists but dept entry is missing → no access

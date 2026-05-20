@@ -29,3 +29,19 @@ INSTANCE_BASE_DIR: str = os.getenv(
     "INSTANCE_BASE_DIR",
     r"D:\Repo\Repo5.5 3\Repo5.5\Instance",
 )
+
+# ---------------------------------------------------------------------------
+# User / Department authorisation XML file paths
+# XML_User.xml  : maps LoginId → DeptId
+# XML_Dept.xml  : maps DeptId  → pipe-separated list of allowed FormIds
+# ---------------------------------------------------------------------------
+
+XML_USER_PATH: str = os.getenv(
+    "XML_USER_PATH",
+    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_User.xml",
+)
+
+XML_DEPT_PATH: str = os.getenv(
+    "XML_DEPT_PATH",
+    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_Dept.xml",
+)

@@ -70,6 +70,7 @@ async def guided_step(
     message:     str,
     session_id:  str | None,
     asp_session: str | None,
+    login_id:    str | None = None,
 ) -> dict[str, Any]:
     """Handle one step of the guided workflow.
 
@@ -99,6 +100,18 @@ async def guided_step(
     stage   = session.get("stage", STAGE_MENU)
     msg     = message.strip()
 
+    # ── Auth: resolve allowed FormIds for this user ────────────────────────
+    allowed_form_ids: set[str] | None = None  # None = no restriction
+    if login_id:
+        from backend.services.auth_service import get_allowed_form_ids as _get_auth
+        allowed_form_ids = _get_auth(login_id)
+        if allowed_form_ids is None:
+            logger.warning("[AUTH_DENY] guided: user not found login_id=%r session=%s", login_id, session_id)
+            return _build(
+                response_text="Your account was not recognised. Please contact your administrator.",
+                result_type="error",
+            )
+
     # ── Step 1: action selection ───────────────────────────────────────────────
     if stage == STAGE_MENU or msg in GUIDED_ACTIONS:
         if msg in GUIDED_ACTIONS:
@@ -123,6 +136,9 @@ async def guided_step(
         # Fuzzy-match the input directly against returns.xml — no LLM needed.
         logger.info("[GUIDED_STATUS_LOOKUP] input=%r session=%s", msg, session_id)
         result = get_report_status(msg)
+        if allowed_form_ids is not None:
+            from backend.agent import _apply_auth_to_status_result
+            result = _apply_auth_to_status_result(result, allowed_form_ids)
         return _from_result(result, intent="get_status", session_id=session_id)
 
     if stage == STAGE_GEN_REPORT:
@@ -133,6 +149,7 @@ async def guided_step(
             reporting_date=None,
             session_id=session_id,
             asp_session=asp_session,
+            allowed_form_ids=allowed_form_ids,
         )
 
     if stage == STAGE_SCHED_REPORT:
@@ -144,12 +161,13 @@ async def guided_step(
             schedule_time=None,
             scheduled_datetime=None,
             session_id=session_id,
+            allowed_form_ids=allowed_form_ids,
         )
 
     if stage == STAGE_CMP_REPORT:
         # _handle_compare runs find_matching_reports + fuzzy suggestions — no LLM.
         logger.info("[GUIDED_COMPARE_LOOKUP] input=%r session=%s", msg, session_id)
-        return await _handle_compare(report_ident=msg, session_id=session_id)
+        return await _handle_compare(report_ident=msg, session_id=session_id, allowed_form_ids=allowed_form_ids)
 
     if stage == STAGE_DB_QUERY:
         return _build(

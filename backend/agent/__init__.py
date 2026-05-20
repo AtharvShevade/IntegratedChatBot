@@ -191,10 +191,33 @@ async def decide(
     user_query: str,
     session_id: str | None = None,
     asp_session: str | None = None,
+    login_id: str | None = None,
 ) -> dict[str, Any]:
     _decide_start = time.monotonic()
     session = _session_context.get(session_id, {}) if session_id else {}
     lower_q = user_query.strip().lower()
+
+    # ── Auth: resolve allowed FormIds for this user ───────────────────────────────
+    # None  = no login_id provided — allow all (dev / backward compat)
+    # set   = restrict to this user’s department forms
+    allowed_form_ids: set[str] | None = None
+    if login_id:
+        from backend.services.auth_service import get_allowed_form_ids as _get_auth
+        allowed_form_ids = _get_auth(login_id)
+        if allowed_form_ids is None:
+            logger.warning(
+                "[AUTH_DENY] User not found: login_id=%r session=%s", login_id, session_id
+            )
+            return _build(
+                intent="unknown",
+                report_name=None,
+                response_text="Your account was not recognised. Please contact your administrator.",
+                result_type="error",
+            )
+        logger.info(
+            "[AUTH] login_id=%r allowed_forms=%d session=%s",
+            login_id, len(allowed_form_ids), session_id,
+        )
 
     # Persist the live cookie so staged flows (multi-turn generate) can use it
     if asp_session and session_id:
@@ -357,6 +380,9 @@ async def decide(
 
             if session_id:
                 _session_context.pop(session_id, None)
+            auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status")
+            if auth_err:
+                return auth_err
             result = get_report_status_exact(resolved_name)
             return _from_result(result, intent="get_status", session_id=session_id)
 
@@ -408,6 +434,9 @@ async def decide(
                     response_text=f"Report '{resolved_gen_name}' not found. Please try again.",
                     result_type="error",
                 )
+            auth_err = _check_name_auth(resolved_gen_name, allowed_form_ids, "generate_instance")
+            if auth_err:
+                return auth_err
             if saved_date:
                 return await _finalize_generation(ret, saved_date, session_id, effective_asp)
             if session_id:
@@ -495,6 +524,9 @@ async def decide(
                     response_text=f"Report '{resolved_sched_name}' not found. Please try again.",
                     result_type="error",
                 )
+            auth_err = _check_name_auth(resolved_sched_name, allowed_form_ids, "schedule_report")
+            if auth_err:
+                return auth_err
             return _finalize_schedule(ret, saved_sched_date, saved_sched_time, saved_sched_dt, session_id)
 
     # -- Schedule: date+time entry --------------------------------------------
@@ -596,6 +628,9 @@ async def decide(
                     ),
                     result_type="disambiguation", options=pending,
                 )
+            auth_err = _check_name_auth(selected, allowed_form_ids, "compare_reports")
+            if auth_err:
+                return auth_err
             return await _compare_with_name(selected, session_id)
 
     # -- Compare: instance file selection --------------------------------------
@@ -678,7 +713,7 @@ async def decide(
             else search_terms
         )
         logger.info("[GENERATE_START] report=%r session=%s", report_ident, session_id)
-        return await _handle_generate(report_ident, reporting_date, session_id, effective_asp)
+        return await _handle_generate(report_ident, reporting_date, session_id, effective_asp, allowed_form_ids)
 
     if intent == "schedule_report":
         report_ident = (
@@ -693,6 +728,7 @@ async def decide(
             schedule_time=extracted.get("schedule_time"),
             scheduled_datetime=extracted.get("scheduled_datetime"),
             session_id=session_id,
+            allowed_form_ids=allowed_form_ids,
         )
 
     if intent == "compare_reports":
@@ -702,7 +738,7 @@ async def decide(
             else search_terms
         )
         logger.info("[COMPARE_START] report=%r session=%s", report_ident, session_id)
-        return await _handle_compare(report_ident, session_id)
+        return await _handle_compare(report_ident, session_id, allowed_form_ids)
 
     # get_status: cache search terms so follow-up turns work without a name
     if session_id:
@@ -715,6 +751,8 @@ async def decide(
     # which gives a misleading "No instances found" when the user typed only
     # a partial name like "raq".
     result = get_report_status(search_terms or user_query)
+    if allowed_form_ids is not None:
+        result = _apply_auth_to_status_result(result, allowed_form_ids)
     _decide_elapsed = time.monotonic() - _decide_start
     logger.info(
         "[PERF] operation=decide intent=%s duration=%.2fs session=%s",
@@ -727,17 +765,27 @@ async def decide(
 # Compare helpers
 # ---------------------------------------------------------------------------
 
-async def _handle_compare(report_ident: str, session_id: str | None) -> dict[str, Any]:
+async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None) -> dict[str, Any]:
     """Entry point for compare_reports intent — handles disambiguation."""
     from backend.tools.xbrl_comparator import find_instances_by_prefix
 
     matches = find_matching_reports(report_ident)
+    if allowed_form_ids is not None:
+        matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
         # Before giving up, check if there are instance files in logs/ whose
         # filenames start with this prefix (e.g. HDFC files not in returns.xml)
         direct_files = find_instances_by_prefix(report_ident)
         if len(direct_files) >= 2:
+            if allowed_form_ids is not None:
+                fid = get_form_id_by_name(report_ident) or ""
+                if fid and fid not in allowed_form_ids:
+                    return _build(
+                        intent="compare_reports", report_name=report_ident,
+                        response_text="You are not authorised to access this report.",
+                        result_type="error",
+                    )
             return await _compare_with_name(report_ident, session_id)
         if len(direct_files) == 1:
             return _build(
@@ -750,6 +798,8 @@ async def _handle_compare(report_ident: str, session_id: str | None) -> dict[str
             )
 
         suggestions = fuzzy_report_suggestions(report_ident)
+        if allowed_form_ids is not None:
+            suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             if session_id:
@@ -1274,6 +1324,7 @@ def _handle_schedule(
     schedule_time: str | None,
     scheduled_datetime: str | None,
     session_id: str | None,
+    allowed_form_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Validate report name against known definitions, then confirm the schedule.
 
@@ -1292,6 +1343,8 @@ def _handle_schedule(
         )
 
     matches = find_matching_reports(report_ident)
+    if allowed_form_ids is not None:
+        matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
         suggestions = fuzzy_report_suggestions(report_ident)
@@ -1436,9 +1489,12 @@ async def _handle_generate(
     reporting_date: str | None,
     session_id: str | None,
     asp_session: str | None = None,
+    allowed_form_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Entry point for generate_instance intent from the normal (non-staged) flow."""
     matches = find_matching_reports(report_name)
+    if allowed_form_ids is not None:
+        matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
         suggestions = fuzzy_report_suggestions(report_name)
@@ -1553,3 +1609,96 @@ def _build(
     if instances_data is not None:
         out["instances_data"] = instances_data
     return out
+
+
+# ---------------------------------------------------------------------------
+# Authorisation helpers
+# ---------------------------------------------------------------------------
+
+def _filter_names_by_auth(names: list[str], allowed: set[str] | None) -> list[str]:
+    """Return only the report names whose FormId is in *allowed*.
+
+    If *allowed* is ``None`` (no auth configured) all names pass through.
+    """
+    if allowed is None:
+        return names
+    result = []
+    for name in names:
+        fid = get_form_id_by_name(name) or ""
+        if fid in allowed:
+            result.append(name)
+    return result
+
+
+def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) -> dict[str, Any] | None:
+    """Return an auth-error response dict if *report_name*'s FormId is not in *allowed*.
+
+    Returns ``None`` when access is granted (either no auth configured, or
+    the FormId is explicitly in the allowed set).
+    """
+    if allowed is None:
+        return None
+    fid = get_form_id_by_name(report_name) or ""
+    if fid not in allowed:
+        logger.warning(
+            "[AUTH_DENY] report=%r form_id=%r not in allowed set", report_name, fid
+        )
+        return _build(
+            intent=intent,
+            report_name=report_name,
+            response_text="You are not authorised to access this report.",
+            result_type="error",
+        )
+    return None
+
+
+def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    """Post-filter a ``get_report_status`` result dict through the auth set.
+
+    Handles all result types returned by ``get_report_status``:
+    - ``disambiguation``  — filter options list; error if none remain
+    - ``date_selection``  — check form_id directly
+    - ``run_selection``   — check form_id directly
+    - ``final``           — look up FormId by report name and check
+    - ``error``           — pass through unchanged
+    """
+    rtype = result.get("type", "")
+
+    if rtype == "disambiguation":
+        filtered = _filter_names_by_auth(result.get("options", []), allowed)
+        if not filtered:
+            return {
+                "type":    "error",
+                "message": "You are not authorised to access any of the matching reports.",
+            }
+        if len(filtered) < len(result.get("options", [])):
+            opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(filtered))
+            return {
+                **result,
+                "options": filtered,
+                "message": (
+                    "Found multiple matching reports. Which one do you mean?\n\n"
+                    f"{opts_text}\n\n"
+                    "Reply with the number or name to select."
+                ),
+            }
+        return result
+
+    if rtype in ("date_selection", "run_selection"):
+        fid = result.get("form_id", "")
+        if fid not in allowed:
+            logger.warning("[AUTH_DENY] form_id=%r not in allowed set (status result)", fid)
+            return {"type": "error", "message": "You are not authorised to access this report."}
+        return result
+
+    if rtype == "final":
+        fid = get_form_id_by_name(result.get("report_name", "")) or ""
+        if fid not in allowed:
+            logger.warning(
+                "[AUTH_DENY] report=%r form_id=%r not in allowed set (final result)",
+                result.get("report_name"), fid,
+            )
+            return {"type": "error", "message": "You are not authorised to access this report."}
+        return result
+
+    return result  # error / unknown — pass through
