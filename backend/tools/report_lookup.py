@@ -15,18 +15,24 @@ from backend.config import RETURNS_XML_PATH as _RETURNS_FILE, INSTANCE_LOG_XML_P
 from backend.tools.xml_loader import load_xml_tree
 
 _STATUS_LABELS: dict[int, str] = {
-    0:  "Not Started",
-    3:  "Failed",
-    8:  "Validation Error",
-    9:  "Processed",
-    10: "XBRL Error",
+    # Success
     11: "Success",
-    12: "Approved",
+    # Failed
+    3:  "Failed",
+    5:  "Failed",
+    8:  "Failed",
+    10: "Failed",
+    13: "Failed",
+    # In Progress
+    4:  "In Progress",
+    6:  "In Progress",
+    # Approved
+    9:  "Approved",
+    # Rejected
+    12: "Rejected",
 }
 
-
 # â”€â”€ Parsers (cached once per server lifetime) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 
 # TTL values — can be overridden via environment variables.
 _returns_ttl   = float(os.getenv("RETURNS_TTL_SEC",   "3600"))   # 1 hour
@@ -260,7 +266,7 @@ def _is_known_date(date_str: str, form_id: str) -> bool:
 
 
 def map_status(code: int) -> str:
-    return _STATUS_LABELS.get(code, f"Unknown ({code})")
+    return _STATUS_LABELS.get(code, "Unknown")
 
 
 def _safe_status(row: dict) -> int:
