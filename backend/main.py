@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 from dotenv import load_dotenv
@@ -26,7 +27,27 @@ from backend.models import ChatRequest, ChatResponse, CompareRequest  # noqa: E4
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Report Assistant", version="3.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Pre-warm Ollama models on startup so the first real request is fast."""
+    from backend.services.llm_service import (
+        OLLAMA_BASE_URL, OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL, _KEEP_ALIVE,
+    )
+    async with httpx.AsyncClient(timeout=120) as client:
+        for model in {OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL}:
+            try:
+                await client.post(
+                    f"{OLLAMA_BASE_URL}/api/chat",
+                    json={"model": model, "messages": [], "stream": False, "keep_alive": _KEEP_ALIVE},
+                )
+                logger.info("[WARMUP] model=%s loaded into memory", model)
+            except Exception as exc:
+                logger.warning("[WARMUP] failed for model=%s: %s", model, exc)
+    yield
+
+
+app = FastAPI(title="Report Assistant", version="3.0.0", lifespan=lifespan)
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
