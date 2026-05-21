@@ -999,6 +999,21 @@ html, body, #root {
 .sched-confirm-bubble {
   border-left: 3px solid var(--accent);
 }
+
+/* Post-action "What next?" menu bubble */
+.action-menu-bubble {
+  max-width: 420px;
+  border-left: 3px solid var(--accent);
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.action-menu-prompt {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 10px !important;
+}
 .sched-confirm-actions {
   margin-top: 8px;
   gap: 10px;

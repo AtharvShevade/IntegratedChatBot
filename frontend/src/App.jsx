@@ -17,22 +17,39 @@ export default function App() {
   const inputRef  = useRef(null)
   const sessionId = useRef(_uid || crypto.randomUUID())
 
+  // Result types that represent a fully completed workflow — show action menu after these.
+  const _TERMINAL_TYPES = new Set([
+    'final',          // report status check done
+    'variance_table', // comparative analysis done
+    'gen_success',    // report generation done
+    'schedule_parsed',// scheduling confirmed
+    'sql_result',     // database query done
+  ])
+
   // ── Helper: push an assistant result into the message list ───────────────
   const _pushResult = (result) => {
+    const isTerminal    = _TERMINAL_TYPES.has(result.result_type)
     const isStillGuided =
       result.result_type === 'guided_menu' || result.result_type === 'guided_input'
-    setIsGuidedFlow(isStillGuided)
-    setMessages((prev) => [...prev, {
-      role:          'assistant',
-      text:          result.response_text,
-      options:       result.options || [],
-      resultType:    result.result_type || '',
-      varianceData:  result.variance_data || [],
-      labelA:        result.variance_label_a || '',
-      labelB:        result.variance_label_b || '',
-      llmSummary:    result.llm_summary || '',
-      instancesData: result.instances_data || [],
-    }])
+    setIsGuidedFlow(isTerminal ? false : isStillGuided)
+
+    const incoming = [
+      {
+        role:          'assistant',
+        text:          result.response_text,
+        options:       result.options || [],
+        resultType:    result.result_type || '',
+        varianceData:  result.variance_data || [],
+        labelA:        result.variance_label_a || '',
+        labelB:        result.variance_label_b || '',
+        llmSummary:    result.llm_summary || '',
+        instancesData: result.instances_data || [],
+      },
+    ]
+    if (isTerminal) {
+      incoming.push({ role: 'action_menu' })
+    }
+    setMessages((prev) => [...prev, ...incoming])
   }
 
   // ── Free-text chat ────────────────────────────────────────────────────────

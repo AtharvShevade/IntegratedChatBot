@@ -9,6 +9,10 @@ export default function MessageBubble({ role, text, data, options, resultType, s
     return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} />
   }
 
+  if (role === 'action_menu') {
+    return <ActionMenu onGuidedAction={onGuidedAction} />
+  }
+
   if (role === 'sql_welcome') {
     return <SqlWelcomeCard />
   }
@@ -246,6 +250,34 @@ function WelcomeCard({ onSuggestion, onGuidedAction }) {
                   ))}
                 </div>
               )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Action Menu ───────────────────────────────────────────────────────────────
+// Reusable post-action "what next?" prompt. Rendered after every completed
+// workflow (final / gen_success / schedule_parsed / variance_table / sql_result).
+function ActionMenu({ onGuidedAction }) {
+  return (
+    <div className="bubble-row assistant">
+      <div className="avatar assistant-avatar">AI</div>
+      <div className="bubble assistant-bubble action-menu-bubble">
+        <p className="welcome-subtext action-menu-prompt">What would you like to do next?</p>
+        <div className="welcome-suggestion-groups">
+          {SUGGESTION_GROUPS.map((group) => (
+            <div key={group.label} className="welcome-suggestion-group">
+              <button
+                className="welcome-group-label-btn"
+                onClick={() => onGuidedAction?.(group.action)}
+                title={`Start guided flow: ${group.action}`}
+              >
+                {group.label}
+                <span className="welcome-group-arrow">›</span>
+              </button>
             </div>
           ))}
         </div>
