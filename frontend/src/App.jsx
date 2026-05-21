@@ -35,6 +35,13 @@ export default function App() {
       downloadUrl:   result.download_url   || '',
       downloadLabel: result.download_label || '',
       statusNote:    result.status_note    || '',
+      sqlData:       result.result_type === 'db_result' ? {
+        sql:      result.db_sql      || '',
+        is_valid: !result.db_error,
+        db_error: result.db_error   || null,
+        columns:  result.db_columns || [],
+        rows:     result.db_rows    || [],
+      } : null,
     }])
   }
 

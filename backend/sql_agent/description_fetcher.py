@@ -8,6 +8,14 @@ LLM prompt so it can write accurate WHERE clauses.
 import json
 import os
 
+from backend.sql_agent.config import (
+    ROW_LABEL_INDEX_PATH,
+    ROW_LABEL_META_PATH,
+    DESC_SAMPLES_PATH,
+    SCHEMA_JSON_PATH,
+    FAISS_OUTPUT_DIR,
+)
+
 # Column names that act as row labels / identifiers in this schema
 LABEL_COLUMNS = {
     "description",
@@ -23,24 +31,26 @@ LABEL_COLUMNS = {
 }
 
 MAX_SAMPLES = 50          # max distinct values to fetch per table
-OUTPUT_PATH = "output/description_samples.json"
 
 
 def _get_connection():
     """Lazy import so the module can be imported without oracledb installed."""
     import oracledb
-    from src.config import DB_HOST, DB_PORT, DB_SERVICE, DB_USER, DB_PASSWORD
+    from backend.sql_agent.config import DB_HOST, DB_PORT, DB_SERVICE, DB_USER, DB_PASSWORD
     dsn = oracledb.makedsn(DB_HOST, DB_PORT, service_name=DB_SERVICE)
     return oracledb.connect(user=DB_USER, password=DB_PASSWORD, dsn=dsn)
 
 
-def fetch_and_save(schema_json_path="output/schema.json"):
+def fetch_and_save(schema_json_path=None):
     """
     Read schema.json, identify tables with label columns, query Oracle for
-    distinct values, and write output/description_samples.json.
+    distinct values, and write description_samples.json.
 
     Returns dict: { table_name: { col_name: [val1, val2, ...] } }
     """
+    if schema_json_path is None:
+        schema_json_path = SCHEMA_JSON_PATH
+
     with open(schema_json_path) as f:
         schema = json.load(f)
 
@@ -85,16 +95,18 @@ def fetch_and_save(schema_json_path="output/schema.json"):
         cursor.close()
         conn.close()
 
-    os.makedirs("output", exist_ok=True)
-    with open(OUTPUT_PATH, "w") as f:
+    os.makedirs(FAISS_OUTPUT_DIR, exist_ok=True)
+    with open(DESC_SAMPLES_PATH, "w") as f:
         json.dump(samples, f, indent=2)
 
-    print(f"\n  Saved → {OUTPUT_PATH}")
+    print(f"\n  Saved → {DESC_SAMPLES_PATH}")
     return samples
 
 
-def load_samples(path=OUTPUT_PATH):
+def load_samples(path=None):
     """Load previously fetched description samples. Returns {} if file missing."""
+    if path is None:
+        path = DESC_SAMPLES_PATH
     try:
         with open(path) as f:
             return json.load(f)
@@ -106,23 +118,12 @@ def load_samples(path=OUTPUT_PATH):
 # Row-label vector index helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-ROW_LABEL_INDEX_PATH = "output/row_label_index.faiss"
-ROW_LABEL_META_PATH  = "output/row_label_meta.pkl"
-
-
 def build_and_save_label_index(samples: dict | None = None):
     """
     Embed every distinct row-label value and persist a FAISS index so
     get_relevant_schema() can retrieve only the labels relevant to a query.
-
-    Parameters
-    ----------
-    samples : dict, optional
-        Pre-loaded samples dict.  If None, loads from OUTPUT_PATH.
-
-    Returns the (index, records) tuple.
     """
-    from src.vectorizer import build_row_label_index, save_index
+    from backend.sql_agent.vectorizer import build_row_label_index, save_index
 
     if samples is None:
         samples = load_samples()
@@ -131,11 +132,11 @@ def build_and_save_label_index(samples: dict | None = None):
         print("  [label_index] No samples found — skipping row-label index build.")
         return None, []
 
-    print(f"  [label_index] Building row-label FAISS index …")
+    print("  [label_index] Building row-label FAISS index …")
     index, records = build_row_label_index(samples)
 
     if index is not None:
-        os.makedirs("output", exist_ok=True)
+        os.makedirs(FAISS_OUTPUT_DIR, exist_ok=True)
         save_index(index, records, ROW_LABEL_INDEX_PATH, ROW_LABEL_META_PATH)
         print(f"  [label_index] ✓ Indexed {len(records)} label values → {ROW_LABEL_INDEX_PATH}")
     else:
@@ -167,7 +168,7 @@ def search_labels_with_scores(query: str, top_k: int = 30) -> list:
     import faiss as _faiss
     import pickle
     import numpy as np
-    from src.vectorizer import embed_query
+    from backend.sql_agent.vectorizer import embed_query
 
     if not os.path.exists(ROW_LABEL_INDEX_PATH):
         return []
@@ -179,7 +180,7 @@ def search_labels_with_scores(query: str, top_k: int = 30) -> list:
     if not meta:
         return []
 
-    q_vec = np.array([embed_query(query)], dtype="float32")
+    q_vec      = np.array([embed_query(query)], dtype="float32")
     effective_k = min(top_k, len(meta))
     distances, indices = index.search(q_vec, effective_k)
 
@@ -194,9 +195,9 @@ def search_labels_with_scores(query: str, top_k: int = 30) -> list:
             continue
         seen.add(key)
         results.append((float(dist), {
-            "table": rec["table"],
+            "table":  rec["table"],
             "column": rec["column"],
-            "value": rec["value"],
+            "value":  rec["value"],
         }))
 
     return results

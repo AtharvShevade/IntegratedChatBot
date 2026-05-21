@@ -1,5 +1,5 @@
 import oracledb
-from src.config import DB_HOST, DB_PORT, DB_SERVICE, DB_USER, DB_PASSWORD, DB_MAX_ROWS
+from backend.sql_agent.config import DB_HOST, DB_PORT, DB_SERVICE, DB_USER, DB_PASSWORD, DB_MAX_ROWS
 
 
 def get_connection():
@@ -71,17 +71,12 @@ def print_results(columns, rows):
         for i, val in enumerate(row):
             widths[i] = max(widths[i], len(str(val) if val is not None else "NULL"))
 
-    sep   = "+-" + "-+-".join("-" * w for w in widths) + "-+"
+    sep    = "+-" + "-+-".join("-" * w for w in widths) + "-+"
     header = "| " + " | ".join(c.ljust(widths[i]) for i, c in enumerate(columns)) + " |"
 
     print(sep)
     print(header)
     print(sep)
     for row in rows:
-        line = "| " + " | ".join(
-            (str(v) if v is not None else "NULL").ljust(widths[i])
-            for i, v in enumerate(row)
-        ) + " |"
-        print(line)
+        print("| " + " | ".join((str(v) if v is not None else "NULL").ljust(widths[i]) for i, v in enumerate(row)) + " |")
     print(sep)
-    print(f"  {len(rows)} row(s) returned (limit: {DB_MAX_ROWS})")

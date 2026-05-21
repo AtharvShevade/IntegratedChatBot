@@ -31,6 +31,16 @@ class ChatResponse(BaseModel):
     status_note:      str        = ""   # e.g. in-progress message or "file not found"
 
 
+    # ── SQL / Database query result fields ────────────────────────────────────
+    db_columns:      list[str]       = []    # column headers from Oracle
+    db_rows:         list[list]      = []    # serialized rows (JSON-safe types)
+    db_sql:          str             = ""   # generated SQL shown to user
+    db_error:        Optional[str]   = None  # Oracle error message if any
+    accuracy_hint:   Optional[str]   = None  # soft tip to add time context
+    needs_more_info: bool            = False # True when query is too vague
+    more_info_hint:  Optional[str]   = None  # guidance for the user
+
+
 class CompareRequest(BaseModel):
     """Direct compare-execute request — bypasses intent detection entirely."""
     session_id:  str = Field(..., max_length=128)

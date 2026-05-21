@@ -689,6 +689,11 @@ async def decide(
         intent, search_terms, reporting_date, session_id,
     )
 
+    if intent == "query_database":
+        logger.info("[INTENT] routing to SQL agent for session=%s", session_id)
+        from backend.sql_agent import handle_db_query
+        return await handle_db_query(user_query, session_id=session_id)
+
     if intent == "unknown":
         try:
             reply = await chat_response(user_query)

@@ -2,7 +2,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 import faiss
 import pickle
-from src.config import EMBED_MODEL, QUERY_PREFIX
+from backend.sql_agent.config import EMBED_MODEL, QUERY_PREFIX
 
 model = SentenceTransformer(EMBED_MODEL)
 
@@ -14,8 +14,6 @@ def embed_documents(texts):
         batch_size=32,
         show_progress_bar=True,
     )
-    
-    import numpy as np
     return np.array(vectors, dtype="float32")
 
 
@@ -25,18 +23,14 @@ def embed_query(query):
 
 
 def build_faiss_index(vectors):
-
     vectors = np.array(vectors, dtype="float32")
 
     if len(vectors.shape) == 1:
         raise ValueError("Embedding output is 1D — check input texts")
 
     dim = vectors.shape[1]
-
-    import faiss
     index = faiss.IndexFlatIP(dim)
     index.add(vectors)
-
     return index
 
 
@@ -58,26 +52,20 @@ def build_row_label_index(samples: dict):
 
     Returns
     -------
-    index  : faiss.Index  (IndexFlatIP, L2-normalised vectors)
-    records: list of dicts with keys: table, column, value, text
+    (index, records) — index is a faiss.Index; records is list of dicts
+    { table, column, value } in the same order as the indexed vectors.
     """
     records = []
+    texts   = []
     for table, col_map in samples.items():
         for col, values in col_map.items():
             for val in values:
-                # Descriptive text so the embedding captures semantic meaning
-                text = f"{table} {col} label: {val}"
-                records.append({
-                    "table": table,
-                    "column": col,
-                    "value": val,
-                    "text": text,
-                })
+                records.append({"table": table, "column": col, "value": val})
+                texts.append(f"{table} {col} {val}")
 
-    if not records:
+    if not texts:
         return None, []
 
-    texts = [r["text"] for r in records]
     vectors = embed_documents(texts)
-    index = build_faiss_index(vectors)
+    index   = build_faiss_index(vectors)
     return index, records

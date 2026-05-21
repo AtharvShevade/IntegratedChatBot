@@ -2,8 +2,12 @@ import re
 import faiss
 import pickle
 import numpy as np
-from src.vectorizer import embed_query
-from src.config import TOP_K_TABLES, TOP_K_COLUMNS
+from backend.sql_agent.vectorizer import embed_query
+from backend.sql_agent.config import (
+    TOP_K_TABLES, TOP_K_COLUMNS,
+    TABLE_INDEX_PATH, TABLE_META_PATH,
+    COLUMN_INDEX_PATH, COLUMN_META_PATH,
+)
 
 TOP_K_LABELS = 10   # max row-label values to retrieve per query
 
@@ -14,25 +18,25 @@ MIN_COLUMN_SCORE = 0.20
 
 # ── Banking / CIMS domain abbreviation expansion ──────────────────────────────
 _QUERY_EXPANSIONS = [
-    (r'\bnpa\b',    'NPA non performing assets'),
-    (r'\bgnpa\b',   'gross NPA non performing assets'),
-    (r'\bnnpa\b',   'net NPA non performing assets'),
-    (r'\bsma\b',    'special mention accounts SMA'),
-    (r'\bcar\b',    'capital adequacy ratio CAR'),
-    (r'\bpcr\b',    'provision coverage ratio PCR'),
-    (r'\brwa\b',    'risk weighted assets RWA'),
-    (r'\bslr\b',    'statutory liquidity ratio SLR'),
-    (r'\bcrr\b',    'cash reserve ratio CRR'),
-    (r'\bpsl\b',    'priority sector lending PSL'),
-    (r'\braq\b',    'Risk Assessment Questionnaire RAQ CIMS'),
-    (r'\bcims\b',   'CIMS banking supervisory return'),
+    (r'\bnpa\b',      'NPA non performing assets'),
+    (r'\bgnpa\b',     'gross NPA non performing assets'),
+    (r'\bnnpa\b',     'net NPA non performing assets'),
+    (r'\bsma\b',      'special mention accounts SMA'),
+    (r'\bcar\b',      'capital adequacy ratio CAR'),
+    (r'\bpcr\b',      'provision coverage ratio PCR'),
+    (r'\brwa\b',      'risk weighted assets RWA'),
+    (r'\bslr\b',      'statutory liquidity ratio SLR'),
+    (r'\bcrr\b',      'cash reserve ratio CRR'),
+    (r'\bpsl\b',      'priority sector lending PSL'),
+    (r'\braq\b',      'Risk Assessment Questionnaire RAQ CIMS'),
+    (r'\bcims\b',     'CIMS banking supervisory return'),
     (r'\bsec(\d+)\b', r'section \1'),
-    (r'\bdom\b',    'domestic'),
-    (r'\bove\b',    'overseas'),
-    (r'\binfra\b',  'infrastructure'),
-    (r'\bsensec\b', 'sensitive sector'),
-    (r'\bparta\b',  'part A'),
-    (r'\bpartb\b',  'part B'),
+    (r'\bdom\b',      'domestic'),
+    (r'\bove\b',      'overseas'),
+    (r'\binfra\b',    'infrastructure'),
+    (r'\bsensec\b',   'sensitive sector'),
+    (r'\bparta\b',    'part A'),
+    (r'\bpartb\b',    'part B'),
 ]
 
 
@@ -85,22 +89,22 @@ def _rrf(rank: int, k: int = 60) -> float:
 
 def get_relevant_schema(query: str):
     expanded = _expand_query(query)
-    top_k = _dynamic_top_k(query)
+    top_k    = _dynamic_top_k(query)
 
     # ── Signal A: direct table semantic search ────────────────────────────────
     table_hits = search(
-        "output/table_index.faiss", "output/table_meta.pkl",
+        TABLE_INDEX_PATH, TABLE_META_PATH,
         expanded, top_k * 3, min_score=MIN_TABLE_SCORE,
     )
 
     # ── Signal B: column search → which tables do best columns belong to? ─────
     col_hits = search(
-        "output/column_index.faiss", "output/column_meta.pkl",
+        COLUMN_INDEX_PATH, COLUMN_META_PATH,
         expanded, TOP_K_COLUMNS * 6, min_score=MIN_COLUMN_SCORE,
     )
 
     # ── Signal C: row-label search → which tables do best labels belong to? ───
-    from src.description_fetcher import search_labels_with_scores
+    from backend.sql_agent.description_fetcher import search_labels_with_scores
     label_hits = search_labels_with_scores(expanded, top_k=TOP_K_LABELS * 3)
 
     # ── RRF: fuse all 3 signals into a single table ranking ───────────────────
@@ -122,7 +126,6 @@ def get_relevant_schema(query: str):
         if tbl in scores:
             scores[tbl] += _rrf(rank) * 1.5
         else:
-            # Column matched a table the table-search missed — add it
             all_table_meta[tbl] = {"table": tbl}
             scores[tbl] = _rrf(rank) * 1.5
 
@@ -141,15 +144,14 @@ def get_relevant_schema(query: str):
             scores[tbl] = _rrf(rank) * 1.0
 
     # Pick top_k tables by fused score
-    ranked = sorted(scores, key=scores.__getitem__, reverse=True)[:top_k]
-    tables = [all_table_meta[tbl] for tbl in ranked]
+    ranked     = sorted(scores, key=scores.__getitem__, reverse=True)[:top_k]
+    tables     = [all_table_meta[tbl] for tbl in ranked]
     table_names = {t["table"] for t in tables}
 
     # ── Columns: take top matches from selected tables ────────────────────────
     columns = [c for _, c in col_hits if c["table"] in table_names]
-    # Deduplicate (table, column) pairs while preserving rank order
     seen_cols: set = set()
-    unique_cols = []
+    unique_cols    = []
     for c in columns:
         key = (c["table"], c["column"])
         if key not in seen_cols:
@@ -158,7 +160,7 @@ def get_relevant_schema(query: str):
     columns = unique_cols[:TOP_K_COLUMNS * 2]
 
     # ── Row labels: restrict to selected tables ───────────────────────────────
-    from src.description_fetcher import search_labels
+    from backend.sql_agent.description_fetcher import search_labels
     matched_labels = search_labels(query, table_names, top_k=TOP_K_LABELS)
 
     return tables, columns, matched_labels
