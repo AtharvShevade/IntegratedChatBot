@@ -1,0 +1,52 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# Vector indexes (binary, rebuilt via python main.py)
+output/*.faiss
+output/*.pkl
+
+# Generated output files (may contain sensitive schema/DB data, rebuilt via main.py)
+output/schema.json
+output/description_samples.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Environment / secrets
+.env
+*.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary audio files (recorded by speech.py)
+*.wav
+
+# Local databases
+*.db
+*.sqlite
+
+# Sentence-transformer model cache (if stored locally)
+sentence_transformers_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
