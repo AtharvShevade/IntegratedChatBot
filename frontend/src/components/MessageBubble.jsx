@@ -1,5 +1,26 @@
 import { useState } from 'react'
 
+// Programmatic fetch → blob → <a click> download.
+// Works for both same-origin and proxied URLs; browser cannot override the filename.
+function triggerBlobDownload(url, label) {
+  const filename = (() => {
+    try { return new URL(url, window.location.origin).searchParams.get('filename') || label } catch { return label }
+  })()
+  fetch(url)
+    .then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.blob() })
+    .then((blob) => {
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href     = blobUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    })
+    .catch((err) => console.error('[Download] failed:', err))
+}
+
 export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
@@ -115,15 +136,12 @@ export default function MessageBubble({ role, text, data, options, resultType, s
             ))}
           </div>
           {downloadUrl && (
-            <a
-              href={`${API_BASE}${downloadUrl}`}
-              download
+            <button
               className="download-btn"
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
             >
               ⬇ {downloadLabel || 'Download'}
-            </a>
+            </button>
           )}
           <div className="bubble assistant-bubble" style={{ marginTop: 6, fontStyle: 'italic', fontSize: '0.88em' }}>
             Would you also like to check status for previous reporting dates?
@@ -210,15 +228,12 @@ export default function MessageBubble({ role, text, data, options, resultType, s
 
         {/* Download button — rendered for final/ask_previous when a file is available */}
         {!isUser && downloadUrl && resultType !== 'ask_previous' && (
-          <a
-            href={`${API_BASE}${downloadUrl}`}
-            download
+          <button
             className="download-btn"
-            target="_blank"
-            rel="noopener noreferrer"
+            onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
           >
             ⬇ {downloadLabel || 'Download'}
-          </a>
+          </button>
         )}
       </div>
 
