@@ -35,96 +35,9 @@ _STATUS_LABELS: dict[int, str] = {
     9:  "Approved",
     # Rejected
     12: "Rejected",
-    0 : "Not Started",
+
+    0: "Not Started",
 }
-
-# Status code sets — used by download-info helper.
-_SUCCESS_CODES  = frozenset({11})
-_FAILED_CODES   = frozenset({3, 5, 8, 10, 13})
-_INPROG_CODES   = frozenset({4, 6})
-_APPROVED_CODES = frozenset({9})
-
-
-# ── Download / file helpers ─────────────────────────────────────────────────────
-
-def _safe_form_id(form_id: str) -> str:
-    """Strip non-numeric characters — guards against path traversal."""
-    return re.sub(r"[^0-9]", "", str(form_id))
-
-
-def build_render_file_path(form_id: str, filename: str) -> str:
-    """Return the absolute path to a render (HTML) file, or '' if inputs are invalid."""
-    safe_fid  = _safe_form_id(form_id)
-    safe_name = os.path.basename(filename.strip()) if filename else ""
-    if not safe_fid or not safe_name:
-        return ""
-    return os.path.join(_RENDER_BASE_DIR, safe_fid, safe_name)
-
-
-def build_error_file_path(form_id: str, filename: str) -> str:
-    """Return the absolute path to an error (XML) file, or '' if inputs are invalid."""
-    safe_fid  = _safe_form_id(form_id)
-    safe_name = os.path.basename(filename.strip()) if filename else ""
-    if not safe_fid or not safe_name:
-        return ""
-    return os.path.join(_INSTANCE_BASE_DIR, safe_fid, safe_name)
-
-
-def file_exists(path: str) -> bool:
-    """True if *path* is a non-empty string pointing to an existing file."""
-    return bool(path) and os.path.isfile(path)
-
-
-def _get_download_info(row: dict, form_id: str) -> dict:
-    """Return download URL, label, and status note based on the row's Status code.
-
-    Returns:
-        {
-            "download_url":   relative URL string (empty when N/A),
-            "download_label": button label string (empty when N/A),
-            "status_note":    extra info string (empty when N/A),
-        }
-    """
-    code    = _safe_status(row)
-    dl      = {"download_url": "", "download_label": "", "status_note": ""}
-    safe_fid = _safe_form_id(form_id)
-
-    if code in _SUCCESS_CODES or code in _APPROVED_CODES:
-        filename = row.get("RenderedExcelDocPath", "").strip()
-        logger.info(
-            "[DOWNLOAD_INFO] status_code=%d raw_RenderedExcelDocPath=%r form_id=%s render_base=%r",
-            code, filename, safe_fid, _RENDER_BASE_DIR,
-        )
-        if filename:
-            safe_name = os.path.basename(filename)
-            path = build_render_file_path(safe_fid, safe_name)
-            logger.info("[DOWNLOAD_INFO] constructed render path=%r exists=%s", path, os.path.isfile(path))
-            if file_exists(path):
-                dl["download_url"]   = f"/download-file?form_id={safe_fid}&type=render&filename={safe_name}"
-                dl["download_label"] = "Download Render File"
-            else:
-                dl["status_note"] = "Render file not found."
-
-    elif code in _FAILED_CODES:
-        filename = row.get("ErrorDocPath", "").strip()
-        logger.info(
-            "[DOWNLOAD_INFO] status_code=%d raw_ErrorDocPath=%r form_id=%s instance_base=%r",
-            code, filename, safe_fid, _INSTANCE_BASE_DIR,
-        )
-        if filename:
-            safe_name = os.path.basename(filename)
-            path = build_error_file_path(safe_fid, safe_name)
-            logger.info("[DOWNLOAD_INFO] constructed error path=%r exists=%s", path, os.path.isfile(path))
-            if file_exists(path):
-                dl["download_url"]   = f"/download-file?form_id={safe_fid}&type=error&filename={safe_name}"
-                dl["download_label"] = "Download Error File"
-            else:
-                dl["status_note"] = "Error file not found."
-
-    elif code in _INPROG_CODES:
-        dl["status_note"] = "Report generation is still in progress."
-
-    return dl
 
 # â”€â”€ Parsers (cached once per server lifetime) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -201,7 +114,7 @@ def _parse_instances() -> tuple[dict, ...]:
     return _instances_cache.set(result)
 
 
-# â”€â”€ Public pipeline functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Public pipeline functions
 
 def _normalise(s: str) -> str:
     """Lowercase and strip every non-alphanumeric character for matching.
