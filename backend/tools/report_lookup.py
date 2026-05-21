@@ -283,6 +283,58 @@ def _safe_status(row: dict) -> int:
         return -1
 
 
+# ── File download helpers ──────────────────────────────────────────────────────
+
+def build_render_file_path(form_id: str, filename: str) -> str:
+    """Construct an absolute path to a render file under RENDER_BASE_DIR/{form_id}/."""
+    safe_fid  = os.path.basename(form_id)
+    safe_name = os.path.basename(filename)
+    return os.path.join(_RENDER_BASE_DIR, safe_fid, safe_name)
+
+
+def build_error_file_path(form_id: str, filename: str) -> str:
+    """Construct an absolute path to an error file under INSTANCE_BASE_DIR/{form_id}/."""
+    safe_fid  = os.path.basename(form_id)
+    safe_name = os.path.basename(filename)
+    return os.path.join(_INSTANCE_BASE_DIR, safe_fid, safe_name)
+
+
+def file_exists(path: str) -> bool:
+    return os.path.isfile(path)
+
+
+def _get_download_info(row: dict, form_id: str) -> dict:
+    """Return download_url, download_label, status_note for a given instance row.
+
+    Checks RenderedExcelDocPath first (render file), then ErrorDocPath (error file).
+    """
+    render_path_str = row.get("RenderedExcelDocPath", "").strip()
+    if render_path_str:
+        filename = os.path.basename(render_path_str)
+        if filename:
+            full_path = build_render_file_path(form_id, filename)
+            if file_exists(full_path):
+                url = f"/download-file?form_id={form_id}&type=render&filename={filename}"
+                logger.info("[download_info] render file found: %s", full_path)
+                return {"download_url": url, "download_label": "Download Render File", "status_note": ""}
+            logger.info("[download_info] render file NOT found: %s", full_path)
+            return {"download_url": "", "download_label": "", "status_note": "Render file not found."}
+
+    error_path_str = row.get("ErrorDocPath", "").strip()
+    if error_path_str:
+        filename = os.path.basename(error_path_str)
+        if filename:
+            full_path = build_error_file_path(form_id, filename)
+            if file_exists(full_path):
+                url = f"/download-file?form_id={form_id}&type=error&filename={filename}"
+                logger.info("[download_info] error file found: %s", full_path)
+                return {"download_url": url, "download_label": "Download Error File", "status_note": ""}
+            logger.info("[download_info] error file NOT found: %s", full_path)
+            return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
+
+    return {"download_url": "", "download_label": "", "status_note": ""}
+
+
 # â”€â”€ Main entry points â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_report_status(report_name: str) -> dict:
