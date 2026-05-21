@@ -27,7 +27,14 @@ INSTANCE_LOG_XML_PATH: str = os.getenv(
 # Structure: {INSTANCE_BASE_DIR}\{report_id}\*.xml
 INSTANCE_BASE_DIR: str = os.getenv(
     "INSTANCE_BASE_DIR",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Instance",
+    r"D:\Repo5.5\Instance",
+)
+
+# Base directory for rendered output files (HTML render documents).
+# Structure: {RENDER_BASE_DIR}\{report_id}\<RenderedExcelDocPath>
+RENDER_BASE_DIR: str = os.getenv(
+    "RENDER_BASE_DIR",
+    r"D:\Repo5.5\Render",
 )
 
 # ---------------------------------------------------------------------------

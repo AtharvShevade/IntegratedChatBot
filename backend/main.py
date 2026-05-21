@@ -195,6 +195,67 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/download-file", status_code=status.HTTP_200_OK)
+async def download_file(form_id: str, type: str, filename: str):
+    """Serve a render or error file for download.
+
+    Query params:
+        form_id  — numeric report ID (non-numeric chars stripped server-side)
+        type     — "render" | "error"
+        filename — bare filename, no directory component allowed
+
+    Security: form_id is sanitised to digits only; filename is reduced to its
+    basename so path-traversal attempts ('../../../etc/passwd') are rejected.
+    The resolved absolute path is verified to lie within the designated base
+    directory before the file is opened.
+    """
+    import re as _re
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    from backend.tools.report_lookup import build_render_file_path, build_error_file_path
+
+    # ── Input validation ──────────────────────────────────────────────────────
+    safe_fid  = _re.sub(r"[^0-9]", "", form_id)
+    safe_name = os.path.basename(filename)  # strips any directory component
+
+    if not safe_fid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid form_id.")
+    if not safe_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename.")
+    if type not in ("render", "error"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type must be 'render' or 'error'.")
+
+    # ── Path construction ─────────────────────────────────────────────────────
+    if type == "render":
+        from backend.config import RENDER_BASE_DIR
+        file_path = build_render_file_path(safe_fid, safe_name)
+        base_dir  = RENDER_BASE_DIR
+        media     = "text/html"
+    else:
+        from backend.config import INSTANCE_BASE_DIR
+        file_path = build_error_file_path(safe_fid, safe_name)
+        base_dir  = INSTANCE_BASE_DIR
+        media     = "application/xml"
+
+    # ── Containment check — prevent directory traversal ───────────────────────
+    resolved  = Path(file_path).resolve()
+    base_real = Path(base_dir).resolve()
+    try:
+        resolved.relative_to(base_real)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+    if not resolved.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+
+    logger.info("[DOWNLOAD] type=%s form_id=%s filename=%s", type, safe_fid, safe_name)
+    return FileResponse(
+        path=str(resolved),
+        media_type=media,
+        filename=safe_name,
+    )
+
+
 @app.get("/reports", status_code=status.HTTP_200_OK)
 async def list_reports() -> dict:
     """Return all known report names from returns.xml — used for guided-mode autocomplete."""

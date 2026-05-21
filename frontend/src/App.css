@@ -1023,6 +1023,28 @@ html, body, #root {
   border-color: rgba(239,68,68,0.65) !important;
 }
 
+/* ── Download button ─────────────────────────────────────────────────────── */
+.download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: #a78bfa;
+  background: rgba(108,99,255,0.12);
+  border: 1px solid rgba(108,99,255,0.45);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.download-btn:hover {
+  background: rgba(108,99,255,0.25);
+  border-color: rgba(108,99,255,0.8);
+}
+
 /* ── Mode selection screen ───────────────────────────────────────────────── */
 .mode-select-screen {
   display: flex;

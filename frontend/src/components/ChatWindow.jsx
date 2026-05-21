@@ -25,6 +25,9 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           labelB={msg.labelB}
           llmSummary={msg.llmSummary}
           instancesData={msg.instancesData}
+          downloadUrl={msg.downloadUrl}
+          downloadLabel={msg.downloadLabel}
+          statusNote={msg.statusNote}
           onFollowUp={onFollowUp}
           onSuggestion={onSuggestion}
           onGuidedAction={onGuidedAction}

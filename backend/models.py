@@ -26,6 +26,9 @@ class ChatResponse(BaseModel):
     variance_label_b: str        = ""
     llm_summary:      str        = ""
     instances_data:   list[dict] = []   # rich metadata for instance_selection UI
+    download_url:     str        = ""   # relative /download-file URL (empty when N/A)
+    download_label:   str        = ""   # e.g. "Download Render File"
+    status_note:      str        = ""   # e.g. in-progress message or "file not found"
 
 
 class CompareRequest(BaseModel):

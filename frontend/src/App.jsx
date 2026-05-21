@@ -32,6 +32,9 @@ export default function App() {
       labelB:        result.variance_label_b || '',
       llmSummary:    result.llm_summary || '',
       instancesData: result.instances_data || [],
+      downloadUrl:   result.download_url   || '',
+      downloadLabel: result.download_label || '',
+      statusNote:    result.status_note    || '',
     }])
   }
 

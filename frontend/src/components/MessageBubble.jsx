@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
-export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, onFollowUp, onSuggestion, onGuidedAction, onCompare }) {
+export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare }) {
+  const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
   const isWelcome = role === 'welcome'
@@ -102,6 +103,47 @@ export default function MessageBubble({ role, text, data, options, resultType, s
         .trim()
     : (text ?? '')
 
+  // Ask-previous-dates card — shows latest status then Yes/No chips
+  if (!isUser && resultType === 'ask_previous') {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <div className="assistant-msg-block">
+          <div className="bubble assistant-bubble">
+            {displayText.split('\n').map((line, i, arr) => (
+              <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+            ))}
+          </div>
+          {downloadUrl && (
+            <a
+              href={`${API_BASE}${downloadUrl}`}
+              download
+              className="download-btn"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ⬇ {downloadLabel || 'Download'}
+            </a>
+          )}
+          <div className="bubble assistant-bubble" style={{ marginTop: 6, fontStyle: 'italic', fontSize: '0.88em' }}>
+            Would you also like to check status for previous reporting dates?
+          </div>
+          <div className="welcome-suggestions option-chips sched-confirm-actions">
+            {chips.map((opt) => (
+              <button
+                key={opt}
+                className={`suggestion-chip${opt === 'Yes' ? ' chip-confirm' : ' chip-cancel'}`}
+                onClick={() => onSuggestion?.(opt)}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // Schedule confirmation card
   if (!isUser && resultType === 'sched_confirm') {
     return (
@@ -164,6 +206,19 @@ export default function MessageBubble({ role, text, data, options, resultType, s
               </button>
             ))}
           </div>
+        )}
+
+        {/* Download button — rendered for final/ask_previous when a file is available */}
+        {!isUser && downloadUrl && resultType !== 'ask_previous' && (
+          <a
+            href={`${API_BASE}${downloadUrl}`}
+            download
+            className="download-btn"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ⬇ {downloadLabel || 'Download'}
+          </a>
         )}
       </div>
 

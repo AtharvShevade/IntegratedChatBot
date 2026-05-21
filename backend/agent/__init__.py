@@ -42,6 +42,7 @@ STAGE_SCHED_CONFIRM = "AWAITING_SCHED_CONFIRM"      # schedule: awaiting user co
 STAGE_SCHED_NAME    = "AWAITING_SCHED_NAME"          # schedule: re-entering report name after Change Data
 STAGE_CMP_REPORT    = "AWAITING_CMP_REPORT"         # compare: picking report from disambiguation
 STAGE_CMP_FILE     = "AWAITING_CMP_FILE"            # compare: confirming which 2 instances
+STAGE_PREV_DATES   = "AWAITING_PREV_DATES_CONFIRM"  # status: yes/no for previous dates
 
 # In-memory session store per session_id
 _session_context: dict[str, dict[str, Any]] = {}
@@ -284,6 +285,39 @@ async def decide(
                         options=result["available_dates"],
                     )
                 return _from_result(result, intent="get_status", session_id=session_id, keep_date_ctx=True)
+
+    # -- Status: previous-dates yes/no prompt -----------------------------------
+    if not is_reset and session.get("awaiting") == STAGE_PREV_DATES:
+        if _looks_like_new_query(user_query):
+            if session_id:
+                _session_context.pop(session_id, None)
+            session = {}
+        else:
+            lower         = lower_q.strip()
+            form_id       = session.get("pending_form_id", "")
+            return_name   = session.get("pending_return_name", "")
+            other_dates   = session.get("pending_other_dates", [])
+            if lower in ("yes", "y", "yeah", "yep"):
+                if session_id:
+                    _session_context[session_id] = {
+                        "awaiting":            STAGE_DATE,
+                        "pending_form_id":     form_id,
+                        "pending_return_name": return_name,
+                    }
+                return _build(
+                    intent="get_status", report_name=return_name,
+                    response_text=f"Select a reporting date for '{return_name}':",
+                    result_type="date_selection",
+                    options=other_dates,
+                )
+            else:  # "No" or anything non-yes
+                if session_id:
+                    _session_context.pop(session_id, None)
+                return _build(
+                    intent="get_status", report_name=return_name,
+                    response_text="Alright! Let me know if you need anything else.",
+                    result_type="final",
+                )
 
     # -- Status: run selection (same date, multiple runs) ----------------------
     if not is_reset and session.get("awaiting") == STAGE_RUN:
@@ -1163,16 +1197,59 @@ def _from_result(
 ) -> dict[str, Any]:
     rtype = result["type"]
 
+    if rtype == "latest_with_ask":
+        ret_name    = result.get("return_name", result.get("report_name", ""))
+        rep_date    = result.get("reporting_date", "")
+        status      = result.get("status", "")
+        run_time    = result.get("run_time", "")
+        other_dates = result.get("other_dates", [])
+        status_note = result.get("status_note", "")
+        text = (
+            f"{ret_name}\n"
+            f"Latest Reporting Date : {rep_date}\n"
+            f"Status                : {status}"
+        )
+        if run_time:
+            text += f"\nRun Time              : {run_time}"
+        if status_note:
+            text += f"\n{status_note}"
+        if other_dates:
+            if session_id:
+                _session_context[session_id] = {
+                    "awaiting":            STAGE_PREV_DATES,
+                    "pending_form_id":     result["form_id"],
+                    "pending_return_name": ret_name,
+                    "pending_other_dates": other_dates,
+                }
+            return _build(
+                intent=intent, report_name=ret_name,
+                response_text=text,
+                result_type="ask_previous",
+                options=["Yes", "No"],
+                download_url=result.get("download_url", ""),
+                download_label=result.get("download_label", ""),
+            )
+        # No other dates — just show final status
+        return _build(intent=intent, report_name=ret_name,
+                      response_text=text, result_type="final",
+                      download_url=result.get("download_url", ""),
+                      download_label=result.get("download_label", ""))
+
     if rtype == "final":
         text = (
             f"{result['report_name']}\n"
             f"Reporting Date : {result['reporting_date']}\n"
             f"Status         : {result['status']}"
         )
+        status_note = result.get("status_note", "")
+        if status_note:
+            text += f"\n{status_note}"
         if keep_date_ctx:
             text += '\n\nYou can select another reporting date, or say "new report" to switch reports.'
         return _build(intent=intent, report_name=result["report_name"],
-                      response_text=text, result_type="final")
+                      response_text=text, result_type="final",
+                      download_url=result.get("download_url", ""),
+                      download_label=result.get("download_label", ""))
 
     if rtype == "disambiguation":
         opts = result.get("options", [])
@@ -1195,11 +1272,7 @@ def _from_result(
     if rtype == "date_selection":
         ret_name = result.get("return_name", "this report")
         opts     = result.get("options", [])
-        opts_text = "\n".join(f"• {d}" for d in opts)
-        msg = (
-            f"'{ret_name}' has multiple instances. "
-            f"Which reporting date would you like?\n\n{opts_text}"
-        )
+        msg = f"Select a reporting date for '{ret_name}':"
         if session_id:
             _session_context[session_id] = {
                 "awaiting":            STAGE_DATE,
@@ -1586,6 +1659,9 @@ def _build(
     variance_label_b: str | None = None,
     llm_summary:      str | None = None,
     instances_data:   list[dict] | None = None,
+    download_url:     str = "",
+    download_label:   str = "",
+    status_note:      str = "",
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "intent":             intent,
@@ -1594,6 +1670,9 @@ def _build(
         "need_clarification": need_clarification,
         "result_type":        result_type,
         "options":            options or [],
+        "download_url":       download_url,
+        "download_label":     download_label,
+        "status_note":        status_note,
     }
     if scheduled_datetime is not None:
         out["scheduled_datetime"] = scheduled_datetime
