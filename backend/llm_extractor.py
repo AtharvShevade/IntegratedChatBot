@@ -455,7 +455,7 @@ async def extract_intent_and_entities(user_query: str) -> dict[str, Any]:
     logger.info("[PERF] operation=llm_extract duration=%.2fs", _elapsed)
 
     # Validate intent — reject any value the LLM hallucinated
-    _valid_intents = {"get_status", "generate_instance", "schedule_report", "compare_reports", "unknown"}
+    _valid_intents = {"get_status", "generate_instance", "schedule_report", "compare_reports", "query_database", "unknown"}
     intent: str = raw.get("intent", "unknown")
     if intent not in _valid_intents:
         logger.warning("LLM returned unknown intent %r — defaulting to unknown", intent)

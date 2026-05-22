@@ -63,6 +63,16 @@ _GEN_KW_RE      = re.compile(
 )
 _SCHED_KW_RE    = re.compile(r'\b(schedule|scheduled|scheduling)\b', re.I)
 
+# DB query keyword detector — catches data-fetch queries regardless of LLM classification
+_DB_QUERY_KW_RE = re.compile(
+    r'\b(fetch|retrieve|show|list|display|get|select|query|how\s+many|what\s+is\s+the|'
+    r'total|sum|count|average|npa|gnpa|nnpa|sma|car|slr|crr|psl|rwa|pcr|'
+    r'exposure|provision|capital|loan|deposit|asset|liability|'
+    r'gross|net|outstanding|balance|amount|value|data|records?|figures?|'
+    r'from\s+(the\s+)?(database|db|oracle|table))\b',
+    re.I,
+)
+
 # Fuzzy keyword sets — catches typos like "stats", "staus", "gnearte", "gnerate"
 _STATUS_FUZZY_KWS = ["status", "state", "progress", "check", "details", "info"]
 _GEN_FUZZY_KWS    = ["generate", "create", "trigger", "run", "produce", "kick", "start", "launch", "execute", "fire"]
@@ -672,6 +682,17 @@ async def decide(
     # the word "run" which falsely triggers the generate-keyword detector.
     if not is_reset and session.get("awaiting") == STAGE_CMP_FILE:
         return await _run_comparison(session, user_query, session_id)
+
+    # -- Keyword fast-path: DB queries (skip LLM for clear data-fetch requests) --
+    # Catches queries like "total loan from cims raq", "show NPA for FY2024",
+    # "what is the gross NPA" without waiting for LLM intent extraction.
+    # Only fires when no staged session is active (i.e. session is empty).
+    if not session and not is_reset and _DB_QUERY_KW_RE.search(user_query):
+        # Make sure it doesn't look like a status/generate/schedule query first
+        if not _fuzzy_has_status(user_query) and not _fuzzy_has_generate(user_query) and not _fuzzy_has_schedule(user_query):
+            logger.info("[INTENT] keyword fast-path → query_database session=%s", session_id)
+            from backend.sql_agent import handle_db_query
+            return await handle_db_query(user_query, session_id=session_id)
 
     # -- Normal intent extraction ---------------------------------------------
     try:

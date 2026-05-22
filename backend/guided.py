@@ -219,7 +219,14 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_DB_QUERY}
         return _build(
-            response_text="What data would you like to query? Describe in detail (e.g. 'Show gross NPA for Q1 FY2024'):",
+            response_text=(
+                "What data would you like to query? Please describe in detail "
+                "(include report name, section, and time period).\n"
+                "Examples:\n"
+                "\u2022 Show gross NPA for Q1 FY2024\n"
+                "\u2022 Total loan assets from RAQ section 1 domestic latest\n"
+                "\u2022 Derivative notional principal from ALE domestic March 2025"
+            ),
             result_type="guided_input",
             options=[],
         )
