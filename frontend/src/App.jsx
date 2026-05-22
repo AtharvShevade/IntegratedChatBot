@@ -48,12 +48,6 @@ export default function App() {
       downloadLabel: result.download_label || '',
       statusNote:    result.status_note    || '',
     }
-    setMessages((prev) => [...prev, resultMsg])
-    if (isTerminal) {
-      setTimeout(() => {
-        setMessages((prev) => [...prev, { role: 'feedback_prompt' }])
-      }, 1000)
-    }
   }
 
   // ── Free-text chat ────────────────────────────────────────────────────────
