@@ -20,8 +20,10 @@ from backend.tools.report_lookup import (
     _parse_returns,
     find_matching_reports,
     fuzzy_report_suggestions,
+    get_available_instances,
     get_form_id_by_name,
     get_instance_by_date,
+    get_instance_by_dtc,
     get_instance_by_row_id,
     get_report_status,
     get_report_status_exact,
@@ -129,6 +131,17 @@ _QUERY_STOP = frozenset({
 })
 
 
+def _parse_dtc_from_label(text: str) -> str | None:
+    """Extract the DTC portion from a formatted instance label.
+
+    Expects the format produced by _fmt_instance_label:
+        'Generated On: <DTC> | Reporting Date: <date>'
+    Returns the DTC string, or None if the format is not recognised.
+    """
+    m = re.search(r'Generated On:\s*(.+?)\s*\|', text)
+    return m.group(1).strip() if m else None
+
+
 def _is_plausible_date(text: str) -> bool:
     """Return True if text contains something that looks like a date.
 
@@ -220,6 +233,18 @@ async def decide(
             login_id, len(allowed_form_ids), session_id,
         )
 
+    # ── Auth: resolve CreateInstance role-based access ────────────────────────
+    # True when no login_id is present (dev / backward compat — allow all).
+    # False when the user's role does not have HasNew=true for CreateInstance.
+    _create_access: bool = True
+    if login_id:
+        from backend.services.auth_service import can_generate_instance as _chk_create
+        _create_access = _chk_create(login_id)
+        logger.info(
+            "[AUTH_ROLE] login_id=%r can_generate_instance=%s session=%s",
+            login_id, _create_access, session_id,
+        )
+
     # Persist the live cookie so staged flows (multi-turn generate) can use it
     if asp_session and session_id:
         session["asp_session"] = asp_session
@@ -239,7 +264,30 @@ async def decide(
 
     # -- Status: date selection -----------------------------------------------
     if not is_reset and session.get("awaiting") == STAGE_DATE:
-        if _looks_like_new_query(user_query):
+        # IMPORTANT: check for the formatted instance label FIRST.
+        # Labels like "Generated On: X | Reporting Date: Y" contain the word
+        # "Generated" which falsely triggers _looks_like_new_query (generate stem).
+        # This is the same issue as STAGE_CMP_FILE with the word "run".
+        dtc_from_label = _parse_dtc_from_label(user_query)
+        if dtc_from_label:
+            form_id     = session["pending_form_id"]
+            return_name = session["pending_return_name"]
+            result = get_instance_by_dtc(form_id, dtc_from_label, return_name)
+            if result["type"] == "date_not_found":
+                available = get_available_instances(form_id)
+                return _build(
+                    intent="get_status",
+                    report_name=return_name,
+                    response_text=(
+                        f"'{user_query.strip()}' did not match any instance for {return_name}. "
+                        "Please select one of the available instances:"
+                    ),
+                    result_type="date_selection",
+                    options=[i["label"] for i in available],
+                    instances_data=[{"label": i["label"], "status": i["status"]} for i in available],
+                )
+            return _ask_another_date(result, form_id, return_name, session_id)
+        elif _looks_like_new_query(user_query):
             if session_id:
                 _session_context.pop(session_id, None)
             session = {}
@@ -272,19 +320,24 @@ async def decide(
             else:
                 form_id     = session["pending_form_id"]
                 return_name = session["pending_return_name"]
-                result      = get_instance_by_date(form_id, user_query.strip(), return_name)
+
+                # Fallback: user typed a raw date string
+                result = get_instance_by_date(form_id, user_query.strip(), return_name)
+
                 if result["type"] == "date_not_found":
+                    available = get_available_instances(form_id)
                     return _build(
                         intent="get_status",
                         report_name=return_name,
                         response_text=(
-                            f"'{user_query.strip()}' is not a valid date for {return_name}. "
-                            "Please select one of the available dates:"
+                            f"'{user_query.strip()}' did not match any instance for {return_name}. "
+                            "Please select one of the available instances:"
                         ),
                         result_type="date_selection",
-                        options=result["available_dates"],
+                        options=[i["label"] for i in available],
+                        instances_data=[{"label": i["label"], "status": i["status"]} for i in available],
                     )
-                return _from_result(result, intent="get_status", session_id=session_id, keep_date_ctx=True)
+                return _ask_another_date(result, form_id, return_name, session_id)
 
     # -- Status: previous-dates yes/no prompt -----------------------------------
     if not is_reset and session.get("awaiting") == STAGE_PREV_DATES:
@@ -293,10 +346,10 @@ async def decide(
                 _session_context.pop(session_id, None)
             session = {}
         else:
-            lower         = lower_q.strip()
-            form_id       = session.get("pending_form_id", "")
-            return_name   = session.get("pending_return_name", "")
-            other_dates   = session.get("pending_other_dates", [])
+            lower           = lower_q.strip()
+            form_id         = session.get("pending_form_id", "")
+            return_name     = session.get("pending_return_name", "")
+            other_instances = session.get("pending_other_instances", [])
             if lower in ("yes", "y", "yeah", "yep"):
                 if session_id:
                     _session_context[session_id] = {
@@ -306,9 +359,10 @@ async def decide(
                     }
                 return _build(
                     intent="get_status", report_name=return_name,
-                    response_text=f"Select a reporting date for '{return_name}':",
+                    response_text=f"Select a reporting instance for '{return_name}':",
                     result_type="date_selection",
-                    options=other_dates,
+                    options=[i["label"] for i in other_instances],
+                    instances_data=[{"label": i["label"], "status": i["status"]} for i in other_instances],
                 )
             else:  # "No" or anything non-yes
                 if session_id:
@@ -471,6 +525,12 @@ async def decide(
             auth_err = _check_name_auth(resolved_gen_name, allowed_form_ids, "generate_instance")
             if auth_err:
                 return auth_err
+            if not _create_access:
+                return _build(
+                    intent="generate_instance", report_name=None,
+                    response_text="Sorry, you do not have access to generate report instances.",
+                    result_type="error",
+                )
             if saved_date:
                 return await _finalize_generation(ret, saved_date, session_id, effective_asp)
             if session_id:
@@ -484,7 +544,7 @@ async def decide(
             freq_label = ret["period_name"] or ret["frequency"]
             return _build(
                 intent="generate_instance", report_name=ret["name"],
-                response_text=f"Please provide the reporting date for '{ret['name']}' ({freq_label}).",
+                response_text=f"Please provide the reporting date for '{ret['name']}'",
                 result_type="gen_awaiting_date",
             )
 
@@ -502,6 +562,12 @@ async def decide(
             else:
                 # Normalize any natural format (e.g. 31/03/2021, 2021-03-31)
                 date_str = parse_and_format_date(user_query.strip()) or user_query.strip()
+            if not _create_access:
+                return _build(
+                    intent="generate_instance", report_name=None,
+                    response_text="Sorry, you do not have access to generate report instances.",
+                    result_type="error",
+                )
             return await _handle_gen_date(date_str, session, session_id, effective_asp)
 
     # -- Schedule: re-enter report name after "Change Data" --------------------
@@ -747,6 +813,12 @@ async def decide(
             else search_terms
         )
         logger.info("[GENERATE_START] report=%r session=%s", report_ident, session_id)
+        if not _create_access:
+            return _build(
+                intent="generate_instance", report_name=None,
+                response_text="Sorry, you do not have access to generate report instances.",
+                result_type="error",
+            )
         return await _handle_generate(report_ident, reporting_date, session_id, effective_asp, allowed_form_ids)
 
     if intent == "schedule_report":
@@ -1198,28 +1270,28 @@ def _from_result(
     rtype = result["type"]
 
     if rtype == "latest_with_ask":
-        ret_name    = result.get("return_name", result.get("report_name", ""))
-        rep_date    = result.get("reporting_date", "")
-        status      = result.get("status", "")
-        run_time    = result.get("run_time", "")
-        other_dates = result.get("other_dates", [])
-        status_note = result.get("status_note", "")
+        ret_name        = result.get("return_name", result.get("report_name", ""))
+        rep_date        = result.get("reporting_date", "")
+        status          = result.get("status", "")
+        run_time        = result.get("run_time", "")
+        other_instances = result.get("other_instances", [])
+        status_note     = result.get("status_note", "")
         text = (
             f"{ret_name}\n"
             f"Latest Reporting Date : {rep_date}\n"
             f"Status                : {status}"
         )
         if run_time:
-            text += f"\nRun Time              : {run_time}"
+            text += f"\nGenerated On          : {run_time}"
         if status_note:
             text += f"\n{status_note}"
-        if other_dates:
+        if other_instances:
             if session_id:
                 _session_context[session_id] = {
-                    "awaiting":            STAGE_PREV_DATES,
-                    "pending_form_id":     result["form_id"],
-                    "pending_return_name": ret_name,
-                    "pending_other_dates": other_dates,
+                    "awaiting":                STAGE_PREV_DATES,
+                    "pending_form_id":         result["form_id"],
+                    "pending_return_name":      ret_name,
+                    "pending_other_instances": other_instances,
                 }
             return _build(
                 intent=intent, report_name=ret_name,
@@ -1229,18 +1301,21 @@ def _from_result(
                 download_url=result.get("download_url", ""),
                 download_label=result.get("download_label", ""),
             )
-        # No other dates — just show final status
+        # No other instances — just show final status
         return _build(intent=intent, report_name=ret_name,
                       response_text=text, result_type="final",
                       download_url=result.get("download_url", ""),
                       download_label=result.get("download_label", ""))
 
     if rtype == "final":
+        dtc = result.get("dtc", "")
         text = (
             f"{result['report_name']}\n"
             f"Reporting Date : {result['reporting_date']}\n"
-            f"Status         : {result['status']}"
         )
+        if dtc:
+            text += f"Generated On   : {dtc}\n"
+        text += f"Status         : {result['status']}"
         status_note = result.get("status_note", "")
         if status_note:
             text += f"\n{status_note}"
@@ -1328,6 +1403,49 @@ def _from_result(
         msg,
     )
     return _build(intent=intent, report_name=None, response_text=msg, result_type="error")
+
+
+def _ask_another_date(
+    result: dict,
+    form_id: str,
+    return_name: str,
+    session_id: str | None,
+    intent: str = "get_status",
+) -> dict[str, Any]:
+    """Show selected-instance status then ask whether to check another reporting date.
+
+    Sets session to STAGE_PREV_DATES with the full instance list so the
+    Yes-path can re-render the dropdown immediately without re-querying.
+    """
+    dtc = result.get("dtc", "")
+    text = (
+        f"{result['report_name']}\n"
+        f"Reporting Date : {result['reporting_date']}\n"
+    )
+    if dtc:
+        text += f"Generated On   : {dtc}\n"
+    text += f"Status         : {result['status']}"
+    status_note = result.get("status_note", "")
+    if status_note:
+        text += f"\n{status_note}"
+
+    all_instances = get_available_instances(form_id)
+    if session_id:
+        _session_context[session_id] = {
+            "awaiting":                STAGE_PREV_DATES,
+            "pending_form_id":         form_id,
+            "pending_return_name":     return_name,
+            "pending_other_instances": all_instances,
+        }
+    return _build(
+        intent=intent,
+        report_name=return_name,
+        response_text=text,
+        result_type="ask_previous",
+        options=["Yes", "No"],
+        download_url=result.get("download_url", ""),
+        download_label=result.get("download_label", ""),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1636,7 +1754,7 @@ async def _handle_generate(
             }
         return _build(
             intent="generate_instance", report_name=ret["name"],
-            response_text=f"Please provide the reporting date for '{ret['name']}' ({freq_label}).",
+            response_text=f"Please provide the reporting date for '{ret['name']}'",
             result_type="gen_awaiting_date",
         )
 

@@ -17,12 +17,24 @@ export default function App() {
   const inputRef  = useRef(null)
   const sessionId = useRef(_uid || crypto.randomUUID())
 
+  // Result types that represent a fully completed workflow.
+  // After these, the action menu re-appears so the user can start another task.
+  const _TERMINAL_TYPES = new Set([
+    'final',           // report status check done
+    'variance_table',  // comparative analysis done
+    'gen_success',     // report generation done
+    'schedule_parsed', // scheduling confirmed
+    'sql_result',      // database query done
+  ])
+
   // ── Helper: push an assistant result into the message list ───────────────
   const _pushResult = (result) => {
+    const isTerminal    = _TERMINAL_TYPES.has(result.result_type)
     const isStillGuided =
       result.result_type === 'guided_menu' || result.result_type === 'guided_input'
-    setIsGuidedFlow(isStillGuided)
-    setMessages((prev) => [...prev, {
+    setIsGuidedFlow(isTerminal ? false : isStillGuided)
+
+    const resultMsg = {
       role:          'assistant',
       text:          result.response_text,
       options:       result.options || [],
@@ -35,7 +47,13 @@ export default function App() {
       downloadUrl:   result.download_url   || '',
       downloadLabel: result.download_label || '',
       statusNote:    result.status_note    || '',
-    }])
+    }
+    setMessages((prev) => [...prev, resultMsg])
+    if (isTerminal) {
+      setTimeout(() => {
+        setMessages((prev) => [...prev, { role: 'feedback_prompt' }])
+      }, 1000)
+    }
   }
 
   // ── Free-text chat ────────────────────────────────────────────────────────
@@ -118,6 +136,18 @@ export default function App() {
     }
   }
 
+  // ── Feedback after completed action ──────────────────────────────────────
+  const handleFeedback = (response) => {
+    if (response === 'yes') {
+      setMessages((prev) => [...prev, { role: 'feedback_positive' }])
+    } else {
+      setMessages((prev) => [...prev, { role: 'feedback_negative' }])
+    }
+    setTimeout(() => {
+      setMessages((prev) => [...prev, { role: 'action_menu' }])
+    }, 800)
+  }
+
   // ── Chip / option click ───────────────────────────────────────────────────
   const handleSuggestion = (text) => {
     if (isGuidedFlow) {
@@ -170,6 +200,7 @@ export default function App() {
           onSuggestion={handleSuggestion}
           onGuidedAction={handleGuidedAction}
           onCompare={handleCompareInstances}
+          onFeedback={handleFeedback}
         />
       </main>
 

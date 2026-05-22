@@ -39,6 +39,11 @@ _STATUS_LABELS: dict[int, str] = {
     0: "Not Started",
 }
 
+# Statuses that should prefer ErrorDocPath for download
+_FAILED_STATUSES: frozenset[int] = frozenset({3, 5, 8, 10, 13})
+# Statuses that should prefer RenderedExcelDocPath for download
+_SUCCESS_STATUSES: frozenset[int] = frozenset({9, 11})
+
 # â”€â”€ Parsers (cached once per server lifetime) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # TTL values — can be overridden via environment variables.
@@ -64,7 +69,12 @@ class _TTLCache:
             return self._data
         return None
 
-    def set(self, data):
+    def set(self, data, *, cache_empty: bool = True):
+        """Store data.  If cache_empty=False and data is empty/falsy, do NOT
+        cache — this lets the next call retry the source (e.g. XML file).
+        """
+        if not cache_empty and not data:
+            return data          # return the empty value without storing it
         self._data = data
         self._ts   = time.monotonic()
         return data
@@ -101,16 +111,34 @@ def _parse_returns() -> tuple[dict, ...]:
 def _parse_instances() -> tuple[dict, ...]:
     """Parse XML_InstanceLog - uses <Row> elements.
     Cached for INSTANCES_TTL_SEC seconds (default 2 minutes).
+    Empty results are NOT cached so a retry happens on the next call
+    (avoids stale empty-cache locking out all instance lookups).
     """
     cached = _instances_cache.get()
     if cached is not None:
         return cached
+    logger.debug("[report_lookup] _parse_instances: loading from %s", _INSTANCE_FILE)
     root = load_xml_tree(_INSTANCE_FILE, "XML_InstanceLog.xml")
     if root is None:
+        logger.error(
+            "[report_lookup] _parse_instances: XML_InstanceLog.xml could not be loaded "
+            "(file missing or parse error). Path: %s", _INSTANCE_FILE
+        )
+        # Do NOT cache the failure so the next request will retry
         return ()
     rows = [el.attrib for el in root.findall("Row")]
     result = tuple(rows)
-    logger.info("Loaded %d instance(s) from XML_InstanceLog.xml (cache refreshed)", len(rows))
+    if not result:
+        logger.warning(
+            "[report_lookup] _parse_instances: XML_InstanceLog.xml loaded but contains "
+            "0 <Row> elements. Path: %s", _INSTANCE_FILE
+        )
+        # Do NOT cache empty result — allow retry on next request
+        return _instances_cache.set(result, cache_empty=False)
+    logger.info(
+        "[report_lookup] _parse_instances: loaded %d instance(s) from XML_InstanceLog.xml "
+        "(cache refreshed)", len(rows)
+    )
     return _instances_cache.set(result)
 
 
@@ -221,7 +249,14 @@ def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.35) 
 
 def get_instances_by_form_id(form_id: str) -> list[dict]:
     fid = str(form_id).strip()
-    return [r for r in _parse_instances() if r.get("FormId", "").strip() == fid]
+    all_rows = _parse_instances()
+    matches = [r for r in all_rows if r.get("FormId", "").strip() == fid]
+    logger.debug(
+        "[report_lookup] get_instances_by_form_id(form_id=%r): "
+        "total rows in log=%d, matched=%d",
+        fid, len(all_rows), len(matches),
+    )
+    return matches
 
 
 def get_available_dates(form_id: str) -> list[str]:
@@ -248,12 +283,7 @@ def _get_runs_for_date(form_id: str, reporting_date: str) -> list[dict]:
         r for r in get_instances_by_form_id(form_id)
         if r.get("ReportingDate", "").strip() == reporting_date
     ]
-    def _key(r: dict) -> datetime:
-        try:
-            return datetime.strptime(r.get("DTC", ""), "%d-%b-%Y %I:%M:%S %p")
-        except ValueError:
-            return datetime.min
-    rows.sort(key=_key)
+    rows.sort(key=_dtc_sort_key)
     return rows
 
 
@@ -274,6 +304,16 @@ def _is_known_date(date_str: str, form_id: str) -> bool:
 
 def map_status(code: int) -> str:
     return _STATUS_LABELS.get(code, "Unknown")
+
+
+def _dtc_sort_key(r: dict) -> datetime:
+    """Sort key: parse DTC as datetime so instances sort chronologically.
+    Rows with unparseable DTCs sort to datetime.min (oldest).
+    """
+    try:
+        return datetime.strptime(r.get("DTC", ""), "%d-%b-%Y %I:%M:%S %p")
+    except ValueError:
+        return datetime.min
 
 
 def _safe_status(row: dict) -> int:
@@ -306,36 +346,180 @@ def file_exists(path: str) -> bool:
 def _get_download_info(row: dict, form_id: str) -> dict:
     """Return download_url, download_label, status_note for a given instance row.
 
-    Checks RenderedExcelDocPath first (render file), then ErrorDocPath (error file).
+    File selection is based on the row's status code:
+    - Failed statuses (3,5,8,10,13) → ErrorDocPath  → "Download Error File"
+    - Success/Approved (9,11)       → RenderedExcelDocPath → "Download Render File"
+    - Other statuses                → render first, error as fallback
     """
-    render_path_str = row.get("RenderedExcelDocPath", "").strip()
-    if render_path_str:
-        filename = os.path.basename(render_path_str)
-        if filename:
-            full_path = build_render_file_path(form_id, filename)
-            if file_exists(full_path):
-                url = f"/download-file?form_id={form_id}&type=render&filename={filename}"
-                logger.info("[download_info] render file found: %s", full_path)
-                return {"download_url": url, "download_label": "Download Render File", "status_note": ""}
-            logger.info("[download_info] render file NOT found: %s", full_path)
-            return {"download_url": "", "download_label": "", "status_note": "Render file not found."}
+    code = _safe_status(row)
 
-    error_path_str = row.get("ErrorDocPath", "").strip()
-    if error_path_str:
-        filename = os.path.basename(error_path_str)
-        if filename:
-            full_path = build_error_file_path(form_id, filename)
-            if file_exists(full_path):
-                url = f"/download-file?form_id={form_id}&type=error&filename={filename}"
-                logger.info("[download_info] error file found: %s", full_path)
-                return {"download_url": url, "download_label": "Download Error File", "status_note": ""}
-            logger.info("[download_info] error file NOT found: %s", full_path)
-            return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
+    def _try_render() -> dict | None:
+        path_str = row.get("RenderedExcelDocPath", "").strip()
+        if not path_str:
+            return None
+        filename = os.path.basename(path_str)
+        if not filename:
+            return None
+        full_path = build_render_file_path(form_id, filename)
+        if file_exists(full_path):
+            url = f"/download-file?form_id={form_id}&type=render&filename={filename}"
+            logger.info("[download_info] render file found: %s", full_path)
+            return {"download_url": url, "download_label": "Download Render File", "status_note": ""}
+        logger.info("[download_info] render file NOT found: %s", full_path)
+        return {"download_url": "", "download_label": "", "status_note": "Render file not found."}
 
-    return {"download_url": "", "download_label": "", "status_note": ""}
+    def _try_error() -> dict | None:
+        path_str = row.get("ErrorDocPath", "").strip()
+        if not path_str:
+            return None
+        filename = os.path.basename(path_str)
+        if not filename:
+            return None
+        full_path = build_error_file_path(form_id, filename)
+        if file_exists(full_path):
+            url = f"/download-file?form_id={form_id}&type=error&filename={filename}"
+            logger.info("[download_info] error file found: %s", full_path)
+            return {"download_url": url, "download_label": "Download Error File", "status_note": ""}
+        logger.info("[download_info] error file NOT found: %s", full_path)
+        return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
+
+    if code in _FAILED_STATUSES:
+        # For failed/error runs always prefer the error document
+        result = _try_error()
+        return result if result is not None else {"download_url": "", "download_label": "", "status_note": ""}
+
+    if code in _SUCCESS_STATUSES:
+        # For success/approved runs always prefer the rendered file
+        result = _try_render()
+        return result if result is not None else {"download_url": "", "download_label": "", "status_note": ""}
+
+    # Rejected / In-Progress / Not-Started / Unknown: render first, error as fallback
+    result = _try_render()
+    if result is not None:
+        return result
+    result = _try_error()
+    return result if result is not None else {"download_url": "", "download_label": "", "status_note": ""}
 
 
 # â”€â”€ Main entry points â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+# ── Instance-based selection helpers ─────────────────────────────────────────
+
+def _fmt_instance_label(dtc: str, reporting_date: str) -> str:
+    """Human-readable single-line label for a generated instance."""
+    return f"Generated On: {dtc} | Reporting Date: {reporting_date}"
+
+
+def get_available_instances(form_id: str) -> list[dict]:
+    """Return ALL instances for a form, sorted by DTC descending.
+
+    Each entry: {"dtc": str, "reporting_date": str, "status": str, "label": str}
+    Unlike get_available_dates(), this keeps duplicate ReportingDate entries so
+    the user can distinguish multiple runs for the same reporting period.
+    """
+    rows = list(get_instances_by_form_id(form_id))
+    rows.sort(key=_dtc_sort_key, reverse=True)
+    return [
+        {
+            "dtc":            r.get("DTC", "").strip(),
+            "reporting_date": r.get("ReportingDate", "").strip(),
+            "status":         r.get("Status", "").strip(),
+            "label":          _fmt_instance_label(
+                                  r.get("DTC", "").strip(),
+                                  r.get("ReportingDate", "").strip(),
+                              ),
+        }
+        for r in rows
+        if r.get("DTC", "").strip() or r.get("ReportingDate", "").strip()
+    ]
+
+
+def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
+    """Resolve a single instance by exact DTC match.
+
+    Used when the user clicks a chip whose label encodes both DTC and
+    ReportingDate (e.g. 'Generated On: X | Reporting Date: Y').
+    """
+    rows = get_instances_by_form_id(form_id)
+    dtc_clean = dtc.strip()
+    row = next((r for r in rows if r.get("DTC", "").strip() == dtc_clean), None)
+    if not row:
+        return {
+            "type":                "date_not_found",
+            "message":             f"No instance found for DTC '{dtc_clean}'.",
+            "form_id":             form_id,
+            "return_name":         return_name,
+            "available_instances": get_available_instances(form_id),
+        }
+    code = _safe_status(row)
+    dl   = _get_download_info(row, form_id)
+    return {
+        "type":           "final",
+        "report_name":    return_name,
+        "reporting_date": row.get("ReportingDate", "").strip(),
+        "dtc":            row.get("DTC", "").strip(),
+        "status":         map_status(code),
+        "status_code":    code,
+        "download_url":   dl["download_url"],
+        "download_label": dl["download_label"],
+        "status_note":    dl["status_note"],
+    }
+
+
+def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> dict:
+    """Core status-result builder shared by get_report_status / get_report_status_exact.
+
+    Selects the TRUE latest instance by DTC timestamp (not by ReportingDate),
+    collects all other instances for the "check another date?" dropdown, and
+    returns either a 'latest_with_ask' or 'final' result dict.
+    """
+    # Sort ALL instances by DTC descending — index 0 is always the true latest run
+    sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
+    latest_row  = sorted_rows[0]
+
+    code        = _safe_status(latest_row)
+    dl          = _get_download_info(latest_row, form_id)
+    current_dtc = latest_row.get("DTC", "").strip()
+    rep_date    = latest_row.get("ReportingDate", "").strip()
+
+    logger.info(
+        "[_build_status_result] form_id=%r  latest DTC=%r  ReportingDate=%r  Status=%r",
+        form_id, current_dtc, rep_date, map_status(code),
+    )
+
+    # All instances except the one we're about to display
+    all_instances   = get_available_instances(form_id)  # already sorted DTC desc
+    other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
+
+    if other_instances:
+        return {
+            "type":            "latest_with_ask",
+            "report_name":     ret_name,
+            "form_id":         form_id,
+            "return_name":     ret_name,
+            "reporting_date":  rep_date,
+            "status":          map_status(code),
+            "status_code":     code,
+            "run_time":        current_dtc,
+            "other_instances": other_instances,
+            "download_url":    dl["download_url"],
+            "download_label":  dl["download_label"],
+            "status_note":     dl["status_note"],
+        }
+
+    return {
+        "type":           "final",
+        "report_name":    ret_name,
+        "reporting_date": rep_date,
+        "dtc":            current_dtc,
+        "status":         map_status(code),
+        "status_code":    code,
+        "download_url":   dl["download_url"],
+        "download_label": dl["download_label"],
+        "status_note":    dl["status_note"],
+    }
+
 
 def get_report_status(report_name: str) -> dict:
     """Full pipeline: name -> return match -> instances -> status.
@@ -398,82 +582,31 @@ def get_report_status(report_name: str) -> dict:
     form_id  = match.get("Id", "").strip()
     ret_name = match.get("Name", report_name)
 
+    logger.info(
+        "[get_report_status] matched report: name=%r  form_id=%r",
+        ret_name, form_id,
+    )
+
     instances = get_instances_by_form_id(form_id)
 
+    logger.info(
+        "[get_report_status] total instances for form_id=%r: %d",
+        form_id, len(instances),
+    )
+
     if not instances:
+        logger.warning(
+            "[get_report_status] NO instances found for form_id=%r (name=%r). "
+            "Check that INSTANCE_LOG_XML_PATH points to the correct file and "
+            "that <Row FormId=%r .../> entries exist.",
+            form_id, ret_name, form_id,
+        )
         return {
             "type":    "error",
             "message": f"Report '{ret_name}' exists but no instances have been generated yet.",
         }
 
-    unique_dates = get_available_dates(form_id)
-
-    if len(unique_dates) > 1:
-        # Auto-pick the latest date; show its status and ask about previous dates.
-        latest_date = unique_dates[0]  # sorted descending, so [0] is latest
-        runs = _get_runs_for_date(form_id, latest_date)
-        if runs:
-            row  = runs[-1]  # most recent run for the latest date
-            code = _safe_status(row)
-            dl   = _get_download_info(row, form_id)
-            return {
-                "type":           "latest_with_ask",
-                "report_name":    ret_name,
-                "form_id":        form_id,
-                "return_name":    ret_name,
-                "reporting_date": latest_date,
-                "status":         map_status(code),
-                "status_code":    code,
-                "run_time":       row.get("DTC", "").strip(),
-                "other_dates":    unique_dates[1:],  # remaining dates, still descending
-                "download_url":   dl["download_url"],
-                "download_label": dl["download_label"],
-                "status_note":    dl["status_note"],
-            }
-        # No runs recorded for the latest date — fall back to date picker
-        return {
-            "type":        "date_selection",
-            "message":     f"Select a reporting date for '{ret_name}':",
-            "options":     unique_dates,
-            "form_id":     form_id,
-            "return_name": ret_name,
-        }
-
-    # Single unique date — check if multiple runs exist on that date
-    reporting_date = unique_dates[0] if unique_dates else instances[-1].get("ReportingDate", "").strip()
-    runs = _get_runs_for_date(form_id, reporting_date) if reporting_date else instances
-
-    if len(runs) > 1:
-        run_options = [
-            {
-                "id":     r.get("Id", ""),
-                "label":  f"{r.get('DTC', '').strip()} — {map_status(_safe_status(r))}",
-                "status": map_status(_safe_status(r)),
-                "dtc":    r.get("DTC", "").strip(),
-            }
-            for r in runs
-        ]
-        return {
-            "type":           "run_selection",
-            "options":        run_options,
-            "form_id":        form_id,
-            "return_name":    ret_name,
-            "reporting_date": reporting_date,
-        }
-
-    row  = runs[-1] if runs else instances[-1]
-    code = _safe_status(row)
-    dl   = _get_download_info(row, form_id)
-    return {
-        "type":           "final",
-        "report_name":    ret_name,
-        "reporting_date": row.get("ReportingDate", "").strip(),
-        "status":         map_status(code),
-        "status_code":    code,
-        "download_url":   dl["download_url"],
-        "download_label": dl["download_label"],
-        "status_note":    dl["status_note"],
-    }
+    return _build_status_result(form_id, ret_name, instances)
 
 def get_instance_by_date(form_id: str, date_query: str, return_name: str) -> dict:
     """Resolve a single instance by exact ReportingDate match."""
@@ -500,8 +633,7 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str) -> dic
     return {
         "type":           "final",
         "report_name":    return_name,
-        "reporting_date": row.get("ReportingDate", "").strip(),
-        "status":         map_status(code),
+        "reporting_date": row.get("ReportingDate", "").strip(),        "dtc":            row.get("DTC", "").strip(),        "status":         map_status(code),
         "status_code":    code,
         "download_url":   dl["download_url"],
         "download_label": dl["download_label"],
@@ -525,77 +657,32 @@ def get_report_status_exact(report_name: str) -> dict:
         }
     form_id  = match.get("Id", "").strip()
     ret_name = match.get("Name", report_name)
+
+    logger.info(
+        "[get_report_status_exact] matched report: name=%r  form_id=%r",
+        ret_name, form_id,
+    )
+
     instances = get_instances_by_form_id(form_id)
+
+    logger.info(
+        "[get_report_status_exact] total instances for form_id=%r: %d",
+        form_id, len(instances),
+    )
+
     if not instances:
+        logger.warning(
+            "[get_report_status_exact] NO instances found for form_id=%r (name=%r). "
+            "Check that INSTANCE_LOG_XML_PATH points to the correct file and "
+            "that <Row FormId=%r .../> entries exist.",
+            form_id, ret_name, form_id,
+        )
         return {
             "type":    "error",
             "message": f"Report '{ret_name}' exists but no instances have been generated yet.",
         }
-    unique_dates = get_available_dates(form_id)
-    if len(unique_dates) > 1:
-        # Auto-pick the latest date; show its status and ask about previous dates.
-        latest_date = unique_dates[0]
-        runs = _get_runs_for_date(form_id, latest_date)
-        if runs:
-            row  = runs[-1]
-            code = _safe_status(row)
-            dl   = _get_download_info(row, form_id)
-            return {
-                "type":           "latest_with_ask",
-                "report_name":    ret_name,
-                "form_id":        form_id,
-                "return_name":    ret_name,
-                "reporting_date": latest_date,
-                "status":         map_status(code),
-                "status_code":    code,
-                "run_time":       row.get("DTC", "").strip(),
-                "other_dates":    unique_dates[1:],
-                "download_url":   dl["download_url"],
-                "download_label": dl["download_label"],
-                "status_note":    dl["status_note"],
-            }
-        return {
-            "type":        "date_selection",
-            "message":     f"Select a reporting date for '{ret_name}':",
-            "options":     unique_dates,
-            "form_id":     form_id,
-            "return_name": ret_name,
-        }
-    # Single unique date — check if multiple runs exist on that date
-    reporting_date = unique_dates[0] if unique_dates else instances[-1].get("ReportingDate", "").strip()
-    runs = _get_runs_for_date(form_id, reporting_date) if reporting_date else instances
 
-    if len(runs) > 1:
-        run_options = [
-            {
-                "id":     r.get("Id", ""),
-                "label":  f"{r.get('DTC', '').strip()} — {map_status(_safe_status(r))}",
-                "status": map_status(_safe_status(r)),
-                "dtc":    r.get("DTC", "").strip(),
-            }
-            for r in runs
-        ]
-        return {
-            "type":           "run_selection",
-            "options":        run_options,
-            "form_id":        form_id,
-            "return_name":    ret_name,
-            "reporting_date": reporting_date,
-        }
-
-    row  = runs[-1] if runs else instances[-1]
-    code = _safe_status(row)
-    dl   = _get_download_info(row, form_id)
-    return {
-        "type":           "final",
-        "report_name":    ret_name,
-        "reporting_date": row.get("ReportingDate", "").strip(),
-        "status":         map_status(code),
-        "status_code":    code,
-        "download_url":   dl["download_url"],
-        "download_label": dl["download_label"],
-        "status_note":    dl["status_note"],
-    }
+    return _build_status_result(form_id, ret_name, instances)
 
 
 def get_form_id_by_name(report_name: str) -> str | None:

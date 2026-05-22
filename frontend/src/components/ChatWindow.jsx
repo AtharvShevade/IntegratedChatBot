@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import MessageBubble from './MessageBubble.jsx'
 
-export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare }) {
+export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
   const bottomRef = useRef(null)
 
   // Auto-scroll to the latest message whenever messages change
@@ -32,6 +32,7 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           onSuggestion={onSuggestion}
           onGuidedAction={onGuidedAction}
           onCompare={onCompare}
+          onFeedback={onFeedback}
         />
       ))}
 

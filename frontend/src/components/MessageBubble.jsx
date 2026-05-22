@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 
 // Programmatic fetch → blob → <a click> download.
 // Works for both same-origin and proxied URLs; browser cannot override the filename.
@@ -21,7 +21,7 @@ function triggerBlobDownload(url, label) {
     .catch((err) => console.error('[Download] failed:', err))
 }
 
-export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare }) {
+export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
@@ -31,8 +31,29 @@ export default function MessageBubble({ role, text, data, options, resultType, s
     return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} />
   }
 
+  if (role === 'action_menu') {
+    return <ActionMenu onGuidedAction={onGuidedAction} />
+  }
+
   if (role === 'sql_welcome') {
     return <SqlWelcomeCard />
+  }
+
+  if (role === 'feedback_prompt') {
+    return <FeedbackPrompt onFeedback={onFeedback} />
+  }
+
+  if (role === 'feedback_positive') {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <div className="bubble assistant-bubble">Great! Glad I could help. 😊</div>
+      </div>
+    )
+  }
+
+  if (role === 'feedback_negative') {
+    return <SupportContact />
   }
 
   // Guided action menu — large clickable cards
@@ -77,6 +98,21 @@ export default function MessageBubble({ role, text, data, options, resultType, s
       <div className="bubble-row assistant">
         <div className="avatar assistant-avatar">AI</div>
         <SqlResultBlock data={sqlData} />
+      </div>
+    )
+  }
+
+  // Date/instance selection — dropdown instead of chips to handle long lists
+  if (!isUser && resultType === 'date_selection' && options?.length > 0) {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <InstanceDropdown
+          headerText={text}
+          options={options}
+          instancesData={instancesData}
+          onSelect={onSuggestion}
+        />
       </div>
     )
   }
@@ -144,7 +180,7 @@ export default function MessageBubble({ role, text, data, options, resultType, s
             </button>
           )}
           <div className="bubble assistant-bubble" style={{ marginTop: 6, fontStyle: 'italic', fontSize: '0.88em' }}>
-            Would you also like to check status for previous reporting dates?
+            Would you also like to check status for another reporting date?
           </div>
           <div className="welcome-suggestions option-chips sched-confirm-actions">
             {chips.map((opt) => (
@@ -242,6 +278,70 @@ export default function MessageBubble({ role, text, data, options, resultType, s
   )
 }
 
+// ── Status metadata helper ────────────────────────────────────────────────────
+function getStatusMeta(code) {
+  const n = parseInt(code, 10)
+  if (n === 11)                       return { label: 'Success',     color: '#00C853' }
+  if (n === 9)                        return { label: 'Approved',    color: '#006400' }
+  if ([3, 5, 8, 10, 13].includes(n)) return { label: 'Failed',      color: '#FF4D4F' }
+  if ([4, 6].includes(n))             return { label: 'In Progress', color: '#FF9800' }
+  if (n === 0)                        return { label: 'Not Started', color: '#FFD600' }
+  return { label: 'Unknown', color: '#9E9E9E' }
+}
+
+// ── Instance Dropdown ─────────────────────────────────────────────────────────────
+// Used for date_selection when the list is too long for chips.
+// Renders a custom scrollable listbox with colored status dots when instancesData
+// is provided; gracefully falls back to plain labels when it is not.
+function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
+  const [selected, setSelected] = useState(options[0] ?? '')
+
+  // Build label → status-meta map for O(1) lookup while rendering
+  const statusMap = useMemo(() => {
+    if (!instancesData?.length) return {}
+    return Object.fromEntries(
+      instancesData.map((item) => [item.label, getStatusMeta(item.status)])
+    )
+  }, [instancesData])
+
+  const hasStatus = instancesData?.length > 0
+
+  return (
+    <div className="assistant-msg-block">
+      <div className="bubble assistant-bubble">{headerText}</div>
+      <div className="instance-listbox-card">
+        <div className="instance-listbox">
+          {options.map((opt) => {
+            const meta = hasStatus ? statusMap[opt] : null
+            return (
+              <div
+                key={opt}
+                className={`instance-listbox-item${selected === opt ? ' selected' : ''}`}
+                onClick={() => setSelected(opt)}
+              >
+                {meta && (
+                  <span
+                    className="status-dot"
+                    style={{ background: meta.color }}
+                    title={meta.label}
+                  />
+                )}
+                <span className="instance-listbox-label">{opt}</span>
+              </div>
+            )
+          })}
+        </div>
+        <button
+          className="instance-dropdown-btn"
+          onClick={() => onSelect?.(selected)}
+        >
+          Select ›
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Welcome card ─────────────────────────────────────────────────────────────
 const SUGGESTION_GROUPS = [
   {
@@ -316,6 +416,78 @@ function WelcomeCard({ onSuggestion, onGuidedAction }) {
                   ))}
                 </div>
               )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Feedback Prompt ─────────────────────────────────────────────────────
+function FeedbackPrompt({ onFeedback }) {
+  const [answered, setAnswered] = useState(false)
+  const handleClick = (response) => {
+    if (answered) return
+    setAnswered(true)
+    onFeedback?.(response)
+  }
+  return (
+    <div className="bubble-row assistant">
+      <div className="avatar assistant-avatar">AI</div>
+      <div className="assistant-msg-block">
+        <div className="bubble assistant-bubble">Was this helpful?</div>
+        {!answered && (
+          <div className="feedback-actions">
+            <button className="feedback-btn feedback-yes" onClick={() => handleClick('yes')}>
+              👍 Yes
+            </button>
+            <button className="feedback-btn feedback-no" onClick={() => handleClick('no')}>
+              👎 No
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Support Contact ──────────────────────────────────────────────────────
+function SupportContact() {
+  return (
+    <div className="bubble-row assistant">
+      <div className="avatar assistant-avatar">AI</div>
+      <div className="bubble assistant-bubble support-contact-bubble">
+        <p className="support-sorry">I’m sorry the experience wasn’t helpful.</p>
+        <p className="support-desc">If you’re facing an issue, have a query, or want to report a problem, please contact our support team:</p>
+        <div className="support-emails">
+          <a href="mailto:support@company.com" className="support-email-link">📧 support@company.com</a>
+          <a href="mailto:chatbot-support@company.com" className="support-email-link">📧 chatbot-support@company.com</a>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Action Menu ─────────────────────────────────────────────────────────────
+// Compact reusable "What next?" prompt shown after every completed workflow.
+function ActionMenu({ onGuidedAction }) {
+  return (
+    <div className="bubble-row assistant">
+      <div className="avatar assistant-avatar">AI</div>
+      <div className="bubble assistant-bubble action-menu-bubble">
+        <p className="action-menu-prompt">What would you like to do next?</p>
+        <div className="welcome-suggestion-groups">
+          {SUGGESTION_GROUPS.map((group) => (
+            <div key={group.label} className="welcome-suggestion-group">
+              <button
+                className="welcome-group-label-btn"
+                onClick={() => onGuidedAction?.(group.action)}
+                title={`Start guided flow: ${group.action}`}
+              >
+                {group.label}
+                <span className="welcome-group-arrow">›</span>
+              </button>
             </div>
           ))}
         </div>

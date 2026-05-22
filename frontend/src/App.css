@@ -999,11 +999,209 @@ html, body, #root {
 .sched-confirm-bubble {
   border-left: 3px solid var(--accent);
 }
+
+/* Post-action "What would you like to do next?" menu */
+.action-menu-bubble {
+  max-width: 420px;
+  border-left: 3px solid var(--accent);
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.action-menu-prompt {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
 .sched-confirm-actions {
   margin-top: 8px;
   gap: 10px;
 }
-.chip-confirm {
+
+/* ── Instance dropdown (date_selection) ─────────────────────────────────── */
+.instance-dropdown-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  max-width: 560px;
+}
+
+.instance-dropdown-select {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.83rem;
+  padding: 8px 12px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.instance-dropdown-select:focus {
+  border-color: var(--accent);
+}
+
+.instance-dropdown-select option {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.instance-dropdown-btn {
+  flex-shrink: 0;
+  background: #2ecc71;
+  border: 1px solid #27ae60;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.83rem;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.instance-dropdown-btn:hover {
+  background: #27ae60;
+  border-color: #1e8449;
+}
+
+/* ── Instance listbox (date_selection with status dots) ──────────────────── */
+.instance-listbox-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 560px;
+}
+
+.instance-listbox {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.instance-listbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.12s;
+  font-size: 0.83rem;
+  color: var(--text);
+  user-select: none;
+}
+
+.instance-listbox-item:last-child {
+  border-bottom: none;
+}
+
+.instance-listbox-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.instance-listbox-item.selected {
+  background: rgba(108, 99, 255, 0.18);
+  color: #c4b5fd;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
+}
+
+.instance-listbox-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Feedback prompt ─────────────────────────────────────────────────────── */
+.feedback-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.feedback-btn {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 7px 20px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.feedback-yes {
+  background: #2ecc71;
+  border-color: #27ae60;
+  color: #fff;
+}
+
+.feedback-yes:hover {
+  background: #27ae60;
+  border-color: #1e8449;
+}
+
+.feedback-no {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #f87171;
+}
+
+.feedback-no:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.7);
+}
+
+/* ── Support contact ─────────────────────────────────────────────────────── */
+.support-contact-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.support-contact-bubble p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.support-sorry {
+  font-weight: 600;
+}
+
+.support-emails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.support-email-link {
+  color: #818cf8;
+  text-decoration: none;
+  font-size: 0.88rem;
+}
+
+.support-email-link:hover {
+  text-decoration: underline;
+  color: #a78bfa;
+}
+
+
   background: rgba(108,99,255,0.15) !important;
   border-color: rgba(108,99,255,0.55) !important;
   color: #a78bfa !important;

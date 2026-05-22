@@ -27,14 +27,14 @@ INSTANCE_LOG_XML_PATH: str = os.getenv(
 # Structure: {INSTANCE_BASE_DIR}\{report_id}\*.xml
 INSTANCE_BASE_DIR: str = os.getenv(
     "INSTANCE_BASE_DIR",
-    r"D:\Repo5.5\Instance",
+    r"D:\Repo\Repo5.5 3\Repo5.5\Instance",
 )
 
 # Base directory for rendered output files (HTML render documents).
 # Structure: {RENDER_BASE_DIR}\{report_id}\<RenderedExcelDocPath>
 RENDER_BASE_DIR: str = os.getenv(
     "RENDER_BASE_DIR",
-    r"D:\Repo5.5\Render",
+    r"D:\Repo\Repo5.5 3\Repo5.5\Render",
 )
 
 # ---------------------------------------------------------------------------
@@ -51,4 +51,10 @@ XML_USER_PATH: str = os.getenv(
 XML_DEPT_PATH: str = os.getenv(
     "XML_DEPT_PATH",
     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_Dept.xml",
+)
+
+# XML_RoleAccess.xml: maps RoleId + OptionId → access flags (HasNew, HasEdit, HasView)
+XML_ROLE_ACCESS_PATH: str = os.getenv(
+    "XML_ROLE_ACCESS_PATH",
+    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_RoleAccess.xml",
 )
