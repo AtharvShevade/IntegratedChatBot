@@ -189,7 +189,7 @@ export default function App() {
     <div className="app-shell">
       <header className="app-header">
         <span className="header-logo">💬</span>
-        <h1>AI Report Assistant</h1>
+        <h1>Chatbot</h1>
         {_loginId && <span className="header-badge">{_loginId}</span>}
       </header>
 
