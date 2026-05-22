@@ -39,12 +39,18 @@ def execute_query(sql):
 
     cursor = None
     try:
-        # Set NLS on a separate cursor so the main cursor starts clean
+        # Set NLS settings on a separate cursor so the main cursor starts clean
         nls_cur = conn.cursor()
-        nls_cur.execute("ALTER SESSION SET NLS_DATE_LANGUAGE = 'AMERICAN'")
+        for stmt in [
+            "ALTER SESSION SET NLS_DATE_LANGUAGE  = 'AMERICAN'",
+            "ALTER SESSION SET NLS_DATE_FORMAT    = 'DD-MON-YYYY'",
+            "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'",
+        ]:
+            nls_cur.execute(stmt)
         nls_cur.close()
 
         cursor = conn.cursor()
+        cursor.callTimeout = 60000  # 60-second statement timeout
         # Oracle driver does not accept a trailing semicolon
         cursor.execute(sql.rstrip().rstrip(";"))
         columns = [col[0] for col in cursor.description]

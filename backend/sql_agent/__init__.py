@@ -13,8 +13,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ── Minimum query length guard (mirrored from original api/routes/query.py) ───
-MIN_QUERY_LENGTH = 20
+# ── Minimum word-count guard ───────────────────────────────────────────────────
+MIN_QUERY_WORDS = 5   # queries with fewer words are too vague for accurate SQL
+MAX_SQL_RETRIES = 2   # max generate→validate→execute attempts per user query
 
 # ── Time-context patterns for the accuracy hint ───────────────────────────────
 _TIME_PATTERNS = [
@@ -87,15 +88,21 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
     """
     q = message.strip()
 
-    # ── Guard 1: minimum query length ─────────────────────────────────────────
-    if len(q) < MIN_QUERY_LENGTH:
+    # ── Guard 1: minimum word count ────────────────────────────────────────────
+    word_count = len(q.split())
+    if word_count < MIN_QUERY_WORDS:
         return _build_result(
-            response_text="Please describe what data you need in more detail.",
+            response_text=(
+                f"Your query is too short ({word_count} word{'s' if word_count != 1 else ''}). "
+                "Please describe what you need in more detail."
+            ),
             result_type="db_result",
             needs_more_info=True,
             more_info_hint=(
-                "Please provide more detail about what data you need. "
-                "Include a time period (e.g. Q1 FY2024, March 2025) for best results."
+                f"Please use at least {MIN_QUERY_WORDS} words. For example:\n"
+                "\u2022 'Show gross NPA for Q1 FY2024'\n"
+                "\u2022 'Total loan assets from RAQ section 1 latest'\n"
+                "\u2022 'Fetch derivative notional principal from ALE domestic March 2025'"
             ),
         )
 
@@ -128,80 +135,118 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
             accuracy_hint=accuracy_hint,
         )
 
-    # ── Step 2: SQL generation ────────────────────────────────────────────────
-    try:
-        from backend.sql_agent.sql_generator import generate_sql, validate_sql
-        result = generate_sql(q, tables, columns, matched_labels=matched_labels)
-        sql = result.get("sql", "")
-        logger.info("[SQL_AGENT] generated sql=\n%s", sql)
-    except RuntimeError as exc:
-        # Ollama not running / timeout
-        logger.error("[SQL_AGENT] SQL generation failed: %s", exc)
-        return _build_result(
-            response_text=f"SQL generation failed: {exc}",
-            result_type="db_result",
-            db_error=str(exc),
-            accuracy_hint=accuracy_hint,
-        )
-    except Exception as exc:
-        logger.error("[SQL_AGENT] Unexpected error in generate_sql: %s", exc)
-        return _build_result(
-            response_text="An unexpected error occurred while generating SQL.",
-            result_type="db_result",
-            db_error=str(exc),
-        )
+    # ── Steps 2-4: generate → validate → execute (retry loop) ─────────────────
+    from backend.sql_agent.sql_generator import generate_sql, validate_sql
+    from backend.sql_agent.executor import execute_query
+    from backend.sql_agent.utils import serialize_rows
 
-    # ── Step 3: validation ────────────────────────────────────────────────────
-    is_valid, reason = validate_sql(sql, tables, columns)
-    logger.info("[SQL_AGENT] valid=%s reason=%s", is_valid, reason)
+    previous_sql   = None
+    previous_error = None
 
-    if not is_valid:
+    for attempt in range(MAX_SQL_RETRIES):
+        # Step 2: SQL generation
+        try:
+            result = generate_sql(
+                q, tables, columns, matched_labels=matched_labels,
+                previous_sql=previous_sql, previous_error=previous_error,
+            )
+            sql = result.get("sql", "")
+            logger.info("[SQL_AGENT] attempt=%d sql=\n%s", attempt + 1, sql)
+        except RuntimeError as exc:
+            logger.error("[SQL_AGENT] SQL generation failed: %s", exc)
+            return _build_result(
+                response_text=f"SQL generation failed: {exc}",
+                result_type="db_result",
+                db_error=str(exc),
+                accuracy_hint=accuracy_hint,
+            )
+        except Exception as exc:
+            logger.error("[SQL_AGENT] Unexpected error in generate_sql: %s", exc)
+            return _build_result(
+                response_text="An unexpected error occurred while generating SQL.",
+                result_type="db_result",
+                db_error=str(exc),
+            )
+
+        # Step 3: validation
+        is_valid, reason = validate_sql(sql, tables, columns)
+        logger.info("[SQL_AGENT] attempt=%d valid=%s reason=%s", attempt + 1, is_valid, reason)
+        if not is_valid:
+            if attempt + 1 < MAX_SQL_RETRIES:
+                previous_sql   = sql
+                previous_error = f"Validation error: {reason}"
+                logger.info("[SQL_AGENT] retrying after validation failure")
+                continue
+            return _build_result(
+                response_text=f"The generated SQL did not pass validation: {reason}",
+                result_type="db_result",
+                db_sql=sql,
+                db_error=reason,
+                accuracy_hint=accuracy_hint,
+            )
+
+        # Step 4: execution
+        try:
+            col_names, rows, db_error = execute_query(sql)
+            serialized_rows = serialize_rows(rows)
+            logger.info("[SQL_AGENT] attempt=%d rows=%d db_error=%s", attempt + 1, len(rows), db_error)
+        except Exception as exc:
+            logger.error("[SQL_AGENT] Execution error: %s", exc)
+            return _build_result(
+                response_text="Failed to execute the query against Oracle.",
+                result_type="db_result",
+                db_sql=sql,
+                db_error=str(exc),
+                accuracy_hint=accuracy_hint,
+            )
+
+        if db_error:
+            if attempt + 1 < MAX_SQL_RETRIES:
+                previous_sql   = sql
+                previous_error = db_error
+                logger.info("[SQL_AGENT] retrying after DB error: %s", db_error)
+                continue
+            return _build_result(
+                response_text="Query executed but the database returned an error.",
+                result_type="db_result",
+                db_sql=sql,
+                db_error=db_error,
+                accuracy_hint=accuracy_hint,
+            )
+
+        # Success
+        row_count = len(serialized_rows)
+
+        if row_count == 0:
+            return _build_result(
+                response_text="No data found for your query.",
+                result_type="db_result",
+                db_columns=col_names,
+                db_rows=[],
+                db_sql=sql,
+                needs_more_info=True,
+                more_info_hint=(
+                    "The query ran successfully but returned no rows. Try:\n"
+                    "\u2022 Adding a time period \u2014 e.g. 'Q1 FY2024', 'March 2025', 'latest'\n"
+                    "\u2022 Being more specific \u2014 e.g. include the report section name\n"
+                    "\u2022 Checking the spelling of report/section names"
+                ),
+                accuracy_hint=accuracy_hint,
+            )
+
         return _build_result(
-            response_text=f"The generated SQL did not pass validation: {reason}",
+            response_text=f"Found {row_count} row{'s' if row_count != 1 else ''}.",
             result_type="db_result",
+            db_columns=col_names,
+            db_rows=serialized_rows,
             db_sql=sql,
-            db_error=reason,
             accuracy_hint=accuracy_hint,
         )
 
-    # ── Step 4: execution ─────────────────────────────────────────────────────
-    try:
-        from backend.sql_agent.executor import execute_query
-        from backend.sql_agent.utils import serialize_rows
-        col_names, rows, db_error = execute_query(sql)
-        serialized_rows = serialize_rows(rows)
-        logger.info("[SQL_AGENT] rows=%d db_error=%s", len(rows), db_error)
-    except Exception as exc:
-        logger.error("[SQL_AGENT] Execution error: %s", exc)
-        return _build_result(
-            response_text="Failed to execute the query against Oracle.",
-            result_type="db_result",
-            db_sql=sql,
-            db_error=str(exc),
-            accuracy_hint=accuracy_hint,
-        )
-
-    if db_error:
-        return _build_result(
-            response_text=f"Query executed but the database returned an error.",
-            result_type="db_result",
-            db_sql=sql,
-            db_error=db_error,
-            accuracy_hint=accuracy_hint,
-        )
-
-    row_count = len(serialized_rows)
-    response_text = (
-        f"Found {row_count} row{'s' if row_count != 1 else ''}."
-        if row_count > 0
-        else "The query returned no results."
-    )
-
+    # Exhausted retries without success
     return _build_result(
-        response_text=response_text,
+        response_text="Unable to generate a valid SQL query after multiple attempts. Please rephrase your question.",
         result_type="db_result",
-        db_columns=col_names,
-        db_rows=serialized_rows,
-        db_sql=sql,
+        db_error="Max retries exceeded",
         accuracy_hint=accuracy_hint,
     )

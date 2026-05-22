@@ -10,6 +10,9 @@ import os
 _HERE         = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(_HERE))   # IntegratedChatBot/
 
+# Directory containing schema.sql and .json-formatted mapping file.
+SQL_AGENT_DATA_DIR: str = os.path.join(_PROJECT_ROOT, "sql_agent", "data")
+
 # Directory where main.py writes FAISS indexes and schema artifacts.
 # Defaults to <project_root>/sql_agent/output so the gitignore rules
 # already in place continue to work without any change.
@@ -36,7 +39,7 @@ QUERY_PREFIX = os.getenv(
 )
 
 # ── FAISS retrieval settings ───────────────────────────────────────────────────
-TOP_K_TABLES  = int(os.getenv("SQL_TOP_K_TABLES",  "3"))
+TOP_K_TABLES  = int(os.getenv("SQL_TOP_K_TABLES",  "5"))
 TOP_K_COLUMNS = int(os.getenv("SQL_TOP_K_COLUMNS", "5"))
 
 # ── Ollama settings ────────────────────────────────────────────────────────────

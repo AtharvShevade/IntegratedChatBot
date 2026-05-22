@@ -28,6 +28,15 @@ LABEL_COLUMNS = {
     "industry_name",
     "period_delinquency",
     "country_brw_cuntr_party",
+    # Phase 5 additions — cover more vertical-format tables
+    "particulars",
+    "borrower_category",
+    "sector",
+    "activity",
+    "exposure_type",
+    "asset_type",
+    "movement_from_npa",
+    "sl_no_description",
 }
 
 MAX_SAMPLES = 50          # max distinct values to fetch per table

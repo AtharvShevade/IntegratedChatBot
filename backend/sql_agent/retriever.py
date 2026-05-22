@@ -11,6 +11,9 @@ from backend.sql_agent.config import (
 
 TOP_K_LABELS = 10   # max row-label values to retrieve per query
 
+# Module-level FAISS index + metadata cache (loaded once per process, not per query)
+_INDEX_CACHE: dict = {}
+
 # Minimum cosine similarity score to accept a FAISS result (IndexFlatIP,
 # vectors are L2-normalised so dot-product == cosine similarity).
 MIN_TABLE_SCORE  = 0.25
@@ -18,25 +21,34 @@ MIN_COLUMN_SCORE = 0.20
 
 # ── Banking / CIMS domain abbreviation expansion ──────────────────────────────
 _QUERY_EXPANSIONS = [
-    (r'\bnpa\b',      'NPA non performing assets'),
-    (r'\bgnpa\b',     'gross NPA non performing assets'),
-    (r'\bnnpa\b',     'net NPA non performing assets'),
-    (r'\bsma\b',      'special mention accounts SMA'),
-    (r'\bcar\b',      'capital adequacy ratio CAR'),
-    (r'\bpcr\b',      'provision coverage ratio PCR'),
-    (r'\brwa\b',      'risk weighted assets RWA'),
-    (r'\bslr\b',      'statutory liquidity ratio SLR'),
-    (r'\bcrr\b',      'cash reserve ratio CRR'),
-    (r'\bpsl\b',      'priority sector lending PSL'),
-    (r'\braq\b',      'Risk Assessment Questionnaire RAQ CIMS'),
-    (r'\bcims\b',     'CIMS banking supervisory return'),
-    (r'\bsec(\d+)\b', r'section \1'),
-    (r'\bdom\b',      'domestic'),
-    (r'\bove\b',      'overseas'),
-    (r'\binfra\b',    'infrastructure'),
-    (r'\bsensec\b',   'sensitive sector'),
-    (r'\bparta\b',    'part A'),
-    (r'\bpartb\b',    'part B'),
+    (r'\bnpa\b',                     'NPA non performing assets'),
+    (r'\bgnpa\b',                    'gross NPA non performing assets'),
+    (r'\bnnpa\b',                    'net NPA non performing assets'),
+    (r'\bsma\b',                     'special mention accounts SMA'),
+    (r'\bcar\b',                     'capital adequacy ratio CAR'),
+    (r'\bpcr\b',                     'provision coverage ratio PCR'),
+    (r'\brwa\b',                     'risk weighted assets RWA'),
+    (r'\bslr\b',                     'statutory liquidity ratio SLR'),
+    (r'\bcrr\b',                     'cash reserve ratio CRR'),
+    (r'\bpsl\b',                     'priority sector lending PSL'),
+    (r'\braq\b',                     'Risk Assessment Questionnaire RAQ CIMS'),
+    (r'\bcims\b',                    'CIMS banking supervisory return'),
+    (r'\bale\b',                     'ALE asset liability exposure CIMS_ALE monthly'),
+    (r'\bcrilc\b',                   'CRILC central repository large credits exposure'),
+    (r'\bbsr\b',                     'BSR basic statistical returns deposits advances'),
+    (r'\blcr\b',                     'LCR liquidity coverage ratio high quality liquid assets'),
+    (r'\bnsfr\b',                    'NSFR net stable funding ratio stable funding'),
+    (r'\b(form\s*fr|fr\s*return)\b', 'Form FR statutory reporting CIMS_FORM_FR'),
+    (r'\bderivative[s]?\b',          'derivative notional principal MTM credit equivalent ALE section D'),
+    (r'\bsec(\d+)\b',                r'section \1'),
+    (r'\bdom\b',                     'domestic'),
+    (r'\bove\b',                     'overseas'),
+    (r'\binfra\b',                   'infrastructure'),
+    (r'\bsensec\b',                  'sensitive sector'),
+    (r'\bparta\b',                   'part A'),
+    (r'\bpartb\b',                   'part B'),
+    (r'\bpartc\b',                   'part C'),
+    (r'\bpartd\b',                   'part D'),
 ]
 
 
@@ -51,7 +63,7 @@ def _expand_query(query: str) -> str:
 def _dynamic_top_k(query: str) -> int:
     """Return a higher TOP_K for complex queries that mention multiple items."""
     hits = len(re.findall(
-        r'\b(sec\d+|part\s*[ab]|section\s*\d+|compare|versus|vs|and|both|all|union)\b',
+        r'\b(sec\d+|part\s*[abcd]|section\s*\d+|compare|versus|vs|and|both|all|every|across|combined|union)\b',
         query, re.IGNORECASE,
     ))
     if hits >= 3:
@@ -62,11 +74,16 @@ def _dynamic_top_k(query: str) -> int:
 
 
 def search(index_path, meta_path, query, k, min_score=0.0):
-    """Search a FAISS index, returning only hits above min_score."""
-    index = faiss.read_index(index_path)
-
-    with open(meta_path, "rb") as f:
-        meta = pickle.load(f)
+    """Search a FAISS index, returning only hits above min_score.
+    Indexes are cached in memory after the first load."""
+    if index_path not in _INDEX_CACHE:
+        _INDEX_CACHE[index_path] = {
+            "index": faiss.read_index(index_path),
+            "meta":  pickle.load(open(meta_path, "rb")),
+        }
+    cached = _INDEX_CACHE[index_path]
+    index  = cached["index"]
+    meta   = cached["meta"]
 
     if not meta:
         return []
@@ -100,7 +117,7 @@ def get_relevant_schema(query: str):
     # ── Signal B: column search → which tables do best columns belong to? ─────
     col_hits = search(
         COLUMN_INDEX_PATH, COLUMN_META_PATH,
-        expanded, TOP_K_COLUMNS * 6, min_score=MIN_COLUMN_SCORE,
+        expanded, TOP_K_COLUMNS * 10, min_score=MIN_COLUMN_SCORE,
     )
 
     # ── Signal C: row-label search → which tables do best labels belong to? ───

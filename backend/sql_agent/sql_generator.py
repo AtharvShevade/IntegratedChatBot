@@ -8,6 +8,77 @@ from backend.sql_agent.config import OLLAMA_MODEL, OLLAMA_URL, SCHEMA_JSON_PATH
 
 BANNED_KEYWORDS = ["delete", "update", "drop", "insert", "truncate", "alter", "create", "exec"]
 
+# Oracle built-in pseudo-tables that are always valid
+ORACLE_PSEUDO_TABLES = frozenset({"dual"})
+
+# Oracle date/time format tokens and built-in function names that must not be
+# treated as column names during SQL validation.
+_ORACLE_FORMAT_TOKENS = frozenset({
+    'yyyy', 'yy', 'mm', 'dd', 'hh', 'hh24', 'mi', 'ss', 'mon', 'dy', 'ddd',
+    'am', 'pm', 'ff', 'tz', 'ww', 'iw', 'sssss', 'j', 'rr', 'rrrr',
+})
+_ORACLE_BUILTIN_TOKENS = frozenset({
+    'add_months', 'months_between', 'trunc', 'sysdate', 'systimestamp',
+    'decode', 'instr', 'substr', 'substrb', 'length', 'round', 'floor', 'ceil',
+    'greatest', 'least', 'nvl2', 'lpad', 'rpad', 'replace', 'regexp_like',
+    'regexp_substr', 'listagg', 'level', 'rowid', 'prior', 'connect_by_root',
+    'extract', 'to_number', 'numtoyminterval', 'numtodsinterval',
+})
+
+# Module-level caches — loaded once per process restart
+_schema_cache: list | None = None
+_samples_cache: dict | None = None
+
+
+def _get_schema(schema_path=None) -> list:
+    """Return schema.json contents, loading from disk only once."""
+    global _schema_cache
+    if _schema_cache is None:
+        p = schema_path or SCHEMA_JSON_PATH
+        with open(p) as f:
+            _schema_cache = json.load(f)
+    return _schema_cache
+
+
+def _get_samples() -> dict:
+    """Return description_samples.json contents, loading from disk only once."""
+    global _samples_cache
+    if _samples_cache is None:
+        from backend.sql_agent.description_fetcher import load_samples
+        _samples_cache = load_samples()
+    return _samples_cache
+
+
+def _fix_unbalanced_parens(sql: str) -> str:
+    """
+    Remove unmatched closing ')' from LLM-generated SQL.
+    Tracks depth while ignoring parentheses inside string literals.
+    Example: SELECT (...) + (...) ) ) AS X FROM DUAL  →  SELECT (...) + (...) AS X FROM DUAL
+    """
+    depth = 0
+    in_str = False
+    unmatched: list[int] = []
+
+    for i, ch in enumerate(sql):
+        if ch == "'" :
+            in_str = not in_str
+        elif not in_str:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth < 0:
+                    unmatched.append(i)
+                    depth = 0   # keep scanning for more unmatched closes
+
+    if not unmatched:
+        return sql
+
+    chars = list(sql)
+    for idx in reversed(unmatched):
+        chars[idx] = ''
+    return ''.join(chars).strip()
+
 
 def _resolve_relative_time(query: str, today: date) -> str | None:
     """
@@ -99,6 +170,66 @@ def _resolve_relative_time(query: str, today: date) -> str | None:
             f"(01-APR-{fy_sy-1} to 31-MAR-{fy_sy})"
         )
 
+    # Explicit "Q<n> FY<yyyy>" or "FY<yyyy> Q<n>" patterns
+    # e.g. "Q1 FY2024", "FY2024 Q2", "Q3 FY24", "q1 fy2024"
+    _FY_QTR_MONTHS = {
+        1: (4,  6,  "APR", "JUN"),
+        2: (7,  9,  "JUL", "SEP"),
+        3: (10, 12, "OCT", "DEC"),
+        4: (1,  3,  "JAN", "MAR"),
+    }
+    _fy_qtr_pat = re.compile(
+        r'\bq([1-4])\s*fy(\d{2,4})\b|\bfy(\d{2,4})\s*q([1-4])\b', re.IGNORECASE
+    )
+    for m in _fy_qtr_pat.finditer(q):
+        qnum = int(m.group(1) or m.group(4))
+        raw_yr = m.group(2) or m.group(3)
+        yr = int(raw_yr) if len(raw_yr) == 4 else 2000 + int(raw_yr)
+        # yr is the END year of the FY (e.g. FY2024 ends Mar 2024, starts Apr 2023)
+        fy_start_yr = yr - 1
+        mm_s, mm_e, mon_s, mon_e = _FY_QTR_MONTHS[qnum]
+        # Q4 spans Jan-Mar of the end year; Q1-Q3 span Apr-Dec of start year
+        actual_yr_s = fy_start_yr if qnum <= 3 else yr
+        actual_yr_e = fy_start_yr if qnum <= 3 else yr
+        s = f"01-{mon_s}-{actual_yr_s}"
+        e_day = 30 if mon_e in ("JUN", "SEP", "NOV", "APR") else (28 if mon_e == "FEB" else 31)
+        e = f"{e_day:02d}-{mon_e}-{actual_yr_e}"
+        lines.append(
+            f"'Q{qnum} FY{yr}' = {fmt(date(actual_yr_s, mm_s, 1))} to "
+            f"{fmt(date(actual_yr_e, mm_e, calendar.monthrange(actual_yr_e, mm_e)[1]))}"
+            f"  → use RDATE BETWEEN TO_DATE('{s}','DD-MON-YYYY') AND "
+            f"TO_DATE('{e}','DD-MON-YYYY')"
+        )
+
+    # Explicit "Month YYYY" pattern: e.g. "March 2025", "December 2024", "Jan 2026"
+    _MONTH_NUM = {
+        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5,
+        'june': 6, 'july': 7, 'august': 8, 'september': 9, 'october': 10,
+        'november': 11, 'december': 12,
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+        'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9,
+        'oct': 10, 'nov': 11, 'dec': 12,
+    }
+    _mon_yr_pat = re.compile(
+        r'\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
+        r'jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        r'\s+(\d{4})\b', re.IGNORECASE,
+    )
+    for m in _mon_yr_pat.finditer(q):
+        mon_key = m.group(1).lower()
+        mon_num = _MONTH_NUM.get(mon_key, _MONTH_NUM.get(mon_key[:3], 0))
+        if not mon_num:
+            continue
+        yr       = int(m.group(2))
+        last_day = calendar.monthrange(yr, mon_num)[1]
+        mon_abbr = date(yr, mon_num, 1).strftime('%b').upper()
+        lines.append(
+            f"'{m.group(1).title()} {yr}' = {fmt(date(yr, mon_num, 1))} to "
+            f"{fmt(date(yr, mon_num, last_day))}"
+            f"  \u2192 use RDATE BETWEEN TO_DATE('01-{mon_abbr}-{yr}','DD-MON-YYYY') AND "
+            f"TO_DATE('{last_day:02d}-{mon_abbr}-{yr}','DD-MON-YYYY')"
+        )
+
     if not lines:
         return None
 
@@ -127,19 +258,18 @@ _SQL_KEYWORDS = {
 
 
 def _load_all_columns(table_names, schema_path=None):
-    """Return all columns for the given table names loaded from schema.json."""
-    if schema_path is None:
-        schema_path = SCHEMA_JSON_PATH
-    try:
-        with open(schema_path) as f:
-            schema = json.load(f)
-    except FileNotFoundError:
-        return []
+    """Return all columns for the given table names using cached schema."""
+    schema = _get_schema(schema_path)
     result = []
     for entry in schema:
         if entry["table"] in table_names:
             for col in entry["columns"]:
-                result.append({"table": entry["table"], "column": col["name"]})
+                result.append({
+                    "table":       entry["table"],
+                    "column":      col["name"],
+                    "description": col.get("description", ""),
+                    "return_name": col.get("return_name", ""),
+                })
     return result
 
 
@@ -158,7 +288,8 @@ def _find_total_row(values: list) -> str | None:
     return None
 
 
-def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None, matched_labels=None):
+def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None,
+                 matched_labels=None, previous_sql=None, previous_error=None):
     if today_date is None:
         today_date = date.today().isoformat()
 
@@ -166,8 +297,7 @@ def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None,
     all_columns = _load_all_columns(table_names)
 
     if matched_labels is None:
-        from backend.sql_agent.description_fetcher import load_samples
-        raw_samples = load_samples()
+        raw_samples = _get_samples()
         matched_labels = []
         for tbl, col_map in raw_samples.items():
             for col, vals in col_map.items():
@@ -179,7 +309,7 @@ def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None,
         label_map[lbl["table"]][lbl["column"]].append(lbl["value"])
 
     from backend.sql_agent.description_fetcher import load_samples as _load_samples
-    all_samples = _load_samples()
+    all_samples = _get_samples()
     for tbl in table_names:
         if tbl in all_samples:
             for col, vals in all_samples[tbl].items():
@@ -191,9 +321,16 @@ def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None,
     schema_lines = []
     for t in tables:
         table_name = t["table"].upper()
-        table_cols = [c["column"].upper() for c in all_columns if c["table"] == t["table"]]
-        cols_str   = ", ".join(table_cols) if table_cols else "(none)"
-        block      = f"Table: {table_name}\nAllowed columns (use ONLY these): {cols_str}"
+        table_col_objs = [c for c in all_columns if c["table"] == t["table"]]
+        col_parts = []
+        for c in table_col_objs:
+            label = c.get("return_name") or c.get("description") or ""
+            part  = c["column"].upper()
+            if label:
+                part += f" ({label})"
+            col_parts.append(part)
+        cols_str = ", ".join(col_parts) if col_parts else "(none)"
+        block    = f"Table: {table_name}\nAllowed columns (use ONLY these): {cols_str}"
 
         col_labels = label_map.get(t["table"], {})
         if col_labels:
@@ -215,9 +352,24 @@ def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None,
     schema_context = "\n\n".join(schema_lines)
     valid_tables   = ", ".join(t["table"].upper() for t in tables)
 
-    today_obj        = date.fromisoformat(today_date) if isinstance(today_date, str) else today_date
-    _time_block      = _resolve_relative_time(user_query, today_obj)
+    today_obj          = date.fromisoformat(today_date) if isinstance(today_date, str) else today_date
+    _time_block        = _resolve_relative_time(user_query, today_obj)
     time_context_block = (_time_block + "\n") if _time_block else ""
+
+    # Correction block injected on retry attempts
+    if previous_sql and previous_error:
+        correction_block = (
+            "\n════════════════════════════════════════════════\n"
+            "CORRECTION REQUIRED — your previous attempt failed\n"
+            "════════════════════════════════════════════════\n"
+            f"Error   : {previous_error}\n"
+            f"Bad SQL : {previous_sql}\n"
+            "Fix ONLY the error above. Keep the same tables, columns, and WHERE logic "
+            "unless the error explicitly requires changing them.\n"
+            "════════════════════════════════════════════════\n"
+        )
+    else:
+        correction_block = ""
 
     return f"""You are an expert {dialect} SQL generator. Today is {today_date}.
 
@@ -228,6 +380,12 @@ ABSOLUTE RULES (never break these)
 2. Use ONLY table names and column names listed in the SCHEMA CONTEXT below. Never invent names.
 3. Never use bind variables or placeholders (:val, ?, %s). Embed all values as literals.
 4. Never touch backup tables (_bkup, _bk, _bckup, _backup suffixes). Use only the main tables.
+5. COUNT EVERY PARENTHESIS before returning — the total number of '(' must equal ')'.
+   WRONG: SELECT ( (subq1) + (subq2) ) ) AS X FROM DUAL   ← extra ')'
+   RIGHT: SELECT ( (subq1) + (subq2) ) AS X FROM DUAL
+6. Use TO_DATE('DD-MON-YYYY','DD-MON-YYYY') format for ALL date literals. Never write bare date strings.
+7. SELECT ... FROM DUAL is valid ONLY for pure expression evaluation with no table rows.
+   Never wrap a subquery that already returns rows with FROM DUAL.
 
 ════════════════════════════════════════════════
 VERTICAL FORMAT TABLES — CRITICAL RULES
@@ -290,9 +448,21 @@ RULE P1 — RDATE is the reporting date column.
 RULE P2 — "Latest" → WHERE RDATE = (SELECT MAX(RDATE) FROM <same_table>)
 RULE P3 — "Last N quarters" → WHERE RDATE >= ADD_MONTHS((SELECT MAX(RDATE) FROM <t>), -<N*3>)
 RULE P4 — "Year YYYY" → WHERE EXTRACT(YEAR FROM RDATE) = YYYY
-RULE P5 — Date range → WHERE RDATE BETWEEN TO_DATE(...) AND TO_DATE(...)
+RULE P5 — Date range → WHERE RDATE BETWEEN TO_DATE('DD-MON-YYYY','DD-MON-YYYY') AND TO_DATE('DD-MON-YYYY','DD-MON-YYYY')
 RULE P6 — "Trend" → include RDATE in SELECT + ORDER BY RDATE ASC
 RULE P7 — Never hardcode date literals; derive via MAX(RDATE)
+RULE P8 — *** ORACLE HAS NO EXTRACT(QUARTER FROM ...) — it is INVALID SYNTAX ***
+           To filter by quarter, use EXTRACT(MONTH FROM RDATE) with a month range:
+             Calendar Q1 (Jan–Mar)  → EXTRACT(MONTH FROM RDATE) BETWEEN 1 AND 3
+             Calendar Q2 (Apr–Jun)  → EXTRACT(MONTH FROM RDATE) BETWEEN 4 AND 6
+             Calendar Q3 (Jul–Sep)  → EXTRACT(MONTH FROM RDATE) BETWEEN 7 AND 9
+             Calendar Q4 (Oct–Dec)  → EXTRACT(MONTH FROM RDATE) BETWEEN 10 AND 12
+           Indian FY quarters (FY starts April):
+             FY Q1 (Apr–Jun)  → EXTRACT(MONTH FROM RDATE) BETWEEN 4  AND 6
+             FY Q2 (Jul–Sep)  → EXTRACT(MONTH FROM RDATE) BETWEEN 7  AND 9
+             FY Q3 (Oct–Dec)  → EXTRACT(MONTH FROM RDATE) BETWEEN 10 AND 12
+             FY Q4 (Jan–Mar)  → EXTRACT(MONTH FROM RDATE) BETWEEN 1  AND 3
+           If RESOLVED TIME CONTEXT is provided above, use the exact RDATE range from there instead.
 
 ════════════════════════════════════════════════
 RANKING & TOP-N RULES
@@ -309,15 +479,17 @@ SCHEMA CONTEXT
 
 ════════════════════════════════════════════════
 Allowed tables: {valid_tables}
-{time_context_block}User question: {user_query}
+{time_context_block}{correction_block}User question: {user_query}
 ════════════════════════════════════════════════
 SQL:"""
 
 
-def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None, matched_labels=None):
+def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
+                 matched_labels=None, previous_sql=None, previous_error=None):
     prompt = build_prompt(
         user_query, tables, columns,
         dialect=dialect, today_date=today_date, matched_labels=matched_labels,
+        previous_sql=previous_sql, previous_error=previous_error,
     )
 
     payload = {
@@ -350,6 +522,9 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
     raw = re.sub(r'```\s*$', '', raw).strip()
     raw = raw.rstrip().rstrip(";")
 
+    # Fix unbalanced parentheses (LLM sometimes adds extra closing parens)
+    raw = _fix_unbalanced_parens(raw)
+
     return {
         "sql": raw,
         "question_understanding": "",
@@ -368,7 +543,23 @@ def validate_sql(sql, tables, columns):
     if not sql:
         return False, "Empty SQL"
 
-    q = sql.lower().replace('"', '').replace("'", '').strip()
+    q = sql.lower().replace('"', '').strip()
+
+    # Mask string literals: replace content inside '...' with spaces so
+    # tokens like 'Substandard' don't leak as column candidates.
+    def _mask_literals(s: str) -> str:
+        out, in_str = [], False
+        for ch in s:
+            if ch == "'":
+                in_str = not in_str
+                out.append(ch)
+            elif in_str:
+                out.append(' ')
+            else:
+                out.append(ch)
+        return ''.join(out)
+
+    q = _mask_literals(q)
 
     if not q.startswith("select"):
         return False, "Only SELECT queries are allowed"
@@ -387,7 +578,7 @@ def validate_sql(sql, tables, columns):
     q_for_tables      = re.sub(r'\bextract\s*\([^)]*\)', '', q)
     q_for_tables      = re.sub(r'\btrim\s*\([^)]*\)', '', q_for_tables)
     referenced_tables = set(re.findall(r'(?:from|join)\s+([a-z_][a-z0-9_]*)', q_for_tables))
-    real_table_refs   = referenced_tables - subquery_aliases
+    real_table_refs   = referenced_tables - subquery_aliases - ORACLE_PSEUDO_TABLES
     hallucinated_tables = real_table_refs - valid_table_names
     if hallucinated_tables:
         return False, f"Hallucinated tables (not in schema): {sorted(hallucinated_tables)}"
@@ -395,7 +586,24 @@ def validate_sql(sql, tables, columns):
     if not referenced_tables & valid_table_names:
         return False, f"Query does not reference any matched table: {sorted(valid_table_names)}"
 
-    select_body = re.split(r'\bfrom\b', q, maxsplit=1)[0]
+    # Find the top-level FROM (depth-0), not a FROM inside a subquery
+    _depth, _in_str, _outer_from_pos = 0, False, -1
+    _lq = q
+    for _i, _ch in enumerate(_lq):
+        if _ch == "'":
+            _in_str = not _in_str
+        elif not _in_str:
+            if _ch == '(':
+                _depth += 1
+            elif _ch == ')':
+                _depth -= 1
+            elif _depth == 0 and _lq[_i:_i+4] == 'from':
+                _before = _lq[_i-1] if _i > 0 else ' '
+                _after  = _lq[_i+4] if _i+4 < len(_lq) else ' '
+                if not (_before.isalnum() or _before == '_') and not (_after.isalnum() or _after == '_'):
+                    _outer_from_pos = _i
+                    break
+    select_body = (q[:_outer_from_pos] if _outer_from_pos != -1 else q)
     select_body = select_body.replace("select", "", 1).strip()
     select_body = re.sub(r'\bas\s+[a-z_][a-z0-9_]*', '', select_body)
     select_body = re.sub(r'\b(sum|avg|min|max|count|coalesce|nvl|nullif|trim|upper|lower|to_date|to_char)\s*\(', '(', select_body)
@@ -409,6 +617,8 @@ def validate_sql(sql, tables, columns):
             t not in valid_col_names
             and t not in _SQL_KEYWORDS
             and t not in subquery_aliases
+            and t not in _ORACLE_FORMAT_TOKENS
+            and t not in _ORACLE_BUILTIN_TOKENS
             and t != "*"
             and not t.isdigit()
             and len(t) > 2
