@@ -81,9 +81,10 @@ def resolve_return_exact(report_name: str) -> dict | None:
     returns  = _parse_returns()
 
     match = (
-        next((r for r in returns if r.get("Name", "").strip()           == name_str),         None)
-        or next((r for r in returns if r.get("Name",    "").strip().lower() == name_str.lower()), None)
-        or next((r for r in returns if r.get("AltName", "").strip().lower() == name_str.lower()), None)
+        next((r for r in returns if r.get("Name",     "").strip()           == name_str),         None)
+        or next((r for r in returns if r.get("Name",  "").strip().lower()   == name_str.lower()), None)
+        or next((r for r in returns if r.get("AltName","").strip().lower()  == name_str.lower()), None)
+        or next((r for r in returns if r.get("ReturnId","").strip().lower() == name_str.lower()), None)
     )
     if not match:
         return None

@@ -152,8 +152,9 @@ def _normalise(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def _normalised_returns() -> tuple[tuple[str, dict], ...]:
-    """Pre-computed (normalised_name, attrib_dict) pairs.
+def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
+    """Pre-computed (norm_name, norm_return_id, norm_alt_name, attrib_dict) 4-tuples.
+    Searching against Name, ReturnId, and AltName from Returns.xml.
     Automatically rebuilds whenever _parse_returns() refreshes its cache.
     """
     # If returns cache was refreshed more recently than norm cache, rebuild
@@ -163,7 +164,12 @@ def _normalised_returns() -> tuple[tuple[str, dict], ...]:
     if cached is not None:
         return cached
     result = tuple(
-        (_normalise(r.get("Name", "")), r)
+        (
+            _normalise(r.get("Name", "")),
+            _normalise(r.get("ReturnId", "")),
+            _normalise(r.get("AltName", "")),
+            r,
+        )
         for r in _parse_returns()
         if r.get("Name", "")
     )
@@ -171,56 +177,117 @@ def _normalised_returns() -> tuple[tuple[str, dict], ...]:
 
 
 def find_matching_reports(user_input: str) -> list[dict]:
-    """Multi-strategy, case-insensitive matching for flexible user-friendly lookup.
+    """Multi-strategy, case-insensitive search against Name, ReturnId, and AltName.
 
-    Strategies (applied in order, returns on first non-empty result):
-      1. Bidirectional substring  –  'raq(monthly)' finds 'CIMS_RAQ(Monthly)'
-      2. All-keyword token match  –  'raq monthly'  requires every token to appear
-      3. Any-keyword token match  –  'raq'           matches every CIMS_RAQ(*)
+    Search priority (returns on first non-empty result):
+      1.  Exact ReturnId match
+      2.  Exact Name match
+      3.  Exact AltName match
+      4.  Partial/bidirectional Name match
+      5.  Partial/bidirectional AltName match
+      6.  Partial/bidirectional ReturnId match
+      7.  All-keyword token match against Name
+      8.  All-keyword token match against AltName
+      9.  Any-keyword token match against Name
+      10. Any-keyword token match against AltName
+      11. Any-keyword token match against ReturnId
 
-    Input is normalised (lowercased, special chars stripped) before matching.
-    All report names are pre-normalised at startup so matching is O(n).
+    All comparisons are case-insensitive (via _normalise) and trim-safe.
+    Null/missing XML attributes are handled gracefully.
 
     Args:
-        user_input: Free-text report name from the user (e.g. '  RAQ monthly  ').
+        user_input: Free-text from the user (e.g. 'R091', 'CIMS_RAQ', 'raq quarterly').
 
     Returns:
-        Deduplicated list of matching report attribute dicts from returns.xml.
+        Deduplicated list of matching report attribute dicts from Returns.xml.
         Empty list means no match was found by any strategy.
     """
     needle = _normalise(user_input)
     if not needle:
         return []
 
-    pairs = _normalised_returns()
+    quads = _normalised_returns()  # (norm_name, norm_return_id, norm_alt_name, raw_dict)
 
-    # Strategy 1: bidirectional substring (needle ⊂ name OR name ⊂ needle)
-    substring_matches = [
-        r for (norm_name, r) in pairs
-        if needle in norm_name or norm_name in needle
+    def _dedup(lst: list[dict]) -> list[dict]:
+        """Deduplicate by (Name, Id) pair while preserving order."""
+        seen: set[str] = set()
+        out: list[dict] = []
+        for r in lst:
+            key = r.get("Name", "") + "|" + r.get("Id", "")
+            if key not in seen:
+                seen.add(key)
+                out.append(r)
+        return out
+
+    # ── Exact matches ────────────────────────────────────────────────────────
+    # 1. Exact ReturnId  (e.g. user types "R091" → matches all reports with ReturnId=R091)
+    exact_rid = [r for (_, nrid, _, r) in quads if nrid and nrid == needle]
+    if exact_rid:
+        return _dedup(exact_rid)
+
+    # 2. Exact Name
+    exact_name = [r for (nname, _, _, r) in quads if nname and nname == needle]
+    if exact_name:
+        return _dedup(exact_name)
+
+    # 3. Exact AltName  (e.g. user types "CIMS_RAQ" → matches the AltName field)
+    exact_alt = [r for (_, _, nalt, r) in quads if nalt and nalt == needle]
+    if exact_alt:
+        return _dedup(exact_alt)
+
+    # ── Partial / bidirectional contains ────────────────────────────────────
+    # 4. Partial Name  (needle ⊂ norm_name OR norm_name ⊂ needle)
+    partial_name = [
+        r for (nname, _, _, r) in quads
+        if nname and (needle in nname or nname in needle)
     ]
-    if substring_matches:
-        return substring_matches
+    if partial_name:
+        return _dedup(partial_name)
 
-    # Strategy 2 & 3: keyword token matching
+    # 5. Partial AltName
+    partial_alt = [
+        r for (_, _, nalt, r) in quads
+        if nalt and (needle in nalt or nalt in needle)
+    ]
+    if partial_alt:
+        return _dedup(partial_alt)
+
+    # 6. Partial ReturnId
+    partial_rid = [
+        r for (_, nrid, _, r) in quads
+        if nrid and (needle in nrid or nrid in needle)
+    ]
+    if partial_rid:
+        return _dedup(partial_rid)
+
+    # ── Keyword token matching ───────────────────────────────────────────────
     # Tokens: split on non-alphanumeric, keep tokens with at least 2 chars
     tokens = [t for t in re.split(r"[^a-z0-9]+", needle) if len(t) >= 2]
     if tokens:
-        # All keywords must appear in the report name
-        all_token_matches = [
-            r for (norm_name, r) in pairs
-            if all(t in norm_name for t in tokens)
-        ]
-        if all_token_matches:
-            return all_token_matches
+        # 7. All tokens in Name
+        all_name = [r for (nname, _, _, r) in quads if nname and all(t in nname for t in tokens)]
+        if all_name:
+            return _dedup(all_name)
 
-        # At least one keyword must appear in the report name
-        any_token_matches = [
-            r for (norm_name, r) in pairs
-            if any(t in norm_name for t in tokens)
-        ]
-        if any_token_matches:
-            return any_token_matches
+        # 8. All tokens in AltName
+        all_alt = [r for (_, _, nalt, r) in quads if nalt and all(t in nalt for t in tokens)]
+        if all_alt:
+            return _dedup(all_alt)
+
+        # 9. Any token in Name
+        any_name = [r for (nname, _, _, r) in quads if nname and any(t in nname for t in tokens)]
+        if any_name:
+            return _dedup(any_name)
+
+        # 10. Any token in AltName
+        any_alt = [r for (_, _, nalt, r) in quads if nalt and any(t in nalt for t in tokens)]
+        if any_alt:
+            return _dedup(any_alt)
+
+        # 11. Any token in ReturnId
+        any_rid = [r for (_, nrid, _, r) in quads if nrid and any(t in nrid for t in tokens)]
+        if any_rid:
+            return _dedup(any_rid)
 
     return []
 
@@ -242,7 +309,7 @@ def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.35) 
     needle = _normalise(user_input)
     if not needle:
         return []
-    norm_to_orig = {norm: r.get("Name", "") for norm, r in _normalised_returns()}
+    norm_to_orig = {norm_name: r.get("Name", "") for (norm_name, _, _, r) in _normalised_returns()}
     close_norms  = difflib.get_close_matches(needle, list(norm_to_orig.keys()), n=n, cutoff=cutoff)
     return [norm_to_orig[c] for c in close_norms if norm_to_orig[c]]
 
@@ -686,15 +753,17 @@ def get_report_status_exact(report_name: str) -> dict:
 
 
 def get_form_id_by_name(report_name: str) -> str | None:
-    """Return the Id (Report ID / FormId) for an exact report-name match.
+    """Return the Id (Report ID / FormId) for a report, matched by Name, AltName, or ReturnId.
 
     Matching is case-insensitive.  Returns `None` if the report is not
     found in Returns.xml so the caller can handle the missing-report case.
     Used by the comparison flow: report name -> Report ID -> instance folder.
     """
     name_clean = report_name.strip().lower()
-    match = next(
-        (r for r in _parse_returns() if r.get("Name", "").strip().lower() == name_clean),
-        None,
+    returns = _parse_returns()
+    match = (
+        next((r for r in returns if r.get("Name", "").strip().lower()     == name_clean), None)
+        or next((r for r in returns if r.get("AltName", "").strip().lower()  == name_clean), None)
+        or next((r for r in returns if r.get("ReturnId", "").strip().lower() == name_clean), None)
     )
     return match.get("Id", "").strip() if match else None

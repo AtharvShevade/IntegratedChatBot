@@ -187,7 +187,7 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_STATUS_REPORT}
         return _build(
-            response_text="Enter the report name (e.g. CIMS_RAQ, APBL, RAQ):",
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R091, RAQ):",
             result_type="guided_input",
             options=[],
         )
@@ -196,7 +196,7 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_GEN_REPORT}
         return _build(
-            response_text="Enter the report name:",
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R091):",
             result_type="guided_input",
             options=[],
         )
@@ -205,7 +205,7 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_SCHED_REPORT}
         return _build(
-            response_text="Enter the report name:",
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R091):",
             result_type="guided_input",
             options=[],
         )
@@ -214,7 +214,7 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_CMP_REPORT}
         return _build(
-            response_text="Enter the report name to compare (e.g. HDFC, CIMS_RAQ):",
+            response_text="Enter the report name, ReturnId, or short name to compare (e.g. CIMS_RAQ, R091, HDFC):",
             result_type="guided_input",
             options=[],
         )
