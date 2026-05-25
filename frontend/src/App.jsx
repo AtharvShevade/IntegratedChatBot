@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
 import { sendMessage, sendGuidedMessage, compareInstances } from './services/api.js'
@@ -9,13 +9,48 @@ const _loginId    = _params.get('loginId')    || ''
 const _uid        = _params.get('uid')        || ''
 const _aspSession = _params.get('aspSession') || ''
 
+// ── Persistent storage key (isolated per uid) ─────────────────────────────
+const STORAGE_KEY = `chat_history_${_uid}`
+
+// Load saved messages from localStorage; fall back to the welcome card.
+function _loadHistory() {
+  if (!_uid) return [{ role: 'welcome' }]
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    }
+  } catch {
+    // Corrupted data — start fresh
+  }
+  return [{ role: 'welcome' }]
+}
+
 export default function App() {
-  const [messages, setMessages]       = useState([{ role: 'welcome' }])
+  const [messages, setMessages]       = useState(_loadHistory)
   const [inputText, setInputText]     = useState('')
   const [isLoading, setIsLoading]     = useState(false)
   const [isGuidedFlow, setIsGuidedFlow] = useState(false)
   const inputRef  = useRef(null)
   const sessionId = useRef(_uid || crypto.randomUUID())
+
+  // ── Persist messages to localStorage on every change ─────────────────────
+  useEffect(() => {
+    if (!_uid) return
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages))
+    } catch {
+      // Storage quota exceeded or private-browsing restriction — ignore silently
+    }
+  }, [messages])
+
+  // ── Clear chat ────────────────────────────────────────────────────────────
+  const handleClearChat = () => {
+    try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+    setMessages([{ role: 'welcome' }])
+    setIsGuidedFlow(false)
+  }
 
   // Result types that represent a fully completed workflow.
   // After these, the action menu re-appears so the user can start another task.
@@ -210,12 +245,6 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <span className="header-logo">💬</span>
-        <h1>Chatbot</h1>
-        {_loginId && <span className="header-badge">{_loginId}</span>}
-      </header>
-
       <main className="chat-area">
         <ChatWindow
           messages={messages}
@@ -244,6 +273,15 @@ export default function App() {
             disabled={isLoading}
           />
           <button
+            type="button"
+            className="clear-chat-btn"
+            onClick={handleClearChat}
+            title="Clear chat history"
+            aria-label="Clear chat history"
+          >
+            <TrashIcon />
+          </button>
+          <button
             type="submit"
             className="send-btn"
             disabled={!inputText.trim() || isLoading}
@@ -262,6 +300,17 @@ function SendIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="22" y1="2" x2="11" y2="13" />
       <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
     </svg>
   )
 }

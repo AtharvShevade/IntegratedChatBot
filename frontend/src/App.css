@@ -1,4 +1,4 @@
-/* ── Reset & base ─────────────────────────────────────────────────────────── */
+﻿/* ── Reset & base ─────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -86,6 +86,34 @@ html, body, #root {
   text-transform: uppercase;
 }
 
+/* ── Clear Chat button (input bar, icon-only) ───────────────────────────── */
+.clear-chat-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+}
+.clear-chat-btn:hover {
+  background: #fff0f0;
+  border-color: #dc3545;
+  color: #dc3545;
+}
+.clear-chat-btn:active {
+  transform: scale(0.93);
+}
+.clear-chat-btn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
 /* ── Chat area ───────────────────────────────────────────────────────────── */
 .chat-area {
   flex: 1;
