@@ -93,7 +93,7 @@ export default function MessageBubble({ role, text, data, options, resultType, s
   }
 
   // SQL result — full-width block, no bubble wrapper
-  if (!isUser && resultType === 'sql_result' && sqlData) {
+  if (!isUser && resultType === 'db_result' && sqlData) {
     return (
       <div className="bubble-row assistant">
         <div className="avatar assistant-avatar">AI</div>

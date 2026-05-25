@@ -37,6 +37,10 @@ Valid intents:
   "schedule_report"   — user wants to schedule a report to run at a specific future date and time
   "compare_reports"   — user wants to compare two instances/periods of a report, see variance/differences
                         triggers: compare, variance, difference, vs, versus, side by side, contrast
+  "query_database"    — user wants to fetch, retrieve, show, list, or analyse data from the Oracle database
+                        triggers: show data, get data, fetch records, list transactions, NPA data, how many,
+                        what is the value, retrieve from database, query, select, display records,
+                        any banking metric (NPA, CAR, SLR, CRR, SMA, exposure, provision, capital)
   "unknown"           — greeting, small talk, thanks, help, or anything unrelated to reports
 
 Entities to extract:
@@ -59,6 +63,13 @@ Examples for compare_reports:
   "compare APBL instances"   → {"intent":"compare_reports","report_name":"APBL","reporting_date":null,"schedule_date":null,"schedule_time":null}
   "variance analysis of RAQ" → {"intent":"compare_reports","report_name":"RAQ","reporting_date":null,"schedule_date":null,"schedule_time":null}
   "compare CIMS_RAQ"         → {"intent":"compare_reports","report_name":"CIMS_RAQ","reporting_date":null,"schedule_date":null,"schedule_time":null}
+
+Examples for query_database:
+  "show NPA data for March 2025"          → {"intent":"query_database","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null}
+  "what is the gross NPA for Q1 FY2024"   → {"intent":"query_database","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null}
+  "list all bank codes with CAR below 12" → {"intent":"query_database","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null}
+  "fetch exposure data from database"     → {"intent":"query_database","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null}
+  "retrieve SLR figures for last quarter" → {"intent":"query_database","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null}
 
 JSON schema:
 {

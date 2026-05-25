@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
 import { sendMessage, sendGuidedMessage, compareInstances } from './services/api.js'
@@ -9,13 +9,48 @@ const _loginId    = _params.get('loginId')    || ''
 const _uid        = _params.get('uid')        || ''
 const _aspSession = _params.get('aspSession') || ''
 
+// ── Persistent storage key (isolated per uid) ─────────────────────────────
+const STORAGE_KEY = `chat_history_${_uid}`
+
+// Load saved messages from localStorage; fall back to the welcome card.
+function _loadHistory() {
+  if (!_uid) return [{ role: 'welcome' }]
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    }
+  } catch {
+    // Corrupted data — start fresh
+  }
+  return [{ role: 'welcome' }]
+}
+
 export default function App() {
-  const [messages, setMessages]       = useState([{ role: 'welcome' }])
+  const [messages, setMessages]       = useState(_loadHistory)
   const [inputText, setInputText]     = useState('')
   const [isLoading, setIsLoading]     = useState(false)
   const [isGuidedFlow, setIsGuidedFlow] = useState(false)
   const inputRef  = useRef(null)
   const sessionId = useRef(_uid || crypto.randomUUID())
+
+  // ── Persist messages to localStorage on every change ─────────────────────
+  useEffect(() => {
+    if (!_uid) return
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages))
+    } catch {
+      // Storage quota exceeded or private-browsing restriction — ignore silently
+    }
+  }, [messages])
+
+  // ── Clear chat ────────────────────────────────────────────────────────────
+  const handleClearChat = () => {
+    try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+    setMessages([{ role: 'welcome' }])
+    setIsGuidedFlow(false)
+  }
 
   // Result types that represent a fully completed workflow.
   // After these, the action menu re-appears so the user can start another task.
@@ -25,6 +60,7 @@ export default function App() {
     'gen_success',     // report generation done
     'schedule_parsed', // scheduling confirmed
     'sql_result',      // database query done
+    'db_result',       // SQL agent query done
   ])
 
   // ── Helper: push an assistant result into the message list ───────────────
@@ -34,11 +70,33 @@ export default function App() {
       result.result_type === 'guided_menu' || result.result_type === 'guided_input'
     setIsGuidedFlow(isTerminal ? false : isStillGuided)
 
+    // Append more_info_hint to the displayed text when the backend signals
+    // that the query needs more detail (short query, no results, etc.)
+    const moreInfoHint = result.needs_more_info && result.more_info_hint
+      ? result.more_info_hint : null
+    const displayText = moreInfoHint
+      ? `${result.response_text}\n\n${moreInfoHint}` : result.response_text
+
+    // Only pass sqlData when there are actual rows — triggers the table UI.
+    // For no-results / error / too-short cases the text bubble is used instead.
+    const sqlData = result.result_type === 'db_result' && result.db_rows?.length > 0
+      ? {
+          sql:             result.db_sql      || '',
+          is_valid:        !result.db_error,
+          db_error:        result.db_error    || null,
+          columns:         result.db_columns  || [],
+          rows:            result.db_rows     || [],
+          matched_tables:  [],
+          matched_columns: [],
+        }
+      : null
+
     const resultMsg = {
       role:          'assistant',
-      text:          result.response_text,
+      text:          displayText,
       options:       result.options || [],
       resultType:    result.result_type || '',
+      sqlData,
       varianceData:  result.variance_data || [],
       labelA:        result.variance_label_a || '',
       labelB:        result.variance_label_b || '',
@@ -187,12 +245,6 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <span className="header-logo">💬</span>
-        <h1>Chatbot</h1>
-        {_loginId && <span className="header-badge">{_loginId}</span>}
-      </header>
-
       <main className="chat-area">
         <ChatWindow
           messages={messages}
@@ -221,6 +273,15 @@ export default function App() {
             disabled={isLoading}
           />
           <button
+            type="button"
+            className="clear-chat-btn"
+            onClick={handleClearChat}
+            title="Clear chat history"
+            aria-label="Clear chat history"
+          >
+            <TrashIcon />
+          </button>
+          <button
             type="submit"
             className="send-btn"
             disabled={!inputText.trim() || isLoading}
@@ -242,3 +303,15 @@ function SendIcon() {
     </svg>
   )
 }
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="14" height="14">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  )
+}
+ 

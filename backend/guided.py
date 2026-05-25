@@ -170,13 +170,9 @@ async def guided_step(
         return await _handle_compare(report_ident=msg, session_id=session_id, allowed_form_ids=allowed_form_ids)
 
     if stage == STAGE_DB_QUERY:
-        return _build(
-            response_text=(
-                "Database query integration is coming soon.\n"
-                "You can use free-text chat in the meantime."
-            ),
-            result_type="final",
-        )
+        logger.info("[GUIDED_DB_QUERY] input=%r session=%s", msg, session_id)
+        from backend.sql_agent import handle_db_query
+        return await handle_db_query(msg, session_id=session_id)
 
     return _menu()
 
@@ -221,13 +217,18 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
 
     if action == "Retrieve data from database":
         if session_id:
-            _guided_sessions.pop(session_id, None)
+            _guided_sessions[session_id] = {"stage": STAGE_DB_QUERY}
         return _build(
             response_text=(
-                "Database query integration is coming soon.\n"
-                "You can use free-text chat in the meantime."
+                "What data would you like to query? Please describe in detail "
+                "(include report name, section, and time period).\n"
+                "Examples:\n"
+                "\u2022 Show gross NPA for Q1 FY2024\n"
+                "\u2022 Total loan assets from RAQ section 1 domestic latest\n"
+                "\u2022 Derivative notional principal from ALE domestic March 2025"
             ),
-            result_type="final",
+            result_type="guided_input",
+            options=[],
         )
 
     return _menu()
