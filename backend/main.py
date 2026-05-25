@@ -30,7 +30,37 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Pre-warm Ollama models on startup so the first real request is fast."""
+    """Pre-warm Ollama models, SentenceTransformer, and FAISS indexes on startup."""
+    import asyncio
+
+    # ── Pre-load SentenceTransformer + FAISS indexes in a thread so the async
+    # event loop is not blocked.  This moves the cold-start penalty from the
+    # first user query to server startup (invisible to users).
+    def _warmup_embedding():
+        try:
+            import backend.sql_agent.vectorizer as _vec  # noqa: F401  triggers module-level load
+            logger.info("[WARMUP] SentenceTransformer model loaded")
+        except Exception as exc:
+            logger.warning("[WARMUP] SentenceTransformer load failed: %s", exc)
+
+        try:
+            from backend.sql_agent.retriever import search
+            from backend.sql_agent.config import (
+                TABLE_INDEX_PATH, TABLE_META_PATH,
+                COLUMN_INDEX_PATH, COLUMN_META_PATH,
+            )
+            import os as _os
+            if _os.path.exists(TABLE_INDEX_PATH):
+                search(TABLE_INDEX_PATH, TABLE_META_PATH, "warmup", k=1)
+                logger.info("[WARMUP] Table FAISS index loaded")
+            if _os.path.exists(COLUMN_INDEX_PATH):
+                search(COLUMN_INDEX_PATH, COLUMN_META_PATH, "warmup", k=1)
+                logger.info("[WARMUP] Column FAISS index loaded")
+        except Exception as exc:
+            logger.warning("[WARMUP] FAISS index load failed: %s", exc)
+
+    await asyncio.get_event_loop().run_in_executor(None, _warmup_embedding)
+
     from backend.services.llm_service import (
         OLLAMA_BASE_URL, OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL, _KEEP_ALIVE,
     )

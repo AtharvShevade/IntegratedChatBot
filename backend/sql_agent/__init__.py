@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ── Minimum word-count guard ───────────────────────────────────────────────────
 MIN_QUERY_WORDS = 5   # queries with fewer words are too vague for accurate SQL
-MAX_SQL_RETRIES = 2   # max generate→validate→execute attempts per user query
+MAX_SQL_RETRIES = 1   # max generate→validate→execute attempts per user query
 
 # ── Time-context patterns for the accuracy hint ───────────────────────────────
 _TIME_PATTERNS = [

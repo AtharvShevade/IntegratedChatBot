@@ -1,10 +1,52 @@
 import oracledb
 from backend.sql_agent.config import DB_HOST, DB_PORT, DB_SERVICE, DB_USER, DB_PASSWORD, DB_MAX_ROWS
 
+# ── Connection pool ────────────────────────────────────────────────────────────
+# Created once per process; each query acquires/releases a connection from the
+# pool instead of opening a fresh TCP connection every time (~2s saved/query).
+_pool: oracledb.ConnectionPool | None = None
+
+
+def _nls_session_callback(conn, requested_tag, actual_tag):
+    """
+    Called by the pool once when a new physical connection is created.
+    Sets NLS parameters so every pooled connection has the correct locale
+    without re-running ALTER SESSION on every query.
+    """
+    cursor = conn.cursor()
+    for stmt in [
+        "ALTER SESSION SET NLS_DATE_LANGUAGE  = 'AMERICAN'",
+        "ALTER SESSION SET NLS_DATE_FORMAT    = 'DD-MON-YYYY'",
+        "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'",
+    ]:
+        cursor.execute(stmt)
+    cursor.close()
+
+
+def _get_pool() -> oracledb.ConnectionPool:
+    """Return the module-level pool, creating it on first call."""
+    global _pool
+    if _pool is None:
+        dsn = oracledb.makedsn(DB_HOST, DB_PORT, service_name=DB_SERVICE)
+        _pool = oracledb.create_pool(
+            user=DB_USER,
+            password=DB_PASSWORD,
+            dsn=dsn,
+            min=1,
+            max=5,
+            increment=1,
+            session_callback=_nls_session_callback,
+        )
+    return _pool
+
 
 def get_connection():
-    dsn = oracledb.makedsn(DB_HOST, DB_PORT, service_name=DB_SERVICE)
-    return oracledb.connect(user=DB_USER, password=DB_PASSWORD, dsn=dsn)
+    """Acquire a connection from the pool (falls back to direct connect if pool fails)."""
+    try:
+        return _get_pool().acquire()
+    except Exception:
+        dsn = oracledb.makedsn(DB_HOST, DB_PORT, service_name=DB_SERVICE)
+        return oracledb.connect(user=DB_USER, password=DB_PASSWORD, dsn=dsn)
 
 
 def get_accessible_tables() -> set:
@@ -39,16 +81,6 @@ def execute_query(sql):
 
     cursor = None
     try:
-        # Set NLS settings on a separate cursor so the main cursor starts clean
-        nls_cur = conn.cursor()
-        for stmt in [
-            "ALTER SESSION SET NLS_DATE_LANGUAGE  = 'AMERICAN'",
-            "ALTER SESSION SET NLS_DATE_FORMAT    = 'DD-MON-YYYY'",
-            "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'",
-        ]:
-            nls_cur.execute(stmt)
-        nls_cur.close()
-
         cursor = conn.cursor()
         cursor.callTimeout = 60000  # 60-second statement timeout
         # Oracle driver does not accept a trailing semicolon
