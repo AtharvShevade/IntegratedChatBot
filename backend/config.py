@@ -53,6 +53,18 @@ XML_DEPT_PATH: str = os.getenv(
     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_Dept.xml",
 )
 
+# ---------------------------------------------------------------------------
+# SQL Agent — FAISS index output directory
+# Produced by running:  python sql_agent/main.py  (one-time setup)
+# Override via FAISS_OUTPUT_DIR env var.
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+FAISS_OUTPUT_DIR: str = os.getenv(
+    "FAISS_OUTPUT_DIR",
+    os.path.join(_PROJECT_ROOT, "sql_agent", "output"),
+)
+
 # XML_RoleAccess.xml: maps RoleId + OptionId → access flags (HasNew, HasEdit, HasView)
 XML_ROLE_ACCESS_PATH: str = os.getenv(
     "XML_ROLE_ACCESS_PATH",

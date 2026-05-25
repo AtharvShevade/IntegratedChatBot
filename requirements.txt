@@ -31,5 +31,13 @@ python-dateutil>=2.9.0         # fuzzy date parsing: "26 Jan 2021", "March 2026"
 rapidfuzz>=3.0.0               # typo-tolerant keyword escape guards in agent
 
 # ── XBRL variance analysis ───────────────────────────────────────────────────
-arelle-release                 # Arelle XBRL toolkit (compare_reports intent)
+ arelle-release                 # Arelle XBRL toolkit (compare_reports intent)
 pandas>=2.0.0                  # variance DataFrame / CSV export (optional)
+
+# ── SQL Agent (FAISS vector search + BGE embeddings) ───────────────────
+sentence-transformers==2.7.0   # BGE-large-en embeddings for schema search
+faiss-cpu>=1.7.4               # vector similarity index (CPU build)
+scipy                          # required by sentence-transformers
+scikit-learn                   # used by FAISS index utilities
+tqdm                           # progress bars during index build
+regex                          # advanced regex (used by sql_generator)

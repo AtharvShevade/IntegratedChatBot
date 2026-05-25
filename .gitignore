@@ -46,7 +46,7 @@ logs/
 htmlcov/
 
 # ── sql_agent generated outputs ──────────────────────────────────────────────
-sql_agent/output/*.faiss
-sql_agent/output/*.pkl
-sql_agent/output/schema.json
-sql_agent/output/description_samples.json
+# sql_agent/output/*.faiss
+# sql_agent/output/*.pkl
+# sql_agent/output/schema.json
+# sql_agent/output/description_samples.json

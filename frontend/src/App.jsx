@@ -25,6 +25,7 @@ export default function App() {
     'gen_success',     // report generation done
     'schedule_parsed', // scheduling confirmed
     'sql_result',      // database query done
+    'db_result',       // SQL agent query done
   ])
 
   // ── Helper: push an assistant result into the message list ───────────────
@@ -34,11 +35,33 @@ export default function App() {
       result.result_type === 'guided_menu' || result.result_type === 'guided_input'
     setIsGuidedFlow(isTerminal ? false : isStillGuided)
 
+    // Append more_info_hint to the displayed text when the backend signals
+    // that the query needs more detail (short query, no results, etc.)
+    const moreInfoHint = result.needs_more_info && result.more_info_hint
+      ? result.more_info_hint : null
+    const displayText = moreInfoHint
+      ? `${result.response_text}\n\n${moreInfoHint}` : result.response_text
+
+    // Only pass sqlData when there are actual rows — triggers the table UI.
+    // For no-results / error / too-short cases the text bubble is used instead.
+    const sqlData = result.result_type === 'db_result' && result.db_rows?.length > 0
+      ? {
+          sql:             result.db_sql      || '',
+          is_valid:        !result.db_error,
+          db_error:        result.db_error    || null,
+          columns:         result.db_columns  || [],
+          rows:            result.db_rows     || [],
+          matched_tables:  [],
+          matched_columns: [],
+        }
+      : null
+
     const resultMsg = {
       role:          'assistant',
-      text:          result.response_text,
+      text:          displayText,
       options:       result.options || [],
       resultType:    result.result_type || '',
+      sqlData,
       varianceData:  result.variance_data || [],
       labelA:        result.variance_label_a || '',
       labelB:        result.variance_label_b || '',
@@ -242,3 +265,4 @@ function SendIcon() {
     </svg>
   )
 }
+ 
