@@ -669,8 +669,9 @@ def get_report_status(report_name: str) -> dict:
             form_id, ret_name, form_id,
         )
         return {
-            "type":    "error",
-            "message": f"Report '{ret_name}' exists but no instances have been generated yet.",
+            "type":     "error",
+            "message":  f"Report '{ret_name}' exists but no instances have been generated yet.",
+            "_form_id": form_id,  # used by auth post-filter to deny unauthorised users
         }
 
     return _build_status_result(form_id, ret_name, instances)
@@ -745,8 +746,9 @@ def get_report_status_exact(report_name: str) -> dict:
             form_id, ret_name, form_id,
         )
         return {
-            "type":    "error",
-            "message": f"Report '{ret_name}' exists but no instances have been generated yet.",
+            "type":     "error",
+            "message":  f"Report '{ret_name}' exists but no instances have been generated yet.",
+            "_form_id": form_id,  # used by auth post-filter to deny unauthorised users
         }
 
     return _build_status_result(form_id, ret_name, instances)

@@ -1566,6 +1566,8 @@ def _handle_schedule(
 
     if not matches:
         suggestions = fuzzy_report_suggestions(report_ident)
+        if allowed_form_ids is not None:
+            suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
             if session_id:
                 _session_context[session_id] = {
@@ -1584,6 +1586,12 @@ def _handle_schedule(
                     "Reply with the number or name to select."
                 ),
                 result_type="disambiguation", options=suggestions,
+            )
+        if allowed_form_ids is not None:
+            return _build(
+                intent="schedule_report", report_name=None,
+                response_text="You are not authorised to access any matching reports.",
+                result_type="error",
             )
         return _build(
             intent="schedule_report", report_name=None,
@@ -1716,6 +1724,8 @@ async def _handle_generate(
 
     if not matches:
         suggestions = fuzzy_report_suggestions(report_name)
+        if allowed_form_ids is not None:
+            suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
             if session_id:
                 _session_context[session_id] = {
@@ -1732,6 +1742,12 @@ async def _handle_generate(
                     "Reply with the number or name to select."
                 ),
                 result_type="disambiguation", options=suggestions,
+            )
+        if allowed_form_ids is not None:
+            return _build(
+                intent="generate_instance", report_name=None,
+                response_text="You are not authorised to access any matching reports.",
+                result_type="error",
             )
         return _build(
             intent="generate_instance", report_name=None,
@@ -1925,4 +1941,23 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> d
             return {"type": "error", "message": "You are not authorised to access this report."}
         return result
 
-    return result  # error / unknown — pass through
+    if rtype == "latest_with_ask":
+        # Result returned when report has multiple instances and user is shown the latest.
+        # form_id is always present in this result type (set by _build_status_result).
+        fid = result.get("form_id", "")
+        if fid not in allowed:
+            logger.warning(
+                "[AUTH_DENY] form_id=%r not in allowed set (latest_with_ask result)", fid
+            )
+            return {"type": "error", "message": "You are not authorised to access this report."}
+        return result
+
+    # "error" type: check _form_id if present — avoids leaking that a report
+    # exists (e.g. "Report X exists but no instances") to unauthorised users.
+    fid = result.get("_form_id", "")
+    if fid and fid not in allowed:
+        logger.warning(
+            "[AUTH_DENY] form_id=%r not in allowed set (error result with _form_id)", fid
+        )
+        return {"type": "error", "message": "You are not authorised to access this report."}
+    return result  # generic error / unknown — pass through
