@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from rapidfuzz import process as _fuzz
-from backend.llm_extractor import extract_intent_and_entities, resolve_entities, parse_and_format_date, extract_schedule_datetime
+from backend.llm_extractor import extract_intent_and_entities, parse_and_format_date, extract_schedule_datetime
 from backend.services.llm_service import chat_response
 from backend.tools.instance_generator import (
     call_generate_api,
@@ -24,7 +24,6 @@ from backend.tools.report_lookup import (
     get_form_id_by_name,
     get_instance_by_date,
     get_instance_by_dtc,
-    get_instance_by_row_id,
     get_report_status,
     get_report_status_exact,
 )
@@ -32,7 +31,6 @@ from backend.tools.report_lookup import (
 logger = logging.getLogger(__name__)
 
 # Stage constants -- stored in session under key "awaiting"
-STAGE_IDLE         = None
 STAGE_DATE         = "AWAITING_DATE_SELECTION"    # status: picking a date
 STAGE_REPORT       = "AWAITING_REPORT_SELECTION"  # status: picking from disambiguation
 STAGE_GEN_REPORT   = "AWAITING_GEN_REPORT"        # generate: picking from disambiguation
@@ -506,10 +504,7 @@ async def decide(
                     opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(pending_gen_options))
                     return _build(
                         intent="generate_instance", report_name=None,
-                        response_text=(
-                            f"Please enter a number between 1 and {len(pending_gen_options)}.\n\n"
-                            f"{opts_text}"
-                        ),
+                        response_text=opts_text,
                         result_type="disambiguation",
                         options=pending_gen_options,
                     )
@@ -523,8 +518,7 @@ async def decide(
                 )
                 resolved_gen_name = keyword_match if keyword_match else raw_gen_input
 
-            ret        = resolve_return_exact(resolved_gen_name)
-            saved_date = session.get("gen_reporting_date")
+            ret = resolve_return_exact(resolved_gen_name)
             if session_id:
                 _session_context.pop(session_id, None)
             if not ret:
@@ -542,8 +536,8 @@ async def decide(
                     response_text="Sorry, you do not have access to generate report instances.",
                     result_type="error",
                 )
-            if saved_date:
-                return await _finalize_generation(ret, saved_date, session_id, effective_asp)
+            # Always ask for date after disambiguation — never use a pre-extracted
+            # date from the original query (prevents stale/hallucinated date validation).
             if session_id:
                 _session_context[session_id] = {
                     "awaiting":        STAGE_GEN_DATE,
@@ -552,10 +546,9 @@ async def decide(
                     "gen_frequency":   ret["frequency"],
                     "gen_period_name": ret["period_name"],
                 }
-            freq_label = ret["period_name"] or ret["frequency"]
             return _build(
                 intent="generate_instance", report_name=ret["name"],
-                response_text=f"Please provide the reporting date for '{ret['name']}'",
+                response_text=_date_ask_prompt(ret["name"], ret["frequency"], ret["period_name"]),
                 result_type="gen_awaiting_date",
             )
 
@@ -783,6 +776,23 @@ async def decide(
         return await handle_db_query(user_query, session_id=session_id)
 
     if intent == "unknown":
+        # Before falling back to the LLM, run the raw input through the backend
+        # report resolver. This handles short identifiers like "r091" or "raq"
+        # that small LLMs mis-classify as unknown but are valid report queries.
+        _fallback_query = search_terms or user_query.strip()
+        if _fallback_query:
+            _fallback_matches = find_matching_reports(_fallback_query)
+            if _fallback_matches:
+                logger.info(
+                    "[UNKNOWN_FALLBACK] query=%r matched %d report(s) — routing to get_status",
+                    _fallback_query, len(_fallback_matches),
+                )
+                if session_id:
+                    _session_context[session_id] = {"last_search_terms": _fallback_query}
+                result = get_report_status(_fallback_query)
+                if allowed_form_ids is not None:
+                    result = _apply_auth_to_status_result(result, allowed_form_ids)
+                return _from_result(result, intent="get_status", session_id=session_id)
         try:
             reply = await chat_response(user_query, history=conversation_history)
         except Exception as exc:
@@ -799,64 +809,51 @@ async def decide(
         search_terms = session.get("last_search_terms", "")
 
     if not search_terms:
-        hint = (
-            'Please provide the report name. '
-            'For example: "Generate CIMS_RAQ for 30-Jun-2024".'
-            if intent == "generate_instance"
-            else (
-                'Please provide the report name and schedule datetime. '
-                'For example: "Schedule CIMS_RAQ for 15-Apr-2026 at 4 PM".'
-            ) if intent == "schedule_report"
-            else (
-                'Please mention the report name to compare. '
-                'For example: "Compare CIMS_RAQ" or "Variance analysis of RAQ".'
-            ) if intent == "compare_reports"
-            else (
-                'Please mention the report name. '
-                'For example: "Status of CIMS_RAQ" or "Status of RAQ monthly".'
+        # Before showing a clarification prompt, try the full raw query against
+        # the backend resolver. This catches cases where the LLM failed to extract
+        # search_terms but the query itself is a valid identifier (e.g. "r091").
+        _direct_matches = find_matching_reports(user_query.strip())
+        if _direct_matches:
+            search_terms = user_query.strip()
+            logger.info(
+                "[DIRECT_MATCH] LLM extracted no search_terms but backend matched %d "
+                "report(s) for %r — using raw query",
+                len(_direct_matches), search_terms,
             )
-        )
-        return _build(intent=intent, report_name=None, response_text=hint, need_clarification=True)
-
-    # Build report name list once (cached in _parse_returns after first call)
-    _report_names: list[str] = [
-        r.get("Name", "") for r in _parse_returns() if r.get("Name")
-    ]
-
-    # Resolve entities: use LLM-extracted search_terms (report name) as input
-    # when available — it's already cleaned. Fall back to full user_query if not.
-    entity_input = search_terms if search_terms else user_query
-    entity = resolve_entities(entity_input, intent, _report_names)
-
-    logger.info(
-        "[REPORT_MATCH] intent=%r search=%r matches=%d confidence=%.2f session=%s",
-        intent, search_terms, len(entity["matches"]), entity["confidence"], session_id,
-    )
+        else:
+            hint = (
+                'Please provide the report name. '
+                'For example: "Generate CIMS_RAQ for 30-Jun-2024".'
+                if intent == "generate_instance"
+                else (
+                    'Please provide the report name and schedule datetime. '
+                    'For example: "Schedule CIMS_RAQ for 15-Apr-2026 at 4 PM".'
+                ) if intent == "schedule_report"
+                else (
+                    'Please mention the report name to compare. '
+                    'For example: "Compare CIMS_RAQ" or "Variance analysis of RAQ".'
+                ) if intent == "compare_reports"
+                else (
+                    'Please mention the report name. '
+                    'For example: "Status of CIMS_RAQ" or "Status of RAQ monthly".'
+                )
+            )
+            return _build(intent=intent, report_name=None, response_text=hint, need_clarification=True)
 
     if intent == "generate_instance":
-        report_ident = (
-            entity["best_match"]
-            if entity["best_match"] and not entity["needs_disambiguation"]
-            else search_terms
-        )
-        logger.info("[GENERATE_START] report=%r session=%s", report_ident, session_id)
+        logger.info("[GENERATE_START] report=%r session=%s", search_terms, session_id)
         if not _create_access:
             return _build(
                 intent="generate_instance", report_name=None,
                 response_text="Sorry, you do not have access to generate report instances.",
                 result_type="error",
             )
-        return await _handle_generate(report_ident, reporting_date, session_id, effective_asp, allowed_form_ids)
+        return await _handle_generate(search_terms, reporting_date, session_id, effective_asp, allowed_form_ids)
 
     if intent == "schedule_report":
-        report_ident = (
-            entity["best_match"]
-            if entity["best_match"] and not entity["needs_disambiguation"]
-            else search_terms
-        )
-        logger.info("[SCHEDULE_START] report=%r session=%s", report_ident, session_id)
+        logger.info("[SCHEDULE_START] report=%r session=%s", search_terms, session_id)
         return _handle_schedule(
-            report_ident=report_ident,
+            report_ident=search_terms,
             schedule_date=extracted.get("schedule_date"),
             schedule_time=extracted.get("schedule_time"),
             scheduled_datetime=extracted.get("scheduled_datetime"),
@@ -865,13 +862,8 @@ async def decide(
         )
 
     if intent == "compare_reports":
-        report_ident = (
-            entity["best_match"]
-            if entity["best_match"] and not entity["needs_disambiguation"]
-            else search_terms
-        )
-        logger.info("[COMPARE_START] report=%r session=%s", report_ident, session_id)
-        return await _handle_compare(report_ident, session_id, allowed_form_ids)
+        logger.info("[COMPARE_START] report=%r session=%s", search_terms, session_id)
+        return await _handle_compare(search_terms, session_id, allowed_form_ids)
 
     # get_status: cache search terms so follow-up turns work without a name
     if session_id:
@@ -1582,8 +1574,7 @@ def _handle_schedule(
                 intent="schedule_report", report_name=None,
                 response_text=(
                     f"No exact match found for '{report_ident}'. Did you mean one of these?\n\n"
-                    f"{opts_text}\n\n"
-                    "Reply with the number or name to select."
+                    f"{opts_text}"
                 ),
                 result_type="disambiguation", options=suggestions,
             )
@@ -1614,8 +1605,7 @@ def _handle_schedule(
             intent="schedule_report", report_name=None,
             response_text=(
                 "Found multiple matching reports. Which one would you like to schedule?\n\n"
-                f"{opts_text}\n\n"
-                "Reply with the number or name to select."
+                f"{opts_text}"
             ),
             result_type="disambiguation", options=names,
         )
@@ -1710,6 +1700,88 @@ async def _handle_gen_date(
     return await _finalize_generation(ret, date_str, session_id, asp_session)
 
 
+def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
+    """Build a dynamic date-entry prompt based on the report's frequency."""
+    import calendar as _cal
+    from datetime import date as _date
+    freq  = (frequency or "").upper()
+    label = period_name or freq
+    year  = _date.today().year
+
+    lines = [f"Please enter the reporting date for **{report_name}**.", ""]
+
+    if freq == "Q":
+        lines += [
+            "Quarterly reports must use:",
+            "\u2022 31-Mar", "\u2022 30-Jun", "\u2022 30-Sep", "\u2022 31-Dec",
+            "", f"Example: 31-Mar-{year}",
+        ]
+    elif freq == "M":
+        today = _date.today()
+        last  = _cal.monthrange(today.year, today.month)[1]
+        mname = today.strftime("%b")
+        lines += [
+            "Monthly reports must use the last day of the month.",
+            "", f"Example: {last:02d}-{mname}-{year}",
+        ]
+    elif freq == "H":
+        lines += [
+            "Half Yearly reports must use:",
+            "\u2022 31-Mar", "\u2022 30-Sep",
+            "", f"Example: 31-Mar-{year}",
+        ]
+    elif freq == "C":
+        lines += [
+            "Half Yearly (Calendar Year) reports must use:",
+            "\u2022 30-Jun", "\u2022 31-Dec",
+            "", f"Example: 30-Jun-{year}",
+        ]
+    elif freq == "Y":
+        lines += [
+            "Yearly (Financial Year) reports must use:",
+            "\u2022 31-Mar",
+            "", f"Example: 31-Mar-{year}",
+        ]
+    elif freq == "B":
+        lines += [
+            "Yearly (Calendar Year) reports must use:",
+            "\u2022 31-Dec",
+            "", f"Example: 31-Dec-{year}",
+        ]
+    elif freq == "W":
+        lines += [
+            "Weekly reports must use a Friday.",
+            "", f"Example: the nearest past Friday.",
+        ]
+    elif freq in ("F", "HM"):
+        today = _date.today()
+        last  = _cal.monthrange(today.year, today.month)[1]
+        mname = today.strftime("%b")
+        freq_label = "Fortnightly" if freq == "F" else "Half Monthly"
+        lines += [
+            f"{freq_label} reports must use:",
+            "\u2022 15th of the month",
+            "\u2022 Last day of the month",
+            "", f"Example: 15-{mname}-{year} or {last:02d}-{mname}-{year}",
+        ]
+    elif freq == "E":
+        lines += [
+            "This report must use the last Friday of the month.",
+        ]
+    elif freq == "D":
+        lines += [
+            "Daily reports accept any valid past date.",
+            "", f"Example: 26-May-{year}",
+        ]
+    else:
+        lines += [
+            f"Enter a valid reporting date for this {label} report.",
+            "", f"Example: 31-Mar-{year}",
+        ]
+
+    return "\n".join(lines)
+
+
 async def _handle_generate(
     report_name: str,
     reporting_date: str | None,
@@ -1730,7 +1802,7 @@ async def _handle_generate(
             if session_id:
                 _session_context[session_id] = {
                     "awaiting":           STAGE_GEN_REPORT,
-                    "gen_reporting_date": reporting_date,
+                    "gen_reporting_date": None,
                     "pending_options":    suggestions,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
@@ -1738,8 +1810,7 @@ async def _handle_generate(
                 intent="generate_instance", report_name=None,
                 response_text=(
                     f"No exact match found for '{report_name}'. Did you mean one of these?\n\n"
-                    f"{opts_text}\n\n"
-                    "Reply with the number or name to select."
+                    f"{opts_text}"
                 ),
                 result_type="disambiguation", options=suggestions,
             )
@@ -1761,15 +1832,14 @@ async def _handle_generate(
         if session_id:
             _session_context[session_id] = {
                 "awaiting":           STAGE_GEN_REPORT,
-                "gen_reporting_date": reporting_date,
+                "gen_reporting_date": None,
                 "pending_options":    names,
             }
         return _build(
             intent="generate_instance", report_name=None,
             response_text=(
                 "Found multiple matching reports. Which one would you like to generate?\n\n"
-                f"{opts_text}\n\n"
-                "Reply with the number or name to select."
+                f"{opts_text}"
             ),
             result_type="disambiguation", options=names,
         )
@@ -1783,8 +1853,6 @@ async def _handle_generate(
             result_type="error",
         )
 
-    freq_label = ret["period_name"] or ret["frequency"]
-
     # Date not provided -- ask for it, save context
     if not reporting_date:
         if session_id:
@@ -1797,7 +1865,7 @@ async def _handle_generate(
             }
         return _build(
             intent="generate_instance", report_name=ret["name"],
-            response_text=f"Please provide the reporting date for '{ret['name']}'",
+            response_text=_date_ask_prompt(ret["name"], ret["frequency"], ret["period_name"]),
             result_type="gen_awaiting_date",
         )
 
@@ -1918,8 +1986,7 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> d
                 "options": filtered,
                 "message": (
                     "Found multiple matching reports. Which one do you mean?\n\n"
-                    f"{opts_text}\n\n"
-                    "Reply with the number or name to select."
+                    f"{opts_text}"
                 ),
             }
         return result

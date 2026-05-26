@@ -354,21 +354,6 @@ def _get_runs_for_date(form_id: str, reporting_date: str) -> list[dict]:
     return rows
 
 
-def get_instance_by_row_id(row_id: str, form_id: str) -> dict | None:
-    """Return the instance row matching the given Id attribute, or None."""
-    for r in get_instances_by_form_id(form_id):
-        if r.get("Id", "").strip() == str(row_id).strip():
-            return r
-    return None
-
-
-def _is_known_date(date_str: str, form_id: str) -> bool:
-    """Return True if date_str matches one of the known reporting dates."""
-    dates = get_available_dates(form_id)
-    ds = date_str.strip()
-    return ds in dates or any(ds.lower() in d.lower() for d in dates)
-
-
 def map_status(code: int) -> str:
     return _STATUS_LABELS.get(code, "Unknown")
 
@@ -612,8 +597,7 @@ def get_report_status(report_name: str) -> dict:
                 "type":    "disambiguation",
                 "message": (
                     f"No exact match found for '{clean_input}'. Did you mean one of these?\n\n"
-                    f"{opts_text}\n\n"
-                    "Reply with the number or name to select."
+                    f"{opts_text}"
                 ),
                 "options": suggestions,
             }
@@ -638,8 +622,7 @@ def get_report_status(report_name: str) -> dict:
             "type":    "disambiguation",
             "message": (
                 "Found multiple matching reports. Which one do you mean?\n\n"
-                f"{opts_text}\n\n"
-                "Reply with the number or name to select."
+                f"{opts_text}"
             ),
             "options": opts,
         }
