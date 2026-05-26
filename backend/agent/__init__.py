@@ -216,6 +216,7 @@ async def decide(
     session_id: str | None = None,
     asp_session: str | None = None,
     login_id: str | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> dict[str, Any]:
     _decide_start = time.monotonic()
     session = _session_context.get(session_id, {}) if session_id else {}
@@ -762,7 +763,7 @@ async def decide(
 
     # -- Normal intent extraction ---------------------------------------------
     try:
-        extracted = await extract_intent_and_entities(user_query)
+        extracted = await extract_intent_and_entities(user_query, history=conversation_history)
     except Exception as exc:
         logger.warning("[INTENT_EXTRACT_FAIL] Extraction failed — fallback to unknown: %s", exc)
         extracted = {"intent": "unknown", "search_terms": None, "reporting_date": None}
@@ -783,7 +784,7 @@ async def decide(
 
     if intent == "unknown":
         try:
-            reply = await chat_response(user_query)
+            reply = await chat_response(user_query, history=conversation_history)
         except Exception as exc:
             logger.warning("chat_response failed (%s)", exc)
             reply = (

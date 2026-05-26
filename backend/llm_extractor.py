@@ -415,12 +415,15 @@ def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
     }
 
 
-async def extract_intent_and_entities(user_query: str) -> dict[str, Any]:
+async def extract_intent_and_entities(user_query: str, history: list[dict] | None = None) -> dict[str, Any]:
     """Use LLM to extract intent and entities from a raw user query.
 
     Calls Ollama (OLLAMA_EXTRACT_MODEL, default phi4-mini) with a structured
     JSON prompt, then normalizes all extracted dates/times through the existing
     date and time parsers so downstream code receives a consistent format.
+
+    Pass *history* (last 6-7 messages) so the LLM can resolve cross-turn
+    references like "it", "that report", "the same one".
 
     Returns::
 
@@ -435,11 +438,11 @@ async def extract_intent_and_entities(user_query: str) -> dict[str, Any]:
     """
     from backend.services.llm_service import extract_intent_entities_llm
 
-    logger.info("[LLM_EXTRACT_START] query=%r", user_query)
+    logger.info("[LLM_EXTRACT_START] query=%r history_len=%d", user_query, len(history or []))
     _t0 = time.monotonic()
 
     try:
-        raw = await extract_intent_entities_llm(user_query)
+        raw = await extract_intent_entities_llm(user_query, history=history)
     except Exception as exc:
         _elapsed = time.monotonic() - _t0
         logger.warning(

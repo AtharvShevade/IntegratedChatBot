@@ -48,11 +48,12 @@ export async function compareInstances(sessionId, instanceA, instanceB) {
  * @returns {Promise<{intent: string, report_name: string|null, response_text: string, need_clarification: boolean}>}
  * @throws {Error} - With a user-friendly message on failure.
  */
-export async function sendMessage(message, sessionId = null, aspSession = null, loginId = null) {
+export async function sendMessage(message, sessionId = null, aspSession = null, loginId = null, conversationHistory = []) {
   const body = { message }
-  if (sessionId)  body.session_id  = sessionId
-  if (aspSession) body.asp_session = aspSession
-  if (loginId)    body.login_id    = loginId
+  if (sessionId)                    body.session_id           = sessionId
+  if (aspSession)                   body.asp_session          = aspSession
+  if (loginId)                      body.login_id             = loginId
+  if (conversationHistory?.length)  body.conversation_history = conversationHistory
 
   const res = await fetch(`${BASE_URL}/chat`, {
     method: 'POST',

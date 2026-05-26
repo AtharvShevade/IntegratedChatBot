@@ -12,6 +12,16 @@ const _aspSession = _params.get('aspSession') || ''
 // ── Persistent storage key (isolated per uid) ─────────────────────────────
 const STORAGE_KEY = `chat_history_${_uid}`
 
+// Extract the last n user/assistant messages for conversation context.
+// Skips system roles (welcome, error, action_menu, etc.).
+function _getRecentHistory(messages, n = 7) {
+  return messages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({ role: m.role, text: m.text || '' }))
+    .filter((m) => m.text)
+    .slice(-n)
+}
+
 // Load saved messages from localStorage; fall back to the welcome card.
 function _loadHistory() {
   if (!_uid) return [{ role: 'welcome' }]
@@ -119,11 +129,14 @@ export default function App() {
     const trimmed = text.trim()
     if (!trimmed || isLoading) return
 
+    // Capture history BEFORE appending the current user message
+    const recentHistory = _getRecentHistory(messages)
+
     setMessages((prev) => [...prev, { role: 'user', text: trimmed }])
     setIsLoading(true)
 
     try {
-      const result = await sendMessage(trimmed, sessionId.current, _aspSession || null, _loginId || null)
+      const result = await sendMessage(trimmed, sessionId.current, _aspSession || null, _loginId || null, recentHistory)
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)

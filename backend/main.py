@@ -114,6 +114,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             session_id=request.session_id,
             asp_session=request.asp_session,
             login_id=request.login_id,
+            conversation_history=request.conversation_history[-7:] if request.conversation_history else None,
         )
         elapsed = time.monotonic() - start
         logger.info(

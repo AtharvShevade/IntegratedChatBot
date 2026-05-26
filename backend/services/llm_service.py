@@ -98,11 +98,17 @@ Rules:
 """.strip()
 
 
-async def _call_ollama(prompt: str, system: str) -> str:
+async def _call_ollama(prompt: str, system: str, history: list[dict] | None = None) -> str:
+    history_msgs = [
+        {"role": item["role"], "content": item["text"]}
+        for item in (history or [])
+        if item.get("role") in ("user", "assistant") and item.get("text")
+    ]
     payload = {
         "model":      OLLAMA_MODEL,
         "messages":   [
             {"role": "system", "content": system},
+            *history_msgs,
             {"role": "user",   "content": prompt},
         ],
         "stream":     False,
@@ -135,16 +141,24 @@ async def _call_ollama(prompt: str, system: str) -> str:
     return content
 
 
-async def extract_intent_entities_llm(user_query: str) -> dict:
+async def extract_intent_entities_llm(user_query: str, history: list[dict] | None = None) -> dict:
     """Call Ollama to extract intent and entities as structured JSON.
 
     Returns a dict with keys: intent, report_name, reporting_date, schedule_date, schedule_time.
     Raises httpx or json errors on failure — caller must handle.
+    Passing *history* (last 6-7 messages) lets the LLM resolve references like
+    'it', 'that report', 'the same one' across turns.
     """
+    history_msgs = [
+        {"role": item["role"], "content": item["text"]}
+        for item in (history or [])
+        if item.get("role") in ("user", "assistant") and item.get("text")
+    ]
     payload = {
         "model":      OLLAMA_EXTRACT_MODEL,
         "messages":   [
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
+            *history_msgs,
             {"role": "user",   "content": user_query},
         ],
         "stream":     False,
@@ -173,5 +187,5 @@ async def extract_intent_entities_llm(user_query: str) -> dict:
     return json.loads(content)
 
 
-async def chat_response(user_message: str) -> str:
-    return await _call_ollama(prompt=user_message, system=_CHAT_SYSTEM_PROMPT)
+async def chat_response(user_message: str, history: list[dict] | None = None) -> str:
+    return await _call_ollama(prompt=user_message, system=_CHAT_SYSTEM_PROMPT, history=history)
