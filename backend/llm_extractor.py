@@ -416,23 +416,22 @@ def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
 
 
 async def extract_intent_and_entities(user_query: str, history: list[dict] | None = None) -> dict[str, Any]:
-    """Use LLM to extract intent and entities from a raw user query.
+    """Classify intent via LLM; extract all entities deterministically from the query.
 
-    Calls Ollama (OLLAMA_EXTRACT_MODEL, default phi4-mini) with a structured
-    JSON prompt, then normalizes all extracted dates/times through the existing
-    date and time parsers so downstream code receives a consistent format.
+    The LLM (Ollama, OLLAMA_EXTRACT_MODEL) is called ONLY for intent classification.
+    Report names, dates, and times are extracted from the literal user query text
+    using regex/parser logic so hallucinated values can never reach downstream code.
 
-    Pass *history* (last 6-7 messages) so the LLM can resolve cross-turn
-    references like "it", "that report", "the same one".
+    Pass *history* so the LLM can classify multi-turn references correctly.
 
     Returns::
 
         {
-            "intent":             str,         # get_status | generate_instance | schedule_report | unknown
-            "search_terms":       str | None,  # LLM-extracted report name (used by resolve_entities)
-            "reporting_date":     str | None,  # DD-MMM-YYYY  (generate_instance)
-            "schedule_date":      str | None,  # DD-MMM-YYYY  (schedule_report)
-            "schedule_time":      str | None,  # HH:MM 24-hr  (schedule_report)
+            "intent":             str,         # get_status | generate_instance | schedule_report | compare_reports | query_database | unknown
+            "search_terms":       str | None,  # deterministic report name (stripped query tokens)
+            "reporting_date":     str | None,  # DD-MMM-YYYY — only if literally in the query
+            "schedule_date":      str | None,  # DD-MMM-YYYY — only if literally in the query
+            "schedule_time":      str | None,  # HH:MM 24-hr — only if literally in the query
             "scheduled_datetime": str | None,  # YYYY-MM-DDTHH:MM:00
         }
     """
@@ -474,85 +473,67 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
         logger.info("Keyword override: %r → compare_reports", intent)
         intent = "compare_reports"
 
-    def _clean(v: Any) -> Optional[str]:
-        """Return None for null/none/empty LLM outputs."""
-        if v is None:
-            return None
-        s = str(v).strip()
-        return None if s.lower() in ("null", "none", "") else s
+    # ── Deterministic entity extraction ────────────────────────────────────────
+    # The LLM is ONLY trusted for intent classification.
+    # ALL other fields (report name, dates, times) are extracted directly from
+    # the literal user query via regex/parser logic — LLM values are ignored so
+    # hallucinated entities (e.g. a date invented for "generate instance for abc")
+    # can never propagate into downstream handlers.
 
-    report_name = _clean(raw.get("report_name"))
+    # Report name ─────────────────────────────────────────────────────────────
+    # compare_reports uses its own stop-word regex because comparison-intent words
+    # like "compare", "variance", "vs" are not in the generic _STOP_WORDS set.
+    _CMP_STOP = re.compile(
+        r"\b(compare|comparing|comparison|variance|variances|diff(?:er(?:ence)?)?"
+        r"|vs\.?|versus|contrast|analys[ie]s?|side|report[s]?|instance[s]?"
+        r"|these|those|me|the|a|an|of|for|to|two|both|and|or|with)\b",
+        re.I,
+    )
+    if intent == "compare_reports":
+        _cmp_cleaned = _CMP_STOP.sub(" ", user_query).strip()
+        _cmp_tokens  = [t for t in re.split(r"[\s,;]+", _cmp_cleaned) if len(t) >= 2]
+        report_name: Optional[str] = _cmp_tokens[0] if _cmp_tokens else _extract_search_terms(user_query) or None
+        if report_name:
+            logger.info("[EXTRACT] compare_reports: report_name=%r from query", report_name)
+    else:
+        report_name = _extract_search_terms(user_query) or None
 
-    # Fallback: for compare_reports, if the LLM didn't extract a name (common with
-    # short bank-prefix queries like "compare HDFC"), extract it directly from the query
-    # by stripping comparison-intent words and taking the first meaningful token.
-    if intent == "compare_reports" and not report_name:
-        _CMP_STOP = re.compile(
-            r"\b(compare|comparing|comparison|variance|variances|diff(?:er(?:ence)?)?"
-            r"|vs\.?|versus|contrast|analys[ie]s?|side|report[s]?|instance[s]?"
-            r"|these|those|me|the|a|an|of|for|to|two|both|and|or|with)\b",
-            re.I,
-        )
-        cleaned = _CMP_STOP.sub(" ", user_query).strip()
-        tokens = [t for t in re.split(r"[\s,;]+", cleaned) if len(t) >= 2]
-        if tokens:
-            report_name = tokens[0]
-            logger.info(
-                "compare_reports fallback: extracted report_name=%r from query", report_name
-            )
-
+    # Date / time ─────────────────────────────────────────────────────────────
+    # _extract_date_from_query() uses regex + a date-signal guard, so it only
+    # returns a value when a date-like pattern is literally present in the query.
+    # extract_schedule_datetime() uses the same signal-guarded approach for time.
     reporting_date:     Optional[str] = None
     schedule_date:      Optional[str] = None
     schedule_time:      Optional[str] = None
     scheduled_datetime: Optional[str] = None
 
     if intent == "schedule_report":
-        raw_sdate = _clean(raw.get("schedule_date"))
-        raw_stime = _clean(raw.get("schedule_time"))
-        if raw_sdate:
-            schedule_date = parse_and_format_date(raw_sdate) or raw_sdate
-        if raw_stime:
-            schedule_time = parse_schedule_time(raw_stime) or raw_stime
-        if schedule_date and schedule_time:
-            try:
-                dt = datetime.strptime(f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M")
-                scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
-            except ValueError:
-                pass
+        _sched = extract_schedule_datetime(user_query)
+        schedule_date      = _sched["schedule_date"]
+        schedule_time      = _sched["schedule_time"]
+        scheduled_datetime = _sched["scheduled_datetime"]
 
     elif intent == "generate_instance":
-        raw_date = _clean(raw.get("reporting_date"))
-        raw_stime = _clean(raw.get("schedule_time"))
-        if raw_date:
-            reporting_date = parse_and_format_date(raw_date) or raw_date
-        # Reclassify: generate + time-of-day → schedule_report
-        if raw_stime:
-            schedule_time = parse_schedule_time(raw_stime) or raw_stime
-            if schedule_time:
-                logger.info("Reclassify generate_instance → schedule_report (time component)")
-                intent        = "schedule_report"
-                schedule_date = reporting_date
-                reporting_date = None
-                raw_sdate = _clean(raw.get("schedule_date"))
-                if raw_sdate:
-                    schedule_date = parse_and_format_date(raw_sdate) or raw_sdate
-                if schedule_date and schedule_time:
-                    try:
-                        dt = datetime.strptime(
-                            f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M"
-                        )
-                        scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
-                    except ValueError:
-                        pass
+        reporting_date = _extract_date_from_query(user_query)
+        # Reclassify: if the query contains both a date AND a clock time the user
+        # is scheduling a future run, not just generating.
+        _sched_check = extract_schedule_datetime(user_query)
+        if _sched_check["schedule_date"] and _sched_check["schedule_time"]:
+            logger.info("[EXTRACT] Reclassify generate_instance → schedule_report (time found in query)")
+            intent             = "schedule_report"
+            schedule_date      = _sched_check["schedule_date"]
+            schedule_time      = _sched_check["schedule_time"]
+            scheduled_datetime = _sched_check["scheduled_datetime"]
+            reporting_date     = None
 
     logger.info(
-        "LLM result: intent=%s report_name=%r reporting_date=%r "
+        "[EXTRACT] intent=%s report_name=%r reporting_date=%r "
         "schedule_date=%r schedule_time=%r",
         intent, report_name, reporting_date, schedule_date, schedule_time,
     )
     return {
         "intent":             intent,
-        "search_terms":       report_name,  # passed to resolve_entities() by the agent
+        "search_terms":       report_name,
         "reporting_date":     reporting_date,
         "schedule_date":      schedule_date,
         "schedule_time":      schedule_time,
