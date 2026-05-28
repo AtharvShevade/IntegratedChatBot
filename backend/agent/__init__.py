@@ -9,7 +9,15 @@ import time
 from typing import Any
 
 from rapidfuzz import process as _fuzz
-from backend.llm_extractor import extract_intent_and_entities, parse_and_format_date, extract_schedule_datetime, _extract_search_terms as extract_search_terms
+from backend.llm_extractor import (
+    extract_intent_and_entities,
+    parse_and_format_date,
+    extract_schedule_datetime,
+    _extract_search_terms as extract_search_terms,
+    _extract_date_from_query,
+    _BROAD_DATE_RE as _DATE_STRIP_RE,
+    preprocess_generate_query,
+)
 from backend.services.llm_service import chat_response
 from backend.tools.instance_generator import (
     call_generate_api,
@@ -580,8 +588,16 @@ async def decide(
                     response_text="Sorry, you do not have access to generate report instances.",
                     result_type="error",
                 )
-            # Always ask for date after disambiguation — never use a pre-extracted
-            # date from the original query (prevents stale/hallucinated date validation).
+            # If a reporting_date was pre-extracted and stored in session,
+            # skip the date prompt and go directly to generation.
+            stored_date = session.get("pending_reporting_date")
+            if stored_date:
+                logger.info(
+                    "[AUTO_CONTINUE_GENERATION] report=%r date=%r session=%s — skipping date prompt",
+                    ret["name"], stored_date, session_id,
+                )
+                return await _finalize_generation(ret, stored_date, session_id, effective_asp)
+            # No pre-extracted date — ask the user for it.
             if session_id:
                 _session_context[session_id] = {
                     "awaiting":        STAGE_GEN_DATE,
@@ -608,8 +624,13 @@ async def decide(
             if date_match:
                 date_str = date_match.group(1)
             else:
-                # Normalize any natural format (e.g. 31/03/2021, 2021-03-31)
-                date_str = parse_and_format_date(user_query.strip()) or user_query.strip()
+                # Normalize any natural format (e.g. 31/03/2021, 2021-03-31, "31 April 2026")
+                date_str = parse_and_format_date(user_query.strip())
+                if not date_str:
+                    # parse_and_format_date failed — pass raw input to validator
+                    # which will produce a meaningful error message
+                    date_str = user_query.strip()
+            logger.debug("[DATE_NORMALIZED] raw=%r → normalized=%r", user_query.strip(), date_str)
             if not _create_access:
                 return _build(
                     intent="generate_instance", report_name=None,
@@ -938,13 +959,34 @@ async def decide(
         )
 
     if intent == "generate_instance":
-        # Apply the shared resolver even when search_terms is already set.
-        # This normalises poor LLM extractions (e.g. "generate CIMS_RAQ" → "CIMS_RAQ",
-        # or a partially-wrong name) through the same pipeline used by all other intents.
-        _gen_terms, _gen_matches = _resolve_report_name(user_query, search_terms or None)
+        # ── Deterministic preprocessing: extract date + clean report name ──
+        # Runs before report matching, independently of the LLM.
+        # Handles filler phrases ("for date", "dated", "for report") and all
+        # natural-language date formats ("31 May 2025", "31/05/2025", etc.).
+        _pre_report, _pre_date = preprocess_generate_query(user_query)
+        logger.debug(
+            "[QUERY_PREPROCESS] query=%r -> report=%r date=%r",
+            user_query, _pre_report, _pre_date,
+        )
+        # Use preprocessed values only when extractor found nothing already.
+        if _pre_date and not reporting_date:
+            reporting_date = _pre_date
+        if _pre_report and not search_terms:
+            search_terms = _pre_report
+
+        # Build date-stripped query for the shared resolver (fuzzy + disambiguation)
+        _clean_gen_query = _DATE_STRIP_RE.sub(" ", user_query).strip()
+        logger.debug(
+            "[GEN_CLEAN_QUERY] original=%r cleaned=%r search_terms=%r",
+            user_query, _clean_gen_query, search_terms,
+        )
+        _gen_terms, _gen_matches = _resolve_report_name(_clean_gen_query, search_terms or None)
         if _gen_matches:
             search_terms = _gen_terms
-        logger.info("[GENERATE_START] report=%r (resolved) session=%s", search_terms, session_id)
+        logger.info(
+            "[GENERATE_START] report=%r date=%r (resolved) session=%s",
+            search_terms, reporting_date, session_id,
+        )
         if not _create_access:
             return _build(
                 intent="generate_instance", report_name=None,
@@ -1734,6 +1776,10 @@ async def _finalize_generation(
     """Validate date and call the .NET API for a fully-resolved (report, date) pair."""
     validation = validate_reporting_date(reporting_date, ret["frequency"])
     if not validation["valid"]:
+        logger.debug(
+            "[DATE_VALIDATION_FAIL] date=%r freq=%r error=%r suggestions=%r",
+            reporting_date, ret["frequency"], validation["error"], validation["suggestions"],
+        )
         # Keep context so user can retry with a corrected date
         if session_id:
             _session_context[session_id] = {
@@ -1744,15 +1790,21 @@ async def _finalize_generation(
                 "gen_period_name": ret.get("period_name", ""),
             }
         error_msg   = validation["error"]
-        suggestions = validation["suggestions"]
-        # Near-miss hint: single suggestion -> "Did you mean X?"
+        suggestions = validation.get("suggestions") or []
+
+        # Filter out the same date the user entered — never echo back an invalid
+        # date as a suggestion (e.g. "Did you mean 31-May-2026?" when it's future).
+        suggestions = [s for s in suggestions if s.lower() != reporting_date.lower()]
+
+        # Near-miss hint: single suggestion that is DIFFERENT from the input
         if len(suggestions) == 1:
-            error_msg = f"Did you mean {suggestions[0]}?\n\n{error_msg}"
+            error_msg = f"Did you mean **{suggestions[0]}**?\n\n{error_msg}"
+
         return _build(
             intent="generate_instance", report_name=ret["name"],
             response_text=error_msg,
             result_type="gen_awaiting_date",
-            options=suggestions,
+            options=suggestions if suggestions else None,
         )
 
     api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
@@ -1904,9 +1956,9 @@ async def _handle_generate(
         if suggestions:
             if session_id:
                 _session_context[session_id] = {
-                    "awaiting":           STAGE_GEN_REPORT,
-                    "gen_reporting_date": None,
-                    "pending_options":    suggestions,
+                    "awaiting":               STAGE_GEN_REPORT,
+                    "pending_reporting_date": reporting_date,
+                    "pending_options":        suggestions,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             return _build(
@@ -1934,9 +1986,9 @@ async def _handle_generate(
         opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
         if session_id:
             _session_context[session_id] = {
-                "awaiting":           STAGE_GEN_REPORT,
-                "gen_reporting_date": None,
-                "pending_options":    names,
+                "awaiting":               STAGE_GEN_REPORT,
+                "pending_reporting_date": reporting_date,
+                "pending_options":        names,
             }
         return _build(
             intent="generate_instance", report_name=None,
