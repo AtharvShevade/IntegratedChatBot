@@ -83,6 +83,7 @@ Examples for DB Q&A intents:
   "What can I do?"                        → {"intent":"db_my_permissions",...}
   "Show all inactive users"               → {"intent":"db_list_users","query_type":"inactive",...}
   "Who are all the users?"                → {"intent":"db_list_users","query_type":"all",...}
+  "Department info"                       → {"intent":"db_list_departments",...}
 
 Examples for report intents (existing):
   "Check status of my report"             → {"intent":"get_status","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}

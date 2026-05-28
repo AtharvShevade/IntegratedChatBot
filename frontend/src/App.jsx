@@ -3,11 +3,24 @@ import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
 import { sendMessage, sendGuidedMessage, compareInstances } from './services/api.js'
 
-// Read loginId / uid / aspSession injected by the .NET iframe URL
+// Read loginId / uid / aspSession injected by the .NET iframe URL.
+// On first load with URL params, save them to sessionStorage so identity
+// survives a page refresh (the .NET params are only in the URL on first load).
 const _params     = new URLSearchParams(window.location.search)
-const _loginId    = _params.get('loginId')    || ''
-const _uid        = _params.get('uid')        || ''
-const _aspSession = _params.get('aspSession') || ''
+
+function _readParam(urlKey, sessionKey) {
+  const fromUrl = _params.get(urlKey) || ''
+  if (fromUrl) {
+    sessionStorage.setItem(sessionKey, fromUrl)
+    return fromUrl
+  }
+  return sessionStorage.getItem(sessionKey) || ''
+}
+
+const _loginId    = _readParam('loginId',    'chat_loginId')
+const _uid        = _readParam('uid',         'chat_uid')
+const _roleId     = _readParam('roleId',      'chat_roleId') || _readParam('rid', 'chat_rid') || ''
+const _aspSession = _params.get('aspSession') || ''  // never persisted — cookie-like, must be fresh
 
 // ── Persistent storage key (isolated per uid) ─────────────────────────────
 const STORAGE_KEY = `chat_history_${_uid}`
@@ -136,7 +149,15 @@ export default function App() {
     setIsLoading(true)
 
     try {
-      const result = await sendMessage(trimmed, sessionId.current, _aspSession || null, _loginId || null, recentHistory)
+      const result = await sendMessage(
+        trimmed,
+        sessionId.current,
+        _aspSession || null,
+        _loginId || null,
+        _uid || null,
+        _roleId || null,
+        recentHistory,
+      )
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)
@@ -158,7 +179,14 @@ export default function App() {
     setIsLoading(true)
 
     try {
-      const result = await sendGuidedMessage(trimmed, sessionId.current, _aspSession || null, _loginId || null)
+      const result = await sendGuidedMessage(
+        trimmed,
+        sessionId.current,
+        _aspSession || null,
+        _loginId || null,
+        _uid || null,
+        _roleId || null,
+      )
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)
@@ -178,7 +206,14 @@ export default function App() {
     setMessages((prev) => [...prev, { role: 'user', text: action }])
     setIsLoading(true)
     try {
-      const result = await sendGuidedMessage(action, sessionId.current, _aspSession || null, _loginId || null)
+      const result = await sendGuidedMessage(
+        action,
+        sessionId.current,
+        _aspSession || null,
+        _loginId || null,
+        _uid || null,
+        _roleId || null,
+      )
       _pushResult(result)
     } catch (err) {
       setIsGuidedFlow(false)

@@ -13,6 +13,9 @@ class ChatRequest(BaseModel):
     asp_session:          Optional[str]  = Field(None, max_length=1024)  # forwarded .AspNetCore.Session cookie
     login_id:             Optional[str]  = Field(None, max_length=256)   # user login ID for report authorisation
     conversation_history: list[dict]     = Field(default_factory=list)   # last 6-7 msgs: [{"role":"user"|"assistant","text":"..."}]
+    beautify:             bool           = Field(True)  # when True, use LLM to format DB Q&A results
+    user_id:              Optional[str]  = Field(None, max_length=128)  # current user's ID (for DB Q&A role check)
+    role_id:              Optional[str]  = Field(None, max_length=64)   # current user's role ID (for DB Q&A admin check)
 
 
 class ChatResponse(BaseModel):
@@ -40,6 +43,13 @@ class ChatResponse(BaseModel):
     accuracy_hint:   Optional[str]   = None  # soft tip to add time context
     needs_more_info: bool            = False # True when query is too vague
     more_info_hint:  Optional[str]   = None  # guidance for the user
+
+    # ── App Database (XML) Q&A result fields ──────────────────────────────────
+    db_intent:       str             = ""   # detected intent (e.g., USER_LIST, DEPT_INFO)
+    db_found:        bool            = False # True if query returned records
+    db_records:      list[dict]      = []   # structured rows from XML lookup
+    db_summary:      str             = ""   # plain-text fallback response
+    db_beautified:   str             = ""   # LLM-formatted response (when beautify=True)
 
 
 class CompareRequest(BaseModel):

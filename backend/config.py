@@ -70,3 +70,21 @@ XML_ROLE_ACCESS_PATH: str = os.getenv(
     "XML_ROLE_ACCESS_PATH",
     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_RoleAccess.xml",
 )
+
+# ---------------------------------------------------------------------------
+# Application Database Q&A (optional feature — disabled if not configured)
+# Base directory containing iDEAL application XML files for Q&A queries
+# Structure: {APP_DB_BASE_PATH}/XML_User.xml, XML_Dept.xml, Returns.xml, etc.
+# If not set, DB Q&A feature is gracefully disabled
+# ---------------------------------------------------------------------------
+
+APP_DB_BASE_PATH: str | None = os.getenv("APP_DB_BASE_PATH") or None
+
+# Admin role ID for DB Q&A access control (default: "101" for iDEAL Admin)
+APP_DB_ADMIN_ROLE_ID: str = os.getenv("APP_DB_ADMIN_ROLE_ID", "101")
+
+# Enable LLM beautification of DB Q&A responses (default: true)
+APP_DB_ENABLE_BEAUTIFY: bool = os.getenv("APP_DB_ENABLE_BEAUTIFY", "true").lower() == "true"
+
+# Ollama model for DB Q&A beautification (default: phi3:mini)
+APP_DB_BEAUTIFY_MODEL: str = os.getenv("APP_DB_BEAUTIFY_MODEL", "phi3:mini")

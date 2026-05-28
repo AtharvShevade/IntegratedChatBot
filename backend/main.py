@@ -59,6 +59,21 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("[WARMUP] FAISS index load failed: %s", exc)
 
+        # ── Pre-warm Application Database Q&A XML store (if configured)
+        try:
+            from backend.config import APP_DB_BASE_PATH
+            if APP_DB_BASE_PATH:
+                from backend.db_qa.xml_store import XMLStore
+                store = XMLStore(APP_DB_BASE_PATH)
+                # Trigger lazy-load of all XML files
+                _ = store.users()
+                _ = store.departments()
+                _ = store.roles()
+                _ = store.periods()
+                logger.info("[WARMUP] Application Database XML store loaded")
+        except Exception as exc:
+            logger.warning("[WARMUP] DB Q&A XML store load failed (feature disabled): %s", exc)
+
     await asyncio.get_event_loop().run_in_executor(None, _warmup_embedding)
 
     from backend.services.llm_service import (
@@ -108,19 +123,44 @@ async def chat(request: ChatRequest) -> ChatResponse:
         request.session_id, request.message,
     )
     start = time.monotonic()
+    # ── Debug trace: log every /chat request so missing identity is immediately visible ──
+    from backend.utils.debug import debug_log
+    debug_log(
+        "/chat API HIT",
+        question=request.message,
+        login_id=request.login_id or "NOT PROVIDED",
+        user_id=request.user_id   or "NOT PROVIDED",
+        role_id_from_net="NOT SENT — resolved inside decide() via auth_service",
+        asp_session="provided" if request.asp_session else "NOT PROVIDED",
+        session_id=request.session_id or "none",
+    )
     try:
         result = await decide(
             request.message,
             session_id=request.session_id,
             asp_session=request.asp_session,
             login_id=request.login_id,
+            user_id=request.user_id,
+            role_id=request.role_id,
             conversation_history=request.conversation_history[-7:] if request.conversation_history else None,
         )
         elapsed = time.monotonic() - start
+        intent_for_log = result.intent if isinstance(result, ChatResponse) else result.get("intent", "?")
         logger.info(
             "[PERF] endpoint=/chat intent=%s duration=%.2fs session=%s",
-            result.get("intent", "?"), elapsed, request.session_id,
+            intent_for_log, elapsed, request.session_id,
         )
+        # ── Debug trace: log the response summary ──────────────────────────────
+        debug_log(
+            "/chat RESPONSE",
+            intent=intent_for_log,
+            db_found=result.db_found if isinstance(result, ChatResponse) else result.get("db_found", "N/A"),
+            result_type=result.result_type if isinstance(result, ChatResponse) else result.get("result_type", "?"),
+            response_preview=(result.response_text if isinstance(result, ChatResponse) else result.get("response_text", ""))[:120],
+            elapsed_s=f"{elapsed:.3f}s",
+        )
+        if isinstance(result, ChatResponse):
+            return result
         return ChatResponse(**result)
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         logger.error(

@@ -48,11 +48,21 @@ export async function compareInstances(sessionId, instanceA, instanceB) {
  * @returns {Promise<{intent: string, report_name: string|null, response_text: string, need_clarification: boolean}>}
  * @throws {Error} - With a user-friendly message on failure.
  */
-export async function sendMessage(message, sessionId = null, aspSession = null, loginId = null, conversationHistory = []) {
+export async function sendMessage(
+  message,
+  sessionId = null,
+  aspSession = null,
+  loginId = null,
+  userId = null,
+  roleId = null,
+  conversationHistory = [],
+) {
   const body = { message }
   if (sessionId)                    body.session_id           = sessionId
   if (aspSession)                   body.asp_session          = aspSession
   if (loginId)                      body.login_id             = loginId
+  if (userId)                       body.user_id              = userId
+  if (roleId)                       body.role_id              = roleId
   if (conversationHistory?.length)  body.conversation_history = conversationHistory
 
   const res = await fetch(`${BASE_URL}/chat`, {
@@ -78,11 +88,13 @@ export async function sendMessage(message, sessionId = null, aspSession = null, 
  * @param {string|null} aspSession
  * @returns {Promise<object>}
  */
-export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null) {
+export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null, userId = null, roleId = null) {
   const body = { message }
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
   if (loginId)    body.login_id    = loginId
+  if (userId)     body.user_id     = userId
+  if (roleId)     body.role_id     = roleId
 
   const res = await fetch(`${BASE_URL}/guided`, {
     method: 'POST',

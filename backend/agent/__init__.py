@@ -73,6 +73,29 @@ _DB_QUERY_KW_RE = re.compile(
     re.I,
 )
 
+# Detect ASP.NET / browser session GUIDs forwarded as user_id by the .NET iframe.
+# These are 32-char hex strings (UUID without dashes) or standard UUID format.
+# When matched the value is NOT a real user identifier — fall back to login_id.
+_SESSION_GUID_RE = re.compile(
+    r'^[0-9a-fA-F]{32}$'                                                     # 32-hex no dashes
+    r'|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'  # UUID
+)
+
+
+def _is_real_user_id(uid: str | None) -> bool:
+    """Return True when *uid* looks like a genuine user/login identifier.
+
+    Returns False for:
+    * None / empty string
+    * "0"  (sentinel from older .NET pages)
+    * 32-char hex GUID (ASP.NET session UID forwarded by the iframe)
+    * Standard UUID format  (same reason)
+    """
+    if not uid or uid == "0":
+        return False
+    return not _SESSION_GUID_RE.match(uid)
+
+
 # Fuzzy keyword sets — catches typos like "stats", "staus", "gnearte", "gnerate"
 _STATUS_FUZZY_KWS = ["status", "state", "progress", "check", "details", "info"]
 _GEN_FUZZY_KWS    = ["generate", "create", "trigger", "run", "produce", "kick", "start", "launch", "execute", "fire"]
@@ -137,6 +160,33 @@ _QUERY_STOP = frozenset({
     "the", "of", "for", "a", "an", "is", "it", "this", "that",
     "what", "how", "has", "did", "been", "done",
 })
+
+
+def _extract_status_search_terms(text: str) -> str:
+    """Extract likely report-identifying tokens from a status-style query."""
+    clean = re.sub(r"[?!.,:;|()\[\]{}]+", " ", text)
+    words = [
+        w for w in clean.split()
+        if w and w.lower() not in _QUERY_STOP and len(w) > 1
+    ]
+    return " ".join(words).strip()
+
+
+def _is_staged_session(session: dict[str, Any] | None) -> bool:
+    """Return True if session is awaiting user input for a specific workflow.
+    
+    Staged sessions (comparison, generation, scheduling) block fast-path processing
+    like DB Q&A and SQL agent keyword matching. General conversation history does not.
+    """
+    if not session:
+        return False
+    awaiting_state = session.get("awaiting")
+    staged_states = {
+        STAGE_DATE, STAGE_REPORT, STAGE_GEN_REPORT, STAGE_GEN_DATE,
+        STAGE_RUN, STAGE_SCHED_REPORT, STAGE_SCHED_DT, STAGE_SCHED_CONFIRM,
+        STAGE_SCHED_NAME, STAGE_CMP_REPORT, STAGE_CMP_FILE, STAGE_PREV_DATES,
+    }
+    return awaiting_state in staged_states
 
 
 def _parse_dtc_from_label(text: str) -> str | None:
@@ -214,11 +264,27 @@ async def decide(
     session_id: str | None = None,
     asp_session: str | None = None,
     login_id: str | None = None,
+    user_id: str | None = None,
+    role_id: str | None = None,
     conversation_history: list[dict] | None = None,
 ) -> dict[str, Any]:
     _decide_start = time.monotonic()
     session = _session_context.get(session_id, {}) if session_id else {}
     lower_q = user_query.strip().lower()
+
+    # ── Debug trace: log raw .NET input — role_id is ALWAYS empty here (resolved later) ──
+    from backend.utils.debug import debug_log
+    _uid_is_guid = bool(user_id and _SESSION_GUID_RE.match(user_id))
+    debug_log(
+        "DECIDE — .NET INPUT",
+        question=user_query,
+        login_id=login_id or "NOT PROVIDED",
+        user_id=user_id   or "NOT PROVIDED",
+        user_id_type="SESSION GUID — will use login_id instead" if _uid_is_guid else ("real user ID" if _is_real_user_id(user_id) else "sentinel/missing"),
+        role_id_from_net="NOT SENT BY .NET — resolved from auth_service",
+        session_id=session_id or "none",
+        session_state=session.get("awaiting", "NONE"),
+    )
 
     # ── Auth: resolve allowed FormIds for this user ───────────────────────────────
     # None  = no login_id provided — allow all (dev / backward compat)
@@ -253,6 +319,29 @@ async def decide(
             "[AUTH_ROLE] login_id=%r can_generate_instance=%s session=%s",
             login_id, _create_access, session_id,
         )
+
+    # ── Auth: resolve role_id from XML_User.xml when caller didn't supply it ──
+    # The .NET app only passes loginId/uid — it never sends roleId.
+    # Use auth_service.get_user_role_id() (same XML read already cached) so
+    # every downstream handler (DB Q&A, SQL agent, etc.) sees the correct role.
+    if login_id and (not role_id or role_id == "0"):
+        from backend.services.auth_service import get_user_role_id as _get_role
+        _resolved_role = _get_role(login_id)
+        if _resolved_role:
+            role_id = _resolved_role
+            logger.info(
+                "[AUTH_ROLE] role_id resolved from XML: login_id=%r -> role_id=%r session=%s",
+                login_id, role_id, session_id,
+            )
+
+    # ── Debug trace: log effective identity AFTER auth_service resolution ────
+    debug_log(
+        "DECIDE — RESOLVED IDENTITY",
+        login_id=login_id or "NOT PROVIDED",
+        user_id=user_id   or "NOT PROVIDED",
+        role_id_resolved=role_id or "UNRESOLVED (no login_id or user not found)",
+        role_source=("auth_service (XML_User.xml)" if login_id else "not resolved — no login_id"),
+    )
 
     # Persist the live cookie so staged flows (multi-turn generate) can use it
     if asp_session and session_id:
@@ -743,16 +832,83 @@ async def decide(
     if not is_reset and session.get("awaiting") == STAGE_CMP_FILE:
         return await _run_comparison(session, user_query, session_id)
 
+    # -- Application Database Q&A (regex-based intent classification) -----------
+    # Checks for DB Q&A intents (user management, returns, roles, etc.) before
+    # invoking the main LLM OR SQL agent. This is fast (no LLM call) and works offline.
+    # Gracefully skipped if APP_DB_BASE_PATH is not configured.
+    # MUST come before SQL agent check to take priority
+    # Works in: (1) first message (empty session) (2) multi-turn chat (general session)
+    # Blocked in: staged sessions (comparison/generation/scheduling in progress)
+    if not _is_staged_session(session) and not is_reset:
+        from backend.agent.db_qa_router import check_db_qa_intent, handle_db_qa_query
+        
+        db_intent, db_params = check_db_qa_intent(user_query)
+        # ── Debug trace: log DB Q&A intent detection result ───────────────────────────
+        if db_intent:
+            debug_log(
+                "DECIDE — DB QA ROUTING",
+                question=user_query,
+                detected_intent=db_intent,
+                extracted_params=db_params or "{}",
+                raw_user_id=user_id or "MISSING",
+                login_id=login_id or "MISSING",
+            )
+        else:
+            debug_log(
+                "DECIDE — NO DB Q&A MATCH",
+                question=user_query,
+                fallback_reason="No DB Q&A regex matched — will try SQL agent or LLM",
+            )
+        if db_intent:
+            logger.info(
+                "[INTENT] db_qa_intent=%s params=%s session=%s user=%s role=%s",
+                db_intent, db_params, session_id, user_id, role_id,
+            )
+            # Prefer login_id when user_id is missing, "0", or a session GUID
+            # (the .NET iframe forwards uid=<ASP session GUID> which is not a real user ID)
+            final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
+            final_role_id = role_id if role_id and role_id != "0" else "0"
+            
+            return handle_db_qa_query(
+                message=user_query,
+                intent=db_intent,
+                params=db_params,
+                user_id=final_user_id,
+                role_id=final_role_id,
+                beautify=True,  # Use LLM for formatting by default
+                model="phi3:mini",  # Match env default
+            )
+
     # -- Keyword fast-path: DB queries (skip LLM for clear data-fetch requests) --
     # Catches queries like "total loan from cims raq", "show NPA for FY2024",
     # "what is the gross NPA" without waiting for LLM intent extraction.
-    # Only fires when no staged session is active (i.e. session is empty).
-    if not session and not is_reset and _DB_QUERY_KW_RE.search(user_query):
+    # Only fires when no staged session is active (i.e. not in workflow).
+    if not _is_staged_session(session) and not is_reset and _DB_QUERY_KW_RE.search(user_query):
         # Make sure it doesn't look like a status/generate/schedule query first
         if not _fuzzy_has_status(user_query) and not _fuzzy_has_generate(user_query) and not _fuzzy_has_schedule(user_query):
             logger.info("[INTENT] keyword fast-path → query_database session=%s", session_id)
             from backend.sql_agent import handle_db_query
             return await handle_db_query(user_query, session_id=session_id)
+
+    # -- Keyword fast-path: status lookups (skip LLM on obvious status phrasing) --
+    if not _is_staged_session(session) and not is_reset and _fuzzy_has_status(user_query):
+        raw_query = user_query.strip()
+        extracted_query = _extract_status_search_terms(raw_query)
+        for candidate in (raw_query, extracted_query):
+            if not candidate:
+                continue
+            matches = find_matching_reports(candidate)
+            if matches:
+                logger.info(
+                    "[INTENT] status fast-path query=%r matched %d report(s) session=%s",
+                    candidate, len(matches), session_id,
+                )
+                if session_id:
+                    _session_context[session_id] = {"last_search_terms": candidate}
+                result = get_report_status(candidate)
+                if allowed_form_ids is not None:
+                    result = _apply_auth_to_status_result(result, allowed_form_ids)
+                return _from_result(result, intent="get_status", session_id=session_id)
 
     # -- Normal intent extraction ---------------------------------------------
     try:
@@ -769,6 +925,36 @@ async def decide(
         "[INTENT] intent=%s search_terms=%r reporting_date=%r session=%s",
         intent, search_terms, reporting_date, session_id,
     )
+
+    # -- Database Q&A Routing (LLM-extracted intents starting with "db_") ------
+    # Intents like db_my_profile, db_list_users, db_list_departments, etc.
+    # are extracted by the LLM and contain DB Q&A-specific entities.
+    if intent.startswith("db_"):
+        logger.info(
+            "[INTENT] db_qa_intent=%s target_user=%s target_dept=%s query_type=%s",
+            intent, extracted.get("target_user"), extracted.get("target_department"), 
+            extracted.get("query_type"),
+        )
+        from backend.agent.db_qa_router import handle_db_qa_query
+        try:
+            # Prefer login_id when user_id is missing, "0", or a session GUID
+            final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
+            final_role_id = role_id if role_id and role_id != "0" else "0"
+            return handle_db_qa_query(
+                message=user_query,
+                intent=intent,
+                params=extracted,  # Contains all LLM-extracted entities
+                user_id=final_user_id,
+                role_id=final_role_id,
+                beautify=False,  # Disabled for speed
+            )
+        except Exception as exc:
+            logger.exception("[DB_QA_ERROR] intent=%s error=%s", intent, exc)
+            return {
+                "result": f"Error processing database query: {str(exc)}",
+                "db_found": False,
+                "result_type": "error",
+            }
 
     if intent == "query_database":
         logger.info("[INTENT] routing to SQL agent for session=%s", session_id)
@@ -802,6 +988,13 @@ async def decide(
                 'Try: "Status of CIMS_RAQ", "Generate CIMS_RAQ for 30-Jun-2024", '
                 'or "Schedule RAQ for 15-Apr-2026 at 4 PM".'
             )
+        # ── Debug trace: LLM generic fallback is firing ──────────────────────────────
+        debug_log(
+            "LLM GENERIC FALLBACK",
+            question=user_query,
+            fallback_reason="intent='unknown' — no DB Q&A match, no report name resolved, using LLM answer",
+            response_preview=reply[:100],
+        )
         return _build(intent="unknown", report_name=None, response_text=reply)
 
     # Fall back to session cache for follow-up turns (e.g. user just says "status?")

@@ -1,0 +1,501 @@
+﻿{
+  "catalog_title": "iDEAL Application Database â€” User Question Catalog (Access-Tiered)",
+  "description": "Questions split into two access tiers. Admin/Superuser can ask all questions. Regular users can only query information about themselves or data directly related to them.",
+  "access_levels": {
+    "admin": "Admin User / Superuser â€” full visibility across all users, departments, returns, logs, and system configuration.",
+    "self": "Regular User â€” restricted to their own profile, their department's returns, their role's permissions, and their own submissions only."
+  },
+  "sources": ["XML_User.xml", "XML_Dept.xml", "XML_Role.xml", "XML_RoleAccess.xml", "XML_UserLevels.xml", "XML_Period.xml", "Returns.xml", "NonXBRLReturns.xml", "XML_Option.xml", "XML_InstanceLog.xml", "XML_Segment.xml", "XML_BankDetail.xml", "XML_Audit.xml", "XML_ErrorLog.xml", "XML_UploadedFileLog.xml", "XML_CrossValidationLog.xml"],
+  "categories": [
+
+    {
+      "id": "USER",
+      "title": "User Management",
+      "description": "Questions about user accounts, profile details, login activity, and account status.",
+      "admin_only": [
+        " ?",
+        "Who are all the inactive (disabled) users?",
+        "What is the department of user [other username]?",
+        "What is the role assigned to user [other username]?",
+        "Which users belong to department [department name]?",
+        "Which users are assigned role [role name]?",
+        "How many users are there in total?",
+        "How many active users are there?",
+        "What is the email address of user [other username]?",
+        "What is the mobile number of user [other username]?",
+        "When did user [other username] last log in?",
+        "Which users have never logged in?",
+        "Which users have failed login attempts?",
+        "How many failed login attempts does user [other username] have?",
+        "When was user [other username] created?",
+        "Who created user [other username]?",
+        "When did user [other username] last update their password?",
+        "Which users have not updated their password recently?",
+        "What is the login ID of user [other username]?",
+        "What is the user code for [other username]?",
+        "List all users along with their roles and departments.",
+        "Are there any duplicate email addresses across users?",
+        "Which users are associated with department ID [ID]?",
+        "What are the details of user with ID [user ID]?"
+      ],
+      "self_service": [
+        " ",
+        "What role am I assigned?",
+        "What is my email address?",
+        "What is my mobile number on record?",
+        "When did I last log in?",
+        "When was my account created?",
+        "Who created my account?",
+        "When did I last update my password?",
+        "What is my login ID?",
+        "What is my user code?",
+        "Is my account currently active?",
+        "How many failed login attempts does my account have?"
+      ]
+    },
+
+    {
+      "id": "DEPARTMENT",
+      "title": "Department Management",
+      "description": "Questions about departments, their assigned returns, and configuration.",
+      "admin_only": [
+        "What are all the departments in the system?",
+        "Which departments are currently active?",
+        "Which departments are inactive?",
+        "Which XBRL returns are assigned to department [other department name]?",
+        "Which Non-XBRL returns are assigned to department [other department name]?",
+        "How many XBRL returns does department [other department name] have access to?",
+        "How many Non-XBRL returns does department [other department name] have access to?",
+        "Which departments have access to return [return name]?",
+        "How many departments have access to return [return name]?",
+        "What is the email address of department [department name]?",
+        "How many departments are there in total?",
+        "Which department has the most returns assigned?",
+        "Which department has the fewest returns assigned?",
+        "Which departments have no returns assigned?",
+        "List all departments along with their assigned return counts.",
+        "What is the department ID of [department name]?"
+      ],
+      "self_service": [
+        "What department am I in?",
+        "Which XBRL returns does my department have access to?",
+        "Which Non-XBRL returns does my department have access to?",
+        "How many returns does my department have access to?",
+        "Does my department have access to return [return name]?",
+        "What is the email address of my department?"
+      ]
+    },
+
+    {
+      "id": "ROLE",
+      "title": "Role Management",
+      "description": "Questions about roles, their names, status, and user assignments.",
+      "admin_only": [
+        "What are all the roles defined in the system?",
+        "Which roles are currently active?",
+        "Which roles are inactive / disabled?",
+        "Which users are assigned the [role name] role?",
+        "How many users have the Admin User role?",
+        "Which role has the most users?",
+        "List all roles along with the number of users in each.",
+        "How many roles are there in total?",
+        "What is the role ID for [role name]?",
+        "What is the name of role ID [role ID]?",
+        "Is there a role called [role name] in the system?"
+      ],
+      "self_service": [
+        "What is my role?",
+        "What is the name of my role?",
+        "What is my role ID?",
+        "Is my role currently active?",
+        "How many other users share the same role as me?"
+      ]
+    },
+
+    {
+      "id": "ROLE_ACCESS",
+      "title": "Role Access & Permissions",
+      "description": "Questions about what actions each role is permitted to perform on each module.",
+      "admin_only": [
+        "What permissions does the [role name] role have?",
+        "Can role [role name] create new users?",
+        "Can role [role name] edit department settings?",
+        "Can role [role name] approve instances?",
+        "Can role [role name] view the audit log?",
+        "Which roles have full access (create + edit + view + approve) to [module name]?",
+        "Which roles can approve data preparation?",
+        "Which roles can create XBRL instances?",
+        "Which roles have view-only access to returns?",
+        "Does role [role name] have access to the SDMX generation module?",
+        "Does role [role name] have access to cross-validation?",
+        "What is the difference in permissions between [role A] and [role B]?",
+        "Which modules does the Admin User role have full control over?",
+        "Can the Tester role edit any module?",
+        "Which roles have no edit or create permissions at all?",
+        "Which roles can access the Balance Sheet module?",
+        "Which roles have approval rights for the audit log?",
+        "What actions can role [role name] perform on the notification module?",
+        "Can the QA Analyst role run cross-validation?",
+        "Which roles can upload Non-XBRL files?",
+        "List all modules accessible to role [role name].",
+        "Which roles have access to the NXQueryBuilder?",
+        "What does role [role name] NOT have access to?",
+        "Which roles can generate SDMX?",
+        "Can role [role name] disable the maker-checker workflow?"
+      ],
+      "self_service": [
+        "What permissions do I have in the system?",
+        "Can I create new users?",
+        "Can I edit department settings?",
+        "Can I approve submissions?",
+        "Can I view the audit log?",
+        "Can I run cross-validation?",
+        "Can I generate SDMX?",
+        "Can I upload Non-XBRL files?",
+        "Can I create XBRL instances?",
+        "Can I access the Balance Sheet module?",
+        "Can I disable the maker-checker workflow?",
+        "Can I access data preparation?",
+        "What modules am I allowed to access?",
+        "What actions can I perform on the notification module?",
+        "Do I have approval rights for any module?",
+        "Am I allowed to edit return configurations?",
+        "What do I NOT have access to in this application?",
+        "Can I view the SDMX log?",
+        "Can I add or edit providers?"
+      ]
+    },
+
+    {
+      "id": "USER_LEVEL",
+      "title": "User Levels",
+      "description": "Questions about L1 / L2 / L3 user levels.",
+      "admin_only": [
+        "What user levels are defined in the system?",
+        "How many user levels exist?",
+        "Are all user levels currently active?",
+        "Which users are at level L1?",
+        "Which users are at level L2?",
+        "Which users are at level L3?"
+      ],
+      "self_service": [
+        "What is my user level?",
+        "What is the meaning of my user level (L1 / L2 / L3)?",
+        "What is the level ID assigned to me?"
+      ]
+    },
+
+    {
+      "id": "PERIOD",
+      "title": "Reporting Periods & Frequencies",
+      "description": "Questions about reporting frequencies and period definitions. Reference data â€” accessible to all users.",
+      "admin_only": [
+        "Which periods have an advance notification period greater than [N] days?",
+        "Are there any returns with no advance notification days configured?",
+        "List all reporting frequencies with their EBR codes."
+      ],
+      "self_service": [
+        "What are all the reporting periods/frequencies defined in the system?",
+        "What is the period name for period ID [ID]?",
+        "How many advance notification days are given for [period name] returns?",
+        "Which returns are filed on a monthly basis?",
+        "Which returns are filed quarterly?",
+        "Which returns are filed annually?",
+        "What is the EBR frequency code for [period name]?",
+        "What is the difference between QF and QAD frequencies?",
+        "How many reporting frequencies are defined?",
+        "What is the period ID for the Half Yearly frequency?",
+        "What is the advance notification days for daily returns?",
+        "Which period ID represents fortnightly reporting?"
+      ]
+    },
+
+    {
+      "id": "XBRL_RETURNS",
+      "title": "XBRL Returns",
+      "description": "Questions about XBRL regulatory returns. Return metadata is system-wide reference; access-specific questions are scoped to the user's department.",
+      "admin_only": [
+        "What are all the XBRL returns available in the system?",
+        "Which XBRL returns are currently active?",
+        "Which XBRL returns are inactive / disabled?",
+        "How many XBRL returns are there in total?",
+        "Which returns have both formula validation and schema-calculation validation enabled?",
+        "Which returns have RBI validation enabled?",
+        "Which returns use the large validator?",
+        "List all returns along with their due days and frequency.",
+        "Which returns are CIMS-enabled?",
+        "Which returns use the table linkbase (IsTBL)?",
+        "Which returns belong to the DPSS category?",
+        "Which returns belong to the DBS category?",
+        "Which returns belong to the DBR category?",
+        "Which departments can submit the DPSS09 return?",
+        "Which departments can submit the DBR01 return?",
+        "Which returns have a due period of more than 21 days?",
+        "What is the internal form ID for return [return name]?"
+      ],
+      "self_service": [
+        "Which XBRL returns can I submit?",
+        "What is the return ID for [return name]?",
+        "What version of the taxonomy does return [return name] use?",
+        "What is the XSD path for return [return name]?",
+        "Which of my returns are filed quarterly?",
+        "Which of my returns are filed monthly?",
+        "How many days are due for submission of return [return name]?",
+        "Does return [return name] require encryption?",
+        "Does return [return name] require formula validation?",
+        "Does return [return name] use schema-calculation validation?",
+        "Is return [return name] CIMS-enabled?",
+        "What is the base Excel file for return [return name]?",
+        "What is the table linkbase path for return [return name]?",
+        "What is the alternate name for return [return name]?",
+        "What are the namespace details for return [return name]?",
+        "What is the reporting frequency of return [return name]?"
+      ]
+    },
+
+    {
+      "id": "NON_XBRL_RETURNS",
+      "title": "Non-XBRL Returns (Excel-Based)",
+      "description": "Questions about Non-XBRL / Excel-based returns.",
+      "admin_only": [
+        "How many Non-XBRL returns are there in total?",
+        "Which Non-XBRL returns have no due days configured?",
+        "List all Non-XBRL returns with their return IDs and frequencies.",
+        "Which Non-XBRL returns have a folder structure?",
+        "Which departments can access Non-XBRL return [return name]?"
+      ],
+      "self_service": [
+        "Which Non-XBRL returns can I submit?",
+        "What is the base file template for Non-XBRL return [return name]?",
+        "What is the period/frequency of Non-XBRL return [return name]?",
+        "How many due days does Non-XBRL return [return name] have?",
+        "Is Non-XBRL return [return name] CIMS-enabled?",
+        "What is the job processing ID for Non-XBRL return [return name]?",
+        "How many Non-XBRL returns do I have access to?"
+      ]
+    },
+
+    {
+      "id": "DEPT_RETURN_MAPPING",
+      "title": "Department â†” Return Access Mapping",
+      "description": "Cross-entity questions linking departments to the returns they can access.",
+      "admin_only": [
+        "Which departments have access to return [return name]?",
+        "How many departments have access to return [return name]?",
+        "Which departments can submit the [return name] return?",
+        "Which return is accessible by the maximum number of departments?",
+        "Which returns are accessible by all departments?",
+        "Which department has access to the most returns?",
+        "Which Non-XBRL returns can department [other department name] access?",
+        "What is the complete list of returns for department [other department name]?"
+      ],
+      "self_service": [
+        "Which returns does my department have access to?",
+        "Does my department have access to XBRL return [return ID]?",
+        "Does my department have access to Non-XBRL return [return ID]?",
+        "What is the complete list of returns I can work with?",
+        "How many returns can I access in total?"
+      ]
+    },
+
+    {
+      "id": "INSTANCE_LOG",
+      "title": "Submission & Instance Log",
+      "description": "Questions about XBRL instance submissions, status, approvals, and CIMS upload state.",
+      "admin_only": [
+        "What are all recent submissions made for return [return name] across all users?",
+        "Which submissions are pending approval across all users?",
+        "Which submissions made by user [other username] are still pending?",
+        "Who approved submission [ID]?",
+        "Which users have submitted return [return name]?",
+        "How many submissions are there for return [return name] this quarter across all users?",
+        "Show all submissions between [start date] and [end date] across all users.",
+        "Which submissions have been uploaded to CIMS successfully?",
+        "Which submissions failed CIMS upload?",
+        "How many submissions have the status Audited system-wide?",
+        "What is the total number of submissions in the system?",
+        "Which submissions are rejected and what is the rejection reason?",
+        "Show submissions made by all users for return [return name] in [period].",
+        "Which submissions have an error document generated?",
+        "Which submissions have Un-Audited status?"
+      ],
+      "self_service": [
+        "What is the status of my submission ID [ID]?",
+        "Which of my submissions are pending approval?",
+        "Which of my submissions have been approved?",
+        "Which of my submissions have been audited?",
+        "When was my submission [ID] approved?",
+        "Which submissions have I made for return [return name]?",
+        "Which of my submissions were made for reporting date [date]?",
+        "Has my submission [ID] been uploaded to CIMS?",
+        "Did my CIMS upload for submission [ID] succeed?",
+        "Was my submission [ID] rejected? What is the rejection reason?",
+        "How many submissions have I made for return [return name] this quarter?",
+        "Does my submission [ID] have an error document?",
+        "What is the instance document path for my submission [ID]?",
+        "What is the CIMS upload status for my submission [ID]?",
+        "Show all my submissions between [start date] and [end date].",
+        "Which returns have I submitted so far?",
+        "What is the rendered Excel / HTML report path for my submission [ID]?",
+        "Does my submission [ID] have any comments or remarks?"
+      ]
+    },
+
+    {
+      "id": "MENU_OPTIONS",
+      "title": "Application Menu & Module Options",
+      "description": "Questions about application modules and menu structure.",
+      "admin_only": [
+        "How many top-level menu items are there?",
+        "What modules are available in the entire application?",
+        "Which modules open in a new tab?",
+        "What is the menu rank/order of module [module name]?"
+      ],
+      "self_service": [
+        "What modules am I able to see in the menu?",
+        "What are the child modules under [parent module name]?",
+        "What is the resource label for module [option ID]?",
+        "What is the icon for module [module name]?",
+        "What is the parent module of [module name]?",
+        "Is the Business Analytics module available to me?",
+        "What modules are under the ETL/Workflow section?",
+        "What modules fall under the Data Management section?"
+      ]
+    },
+
+    {
+      "id": "AUDIT_SECURITY",
+      "title": "Audit, Security & Access History",
+      "description": "Questions about audit trails, user activity, and security events.",
+      "admin_only": [
+        "What changes were made by user [other username] in the last [N] days?",
+        "Who last modified the configuration for [module/entity]?",
+        "Show the audit trail for department [name].",
+        "Show the audit trail for return [return name].",
+        "Which users have had their passwords reset?",
+        "Are there any pending password reset requests?",
+        "Which users have exceeded the maximum failed login attempts?",
+        "Show all changes made to user [other username]'s profile.",
+        "Which users have been deactivated and when?",
+        "Show all SDMX generation logs for return [return name].",
+        "Which file uploads failed in the last [N] days across all users?",
+        "Are there any cross-validation errors logged for return [return name]?",
+        "What actions were taken on submission [ID] by any user?",
+        "Who last approved a submission for return [return name]?",
+        "What errors were recorded for submission [ID] of another user?"
+      ],
+      "self_service": [
+        "What changes have I made in the system in the last [N] days?",
+        "Has my password ever been reset?",
+        "Do I have a pending password reset request?",
+        "What actions have I taken on submission [ID]?",
+        "Show my activity history in the application.",
+        "Have any of my file uploads failed recently?",
+        "What errors were recorded for my submission [ID]?",
+        "When did I last change my password?",
+        "Has my account been locked due to failed logins?"
+      ]
+    },
+
+    {
+      "id": "CROSS_ENTITY",
+      "title": "Cross-Entity / Combined Questions",
+      "description": "Questions joining multiple entities (user + role + department + return + log).",
+      "admin_only": [
+        "Which users have access to return [return name] via their department?",
+        "What actions can user [other username] perform in the system?",
+        "Can user [other username] approve submissions?",
+        "Can user [other username] create new users?",
+        "Who in department [name] can approve submissions?",
+        "Which users have both Admin role and belong to department [name]?",
+        "Which users with the [role name] role have access to return [return name]?",
+        "Give a full profile summary of user [other username] including role, department, and accessible returns.",
+        "Which department + role combination has the broadest system access?",
+        "Who has approval rights for the audit log across all departments?",
+        "Which active users have not logged in for more than [N] days?",
+        "Who submitted return [return name] most recently and what was the outcome?",
+        "Which users can generate SDMX for return [return name]?",
+        "List all users who have both data preparation and approval rights."
+      ],
+      "self_service": [
+        "What returns can I submit based on my department?",
+        "What can I do in the system based on my role?",
+        "Can I approve submissions?",
+        "Can I create new users?",
+        "Give me a full summary of my access â€” role, department, and returns.",
+        "Which of my assigned returns are due this month?",
+        "Which of my returns require formula validation?",
+        "What is my full permission profile in this application?",
+        "Can I run cross-validation for return [return name]?",
+        "Have I ever submitted return [return name] before?",
+        "What is the status of my most recent submission?",
+        "Which of my submissions are still awaiting CIMS upload?",
+        "Which returns assigned to my department have I not yet submitted this period?"
+      ]
+    },
+
+    {
+      "id": "BANK_SEGMENT",
+      "title": "Bank & Segment Details",
+      "description": "System-wide reference data â€” accessible to all users.",
+      "admin_only": [],
+      "self_service": [
+        "What is the bank name configured in the system?",
+        "What is the bank code?",
+        "What type of bank is this (Indian / Foreign)?",
+        "What is the CRR/IFSC code of the bank?",
+        "What segment types are defined in the system?",
+        "What is the difference between Segment and Scenario dimension types?",
+        "How many segment types are configured?",
+        "What is the Segment_Id for the Scenario dimension?"
+      ]
+    },
+
+    {
+      "id": "SCHEDULER_NOTIFICATIONS",
+      "title": "Scheduler, Notifications & Alerts",
+      "description": "Questions about scheduled jobs, notification formats, and alert configuration.",
+      "admin_only": [
+        "What notifications are configured in the system?",
+        "Which returns have notifications enabled?",
+        "What is the email format for notification type [name]?",
+        "What is the SMS format for notification type [name]?",
+        "Which users are configured to receive notifications for return [return name]?",
+        "Are there scheduled jobs configured for return [return name]?",
+        "Which returns have no notification configured?",
+        "Are SMS notifications enabled for return [return name]?"
+      ],
+      "self_service": [
+        "Which of my returns have notifications enabled?",
+        "How many days before the due date will I be notified for return [return name]?",
+        "What is the advance notification period for return [return name]?",
+        "Will I receive an SMS reminder for return [return name]?",
+        "Am I configured to receive notifications for return [return name]?"
+      ]
+    },
+
+    {
+      "id": "VALIDATION",
+      "title": "Validation & Business Rules",
+      "description": "Questions about validation rules, formula checks, and cross-report validation.",
+      "admin_only": [
+        "Which returns have cross-report validation configured?",
+        "Which returns have had validation errors in recent submissions across all users?",
+        "Are there any disabled returns currently excluded from validation?",
+        "Which returns are in the disabled returns list?",
+        "List all returns with their validation configuration (formula + schema + RBI)."
+      ],
+      "self_service": [
+        "Which of my returns have formula validation enabled?",
+        "Which of my returns have schema-calculation validation enabled?",
+        "Does return [return name] use the RBI validation engine?",
+        "What are the business rules for return [return name]?",
+        "What validation rules apply to return [return name]?",
+        "What is the cross-validation configuration for return [return name]?",
+        "Have any of my submissions had validation errors?",
+        "What are the mandatory BSR header fields for return [return name]?"
+      ]
+    }
+
+  ]
+}
