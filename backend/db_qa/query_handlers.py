@@ -345,10 +345,11 @@ def handle_my_role_permissions(store: XMLStore, params: dict, user_id: str, is_a
     role_name = store.role_name_by_id(role_id)
 
     target_action = params.get("target_action")
-    accesses = [a for a in store.role_access() if get_attr(a, "RoleId", "Role_Id") == role_id]
+    accesses = [store.enrich_role_access(a)
+                for a in store.role_access()
+                if get_attr(a, "RoleId", "Role_Id") == role_id]
 
     if target_action:
-        # Filter to rows where the specific action is true
         allowed = [a for a in accesses if a.get(target_action, "false").lower() == "true"]
         return _result("MY_ROLE_PERMISSIONS", f"My '{target_action}' Permissions",
                        allowed, f"Your role '{role_name}' has {target_action} access on {len(allowed)} module(s).",
@@ -397,15 +398,17 @@ def handle_my_submissions(store: XMLStore, params: dict, user_id: str, is_admin:
     login_id = u.get("LoginId", user_id) if u else user_id
     numeric_id = u.get("UserId", user_id) if u else user_id
     match_ids = {str(login_id), str(numeric_id), str(user_id)}
-    logs = [l for l in store.instance_log() if l.get("UserId") in match_ids]
-    enriched = []
-    for l in logs:
-        r = dict(l)
-        r["StatusLabel"] = SUBMISSION_STATUS_LABELS.get(r.get("Status", ""), r.get("Status", ""))
-        r["ReturnName"] = store.return_name_by_id(r.get("FormId", ""))
-        enriched.append(r)
+    enriched = [
+        store.enrich_instance_log_entry(l)
+        for l in store.instance_log()
+        if l.get("UserId") in match_ids
+    ]
+    pending = sum(1 for e in enriched if e.get("Status", "") in ("0", "1", "2"))
+    approved = sum(1 for e in enriched if e.get("Status", "") in ("9", "11"))
     return _result("MY_SUBMISSIONS", "My Submissions",
-                   enriched, f"You have {len(enriched)} submission record(s).", count=len(enriched))
+                   enriched,
+                   f"You have {len(enriched)} submission record(s): {approved} approved, {pending} pending.",
+                   count=len(enriched), approved=approved, pending=pending)
 
 
 # ── DEPARTMENT ────────────────────────────────────────────────────────────────
@@ -426,8 +429,22 @@ def handle_dept_info(store: XMLStore, params: dict, user_id: str, is_admin: bool
     if not dept:
         return _not_found("DEPT_INFO", "Department Info",
                           f"Department '{target}' not found." if target else "Please specify a department name.")
-    return _result("DEPT_INFO", f"Department: {dept.get('Name')}", [dept],
-                   f"Details for department '{dept.get('Name')}'.")
+    dept_id = get_attr(dept, "DeptId", "Id", default="")
+    user_count = sum(1 for u in store.users() if get_attr(u, "DepartmentId", "DeptId") == dept_id)
+    form_ids   = {f.strip() for f in dept.get("Forms",   "").split("|") if f.strip()}
+    nx_ids     = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
+    xbrl_count = sum(1 for r in store.returns()
+                     if r.get("Id") in form_ids or r.get("ReturnId") in form_ids)
+    non_xbrl_count = sum(1 for r in store.non_xbrl_returns()
+                         if r.get("Id") in nx_ids or r.get("ReturnId") in nx_ids)
+    enriched = dict(dept)
+    enriched["UserCount"]          = user_count
+    enriched["XBRLReturnCount"]    = xbrl_count
+    enriched["NonXBRLReturnCount"] = non_xbrl_count
+    enriched["TotalReturnCount"]   = xbrl_count + non_xbrl_count
+    dept_name = dept.get("Name", target)
+    return _result("DEPT_INFO", f"Department: {dept_name}", [enriched],
+                   f"Department '{dept_name}' has {user_count} user(s) and {xbrl_count + non_xbrl_count} assigned return(s).")
 
 
 def handle_dept_returns(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
@@ -472,7 +489,9 @@ def handle_role_permissions(store: XMLStore, params: dict, user_id: str, is_admi
         return _not_found("ROLE_PERMISSIONS", "Role Permissions",
                           f"Role '{target}' not found." if target else "Please specify a role name.")
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
-    accesses = [a for a in store.role_access() if get_attr(a, "RoleId", "Role_Id") == role_id]
+    accesses = [store.enrich_role_access(a)
+                for a in store.role_access()
+                if get_attr(a, "RoleId", "Role_Id") == role_id]
     return _result("ROLE_PERMISSIONS", f"Permissions for Role: {role.get('Name')}",
                    accesses,
                    f"Role '{role.get('Name')}' has permissions on {len(accesses)} module(s).",
@@ -505,7 +524,9 @@ def handle_permission_check(store: XMLStore, params: dict, user_id: str, is_admi
         return _not_found("PERMISSION_CHECK", "Permission Check",
                           f"Role '{target_role}' not found." if target_role else "Please specify a role and action.")
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
-    accesses = [a for a in store.role_access() if get_attr(a, "RoleId", "Role_Id") == role_id]
+    accesses = [store.enrich_role_access(a)
+                for a in store.role_access()
+                if get_attr(a, "RoleId", "Role_Id") == role_id]
     if target_action:
         allowed = [a for a in accesses if a.get(target_action, "false").lower() == "true"]
         return _result("PERMISSION_CHECK",
@@ -603,10 +624,8 @@ def handle_non_xbrl_list(store: XMLStore, params: dict, user_id: str, is_admin: 
 # ── INSTANCE LOG (submissions) ────────────────────────────────────────────────
 
 def _enrich_log(store: XMLStore, log: dict) -> dict:
-    r = dict(log)
-    r["StatusLabel"] = SUBMISSION_STATUS_LABELS.get(r.get("Status", ""), r.get("Status", "Unknown"))
-    r["ReturnName"] = store.return_name_by_id(r.get("FormId", ""))
-    return r
+    """Delegate to XMLStore so all enrichment logic stays in one place."""
+    return store.enrich_instance_log_entry(log)
 
 
 def handle_submission_list(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
@@ -706,7 +725,9 @@ def _audit_login_ids(store: XMLStore, user_id: str) -> set[str]:
 def handle_my_audit_log(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
     """What changes have I made in the system? — XML_Audit.xml filtered by LoginId."""
     ids = _audit_login_ids(store, user_id)
-    entries = [e for e in store.audit_log() if e.get("UserId", "") in ids]
+    entries = [store.enrich_log_entry(e)
+               for e in store.audit_log()
+               if e.get("UserId", "") in ids]
     entries.sort(key=lambda e: e.get("AuditDateTime", ""), reverse=True)
     return _result("MY_AUDIT_LOG", "My Activity History",
                    entries,
@@ -717,7 +738,9 @@ def handle_my_audit_log(store: XMLStore, params: dict, user_id: str, is_admin: b
 def handle_my_upload_log(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
     """Have any of my file uploads failed recently? — XML_UploadedFileLog.xml."""
     ids = _audit_login_ids(store, user_id)
-    entries = [e for e in store.upload_file_log() if e.get("UserId", "") in ids]
+    entries = [store.enrich_log_entry(e)
+               for e in store.upload_file_log()
+               if e.get("UserId", "") in ids]
     return _result("MY_UPLOAD_LOG", "My File Uploads",
                    entries,
                    f"Found {len(entries)} file upload record(s) for your account.",
@@ -727,8 +750,10 @@ def handle_my_upload_log(store: XMLStore, params: dict, user_id: str, is_admin: 
 def handle_my_cross_validation_log(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
     """What cross-validation errors were recorded for my submissions?"""
     ids = _audit_login_ids(store, user_id)
-    entries = [e for e in store.cross_validation_log() if e.get("GeneratedBy", "") in ids]
-    failed  = [e for e in entries if e.get("Status", "").lower() == "fail"]
+    entries = [store.enrich_cross_val_entry(e)
+               for e in store.cross_validation_log()
+               if e.get("GeneratedBy", "") in ids]
+    failed = [e for e in entries if e.get("Status", "").lower() == "fail"]
     return _result("MY_CROSS_VAL_LOG", "My Cross-Validation Results",
                    entries,
                    f"Found {len(entries)} cross-validation run(s); {len(failed)} failure(s).",
@@ -740,10 +765,12 @@ def handle_audit_log(store: XMLStore, params: dict, user_id: str, is_admin: bool
     if not is_admin:
         return _admin_denied("AUDIT_LOG")
     target = params.get("target_user", "")
-    entries = list(store.audit_log())
+    entries = [store.enrich_log_entry(e) for e in store.audit_log()]
     if target:
         t = target.lower()
-        entries = [e for e in entries if t in e.get("UserId", "").lower()]
+        entries = [e for e in entries
+                   if t in e.get("UserId", "").lower()
+                   or t in e.get("UserName", "").lower()]
     entries.sort(key=lambda e: e.get("AuditDateTime", ""), reverse=True)
     return _result("AUDIT_LOG", "Audit Log",
                    entries,
@@ -756,7 +783,7 @@ def handle_cross_validation_log(store: XMLStore, params: dict, user_id: str, is_
     if not is_admin:
         return _admin_denied("CROSS_VAL_LOG")
     target = params.get("target_return", "")
-    entries = list(store.cross_validation_log())
+    entries = [store.enrich_cross_val_entry(e) for e in store.cross_validation_log()]
     if target:
         t = target.lower()
         entries = [e for e in entries
@@ -774,7 +801,9 @@ def handle_upload_log(store: XMLStore, params: dict, user_id: str, is_admin: boo
     """Admin: all uploaded file logs."""
     if not is_admin:
         return _admin_denied("UPLOAD_LOG")
-    entries = [e for e in store.upload_file_log() if e.get("FileName", "").strip()]
+    entries = [store.enrich_log_entry(e)
+               for e in store.upload_file_log()
+               if e.get("FileName", "").strip()]
     return _result("UPLOAD_LOG", "Uploaded File Log",
                    entries,
                    f"Found {len(entries)} file upload record(s).",

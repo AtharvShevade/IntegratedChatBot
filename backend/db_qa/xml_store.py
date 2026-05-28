@@ -203,20 +203,46 @@ class XMLStore:
                 return r.get("Name", rid)
         return return_id
 
+    def _user_index(self) -> tuple[dict, dict]:
+        """Build and cache (by_id, by_loginid) lookup maps from XML_User.xml.
+
+        Avoids repeated O(n) linear scans across the user list for every call.
+        The index is stored in the shared _cache under a sentinel key so it is
+        built at most once per XMLStore lifetime.
+        """
+        key = "__user_index__"
+        if key not in self._cache:
+            by_id: dict[str, dict] = {}
+            by_loginid: dict[str, dict] = {}
+            for u in self.users():
+                uid = u.get("UserId", "")
+                lid = u.get("LoginId", "").strip().lower()
+                if uid:
+                    by_id[str(uid)] = u
+                if lid:
+                    by_loginid[lid] = u
+            self._cache[key] = (by_id, by_loginid)  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
+
     def user_by_id(self, user_id: str) -> dict | None:
-        uid = str(user_id)
-        for u in self.users():
-            if u.get("UserId") == uid:
-                return _safe(u)
-        return None
+        by_id, _ = self._user_index()
+        u = by_id.get(str(user_id))
+        return _safe(u) if u else None
 
     def user_by_name(self, name: str) -> dict | None:
         """Find a user by display Name, LoginId, or numeric UserId string."""
         nl = name.strip().lower()
+        by_id, by_loginid = self._user_index()
+        # O(1): LoginId index
+        if nl in by_loginid:
+            return _safe(by_loginid[nl])
+        # O(1): numeric UserId
+        u = by_id.get(name.strip())
+        if u:
+            return _safe(u)
+        # Fallback: linear scan on display Name only
         for u in self.users():
-            if (u.get("Name", "").lower() == nl
-                    or u.get("LoginId", "").lower() == nl
-                    or u.get("UserId", "") == name.strip()):
+            if u.get("Name", "").strip().lower() == nl:
                 return _safe(u)
         return None
 
@@ -290,3 +316,56 @@ class XMLStore:
                 return lvl_name, levels.get(lvl_name, "")
 
         return None, None
+
+    # ── enrichment helpers ───────────────────────────────────────────────────
+
+    def option_name_by_id(self, option_id: str) -> str:
+        """Return human-readable OptionName for an OptionId from XML_Option.xml."""
+        for o in self.options():
+            if o.get("OptionId") == option_id:
+                return o.get("OptionName", option_id)
+        return option_id
+
+    def enrich_role_access(self, access: dict) -> dict:
+        """Add OptionName (human-readable module name) to a RoleAccess row."""
+        r = dict(access)
+        r["OptionName"] = self.option_name_by_id(r.get("OptionId", ""))
+        return r
+
+    def login_id_to_name(self, login_id: str) -> str:
+        """Resolve a LoginId string to the user's display Name (best-effort)."""
+        if not login_id:
+            return login_id
+        u = self.user_by_name(login_id)
+        return u.get("Name", login_id) if u else login_id
+
+    def enrich_log_entry(self, entry: dict, id_field: str = "UserId") -> dict:
+        """Add UserName by resolving *id_field* (LoginId) in audit/upload log rows."""
+        r = dict(entry)
+        login_id = r.get(id_field, "")
+        if login_id:
+            r["UserName"] = self.login_id_to_name(login_id)
+        return r
+
+    def enrich_cross_val_entry(self, entry: dict) -> dict:
+        """Enrich a cross-validation log row with UserName (resolved from GeneratedBy)."""
+        r = dict(entry)
+        generated_by = r.get("GeneratedBy", "")
+        if generated_by:
+            r["UserName"] = self.login_id_to_name(generated_by)
+        return r
+
+    def enrich_instance_log_entry(self, log_entry: dict) -> dict:
+        """Enrich an instance log row with StatusLabel, ReturnName, and UserName.
+
+        XML_InstanceLog.xml stores LoginId (e.g. 'iris810') in its UserId field,
+        not the numeric UserId from XML_User.xml.  This method resolves that to a
+        display Name so callers get 'Abhay Pandey' instead of 'iris810'.
+        """
+        r = dict(log_entry)
+        r["StatusLabel"] = SUBMISSION_STATUS_LABELS.get(r.get("Status", ""), r.get("Status", "Unknown"))
+        r["ReturnName"] = self.return_name_by_id(r.get("FormId", ""))
+        login_id = r.get("UserId", "")
+        if login_id:
+            r["UserName"] = self.login_id_to_name(login_id)
+        return r
