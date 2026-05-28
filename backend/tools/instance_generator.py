@@ -106,25 +106,57 @@ def resolve_return_exact(report_name: str) -> dict | None:
 
 # -- Date validation ------------------------------------------------------------
 
-def _hint_dates(frequency: str, year: int) -> list[str]:
-    """Return a short list of example valid dates for a frequency."""
+def _hint_dates(frequency: str, year: int, *, filter_future: bool = True) -> list[str]:
+    """Return a short list of example valid dates for a frequency.
+
+    When *filter_future* is True (default), any suggestion that falls after
+    today's date is excluded.  This prevents displaying future dates as
+    selectable options — users should never see invalid suggestions.
+    """
     freq = (frequency or "").upper()
-    if freq == "Q":
-        return [f"31-Mar-{year}", f"30-Jun-{year}", f"30-Sep-{year}", f"31-Dec-{year}"]
-    if freq == "H":
-        return [f"31-Mar-{year}", f"30-Sep-{year}"]
-    if freq == "C":
-        return [f"30-Jun-{year}", f"31-Dec-{year}"]
-    if freq == "Y":
-        return [f"31-Mar-{year}", f"31-Mar-{year - 1}"]
-    if freq == "B":
-        return [f"31-Dec-{year}", f"31-Dec-{year - 1}"]
     today = date.today()
-    last  = calendar.monthrange(today.year, today.month)[1]
-    if freq == "M":
-        mname = today.strftime("%b")
-        return [f"{last:02d}-{mname}-{today.year}"]
-    return []
+
+    candidates: list[str] = []
+    if freq == "Q":
+        candidates = [f"31-Mar-{year}", f"30-Jun-{year}", f"30-Sep-{year}", f"31-Dec-{year}"]
+        # Also include previous year quarter-ends for more options
+        candidates += [f"31-Mar-{year - 1}", f"30-Jun-{year - 1}", f"30-Sep-{year - 1}", f"31-Dec-{year - 1}"]
+    elif freq == "H":
+        candidates = [f"31-Mar-{year}", f"30-Sep-{year}", f"31-Mar-{year - 1}", f"30-Sep-{year - 1}"]
+    elif freq == "C":
+        candidates = [f"30-Jun-{year}", f"31-Dec-{year}", f"30-Jun-{year - 1}", f"31-Dec-{year - 1}"]
+    elif freq == "Y":
+        candidates = [f"31-Mar-{year}", f"31-Mar-{year - 1}"]
+    elif freq == "B":
+        candidates = [f"31-Dec-{year}", f"31-Dec-{year - 1}"]
+    elif freq == "M":
+        # Last day of the current and previous month
+        prev_month = today.replace(day=1) - __import__("datetime").timedelta(days=1)
+        last_curr = calendar.monthrange(today.year, today.month)[1]
+        mname_curr = today.strftime("%b")
+        mname_prev = prev_month.strftime("%b")
+        candidates = [
+            f"{last_curr:02d}-{mname_curr}-{today.year}",
+            f"{prev_month.day:02d}-{mname_prev}-{prev_month.year}",
+        ]
+    else:
+        return []
+
+    if not filter_future:
+        return candidates
+
+    # Filter out future dates
+    valid: list[str] = []
+    for ds in candidates:
+        try:
+            d = datetime.strptime(ds, _DATE_FMT).date()
+            if d <= today:
+                valid.append(ds)
+        except ValueError:
+            continue
+
+    logger.debug("[VALID_SUGGESTIONS_FILTERED] freq=%s candidates=%d valid=%d", freq, len(candidates), len(valid))
+    return valid
 
 
 def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
@@ -171,6 +203,28 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
                 pass
 
     if parsed is None:
+        # Attempt to detect impossible-day-of-month (e.g. 31 April → clamp to 30 April)
+        import re as _re2
+        _impossible_match = _re2.match(r'^(\d{1,2})-([A-Za-z]{3})-(\d{4})$', ds)
+        if _impossible_match:
+            _d, _m, _y = int(_impossible_match.group(1)), _impossible_match.group(2), int(_impossible_match.group(3))
+            try:
+                _month_num = datetime.strptime(_m, "%b").month
+                _last_day = calendar.monthrange(_y, _month_num)[1]
+                if _d > _last_day:
+                    clamped = f"{_last_day:02d}-{_m.capitalize()}-{_y}"
+                    return {
+                        "valid":       False,
+                        "error":       (
+                            f"'{ds}' is not a valid calendar date. "
+                            f"{datetime(2000, _month_num, 1).strftime('%B')} has only {_last_day} days.\n"
+                            f"Did you mean **{clamped}**?"
+                        ),
+                        "suggestions": [clamped],
+                    }
+            except ValueError:
+                pass
+
         # Distinguish "right format, wrong calendar date" from "unrecognised input"
         if _re.match(r"^\d{1,2}[-/.\s]\d{1,2}[-/.\s]\d{2,4}$", ds) or \
            _re.match(r"^\d{1,2}-[A-Za-z]{3}-\d{4}$", ds):
@@ -181,6 +235,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
             )
         else:
             error_msg = f"Cannot parse '{ds}'. Please enter a date like 31-Mar-2024, 31/03/2024, or 31 March 2024."
+        logger.debug("[DATE_VALIDATION_FAIL] unparsable=%r", ds)
         return {
             "valid":       False,
             "error":       error_msg,
@@ -200,14 +255,30 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
         }
 
     if parsed > date.today():
+        logger.debug("[FUTURE_DATE_REJECTED] date=%s today=%s", ds, date.today())
+        # Only suggest non-future dates — never show future dates as options
+        past_suggestions = _hint_dates(frequency, date.today().year)
         return {
             "valid":       False,
             "error":       f"'{ds}' is a future date. Future reporting dates are not allowed.",
-            "suggestions": _hint_dates(frequency, date.today().year),
+            "suggestions": past_suggestions,
         }
 
     freq = (frequency or "").strip().upper()
     day, month, year = parsed.day, parsed.month, parsed.year
+
+    def _filter_future(suggestions: list[str]) -> list[str]:
+        """Remove any suggestion that is a future date."""
+        today_ = date.today()
+        result = []
+        for s in suggestions:
+            try:
+                d = datetime.strptime(s, _DATE_FMT).date()
+                if d <= today_:
+                    result.append(s)
+            except ValueError:
+                continue
+        return result
 
     if freq == "Q":
         if (day, month) not in _Q_ENDS:
@@ -217,7 +288,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
                     f"'{ds}' is not a valid quarter-end date.\n"
                     "Quarterly reports must be dated 31-Mar, 30-Jun, 30-Sep, or 31-Dec."
                 ),
-                "suggestions": [f"31-Mar-{year}", f"30-Jun-{year}", f"30-Sep-{year}", f"31-Dec-{year}"],
+                "suggestions": _filter_future([f"31-Mar-{year}", f"30-Jun-{year}", f"30-Sep-{year}", f"31-Dec-{year}"]),
             }
 
     elif freq == "M":
@@ -230,7 +301,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
                     f"'{ds}' is not the last day of {parsed.strftime('%B %Y')}.\n"
                     "Monthly reports must use the last day of the month."
                 ),
-                "suggestions": [f"{last_day:02d}-{mname}-{year}"],
+                "suggestions": _filter_future([f"{last_day:02d}-{mname}-{year}"]),
             }
 
     elif freq == "Y":
@@ -238,7 +309,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
             return {
                 "valid":       False,
                 "error":       f"'{ds}' is not valid for a Yearly (Financial Year) report. Must be 31-Mar.",
-                "suggestions": [f"31-Mar-{year}", f"31-Mar-{year - 1}"],
+                "suggestions": _filter_future([f"31-Mar-{year}", f"31-Mar-{year - 1}"]),
             }
 
     elif freq == "H":
@@ -249,7 +320,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
                     f"'{ds}' is not valid for a Half-Yearly (Financial Year) report.\n"
                     "Valid dates: 31-Mar or 30-Sep."
                 ),
-                "suggestions": [f"31-Mar-{year}", f"30-Sep-{year}"],
+                "suggestions": _filter_future([f"31-Mar-{year}", f"30-Sep-{year}"]),
             }
 
     elif freq == "C":
@@ -260,7 +331,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
                     f"'{ds}' is not valid for a Half-Yearly (Calendar Year) report.\n"
                     "Valid dates: 30-Jun or 31-Dec."
                 ),
-                "suggestions": [f"30-Jun-{year}", f"31-Dec-{year}"],
+                "suggestions": _filter_future([f"30-Jun-{year}", f"31-Dec-{year}"]),
             }
 
     elif freq == "B":
@@ -268,7 +339,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
             return {
                 "valid":       False,
                 "error":       f"'{ds}' is not valid for a Yearly (Calendar Year) report. Must be 31-Dec.",
-                "suggestions": [f"31-Dec-{year}", f"31-Dec-{year - 1}"],
+                "suggestions": _filter_future([f"31-Dec-{year}", f"31-Dec-{year - 1}"]),
             }
 
     elif freq == "W":
@@ -289,7 +360,7 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
                     f"'{ds}' is not valid for a Fortnightly report.\n"
                     "Valid: 15th or last day of month."
                 ),
-                "suggestions": [f"15-{mname}-{year}", f"{last_day:02d}-{mname}-{year}"],
+                "suggestions": _filter_future([f"15-{mname}-{year}", f"{last_day:02d}-{mname}-{year}"]),
             }
 
     # D, G (as-and-when), HM, and unrecognised frequencies: any valid past date accepted

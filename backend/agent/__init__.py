@@ -9,7 +9,15 @@ import time
 from typing import Any
 
 from rapidfuzz import process as _fuzz
-from backend.llm_extractor import extract_intent_and_entities, parse_and_format_date, extract_schedule_datetime
+from backend.llm_extractor import (
+    extract_intent_and_entities,
+    parse_and_format_date,
+    extract_schedule_datetime,
+    _extract_search_terms as extract_search_terms,
+    _extract_date_from_query,
+    _BROAD_DATE_RE as _DATE_STRIP_RE,
+    preprocess_generate_query,
+)
 from backend.services.llm_service import chat_response
 from backend.tools.instance_generator import (
     call_generate_api,
@@ -257,6 +265,50 @@ def _looks_like_new_query(text: str) -> bool:
         words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
         return any(w not in _QUERY_STOP for w in words)
     return False
+
+
+def _resolve_report_name(
+    user_query: str,
+    llm_hint: str | None = None,
+) -> tuple[str, list[dict]]:
+    """Shared multi-candidate report name resolver used by ALL intents.
+
+    Both status and generate flows call this so they get identical matching
+    behaviour regardless of LLM extraction quality.
+
+    Candidates are tried in priority order:
+      1. LLM-extracted hint  (most precise when the model is correct)
+      2. Intent/filler-stripped version  (_extract_search_terms)
+         Strips words like "generate", "instance", "for" so that
+         "generate instance for cims" → "cims" → matches CIMS_RAQ reports.
+      3. Raw user query  (last resort — handles bare identifiers like "r091")
+
+    Returns:
+        (winning_candidate, matching_report_dicts)
+        If no candidate produces a match, winning_candidate is the best
+        non-empty candidate available (for use in error messages).
+    """
+    candidates: list[str] = []
+    if llm_hint and llm_hint.strip():
+        candidates.append(llm_hint.strip())
+    stripped = extract_search_terms(user_query)
+    if stripped and stripped not in candidates:
+        candidates.append(stripped)
+    raw = user_query.strip()
+    if raw and raw not in candidates:
+        candidates.append(raw)
+
+    for candidate in candidates:
+        matches = find_matching_reports(candidate)
+        if matches:
+            logger.debug(
+                "[RESOLVE_REPORT] winner=%r matches=%d (llm_hint=%r)",
+                candidate, len(matches), llm_hint,
+            )
+            return candidate, matches
+
+    best = next((c for c in candidates if c), user_query.strip())
+    return best, []
 
 
 async def decide(
@@ -625,8 +677,16 @@ async def decide(
                     response_text="Sorry, you do not have access to generate report instances.",
                     result_type="error",
                 )
-            # Always ask for date after disambiguation — never use a pre-extracted
-            # date from the original query (prevents stale/hallucinated date validation).
+            # If a reporting_date was pre-extracted and stored in session,
+            # skip the date prompt and go directly to generation.
+            stored_date = session.get("pending_reporting_date")
+            if stored_date:
+                logger.info(
+                    "[AUTO_CONTINUE_GENERATION] report=%r date=%r session=%s — skipping date prompt",
+                    ret["name"], stored_date, session_id,
+                )
+                return await _finalize_generation(ret, stored_date, session_id, effective_asp)
+            # No pre-extracted date — ask the user for it.
             if session_id:
                 _session_context[session_id] = {
                     "awaiting":        STAGE_GEN_DATE,
@@ -653,8 +713,13 @@ async def decide(
             if date_match:
                 date_str = date_match.group(1)
             else:
-                # Normalize any natural format (e.g. 31/03/2021, 2021-03-31)
-                date_str = parse_and_format_date(user_query.strip()) or user_query.strip()
+                # Normalize any natural format (e.g. 31/03/2021, 2021-03-31, "31 April 2026")
+                date_str = parse_and_format_date(user_query.strip())
+                if not date_str:
+                    # parse_and_format_date failed — pass raw input to validator
+                    # which will produce a meaningful error message
+                    date_str = user_query.strip()
+            logger.debug("[DATE_NORMALIZED] raw=%r → normalized=%r", user_query.strip(), date_str)
             if not _create_access:
                 return _build(
                     intent="generate_instance", report_name=None,
@@ -962,23 +1027,76 @@ async def decide(
         return await handle_db_query(user_query, session_id=session_id)
 
     if intent == "unknown":
-        # Before falling back to the LLM, run the raw input through the backend
-        # report resolver. This handles short identifiers like "r091" or "raq"
-        # that small LLMs mis-classify as unknown but are valid report queries.
-        _fallback_query = search_terms or user_query.strip()
-        if _fallback_query:
-            _fallback_matches = find_matching_reports(_fallback_query)
-            if _fallback_matches:
+        # Try backend report matching with stripped query first, then progressively
+        # broader candidates. This handles short ids (r091, raq) AND full natural
+        # sentences like "what is the status of emi laon" — where the raw query
+        # would normalise to one unrecognisable token without stripping first.
+        _stripped_q   = extract_search_terms(user_query)
+        _matched_query: str | None = None
+        for _candidate in filter(None, [search_terms, _stripped_q, user_query.strip()]):
+            if find_matching_reports(_candidate):
+                _matched_query = _candidate
                 logger.info(
-                    "[UNKNOWN_FALLBACK] query=%r matched %d report(s) — routing to get_status",
-                    _fallback_query, len(_fallback_matches),
+                    "[UNKNOWN_FALLBACK] query=%r matched report(s) — re-classifying intent",
+                    _candidate,
                 )
-                if session_id:
-                    _session_context[session_id] = {"last_search_terms": _fallback_query}
-                result = get_report_status(_fallback_query)
-                if allowed_form_ids is not None:
-                    result = _apply_auth_to_status_result(result, allowed_form_ids)
-                return _from_result(result, intent="get_status", session_id=session_id)
+                break
+
+        if _matched_query:
+            # Re-classify to the correct intent based on fuzzy keyword detection
+            # so "generate cims", "create raq", "schedule raq" etc. route correctly
+            # even when the LLM returned unknown.
+            if _fuzzy_has_generate(user_query):
+                logger.info(
+                    "[UNKNOWN_RECLASSIFY] → generate_instance for %r session=%s",
+                    _matched_query, session_id,
+                )
+                if not _create_access:
+                    return _build(
+                        intent="generate_instance", report_name=None,
+                        response_text="Sorry, you do not have access to generate report instances.",
+                        result_type="error",
+                    )
+                return await _handle_generate(
+                    _matched_query, None, session_id, effective_asp, allowed_form_ids
+                )
+            if _fuzzy_has_schedule(user_query):
+                logger.info(
+                    "[UNKNOWN_RECLASSIFY] → schedule_report for %r session=%s",
+                    _matched_query, session_id,
+                )
+                return _handle_schedule(
+                    _matched_query, None, None, None, session_id, allowed_form_ids,
+                )
+            # Default: treat as a status query
+            if session_id:
+                _session_context[session_id] = {"last_search_terms": _matched_query}
+            result = get_report_status(_matched_query)
+            if allowed_form_ids is not None:
+                result = _apply_auth_to_status_result(result, allowed_form_ids)
+            return _from_result(result, intent="get_status", session_id=session_id)
+
+        # No backend match found. If the query looks report-related (status /
+        # generate / schedule keywords detected), return a crisp "not found"
+        # message instead of letting the LLM generate an off-topic explanation
+        # (e.g. explaining what "EMI loans" are).
+        _report_query = _stripped_q or search_terms
+        if _report_query and (
+            _fuzzy_has_status(user_query)
+            or _fuzzy_has_generate(user_query)
+            or _fuzzy_has_schedule(user_query)
+        ):
+            _fb_intent = (
+                "generate_instance" if _fuzzy_has_generate(user_query) else
+                "schedule_report"   if _fuzzy_has_schedule(user_query) else
+                "get_status"
+            )
+            return _build(
+                intent=_fb_intent, report_name=None,
+                response_text=f"No matching report found for '{_report_query}'.",
+                result_type="error",
+            )
+
         try:
             reply = await chat_response(user_query, history=conversation_history)
         except Exception as exc:
@@ -1002,18 +1120,13 @@ async def decide(
         search_terms = session.get("last_search_terms", "")
 
     if not search_terms:
-        # Before showing a clarification prompt, try the full raw query against
-        # the backend resolver. This catches cases where the LLM failed to extract
-        # search_terms but the query itself is a valid identifier (e.g. "r091").
-        _direct_matches = find_matching_reports(user_query.strip())
-        if _direct_matches:
-            search_terms = user_query.strip()
-            logger.info(
-                "[DIRECT_MATCH] LLM extracted no search_terms but backend matched %d "
-                "report(s) for %r — using raw query",
-                len(_direct_matches), search_terms,
-            )
-        else:
+        # Use the shared resolver: tries stripped query THEN raw query so that
+        # filler words like "generate", "instance", "for" are stripped before
+        # matching.  Without this, "generate instance for cims" normalises to
+        # the single token "generateinstanceforcims" and finds nothing.
+        search_terms, _direct_matches = _resolve_report_name(user_query)
+        if not _direct_matches:
+            search_terms = ""
             hint = (
                 'Please provide the report name. '
                 'For example: "Generate CIMS_RAQ for 30-Jun-2024".'
@@ -1032,9 +1145,41 @@ async def decide(
                 )
             )
             return _build(intent=intent, report_name=None, response_text=hint, need_clarification=True)
+        logger.info(
+            "[RESOLVED_MATCH] LLM gave no search_terms; resolver matched %d report(s) "
+            "for %r → using %r",
+            len(_direct_matches), user_query, search_terms,
+        )
 
     if intent == "generate_instance":
-        logger.info("[GENERATE_START] report=%r session=%s", search_terms, session_id)
+        # ── Deterministic preprocessing: extract date + clean report name ──
+        # Runs before report matching, independently of the LLM.
+        # Handles filler phrases ("for date", "dated", "for report") and all
+        # natural-language date formats ("31 May 2025", "31/05/2025", etc.).
+        _pre_report, _pre_date = preprocess_generate_query(user_query)
+        logger.debug(
+            "[QUERY_PREPROCESS] query=%r -> report=%r date=%r",
+            user_query, _pre_report, _pre_date,
+        )
+        # Use preprocessed values only when extractor found nothing already.
+        if _pre_date and not reporting_date:
+            reporting_date = _pre_date
+        if _pre_report and not search_terms:
+            search_terms = _pre_report
+
+        # Build date-stripped query for the shared resolver (fuzzy + disambiguation)
+        _clean_gen_query = _DATE_STRIP_RE.sub(" ", user_query).strip()
+        logger.debug(
+            "[GEN_CLEAN_QUERY] original=%r cleaned=%r search_terms=%r",
+            user_query, _clean_gen_query, search_terms,
+        )
+        _gen_terms, _gen_matches = _resolve_report_name(_clean_gen_query, search_terms or None)
+        if _gen_matches:
+            search_terms = _gen_terms
+        logger.info(
+            "[GENERATE_START] report=%r date=%r (resolved) session=%s",
+            search_terms, reporting_date, session_id,
+        )
         if not _create_access:
             return _build(
                 intent="generate_instance", report_name=None,
@@ -1824,6 +1969,10 @@ async def _finalize_generation(
     """Validate date and call the .NET API for a fully-resolved (report, date) pair."""
     validation = validate_reporting_date(reporting_date, ret["frequency"])
     if not validation["valid"]:
+        logger.debug(
+            "[DATE_VALIDATION_FAIL] date=%r freq=%r error=%r suggestions=%r",
+            reporting_date, ret["frequency"], validation["error"], validation["suggestions"],
+        )
         # Keep context so user can retry with a corrected date
         if session_id:
             _session_context[session_id] = {
@@ -1834,15 +1983,21 @@ async def _finalize_generation(
                 "gen_period_name": ret.get("period_name", ""),
             }
         error_msg   = validation["error"]
-        suggestions = validation["suggestions"]
-        # Near-miss hint: single suggestion -> "Did you mean X?"
+        suggestions = validation.get("suggestions") or []
+
+        # Filter out the same date the user entered — never echo back an invalid
+        # date as a suggestion (e.g. "Did you mean 31-May-2026?" when it's future).
+        suggestions = [s for s in suggestions if s.lower() != reporting_date.lower()]
+
+        # Near-miss hint: single suggestion that is DIFFERENT from the input
         if len(suggestions) == 1:
-            error_msg = f"Did you mean {suggestions[0]}?\n\n{error_msg}"
+            error_msg = f"Did you mean **{suggestions[0]}**?\n\n{error_msg}"
+
         return _build(
             intent="generate_instance", report_name=ret["name"],
             response_text=error_msg,
             result_type="gen_awaiting_date",
-            options=suggestions,
+            options=suggestions if suggestions else None,
         )
 
     api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
@@ -1994,9 +2149,9 @@ async def _handle_generate(
         if suggestions:
             if session_id:
                 _session_context[session_id] = {
-                    "awaiting":           STAGE_GEN_REPORT,
-                    "gen_reporting_date": None,
-                    "pending_options":    suggestions,
+                    "awaiting":               STAGE_GEN_REPORT,
+                    "pending_reporting_date": reporting_date,
+                    "pending_options":        suggestions,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             return _build(
@@ -2024,9 +2179,9 @@ async def _handle_generate(
         opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
         if session_id:
             _session_context[session_id] = {
-                "awaiting":           STAGE_GEN_REPORT,
-                "gen_reporting_date": None,
-                "pending_options":    names,
+                "awaiting":               STAGE_GEN_REPORT,
+                "pending_reporting_date": reporting_date,
+                "pending_options":        names,
             }
         return _build(
             intent="generate_instance", report_name=None,

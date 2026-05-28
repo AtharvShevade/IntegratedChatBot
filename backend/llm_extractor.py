@@ -27,6 +27,31 @@ _DATE_RE = re.compile(
     r"\b(\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})\b", re.I
 )
 
+# Broad multi-format date regex — strips date tokens from user queries before
+# report-name matching.  Covers all commonly used formats:
+#   31 May 2025   (day month-name year — space-separated)
+#   May 31 2025   (month-name day year)
+#   31/05/2025    (numeric slash)
+#   31-05-2025    (numeric hyphen)
+#   31-May-2025   (DD-MMM-YYYY — already in _DATE_RE but included for completeness)
+_BROAD_DATE_RE = re.compile(
+    r"\b(?:"
+    # DD/MM/YYYY or DD-MM-YYYY  (numeric)
+    r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}"
+    # 31 May 2025  (day SP month-name SP year)
+    r"|\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May"
+    r"|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?"
+    r"|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}"
+    # May 31 2025 / May 31, 2025  (month-name SP day [,SP] year)
+    r"|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May"
+    r"|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?"
+    r"|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}[,\s]+\d{4}"
+    # 31-May-2025  (DD-MMM-YYYY)
+    r"|\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4}"
+    r")\b",
+    re.I,
+)
+
 # Month-only pattern: "March 2026", "Mar 2026", "march 2026"
 _MONTH_YEAR_RE = re.compile(
     r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
@@ -92,6 +117,9 @@ def parse_and_format_date(user_input: str) -> Optional[str]:
       - Month + Year only                     : "March 2026"   → "31-Mar-2026"
       - Year only                             : "2026"         → "31-Dec-2026"
       - Relative                              : "today"        → today's date
+      - Ordinal suffixes                      : "31st March 2024" → "31-Mar-2024"
+      - 2-digit years                         : "31 mar 24"    → "31-Mar-2024"
+      - Impossible dates                      : "31 April 2026" → "30-Apr-2026" (clamped)
 
     Returns None if the input cannot be resolved to a date.
     """
@@ -99,6 +127,10 @@ def parse_and_format_date(user_input: str) -> Optional[str]:
         return None
 
     text = user_input.strip()
+    logger.debug("[DATE_PARSE_START] input=%r", text)
+
+    # 0. Strip ordinal suffixes: "31st", "2nd", "3rd", "1st" → digit only
+    text = re.sub(r'\b(\d{1,2})(?:st|nd|rd|th)\b', r'\1', text, flags=re.I)
 
     # 1. Already in the target format — fast path, validate and return
     m = _DATE_RE.search(text)
@@ -107,16 +139,21 @@ def parse_and_format_date(user_input: str) -> Optional[str]:
         try:
             from datetime import datetime as _dt
             validated = _dt.strptime(candidate, "%d-%b-%Y")
+            logger.debug("[DATE_PARSE_SUCCESS] fast-path=%r", validated.strftime("%d-%b-%Y"))
             return validated.strftime("%d-%b-%Y")
         except ValueError:
-            pass  # invalid calendar date (e.g. 31-Feb-2026), fall through
+            # Invalid calendar date in correct format (e.g. 31-Feb-2026)
+            # Try clamping below
+            pass
 
     # 2. Relative date tokens
     lower = text.lower()
     for token, resolver in _RELATIVE_DATES.items():
         if token in lower:
             try:
-                return resolver().strftime("%d-%b-%Y")
+                result = resolver().strftime("%d-%b-%Y")
+                logger.debug("[DATE_PARSE_SUCCESS] relative=%r → %r", token, result)
+                return result
             except Exception:
                 pass
 
@@ -136,7 +173,9 @@ def parse_and_format_date(user_input: str) -> Optional[str]:
             try:
                 dt = _du_parser.parse(f"1 {m.group(0)}", dayfirst=True)
                 last_day = calendar.monthrange(dt.year, dt.month)[1]
-                return dt.replace(day=last_day).strftime("%d-%b-%Y")
+                result = dt.replace(day=last_day).strftime("%d-%b-%Y")
+                logger.debug("[DATE_PARSE_SUCCESS] month+year=%r → %r", m.group(0), result)
+                return result
             except (ParserError, ValueError, OverflowError):
                 pass
 
@@ -146,19 +185,84 @@ def parse_and_format_date(user_input: str) -> Optional[str]:
             try:
                 year = int(m.group(1))
                 if 1900 <= year <= 2100:
-                    return f"31-Dec-{year}"
+                    result = f"31-Dec-{year}"
+                    logger.debug("[DATE_PARSE_SUCCESS] year-only=%d → %r", year, result)
+                    return result
             except ValueError:
                 pass
 
     # 5. Full date — use dateutil fuzzy parsing
     try:
         dt = _du_parser.parse(text, fuzzy=True, dayfirst=True)
-        return dt.strftime("%d-%b-%Y")
+        result = dt.strftime("%d-%b-%Y")
+        logger.debug("[DATE_PARSE_SUCCESS] dateutil=%r → %r", text, result)
+        return result
     except (ParserError, ValueError, OverflowError):
         pass
 
-    logger.debug("parse_and_format_date: could not parse %r", user_input)
+    # 6. Impossible-date clamping: if the text looks like a date but has an
+    #    invalid day (e.g. "31 April 2026"), try clamping to last day of month.
+    clamped = _try_clamp_impossible_date(text)
+    if clamped:
+        logger.debug("[DATE_PARSE_SUCCESS] clamped=%r → %r", text, clamped)
+        return clamped
+
+    logger.debug("[DATE_PARSE_FAIL] could not parse %r", user_input)
     return None
+
+
+# Regex to extract (day, month_name, year) from text that dateutil rejects
+_IMPOSSIBLE_DATE_RE = re.compile(
+    r"\b(\d{1,2})\s+"
+    r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
+    r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\s+(\d{2,4})\b",
+    re.I,
+)
+
+_MONTH_ABBREV_MAP: dict[str, int] = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2,
+    "mar": 3, "march": 3, "apr": 4, "april": 4,
+    "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+
+def _try_clamp_impossible_date(text: str) -> Optional[str]:
+    """Attempt to clamp an impossible date to the last valid day of the month.
+
+    E.g. "31 April 2026" → "30-Apr-2026" (April has only 30 days).
+    """
+    m = _IMPOSSIBLE_DATE_RE.search(text)
+    if not m:
+        return None
+
+    day = int(m.group(1))
+    month_str = m.group(2).lower()
+    year_str = m.group(3)
+
+    month_num = _MONTH_ABBREV_MAP.get(month_str)
+    if not month_num:
+        return None
+
+    # Handle 2-digit year
+    year = int(year_str)
+    if year < 100:
+        year += 2000
+
+    if not (1900 <= year <= 2100):
+        return None
+
+    last_day = calendar.monthrange(year, month_num)[1]
+    if day <= last_day:
+        # It's actually a valid date — dateutil should have handled it
+        return None
+
+    # Clamp to last valid day
+    clamped_date = date(year, month_num, last_day)
+    return clamped_date.strftime("%d-%b-%Y")
 
 
 def _extract_date_from_query(query: str) -> Optional[str]:
@@ -213,6 +317,8 @@ _STOP_WORDS: frozenset[str] = frozenset({
     "of", "for", "the", "a", "an", "on",
     # domain stop words
     "instance", "report", "new", "please",
+    # date-lead contextual filler — prevent "date"/"dated" leaking into report names
+    "date", "dated",
 })
 
 
@@ -220,17 +326,88 @@ _STOP_WORDS: frozenset[str] = frozenset({
 def _extract_search_terms(query: str) -> str:
     """Strip intent/filler words and dates — return only report-relevant tokens.
 
+    Uses _BROAD_DATE_RE so ALL date formats are removed before tokenisation,
+    not just DD-MMM-YYYY.  This prevents date tokens (e.g. "31", "May", "2025"
+    from "generate instance for ale for 31 May 2025") from leaking into the
+    report-name candidates passed to find_matching_reports().
+
     Examples:
-        "status of raq monthly"        → "raq monthly"
-        "Generate CIMS_RAQ for 30-Jun" → "CIMS_RAQ"
-        "check quarterly report"       → "quarterly"
-        "is it finished processing?"   → ""
+        "status of raq monthly"                      → "raq monthly"
+        "Generate CIMS_RAQ for 30-Jun-2024"          → "CIMS_RAQ"
+        "generate instance for ale for 31 May 2025"  → "ale"
+        "generate ale 31/05/2025"                    → "ale"
+        "check quarterly report"                     → "quarterly"
+        "is it finished processing?"                 → ""
     """
-    date_match = _DATE_RE.search(query)
-    clean = query.replace(date_match.group(0), "") if date_match else query
+    # Strip ALL recognised date formats (not just DD-MMM-YYYY) so date tokens
+    # like "31 May 2025" or "31/05/2025" never pollute report-name matching.
+    clean = _BROAD_DATE_RE.sub(" ", query)
     clean = re.sub(r"[?!.,]", " ", clean)
     words = [w for w in clean.split() if w.lower() not in _STOP_WORDS and len(w) > 1]
     return " ".join(words).strip()
+
+
+# ---------------------------------------------------------------------------
+# Generate-instance preprocessing
+# ---------------------------------------------------------------------------
+
+# Filler phrases specific to generate-instance queries.  These are removed as
+# complete phrases before word-level tokenisation so they cannot accidentally
+# split into partial stop-word matches.
+#   "for date"    e.g. "generate ale for date 31 May 2025"
+#   "for report"  e.g. "generate instance for report ale"
+#   "for the"     e.g. "generate instance for the ale report"
+#   "dated"       e.g. "create abc dated 12 May 2026"
+GEN_FILLER_PHRASES_RE = re.compile(
+    r"\b(?:for\s+date|for\s+report|for\s+the|dated)\b",
+    re.I,
+)
+
+
+def preprocess_generate_query(query: str) -> tuple[str, Optional[str]]:
+    """Deterministic preprocessing for generate-instance queries.
+
+    Runs fully independently of the LLM.  Called before ``_resolve_report_name``
+    so natural-language date formats and filler phrases are removed BEFORE the
+    report-name matching pipeline sees the query.
+
+    Steps:
+      1. Extract date using ``_extract_date_from_query`` (broad regex + fuzzy).
+      2. Strip date tokens from query using ``_BROAD_DATE_RE``.
+      3. Strip generate-specific filler phrases ("for date", "for report", "dated").
+      4. Extract clean report name via ``_extract_search_terms``.
+
+    Returns:
+        ``(report_name, reporting_date)``  where either may be empty / None
+        when no name / date can be isolated from the query.
+
+    Examples::
+
+        "generate instance for ale for 31 May 2025"
+            → ("ale", "31-May-2025")
+        "generate instance for report ale for date 31 May 2025"
+            → ("ale", "31-May-2025")
+        "create abc instance dated 12 may 2026"
+            → ("abc", "12-May-2026")
+        "generate report cims raq on 31 mar 2026"
+            → ("cims raq", "31-Mar-2026")
+    """
+    # ── Step 1: Extract date (broad regex first; fuzzy parse as fallback) ────
+    reporting_date: Optional[str] = _extract_date_from_query(query)
+    if reporting_date:
+        logger.debug("[DATE_EXTRACT_REGEX] reporting_date=%r from %r", reporting_date, query)
+
+    # ── Step 2: Remove date tokens and generate-specific filler phrases ───────
+    clean = _BROAD_DATE_RE.sub(" ", query)
+    clean = GEN_FILLER_PHRASES_RE.sub(" ", clean)
+
+    # ── Step 3: Extract clean report name via standard stop-word stripping ────
+    report_name = _extract_search_terms(clean)
+    logger.debug(
+        "[REPORT_NAME_CLEANED] original=%r → report_name=%r reporting_date=%r",
+        query, report_name, reporting_date,
+    )
+    return report_name, reporting_date
 
 
 def resolve_entities(
@@ -416,23 +593,22 @@ def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
 
 
 async def extract_intent_and_entities(user_query: str, history: list[dict] | None = None) -> dict[str, Any]:
-    """Use LLM to extract intent and entities from a raw user query.
+    """Classify intent via LLM; extract all entities deterministically from the query.
 
-    Calls Ollama (OLLAMA_EXTRACT_MODEL, default phi4-mini) with a structured
-    JSON prompt, then normalizes all extracted dates/times through the existing
-    date and time parsers so downstream code receives a consistent format.
+    The LLM (Ollama, OLLAMA_EXTRACT_MODEL) is called ONLY for intent classification.
+    Report names, dates, and times are extracted from the literal user query text
+    using regex/parser logic so hallucinated values can never reach downstream code.
 
-    Pass *history* (last 6-7 messages) so the LLM can resolve cross-turn
-    references like "it", "that report", "the same one".
+    Pass *history* so the LLM can classify multi-turn references correctly.
 
     Returns::
 
         {
-            "intent":             str,         # get_status | generate_instance | schedule_report | unknown
-            "search_terms":       str | None,  # LLM-extracted report name (used by resolve_entities)
-            "reporting_date":     str | None,  # DD-MMM-YYYY  (generate_instance)
-            "schedule_date":      str | None,  # DD-MMM-YYYY  (schedule_report)
-            "schedule_time":      str | None,  # HH:MM 24-hr  (schedule_report)
+            "intent":             str,         # get_status | generate_instance | schedule_report | compare_reports | query_database | unknown
+            "search_terms":       str | None,  # deterministic report name (stripped query tokens)
+            "reporting_date":     str | None,  # DD-MMM-YYYY — only if literally in the query
+            "schedule_date":      str | None,  # DD-MMM-YYYY — only if literally in the query
+            "schedule_time":      str | None,  # HH:MM 24-hr — only if literally in the query
             "scheduled_datetime": str | None,  # YYYY-MM-DDTHH:MM:00
         }
     """
@@ -474,85 +650,67 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
         logger.info("Keyword override: %r → compare_reports", intent)
         intent = "compare_reports"
 
-    def _clean(v: Any) -> Optional[str]:
-        """Return None for null/none/empty LLM outputs."""
-        if v is None:
-            return None
-        s = str(v).strip()
-        return None if s.lower() in ("null", "none", "") else s
+    # ── Deterministic entity extraction ────────────────────────────────────────
+    # The LLM is ONLY trusted for intent classification.
+    # ALL other fields (report name, dates, times) are extracted directly from
+    # the literal user query via regex/parser logic — LLM values are ignored so
+    # hallucinated entities (e.g. a date invented for "generate instance for abc")
+    # can never propagate into downstream handlers.
 
-    report_name = _clean(raw.get("report_name"))
+    # Report name ─────────────────────────────────────────────────────────────
+    # compare_reports uses its own stop-word regex because comparison-intent words
+    # like "compare", "variance", "vs" are not in the generic _STOP_WORDS set.
+    _CMP_STOP = re.compile(
+        r"\b(compare|comparing|comparison|variance|variances|diff(?:er(?:ence)?)?"
+        r"|vs\.?|versus|contrast|analys[ie]s?|side|report[s]?|instance[s]?"
+        r"|these|those|me|the|a|an|of|for|to|two|both|and|or|with)\b",
+        re.I,
+    )
+    if intent == "compare_reports":
+        _cmp_cleaned = _CMP_STOP.sub(" ", user_query).strip()
+        _cmp_tokens  = [t for t in re.split(r"[\s,;]+", _cmp_cleaned) if len(t) >= 2]
+        report_name: Optional[str] = _cmp_tokens[0] if _cmp_tokens else _extract_search_terms(user_query) or None
+        if report_name:
+            logger.info("[EXTRACT] compare_reports: report_name=%r from query", report_name)
+    else:
+        report_name = _extract_search_terms(user_query) or None
 
-    # Fallback: for compare_reports, if the LLM didn't extract a name (common with
-    # short bank-prefix queries like "compare HDFC"), extract it directly from the query
-    # by stripping comparison-intent words and taking the first meaningful token.
-    if intent == "compare_reports" and not report_name:
-        _CMP_STOP = re.compile(
-            r"\b(compare|comparing|comparison|variance|variances|diff(?:er(?:ence)?)?"
-            r"|vs\.?|versus|contrast|analys[ie]s?|side|report[s]?|instance[s]?"
-            r"|these|those|me|the|a|an|of|for|to|two|both|and|or|with)\b",
-            re.I,
-        )
-        cleaned = _CMP_STOP.sub(" ", user_query).strip()
-        tokens = [t for t in re.split(r"[\s,;]+", cleaned) if len(t) >= 2]
-        if tokens:
-            report_name = tokens[0]
-            logger.info(
-                "compare_reports fallback: extracted report_name=%r from query", report_name
-            )
-
+    # Date / time ─────────────────────────────────────────────────────────────
+    # _extract_date_from_query() uses regex + a date-signal guard, so it only
+    # returns a value when a date-like pattern is literally present in the query.
+    # extract_schedule_datetime() uses the same signal-guarded approach for time.
     reporting_date:     Optional[str] = None
     schedule_date:      Optional[str] = None
     schedule_time:      Optional[str] = None
     scheduled_datetime: Optional[str] = None
 
     if intent == "schedule_report":
-        raw_sdate = _clean(raw.get("schedule_date"))
-        raw_stime = _clean(raw.get("schedule_time"))
-        if raw_sdate:
-            schedule_date = parse_and_format_date(raw_sdate) or raw_sdate
-        if raw_stime:
-            schedule_time = parse_schedule_time(raw_stime) or raw_stime
-        if schedule_date and schedule_time:
-            try:
-                dt = datetime.strptime(f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M")
-                scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
-            except ValueError:
-                pass
+        _sched = extract_schedule_datetime(user_query)
+        schedule_date      = _sched["schedule_date"]
+        schedule_time      = _sched["schedule_time"]
+        scheduled_datetime = _sched["scheduled_datetime"]
 
     elif intent == "generate_instance":
-        raw_date = _clean(raw.get("reporting_date"))
-        raw_stime = _clean(raw.get("schedule_time"))
-        if raw_date:
-            reporting_date = parse_and_format_date(raw_date) or raw_date
-        # Reclassify: generate + time-of-day → schedule_report
-        if raw_stime:
-            schedule_time = parse_schedule_time(raw_stime) or raw_stime
-            if schedule_time:
-                logger.info("Reclassify generate_instance → schedule_report (time component)")
-                intent        = "schedule_report"
-                schedule_date = reporting_date
-                reporting_date = None
-                raw_sdate = _clean(raw.get("schedule_date"))
-                if raw_sdate:
-                    schedule_date = parse_and_format_date(raw_sdate) or raw_sdate
-                if schedule_date and schedule_time:
-                    try:
-                        dt = datetime.strptime(
-                            f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M"
-                        )
-                        scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
-                    except ValueError:
-                        pass
+        reporting_date = _extract_date_from_query(user_query)
+        # Reclassify: if the query contains both a date AND a clock time the user
+        # is scheduling a future run, not just generating.
+        _sched_check = extract_schedule_datetime(user_query)
+        if _sched_check["schedule_date"] and _sched_check["schedule_time"]:
+            logger.info("[EXTRACT] Reclassify generate_instance → schedule_report (time found in query)")
+            intent             = "schedule_report"
+            schedule_date      = _sched_check["schedule_date"]
+            schedule_time      = _sched_check["schedule_time"]
+            scheduled_datetime = _sched_check["scheduled_datetime"]
+            reporting_date     = None
 
     logger.info(
-        "LLM result: intent=%s report_name=%r reporting_date=%r "
+        "[EXTRACT] intent=%s report_name=%r reporting_date=%r "
         "schedule_date=%r schedule_time=%r",
         intent, report_name, reporting_date, schedule_date, schedule_time,
     )
     return {
         "intent":             intent,
-        "search_terms":       report_name,  # passed to resolve_entities() by the agent
+        "search_terms":       report_name,
         "reporting_date":     reporting_date,
         "schedule_date":      schedule_date,
         "schedule_time":      schedule_time,
