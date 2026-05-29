@@ -640,27 +640,40 @@ async def generate_llm_summary(
 
     data_text = "\n".join(lines)
     prompt = (
-        f"You are a financial analyst reviewing XBRL regulatory report data for a bank.\n"
-        f"Report: {report_name}\n"
-        f"Comparing filing {label_a} (current) vs {label_b} (prior).\n\n"
-        f"Top variance data (concept: prior → current, % change):\n{data_text}\n\n"
-        f"Write exactly 5 bullet points (no more, no less) explaining the most important changes.\n"
-        f"Rules:\n"
-        f"- Output ONLY the bullet list — no intro text, no headers, no numbering.\n"
-        f"- Start each bullet with the Unicode bullet character ‘•’ followed by a space.\n"
-        f"- Use plain business language — avoid jargon. One sentence per bullet.\n"
-        f"- Lead with the metric name, then describe the change and its significance.\n"
-        f"- Prioritise the highest percentage changes first.\n"
-        f"- Ignore concepts with zero or negligible change.\n"
-        f"- End with one overall trend or risk observation."
+    f"You are an expert banking financial analyst.\n"
+    f"Analyze XBRL variance data and generate concise, high-impact insights.\n\n"
+
+    f"Report: {report_name}\n"
+    f"Comparison: {label_a} vs {label_b}\n\n"
+
+    f"Variance Data:\n{data_text}\n\n"
+
+    f"Generate EXACTLY 5 bullet points.\n\n"
+
+    f"STRICT RULES:\n"
+    f"- Start every line with '• '\n"
+    f"- Maximum 15 words per bullet.\n"
+    f"- One sentence only.\n"
+    f"- Focus only on major increases/decreases.\n"
+    f"- Mention metric + movement + business impact.\n"
+    f"- Keep insights sharp, executive-style, and easy to scan.\n"
+    f"- Avoid technical jargon.\n"
+    f"- No headings.\n"
+    f"- No introduction.\n"
+    f"- No conclusion.\n"
+    f"- No numbering.\n"
+    f"- Output ONLY bullet points.\n\n"
+    f"- Bold ONLY the metric name and percentage change using markdown ** **.\n"
+    f"Example:\n"
+    f"• **NetOpenExchangePosition surged by +1160360%** indicating major forex exposure growth.\n"
     )
 
     base_url   = os.getenv("OLLAMA_BASE_URL",      "http://127.0.0.1:11434")
-    model      = os.getenv("OLLAMA_COMPARE_MODEL", "mistral:7b-instruct")   # dedicated compare/summary model
+    model      = os.getenv("OLLAMA_COMPARE_MODEL", "phi3:mini")   # dedicated compare/summary model
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE",    "30m")
     # Short timeout: summary is decorative - must not block the comparison result.
     # Override via OLLAMA_SUMMARY_TIMEOUT; default 8 s.
-    timeout    = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "8"))
+    timeout    = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "240"))
 
     chat_payload = {
         "model":      model,

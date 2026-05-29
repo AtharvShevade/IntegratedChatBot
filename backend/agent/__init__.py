@@ -1404,36 +1404,11 @@ async def decide(
 
 async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None) -> dict[str, Any]:
     """Entry point for compare_reports intent — handles disambiguation."""
-    from backend.tools.xbrl_comparator import find_instances_by_prefix
-
     matches = find_matching_reports(report_ident)
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        # Before giving up, check if there are instance files in logs/ whose
-        # filenames start with this prefix (e.g. HDFC files not in returns.xml)
-        direct_files = find_instances_by_prefix(report_ident)
-        if len(direct_files) >= 2:
-            if allowed_form_ids is not None:
-                fid = get_form_id_by_name(report_ident) or ""
-                if fid and fid not in allowed_form_ids:
-                    return _build(
-                        intent="compare_reports", report_name=report_ident,
-                        response_text="You are not authorised to access this report.",
-                        result_type="error",
-                    )
-            return await _compare_with_name(report_ident, session_id)
-        if len(direct_files) == 1:
-            return _build(
-                intent="compare_reports", report_name=report_ident,
-                response_text=(
-                    f"Only one instance file found for '{report_ident}' — "
-                    "at least 2 are needed for comparison."
-                ),
-                result_type="error",
-            )
-
         suggestions = fuzzy_report_suggestions(report_ident)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
@@ -1479,31 +1454,27 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
 async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any]:
     """Resolve Report ID → scan instance folder → present selection.
 
-    Primary path  : Returns.xml → Report ID → {INSTANCE_BASE_DIR}/{id}/ → *.xml
-    Fallback path : XML_InstanceLog lookup, then logs/ prefix scan
-                    (keeps backward-compat for HDFC test files).
+    Only path: Returns.xml → Report ID → {INSTANCE_BASE_DIR}/{id}/ → *.xml
+    No fallbacks to XML_InstanceLog or logs/ prefix scan.
     """
     from backend.services.instance_service import get_instances_for_report
-    from backend.tools.xbrl_comparator import find_comparable_instances, find_instances_by_prefix
 
-    # 1 ── Primary: report name → Report ID → repository instance folder
-    form_id  = get_form_id_by_name(name)
-    instances: list[dict] = []
+    # ── Step 1: resolve report name to FormId via Returns.xml ─────────────────
+    form_id = get_form_id_by_name(name)
+    if not form_id:
+        if session_id:
+            _session_context.pop(session_id, None)
+        return _build(
+            intent="compare_reports", report_name=name,
+            response_text=(
+                f"Report '{name}' was not found in Returns.xml. "
+                "Please check the report name and try again."
+            ),
+            result_type="error",
+        )
 
-    if form_id:
-        instances = get_instances_for_report(form_id)
-        if not instances:
-            logger.info(
-                "_compare_with_name: instance folder empty for form_id=%s — trying XML_InstanceLog",
-                form_id,
-            )
-            instances = find_comparable_instances(form_id)   # fallback to log file
-    else:
-        logger.info("_compare_with_name: '%s' not in Returns.xml — scanning logs/ by prefix", name)
-
-    # 2 ── Fallback: scan logs/ for filenames starting with the search term
-    if not instances:
-        instances = find_instances_by_prefix(name)
+    # ── Step 2: scan Instance/{FormId}/ — no fallbacks ────────────────────────
+    instances = get_instances_for_report(form_id)
 
     # ── Error guards ──────────────────────────────────────────────────────────
     # Always clear session on error so stale STAGE_CMP_REPORT / STAGE_CMP_FILE
@@ -1514,8 +1485,8 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
         return _build(
             intent="compare_reports", report_name=name,
             response_text=(
-                f"No instance files found for '{name}'. "
-                "Ensure the report has been generated and the instance folder exists."
+                f"No instance files found for '{name}' (FormId: {form_id}). "
+                f"The folder Instance/{form_id}/ does not exist or contains no XML files."
             ),
             result_type="error",
         )
