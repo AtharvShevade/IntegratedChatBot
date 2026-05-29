@@ -21,7 +21,7 @@ function triggerBlobDownload(url, label) {
     .catch((err) => console.error('[Download] failed:', err))
 }
 
-export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
+export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback, onVarianceTableSelect, onVarianceCompute, varianceFindResult, dataVarianceResult }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
@@ -88,6 +88,32 @@ export default function MessageBubble({ role, text, data, options, resultType, s
             </div>
           )}
         </div>
+      </div>
+    )
+  }
+
+  // Variance: table selection card
+  if (!isUser && resultType === 'variance_find_result' && varianceFindResult) {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <VarianceFindBlock
+          info={varianceFindResult}
+          onSelect={onVarianceTableSelect}
+        />
+      </div>
+    )
+  }
+
+  // Variance: computed result table
+  if (!isUser && resultType === 'data_variance_result' && dataVarianceResult) {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <DataVarianceBlock
+          result={dataVarianceResult}
+          onExplain={onVarianceCompute}
+        />
       </div>
     )
   }
@@ -366,6 +392,11 @@ const SUGGESTION_GROUPS = [
   {
     label:  '📊 Perform comparative analysis',
     action: 'Perform comparative analysis',
+    chips:  [],
+  },
+  {
+    label:  '📈 Data variance',
+    action: 'Data variance',
     chips:  [],
   },
   {
@@ -878,12 +909,199 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
   )
 }
 
+// ── Variance Find Block ─────────────────────────────────────────────────────
+// Shows list of tables returned by /variance/find; user picks one.
+function VarianceFindBlock({ info, onSelect }) {
+  const tables = (info?.tables || []).filter(
+    (t, i, arr) => t.table_name && arr.findIndex((x) => x.table_name === t.table_name) === i
+  )
+  const [selected, setSelected] = useState(tables[0]?.table_name ?? '')
+
+  // Map frequency code → human-readable label and date hint
+  const freqLabel = (freq) => {
+    const f = (freq || '').toUpperCase()
+    const labels = {
+      A: 'Annually (Financial Year, 31-Mar)',
+      ANNUAL: 'Annually (Financial Year, 31-Mar)',
+      Y: 'Annually (Financial Year, 31-Mar)',
+      FY: 'Annually (Financial Year, 31-Mar)',
+      B: 'Annually (Calendar Year, 31-Dec)',
+      CY: 'Annually (Calendar Year, 31-Dec)',
+      Q: 'Quarterly (31-Mar / 30-Jun / 30-Sep / 31-Dec)',
+      QUARTERLY: 'Quarterly (31-Mar / 30-Jun / 30-Sep / 31-Dec)',
+      H: 'Half-Yearly Financial (31-Mar / 30-Sep)',
+      HALFYEARLY: 'Half-Yearly Financial (31-Mar / 30-Sep)',
+      HY: 'Half-Yearly Financial (31-Mar / 30-Sep)',
+      FH: 'Half-Yearly Financial (31-Mar / 30-Sep)',
+      C: 'Half-Yearly Calendar (30-Jun / 31-Dec)',
+      CH: 'Half-Yearly Calendar (30-Jun / 31-Dec)',
+      M: 'Monthly (last day of month)',
+      MONTHLY: 'Monthly (last day of month)',
+      W: 'Weekly (Fridays)',
+      WEEKLY: 'Weekly (Fridays)',
+      F: 'Fortnightly (15th or last day)',
+      FORTNIGHTLY: 'Fortnightly (15th or last day)',
+      HM: 'Half-Monthly (15th or last day)',
+      D: 'Daily',
+      DAILY: 'Daily',
+    }
+    return labels[f] || freq || '—'
+  }
+
+  return (
+    <div className="assistant-msg-block">
+      <div className="bubble assistant-bubble">
+        <strong>Return:</strong> {info.return_name} &nbsp;|&nbsp;
+        <strong>Freq:</strong> {freqLabel(info.report_freq)}
+        <br />
+        Select a table to compute variance:
+      </div>
+      <div className="instance-listbox-card">
+        <div className="instance-listbox">
+          {tables.map((t) => (
+            <div
+              key={t.table_name}
+              className={`instance-listbox-item${selected === t.table_name ? ' selected' : ''}`}
+              onClick={() => setSelected(t.table_name)}
+            >
+              <span className="instance-listbox-label">{t.table_name}</span>
+            </div>
+          ))}
+        </div>
+        <button
+          className="instance-dropdown-btn"
+          disabled={!selected}
+          onClick={() => onSelect?.(info, selected)}
+        >
+          Select ›
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Data Variance Block ───────────────────────────────────────────────────────
+// Renders the structured variance JSON returned by /variance/compute.
+function DataVarianceBlock({ result, onExplain }) {
+  const [showAll, setShowAll] = useState(false)
+
+  if (result?.error) {
+    return (
+      <div className="bubble assistant-bubble" style={{ color: 'var(--danger, #e74c3c)' }}>
+        ⚠ {result.error}
+      </div>
+    )
+  }
+
+  const { table_name, reporting_date, comparison_periods = [], columns = [], rows = [] } = result
+  const periods = comparison_periods
+  const displayRows = showAll ? rows : rows.slice(0, 10)
+
+  const colorClass = (colorStr) => {
+    if (colorStr === 'success') return 'vt-pos'
+    if (colorStr === 'danger')  return 'vt-neg'
+    return ''
+  }
+
+  return (
+    <div className="variance-block">
+      <div className="variance-title">📈 Data Variance — {table_name}</div>
+      <div className="variance-subtitle">
+        Reporting: <strong>{reporting_date}</strong> &nbsp;vs&nbsp;
+        {periods.map((p, i) => <strong key={i}> {p}{i < periods.length - 1 ? ', ' : ''}</strong>)}
+      </div>
+
+      <div className="variance-table-wrapper">
+        <table className="variance-table">
+          <thead>
+            <tr>
+              <th className="vt-concept-col">Identifier</th>
+              {columns.map((col) => (
+                <th key={col} className="vt-num-col" colSpan={1 + periods.length}>{col}</th>
+              ))}
+            </tr>
+            <tr>
+              <th />
+              {columns.map((col) =>
+                ['Current', ...periods.map((_, i) => `Prev ${i + 1}`)].map((lbl) => (
+                  <th key={col + lbl} className="vt-num-col" style={{ fontSize: '0.75em', fontWeight: 400 }}>{lbl}</th>
+                ))
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {displayRows.map((row, ri) => (
+              <tr key={row.identifier ?? ri}>
+                <td className="vt-concept">{row.identifier || '—'}</td>
+                {columns.map((col) => {
+                  const curr = row.current?.[col]
+                  return [
+                    <td key={col + '_curr'} className="vt-num">
+                      {curr ?? '—'}
+                    </td>,
+                    ...periods.map((_, pi) => {
+                      const pKey = `previous_${pi + 1}`
+                      const m = row.previous?.[pKey]?.[col]
+                      const vs = m?.variance_summary
+                      return (
+                        <td key={col + pKey} className={`vt-num ${colorClass(vs?.color ?? '')}`}>
+                          {m ? (
+                            <span title={vs?.text ?? ''}>
+                              {m.value ?? '—'}
+                              {vs?.arrow && <span style={{ marginLeft: 3 }}>{vs.arrow}</span>}
+                              {m.pct_change?.value && (
+                                <span className="vt-pct" style={{ fontSize: '0.8em', marginLeft: 4, opacity: 0.75 }}>
+                                  {m.pct_change.value}
+                                </span>
+                              )}
+                            </span>
+                          ) : '—'}
+                        </td>
+                      )
+                    }),
+                  ]
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {rows.length > 10 && (
+        <button
+          className="suggestion-chip"
+          style={{ marginTop: 6 }}
+          onClick={() => setShowAll((v) => !v)}
+        >
+          {showAll ? 'Show less ▲' : `Show all ${rows.length} rows ▼`}
+        </button>
+      )}
+
+      <div className="welcome-suggestions option-chips" style={{ marginTop: 10 }}>
+        <button
+          className="suggestion-chip chip-confirm"
+          onClick={() => onExplain?.('explain', result)}
+        >
+          💬 Explain This Variance
+        </button>
+        <button
+          className="suggestion-chip"
+          onClick={() => onExplain?.('visualize', result)}
+        >
+          📊 Visualize
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Guided Action Menu Card ───────────────────────────────────────────────────
 const GUIDED_ACTION_META = {
   'Check report status':           { icon: '📋', desc: 'Look up the latest status of any report' },
   'Generate instance for a report':{ icon: '⚙️',  desc: 'Trigger a new report instance for a period' },
   'Schedule a report':             { icon: '🗓️', desc: 'Schedule a report to run at a future date/time' },
   'Perform comparative analysis':  { icon: '📊', desc: 'Compare two XBRL instances period-over-period' },
+  'Data variance':                 { icon: '📈', desc: 'Compare table data across periods and show variances' },
   'Retrieve data from database':   { icon: '🗄️', desc: 'Query the Oracle database in plain English' },
 }
 

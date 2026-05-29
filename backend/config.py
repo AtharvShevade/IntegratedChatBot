@@ -30,6 +30,17 @@ INSTANCE_BASE_DIR: str = os.getenv(
     r"D:\Repo\Repo5.5 3\Repo5.5\Instance",
 )
 
+# Base directory where per-return table mapping XML files live.
+# Structure:
+#   {TABLE_MAPPING_BASE_DIR}\Returns.xml          ← same folder as RETURNS_XML_PATH
+#   {TABLE_MAPPING_BASE_DIR}\{return_id}\{TblPath} ← e.g. Database\2065\TableMapping.xml
+# The return_id comes from the Id attribute in Returns.xml (e.g. 2065, 2041, ...).
+# The TblPath comes from the TblPath attribute in Returns.xml (e.g. TableMapping.xml).
+TABLE_MAPPING_BASE_DIR: str = os.getenv(
+    "TABLE_MAPPING_BASE_DIR",
+    r"D:\Repo\Repo5.5 3\Repo5.5\Database",
+)
+
 # Base directory for rendered output files (HTML render documents).
 # Structure: {RENDER_BASE_DIR}\{report_id}\<RenderedExcelDocPath>
 RENDER_BASE_DIR: str = os.getenv(

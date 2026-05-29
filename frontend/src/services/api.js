@@ -110,6 +110,40 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
   return await res.json()
 }
 
+// ── Variance API helpers ──────────────────────────────────────────────────────
+
+/**
+ * Find a return by name and list its available tables from the table-mapping XML.
+ * @param {string} returnName
+ * @returns {Promise<{return_id, return_name, report_freq, table_mapping_path, tables: Array}>}
+ */
+export async function findReturnTables(returnName) {
+  const res = await fetch(`${BASE_URL}/variance/find?return_name=${encodeURIComponent(returnName)}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail ?? `Find error (${res.status})`)
+  }
+  return res.json()
+}
+
+/**
+ * Compute variance for a selected table / reporting date / periods.
+ * @param {{ return_id, table_mapping_path, table_name, reporting_date, reporting_period }} payload
+ * @returns {Promise<object>}  — { table_name, reporting_date, comparison_periods, columns, rows, error? }
+ */
+export async function computeVariance(payload) {
+  const res = await fetch(`${BASE_URL}/variance/compute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail ?? `Compute error (${res.status})`)
+  }
+  return res.json()
+}
+
 /**
  * Send a recorded audio Blob to the FastAPI /speech-to-text endpoint,
  * which proxies it to Sarvam AI.

@@ -16,6 +16,7 @@ export default defineConfig({
       '/speech-to-text': 'http://localhost:8001',
       '/health':         'http://localhost:8001',
       '/download-file':  'http://localhost:8001',
+      '/variance':       'http://localhost:8001',
     },
   },
 })

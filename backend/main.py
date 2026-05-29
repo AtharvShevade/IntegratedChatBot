@@ -335,6 +335,56 @@ async def list_reports() -> dict:
     return {"reports": names}
 
 
+@app.get("/variance/find", status_code=status.HTTP_200_OK)
+async def variance_find(return_name: str) -> dict:
+    """Find return by name and list available tables from the table mapping XML."""
+    from backend.services import variance_service
+
+    result = variance_service.find_return_and_tables(return_name)
+    if result.get("error"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result["error"])
+    return result
+
+
+@app.post("/variance/compute", status_code=status.HTTP_200_OK)
+async def variance_compute(payload: dict) -> dict:
+    """Compute variance for given return/table/date/periods.
+
+    Expected JSON payload keys:
+      - return_id
+      - table_mapping_path (the TblPath value from Returns.xml; server will resolve full path)
+      - table_name
+      - reporting_date (DD-MMM-YYYY)
+      - reporting_period (int)
+    """
+    from backend.services import variance_service
+    from backend.sql_agent import executor as sql_executor
+
+    required = ("return_id", "table_mapping_path", "table_name", "reporting_date")
+    for k in required:
+        if k not in payload:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Missing {k}")
+
+    reporting_period = int(payload.get("reporting_period", 1))
+
+    try:
+        res = variance_service.compute_variance(
+            return_id=payload["return_id"],
+            return_tbl_path=payload["table_mapping_path"],
+            table_name=payload["table_name"],
+            reporting_date=payload["reporting_date"],
+            reporting_period=reporting_period,
+            execute_query_fn=sql_executor.execute_query,
+            connection_string=None,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    return res
+
+
 @app.post("/guided", response_model=ChatResponse, status_code=status.HTTP_200_OK)
 async def guided(request: ChatRequest) -> ChatResponse:
     """Guided workflow endpoint — deterministic step-by-step input collection.

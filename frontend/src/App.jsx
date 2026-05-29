@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
-import { sendMessage, sendGuidedMessage, compareInstances } from './services/api.js'
+import { sendMessage, sendGuidedMessage, compareInstances, findReturnTables, computeVariance } from './services/api.js'
 
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
@@ -57,6 +57,13 @@ export default function App() {
   const [isGuidedFlow, setIsGuidedFlow] = useState(false)
   const inputRef  = useRef(null)
   const sessionId = useRef(_uid || crypto.randomUUID())
+
+  // ── Variance guided flow state ────────────────────────────────────────────
+  // Tracks which step the user is on so typed input is routed correctly.
+  // Steps: null → 'await_return_name' → 'await_table' → 'await_date' → 'await_periods' → done
+  const [varianceStep, setVarianceStep]   = useState(null)
+  const [varianceInfo, setVarianceInfo]   = useState(null)  // result of /variance/find
+  const [varianceTable, setVarianceTable] = useState(null)  // chosen table name
 
   // ── Persist messages to localStorage on every change ─────────────────────
   useEffect(() => {
@@ -199,9 +206,189 @@ export default function App() {
     }
   }
 
+  // ── Variance: map frequency code → date hint shown to the user ──────────
+  const _varianceDateHint = (freq) => {
+    const f = (freq || '').toUpperCase()
+    const y = new Date().getFullYear()
+    if (['A', 'ANNUAL', 'Y', 'FY'].includes(f))
+      return { example: `31-MAR-${y}`, hint: 'Financial year end — must be 31-Mar.' }
+    if (['B', 'CY'].includes(f))
+      return { example: `31-DEC-${y}`, hint: 'Calendar year end — must be 31-Dec.' }
+    if (['Q', 'QUARTERLY'].includes(f))
+      return { example: `31-MAR-${y}`, hint: 'Quarter end — 31-Mar / 30-Jun / 30-Sep / 31-Dec.' }
+    if (['H', 'HALFYEARLY', 'HY', 'FH'].includes(f))
+      return { example: `31-MAR-${y}`, hint: 'Financial half-year — 31-Mar or 30-Sep.' }
+    if (['C', 'CH'].includes(f))
+      return { example: `30-JUN-${y}`, hint: 'Calendar half-year — 30-Jun or 31-Dec.' }
+    if (['W', 'WEEKLY'].includes(f))
+      return { example: 'any Friday', hint: 'Weekly — must be a Friday.' }
+    if (['F', 'FORTNIGHTLY', 'HM'].includes(f))
+      return { example: `15-MAR-${y}`, hint: 'Fortnightly — 15th or last day of month.' }
+    if (['D', 'DAILY', 'G'].includes(f))
+      return { example: `26-MAY-${y}`, hint: 'Daily — any valid past date.' }
+    // Default: monthly
+    return { example: `31-MAR-${y}`, hint: 'Monthly — last day of the month.' }
+  }
+
+  // ── Variance: step 1 — user clicks 'Data variance' action button ─────────
+  const handleVarianceStart = () => {
+    setVarianceStep('await_return_name')
+    setVarianceInfo(null)
+    setVarianceTable(null)
+    setIsGuidedFlow(true)
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', text: 'Data variance' },
+      {
+        role: 'assistant',
+        text: '📈 Data Variance\nEnter the return or report name to look up (e.g. CIMS_RAQ):',
+        resultType: 'guided_input',
+        options: [],
+      },
+    ])
+  }
+
+  // ── Variance: step 2 — /variance/find then show table picker ─────────────
+  const handleVarianceFindReturn = async (returnName) => {
+    setMessages((prev) => [...prev, { role: 'user', text: returnName }])
+    setIsLoading(true)
+    try {
+      const info = await findReturnTables(returnName)
+      setVarianceInfo(info)
+      setVarianceStep('await_table')
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          resultType: 'variance_find_result',
+          text: '',
+          varianceFindResult: info,
+        },
+      ])
+    } catch (err) {
+      setVarianceStep(null)
+      setIsGuidedFlow(false)
+      setMessages((prev) => [...prev, { role: 'error', text: err.message }])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // ── Variance: step 3 — user picks a table, ask for date ──────────────────
+  const handleVarianceTableSelect = (info, tableName) => {
+    setVarianceTable(tableName)
+    setVarianceInfo(info)
+    setVarianceStep('await_date')
+    const { example, hint } = _varianceDateHint(info?.report_freq)
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', text: tableName },
+      {
+        role: 'assistant',
+        text: `🧭 Guided\nTable selected: **${tableName}**\nEnter the reporting date (DD-MMM-YYYY, e.g. ${example}):\n_${hint}_`,
+        resultType: 'guided_input',
+        options: [],
+      },
+    ])
+  }
+
+  // ── Variance: step 4 — date entered, ask number of periods ───────────────
+  const handleVarianceDateEntered = (dateStr) => {
+    setVarianceStep({ step: 'await_periods', date: dateStr })
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', text: dateStr },
+      {
+        role: 'assistant',
+        text: 'How many previous periods to compare? (e.g. 1, 2, 3):',
+        resultType: 'guided_input',
+        options: ['1', '2', '3'],
+      },
+    ])
+  }
+
+  // ── Variance: step 5 — call /variance/compute and show result ─────────────
+  const handleVarianceCompute = async (periodsStr) => {
+    const date    = varianceStep?.date
+    const periods = parseInt(periodsStr, 10) || 1
+    if (!varianceInfo || !varianceTable || !date) return
+    setMessages((prev) => [...prev, { role: 'user', text: String(periods) }])
+    setIsLoading(true)
+    try {
+      const result = await computeVariance({
+        return_id:          varianceInfo.return_id,
+        table_mapping_path: varianceInfo.table_mapping_path,
+        table_name:         varianceTable,
+        reporting_date:     date,
+        reporting_period:   periods,
+      })
+      setVarianceStep(null)
+      setIsGuidedFlow(false)
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          resultType: 'data_variance_result',
+          text: '',
+          dataVarianceResult: result,
+        },
+      ])
+      setTimeout(() => {
+        setMessages((prev) => [...prev, { role: 'feedback_prompt' }])
+      }, 800)
+    } catch (err) {
+      setVarianceStep(null)
+      setIsGuidedFlow(false)
+      setMessages((prev) => [...prev, { role: 'error', text: err.message }])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // ── Variance: after result — Explain / Visualize buttons ─────────────────
+  const handleVarianceAction = (action, result) => {
+    if (action === 'explain') {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', text: 'Explain This Variance' },
+        {
+          role: 'assistant',
+          text: `📊 Variance Summary for ${result.table_name} (${result.reporting_date} vs ${(result.comparison_periods || []).join(', ')}):\n` +
+            (result.rows || []).slice(0, 5).map((r) => {
+              const cols = result.columns || []
+              const changes = cols.map((col) => {
+                const p1 = r.previous?.previous_1?.[col]
+                if (!p1) return null
+                const vs = p1.variance_summary
+                return vs ? `${col}: ${vs.text}` : null
+              }).filter(Boolean)
+              return `• ${r.identifier}: ${changes.join(', ') || 'no numeric change'}`
+            }).join('\n') +
+            (result.rows?.length > 5 ? `\n…and ${result.rows.length - 5} more rows.` : ''),
+          resultType: 'final',
+        },
+      ])
+    } else if (action === 'visualize') {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', text: 'Visualize' },
+        {
+          role: 'assistant',
+          text: 'Visualization is not yet available in this interface. You can export the data and use Excel or a BI tool to create charts.',
+          resultType: 'final',
+        },
+      ])
+    }
+  }
+
   // ── Start guided flow via welcome card action button ────────────────────
   const handleGuidedAction = async (action) => {
     if (isLoading) return
+    // intercept 'Data variance' — use local flow, not backend guided
+    if (action === 'Data variance') {
+      handleVarianceStart()
+      return
+    }
     setIsGuidedFlow(true)
     setMessages((prev) => [...prev, { role: 'user', text: action }])
     setIsLoading(true)
@@ -255,8 +442,18 @@ export default function App() {
   }
 
   // ── Chip / option click ───────────────────────────────────────────────────
-  const handleSuggestion = (text) => {
-    if (isGuidedFlow) {
+  const handleSuggestion = (text) => {    if (varianceStep === 'await_return_name') {
+      handleVarianceFindReturn(text); return
+    }
+    if (varianceStep === 'await_table') {
+      return // handled by VarianceFindBlock directly
+    }
+    if (varianceStep === 'await_date') {
+      handleVarianceDateEntered(text); return
+    }
+    if (varianceStep?.step === 'await_periods') {
+      handleVarianceCompute(text); return
+    }    if (isGuidedFlow) {
       submitGuidedStep(text)
     } else {
       submitChatMessage(text)
@@ -273,6 +470,10 @@ export default function App() {
     const text = inputText.trim()
     if (!text || isLoading) return
     setInputText('')
+    // route through variance step handlers if in variance guided flow
+    if (varianceStep === 'await_return_name') { await handleVarianceFindReturn(text); return }
+    if (varianceStep === 'await_date')        { handleVarianceDateEntered(text); return }
+    if (varianceStep?.step === 'await_periods') { await handleVarianceCompute(text); return }
     if (isGuidedFlow) {
       await submitGuidedStep(text)
     } else {
@@ -301,6 +502,8 @@ export default function App() {
           onGuidedAction={handleGuidedAction}
           onCompare={handleCompareInstances}
           onFeedback={handleFeedback}
+          onVarianceTableSelect={handleVarianceTableSelect}
+          onVarianceCompute={handleVarianceAction}
         />
       </main>
 
