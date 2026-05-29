@@ -50,6 +50,7 @@ class ChatResponse(BaseModel):
     db_records:      list[dict]      = []   # structured rows from XML lookup
     db_summary:      str             = ""   # plain-text fallback response
     db_beautified:   str             = ""   # LLM-formatted response (when beautify=True)
+    db_qa_data:      dict            = {}   # structured table data for frontend renderer
 
 
 class CompareRequest(BaseModel):

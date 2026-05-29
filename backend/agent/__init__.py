@@ -81,6 +81,14 @@ _DB_QUERY_KW_RE = re.compile(
     re.I,
 )
 
+# Compare keyword detector — signals compare/variance/comparative-analysis workflow intent.
+# Catches: compare, comparative, comparative analysis, comparison, comparing, variance, etc.
+# Prevents compare queries from leaking into the SQL or QA fast-paths.
+_CMP_KW_RE = re.compile(
+    r'\b(compar\w*|versus|vs\.?|varianc\w*|contrast|differences?\s+between|side.?by.?side)\b',
+    re.I,
+)
+
 # Detect ASP.NET / browser session GUIDs forwarded as user_id by the .NET iframe.
 # These are 32-char hex strings (UUID without dashes) or standard UUID format.
 # When matched the value is NOT a real user identifier — fall back to login_id.
@@ -115,6 +123,8 @@ _FUZZY_THRESHOLD  = 78  # 0-100; 78 allows transposition typos like 'gnearte'/'g
 _STATUS_STEMS = ['stat', 'chec', 'prog', 'deta', 'info']
 _GEN_STEMS    = ['gene', 'crea', 'trig', 'prod', 'kick', 'laun', 'exec', 'star', 'fire']
 _SCHED_STEMS  = ['sche']
+_CMP_STEMS    = ['compar', 'varian']   # compare*, comparative*, comparison*, variance*
+_CMP_FUZZY_KWS = ['compare', 'comparative', 'comparison', 'variance', 'contrast']
 
 
 def _fuzzy_has_status(text: str) -> bool:
@@ -156,6 +166,23 @@ def _fuzzy_has_schedule(text: str) -> bool:
         if _fuzz.extractOne(w, _SCHED_FUZZY_KWS, score_cutoff=_FUZZY_THRESHOLD):
             return True
     return False
+
+
+def _fuzzy_has_compare(text: str) -> bool:
+    """True if any word in text fuzzy-matches or stem-matches a compare/comparative keyword.
+
+    Catches: compare, comparative, comparison, comparing, variance, contrast
+    and common typos (compar, comparitive, etc.).
+    """
+    if _CMP_KW_RE.search(text):
+        return True
+    words = re.findall(r'[a-zA-Z]{4,}', text.lower())
+    for w in words:
+        if any(w.startswith(s) for s in _CMP_STEMS):
+            return True
+        if _fuzz.extractOne(w, _CMP_FUZZY_KWS, score_cutoff=_FUZZY_THRESHOLD):
+            return True
+    return False
 # Date pattern -- used to extract a date from free-text messages in STAGE_GEN_DATE
 _DATE_RE = re.compile(
     r'\b(\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})\b', re.I
@@ -177,6 +204,57 @@ def _extract_status_search_terms(text: str) -> str:
         w for w in clean.split()
         if w and w.lower() not in _QUERY_STOP and len(w) > 1
     ]
+    return " ".join(words).strip()
+
+
+# ---------------------------------------------------------------------------
+# Schedule-specific search-term extraction helpers
+# ---------------------------------------------------------------------------
+
+# Month+day without year — "31 June", "Apr 15", "15 March" etc.
+# Used in schedule term extraction to strip bare month/day references.
+_MONTH_DAY_NO_YEAR_RE = re.compile(
+    r'\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May'
+    r'|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?'
+    r'|Nov(?:ember)?|Dec(?:ember)?)\b'
+    r'|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May'
+    r'|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?'
+    r'|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}\b',
+    re.I,
+)
+
+# Time-expression pattern for schedule term extraction.
+# Strips "10 am", "4 PM", "16:00", "10:30 am" etc.
+_SCHED_TIME_RE = re.compile(
+    r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b', re.I
+)
+
+# Words that pollute report-name extraction in a scheduling context but are
+# not already covered by the shared _STOP_WORDS in llm_extractor.py.
+_SCHED_EXTRA_STOP = frozenset({
+    "generation", "generating",
+    "instances",
+})
+
+
+def _extract_schedule_search_terms(text: str) -> str:
+    """Extract report-identifying tokens from a scheduling query.
+
+    Strips: full dates (with year), time tokens, bare month/day pairs (no year),
+    and all schedule/generate filler words so that a query like
+    'schedule instance generation for cims raq at 10 am on 15 Apr 2026'
+    correctly yields 'cims raq'.
+    """
+    # 1. Strip full date expressions (year present)
+    clean = _DATE_STRIP_RE.sub(" ", text)
+    # 2. Strip time tokens ("10 am", "4 PM", "16:00")
+    clean = _SCHED_TIME_RE.sub(" ", clean)
+    # 3. Strip bare month+day without year ("31 June", "Jun 15")
+    clean = _MONTH_DAY_NO_YEAR_RE.sub(" ", clean)
+    # 4. Use the shared extractor (already strips schedule/generate/filler words)
+    terms = extract_search_terms(clean)
+    # 5. Post-filter: remove any remaining schedule-context words
+    words = [w for w in terms.split() if w.lower() not in _SCHED_EXTRA_STOP]
     return " ".join(words).strip()
 
 
@@ -808,8 +886,10 @@ async def decide(
                 except ValueError:
                     pass
             sched_ret = {
-                "form_id": session["sched_form_id"],
-                "name":    session["sched_return_name"],
+                "form_id":     session["sched_form_id"],
+                "name":        session["sched_return_name"],
+                "frequency":   session.get("sched_frequency", ""),
+                "period_name": session.get("sched_period_name", ""),
             }
             if session_id:
                 _session_context.pop(session_id, None)
@@ -862,7 +942,10 @@ async def decide(
 
     # -- Compare: report disambiguation ----------------------------------------
     if not is_reset and session.get("awaiting") == STAGE_CMP_REPORT:
-        if _looks_like_new_query(user_query):
+        # Escape if the user starts a fresh compare query (e.g. "compare HDFC" while
+        # ALE disambiguation is pending) OR any other new-intent query.
+        # _fuzzy_has_compare covers: compare, comparative, comparative analysis, comparison.
+        if _looks_like_new_query(user_query) or _fuzzy_has_compare(user_query):
             if session_id:
                 _session_context.pop(session_id, None)
             session = {}
@@ -894,88 +977,138 @@ async def decide(
     # -- Compare: instance file selection --------------------------------------
     # NOTE: use is_reset (not _looks_like_new_query) here — option labels contain
     # the word "run" which falsely triggers the generate-keyword detector.
+    # However, a new compare/status/generate query should always start fresh.
     if not is_reset and session.get("awaiting") == STAGE_CMP_FILE:
-        return await _run_comparison(session, user_query, session_id)
+        if _fuzzy_has_compare(user_query) or _looks_like_new_query(user_query):
+            if session_id:
+                _session_context.pop(session_id, None)
+            session = {}
+        else:
+            return await _run_comparison(session, user_query, session_id)
 
-    # -- Application Database Q&A (regex-based intent classification) -----------
-    # Checks for DB Q&A intents (user management, returns, roles, etc.) before
-    # invoking the main LLM OR SQL agent. This is fast (no LLM call) and works offline.
-    # Gracefully skipped if APP_DB_BASE_PATH is not configured.
-    # MUST come before SQL agent check to take priority
-    # Works in: (1) first message (empty session) (2) multi-turn chat (general session)
-    # Blocked in: staged sessions (comparison/generation/scheduling in progress)
+    # ─────────────────────────────────────────────────────────────────────────
+    # HIERARCHICAL INTENT FAST-PATHS
+    #
+    # Priority order (each tier blocks all lower tiers — no overlap):
+    #   STEP 1 — Workflow  : status / generate / schedule / compare
+    #   STEP 2 — App Q&A   : XML metadata — users, depts, roles, logs … (before SQL)
+    #   STEP 3 — SQL agent : Oracle analytics, banking metrics (only when QA misses)
+    #   STEP 4 — LLM       : fallback for everything not caught above
+    #
+    # IMPORTANT: STEP 2 (XML-QA) runs before STEP 3 (SQL).
+    # Entity domain wins over action verb — "how many departments" → XML-QA,
+    # not SQL, even though it contains the word "how many".
+    # ─────────────────────────────────────────────────────────────────────────
     if not _is_staged_session(session) and not is_reset:
-        from backend.agent.db_qa_router import check_db_qa_intent, handle_db_qa_query
-        
-        db_intent, db_params = check_db_qa_intent(user_query)
-        # ── Debug trace: log DB Q&A intent detection result ───────────────────────────
-        if db_intent:
+        _has_workflow = (
+            _fuzzy_has_status(user_query)
+            or _fuzzy_has_generate(user_query)
+            or _fuzzy_has_schedule(user_query)
+            or bool(_CMP_KW_RE.search(user_query))
+        )
+        _has_sql = bool(_DB_QUERY_KW_RE.search(user_query))
+
+        # ── STEP 1 : Workflow ─────────────────────────────────────────────────
+        # Any workflow keyword blocks SQL and QA fast-paths entirely.
+        if _has_workflow:
+            logger.info("[INTENT:STEP1] workflow signal detected session=%s", session_id)
+
+            # ── Schedule fast-path: schedule beats generate / status ──────────
+            # When schedule keyword is detected (and no status signal overrides),
+            # extract report name + datetime deterministically — skip LLM entirely.
+            # This ensures "schedule instance generation for CIMS_RAQ at 10 am"
+            # always routes to schedule_report, never generate_instance.
+            if _fuzzy_has_schedule(user_query) and not _fuzzy_has_status(user_query):
+                _sched_terms = _extract_schedule_search_terms(user_query)
+                _sched_dt    = extract_schedule_datetime(user_query)
+                logger.info(
+                    "[INTENT:STEP1] schedule fast-path report=%r date=%r time=%r session=%s",
+                    _sched_terms, _sched_dt.get("schedule_date"),
+                    _sched_dt.get("schedule_time"), session_id,
+                )
+                return _handle_schedule(
+                    report_ident=_sched_terms,
+                    schedule_date=_sched_dt.get("schedule_date"),
+                    schedule_time=_sched_dt.get("schedule_time"),
+                    scheduled_datetime=_sched_dt.get("scheduled_datetime"),
+                    session_id=session_id,
+                    allowed_form_ids=allowed_form_ids,
+                )
+
+            if _fuzzy_has_status(user_query):
+                raw_query = user_query.strip()
+                extracted_query = _extract_status_search_terms(raw_query)
+                for candidate in (raw_query, extracted_query):
+                    if not candidate:
+                        continue
+                    matches = find_matching_reports(candidate)
+                    if matches:
+                        logger.info(
+                            "[INTENT:STEP1] status fast-path matched %d report(s) session=%s",
+                            len(matches), session_id,
+                        )
+                        if session_id:
+                            _session_context[session_id] = {"last_search_terms": candidate}
+                        result = get_report_status(candidate)
+                        if allowed_form_ids is not None:
+                            result = _apply_auth_to_status_result(result, allowed_form_ids)
+                        return _from_result(result, intent="get_status", session_id=session_id)
+            # Generate / schedule / compare, or status with no matching report:
+            # SQL and QA checks are skipped — LLM extraction (STEP 4) resolves intent.
             debug_log(
-                "DECIDE — DB QA ROUTING",
+                "DECIDE — STEP1 WORKFLOW (LLM fallback)",
                 question=user_query,
-                detected_intent=db_intent,
+                has_status=_fuzzy_has_status(user_query),
+                has_generate=_fuzzy_has_generate(user_query),
+                has_schedule=_fuzzy_has_schedule(user_query),
+                has_compare=bool(_CMP_KW_RE.search(user_query)),
+            )
+
+        # ── STEP 2 : Application Q&A (XML-backed deterministic) ──────────────
+        # XML domain check runs BEFORE SQL — entity domain wins over action verb.
+        # "How many departments" → XML-QA even if it contains "how many".
+        else:
+            from backend.agent.db_qa_router import check_db_qa_intent, handle_db_qa_query
+            db_intent, db_params = check_db_qa_intent(user_query)
+            debug_log(
+                "DECIDE — STEP2 QA ROUTING" if db_intent else "DECIDE — STEP2 NO QA MATCH",
+                question=user_query,
+                detected_intent=db_intent or "NONE",
                 extracted_params=db_params or "{}",
-                raw_user_id=user_id or "MISSING",
                 login_id=login_id or "MISSING",
             )
-        else:
-            debug_log(
-                "DECIDE — NO DB Q&A MATCH",
-                question=user_query,
-                fallback_reason="No DB Q&A regex matched — will try SQL agent or LLM",
-            )
-        if db_intent:
-            logger.info(
-                "[INTENT] db_qa_intent=%s params=%s session=%s user=%s role=%s",
-                db_intent, db_params, session_id, user_id, role_id,
-            )
-            # Prefer login_id when user_id is missing, "0", or a session GUID
-            # (the .NET iframe forwards uid=<ASP session GUID> which is not a real user ID)
-            final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
-            final_role_id = role_id if role_id and role_id != "0" else "0"
-            
-            return handle_db_qa_query(
-                message=user_query,
-                intent=db_intent,
-                params=db_params,
-                user_id=final_user_id,
-                role_id=final_role_id,
-                beautify=True,  # Use LLM for formatting by default
-                model="phi3:mini",  # Match env default
-            )
-
-    # -- Keyword fast-path: DB queries (skip LLM for clear data-fetch requests) --
-    # Catches queries like "total loan from cims raq", "show NPA for FY2024",
-    # "what is the gross NPA" without waiting for LLM intent extraction.
-    # Only fires when no staged session is active (i.e. not in workflow).
-    if not _is_staged_session(session) and not is_reset and _DB_QUERY_KW_RE.search(user_query):
-        # Make sure it doesn't look like a status/generate/schedule query first
-        if not _fuzzy_has_status(user_query) and not _fuzzy_has_generate(user_query) and not _fuzzy_has_schedule(user_query):
-            logger.info("[INTENT] keyword fast-path → query_database session=%s", session_id)
-            from backend.sql_agent import handle_db_query
-            return await handle_db_query(user_query, session_id=session_id)
-
-    # -- Keyword fast-path: status lookups (skip LLM on obvious status phrasing) --
-    if not _is_staged_session(session) and not is_reset and _fuzzy_has_status(user_query):
-        raw_query = user_query.strip()
-        extracted_query = _extract_status_search_terms(raw_query)
-        for candidate in (raw_query, extracted_query):
-            if not candidate:
-                continue
-            matches = find_matching_reports(candidate)
-            if matches:
+            if db_intent:
                 logger.info(
-                    "[INTENT] status fast-path query=%r matched %d report(s) session=%s",
-                    candidate, len(matches), session_id,
+                    "[INTENT:STEP2] QA intent=%s params=%s user=%s role=%s session=%s",
+                    db_intent, db_params, user_id, role_id, session_id,
                 )
-                if session_id:
-                    _session_context[session_id] = {"last_search_terms": candidate}
-                result = get_report_status(candidate)
-                if allowed_form_ids is not None:
-                    result = _apply_auth_to_status_result(result, allowed_form_ids)
-                return _from_result(result, intent="get_status", session_id=session_id)
+                final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
+                final_role_id = role_id if role_id and role_id != "0" else "0"
+                return handle_db_qa_query(
+                    message=user_query,
+                    intent=db_intent,
+                    params=db_params,
+                    user_id=final_user_id,
+                    role_id=final_role_id,
+                    beautify=True,
+                    model="phi3:mini",
+                )
 
-    # -- Normal intent extraction ---------------------------------------------
+            # ── STEP 3 : SQL / Oracle analytics ──────────────────────────────
+            # Runs only when both workflow AND XML-QA checks fail.
+            # SQL keywords alone no longer win over XML domains.
+            if _has_sql:
+                logger.info("[INTENT:STEP3] SQL keyword fast-path session=%s", session_id)
+                from backend.sql_agent import handle_db_query
+                return await handle_db_query(user_query, session_id=session_id)
+
+            debug_log(
+                "DECIDE — STEP3 SQL+QA MISS → LLM fallback",
+                question=user_query,
+                fallback_reason="No workflow/XML-QA/SQL signal matched — LLM extraction next",
+            )
+
+    # -- STEP 4: LLM intent extraction (fallback for all non-fast-path queries) --
     try:
         extracted = await extract_intent_and_entities(user_query, history=conversation_history)
     except Exception as exc:
@@ -1044,8 +1177,23 @@ async def decide(
 
         if _matched_query:
             # Re-classify to the correct intent based on fuzzy keyword detection
-            # so "generate cims", "create raq", "schedule raq" etc. route correctly
-            # even when the LLM returned unknown.
+            # so "generate cims", "create raq", "schedule raq", "compare hdfc" etc.
+            # route correctly even when the LLM returned unknown or timed out.
+            # Priority: compare > schedule > generate > status (default)
+            if _fuzzy_has_compare(user_query):
+                logger.info(
+                    "[UNKNOWN_RECLASSIFY] → compare_reports for %r session=%s",
+                    _matched_query, session_id,
+                )
+                return await _handle_compare(_matched_query, session_id, allowed_form_ids)
+            if _fuzzy_has_schedule(user_query):
+                logger.info(
+                    "[UNKNOWN_RECLASSIFY] → schedule_report for %r session=%s",
+                    _matched_query, session_id,
+                )
+                return _handle_schedule(
+                    _matched_query, None, None, None, session_id, allowed_form_ids,
+                )
             if _fuzzy_has_generate(user_query):
                 logger.info(
                     "[UNKNOWN_RECLASSIFY] → generate_instance for %r session=%s",
@@ -1057,16 +1205,21 @@ async def decide(
                         response_text="Sorry, you do not have access to generate report instances.",
                         result_type="error",
                     )
+                # Extract reporting date from the original query so users who
+                # include a date ("generate CIMS RAQ for 31 march 2025") are not
+                # asked for the date again even when the LLM returned unknown.
+                _fallback_date = _extract_date_from_query(user_query)
+                if _fallback_date:
+                    logger.info(
+                        "[REPORT_DATE_DETECTED] unknown-fallback path: date=%r in query=%r",
+                        _fallback_date, user_query,
+                    )
+                    logger.info(
+                        "[SKIP_DATE_PROMPT] date=%r pre-extracted — skipping date prompt",
+                        _fallback_date,
+                    )
                 return await _handle_generate(
-                    _matched_query, None, session_id, effective_asp, allowed_form_ids
-                )
-            if _fuzzy_has_schedule(user_query):
-                logger.info(
-                    "[UNKNOWN_RECLASSIFY] → schedule_report for %r session=%s",
-                    _matched_query, session_id,
-                )
-                return _handle_schedule(
-                    _matched_query, None, None, None, session_id, allowed_form_ids,
+                    _matched_query, _fallback_date, session_id, effective_asp, allowed_form_ids
                 )
             # Default: treat as a status query
             if session_id:
@@ -1097,21 +1250,17 @@ async def decide(
                 result_type="error",
             )
 
-        try:
-            reply = await chat_response(user_query, history=conversation_history)
-        except Exception as exc:
-            logger.warning("chat_response failed (%s)", exc)
-            reply = (
-                'I can help with report status, generation, or scheduling. '
-                'Try: "Status of CIMS_RAQ", "Generate CIMS_RAQ for 30-Jun-2024", '
-                'or "Schedule RAQ for 15-Apr-2026 at 4 PM".'
-            )
-        # ── Debug trace: LLM generic fallback is firing ──────────────────────────────
+        # ── Debug trace: unknown intent, no report match ─────────────────────────────
         debug_log(
-            "LLM GENERIC FALLBACK",
+            "UNKNOWN INTENT FALLBACK",
             question=user_query,
-            fallback_reason="intent='unknown' — no DB Q&A match, no report name resolved, using LLM answer",
-            response_preview=reply[:100],
+            fallback_reason="intent='unknown' — no DB Q&A match, no report name resolved",
+        )
+        reply = (
+            "Sorry, I didn't understand your query. "
+            "I can help with report status, generation, scheduling, "
+            "user/role/department information, or data queries. "
+            "Could you please rephrase?"
         )
         return _build(intent="unknown", report_name=None, response_text=reply)
 
@@ -1167,6 +1316,18 @@ async def decide(
         if _pre_report and not search_terms:
             search_terms = _pre_report
 
+        if reporting_date:
+            logger.info(
+                "[REPORT_DATE_DETECTED] date=%r extracted from query=%r",
+                reporting_date, user_query,
+            )
+            logger.info(
+                "[SKIP_DATE_PROMPT] date=%r available — will skip date prompt if report resolves",
+                reporting_date,
+            )
+        else:
+            logger.debug("[REPORT_DATE_DETECTED] no date found in query=%r", user_query)
+
         # Build date-stripped query for the shared resolver (fuzzy + disambiguation)
         _clean_gen_query = _DATE_STRIP_RE.sub(" ", user_query).strip()
         logger.debug(
@@ -1189,12 +1350,25 @@ async def decide(
         return await _handle_generate(search_terms, reporting_date, session_id, effective_asp, allowed_form_ids)
 
     if intent == "schedule_report":
-        logger.info("[SCHEDULE_START] report=%r session=%s", search_terms, session_id)
+        # ── Deterministic preprocessing: extract datetime + clean report name ──
+        # Mirrors generate_instance preprocessing — strips schedule/generate/time
+        # tokens before report name lookup so LLM-polluted search_terms are corrected.
+        _sched_pre    = _extract_schedule_search_terms(user_query)
+        _sched_pre_dt = extract_schedule_datetime(user_query)
+        if _sched_pre and not search_terms:
+            search_terms = _sched_pre
+        _sched_date = extracted.get("schedule_date") or _sched_pre_dt.get("schedule_date")
+        _sched_time = extracted.get("schedule_time") or _sched_pre_dt.get("schedule_time")
+        _sched_cdt  = extracted.get("scheduled_datetime") or _sched_pre_dt.get("scheduled_datetime")
+        logger.info(
+            "[SCHEDULE_START] report=%r date=%r time=%r session=%s",
+            search_terms, _sched_date, _sched_time, session_id,
+        )
         return _handle_schedule(
             report_ident=search_terms,
-            schedule_date=extracted.get("schedule_date"),
-            schedule_time=extracted.get("schedule_time"),
-            scheduled_datetime=extracted.get("scheduled_datetime"),
+            schedule_date=_sched_date,
+            schedule_time=_sched_time,
+            scheduled_datetime=_sched_cdt,
             session_id=session_id,
             allowed_form_ids=allowed_form_ids,
         )
@@ -1332,7 +1506,11 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
         instances = find_instances_by_prefix(name)
 
     # ── Error guards ──────────────────────────────────────────────────────────
+    # Always clear session on error so stale STAGE_CMP_REPORT / STAGE_CMP_FILE
+    # cannot interfere with the user's next request.
     if not instances:
+        if session_id:
+            _session_context.pop(session_id, None)
         return _build(
             intent="compare_reports", report_name=name,
             response_text=(
@@ -1343,6 +1521,8 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
         )
 
     if len(instances) < 2:
+        if session_id:
+            _session_context.pop(session_id, None)
         return _build(
             intent="compare_reports", report_name=name,
             response_text=(
@@ -1816,29 +1996,82 @@ def _finalize_schedule(
     scheduled_datetime: str | None,
     session_id: str | None,
 ) -> dict[str, Any]:
-    """Build a confirmed schedule response, or ask for the missing date/time."""
+    """Build a confirmed schedule response, or ask for the missing date/time.
+
+    * Validates the schedule date against the report's frequency (reuses the
+      same ``validate_reporting_date`` logic as generate-instance).
+    * Handles partial input gracefully: if only date is provided, saves it and
+      asks for time; if only time is provided, saves it and asks for date.
+    * Saves ``frequency`` and ``period_name`` in the STAGE_SCHED_DT session so
+      the next turn can re-validate and display richer prompts.
+    """
+    frequency   = ret.get("frequency", "")
+    period_name = ret.get("period_name", "")
+
+    # ── Date validation (reuse generate-instance logic when frequency is known) ──
+    # require_future=True: scheduling needs a strictly future date (opposite of generate).
+    if schedule_date and frequency:
+        validation = validate_reporting_date(schedule_date, frequency, require_future=True)
+        if not validation["valid"]:
+            if session_id:
+                _session_context[session_id] = {
+                    "awaiting":            STAGE_SCHED_DT,
+                    "sched_form_id":       ret["form_id"],
+                    "sched_return_name":   ret["name"],
+                    "sched_frequency":     frequency,
+                    "sched_period_name":   period_name,
+                    "sched_schedule_date": None,           # reject the invalid date
+                    "sched_schedule_time": schedule_time,  # keep time if already given
+                }
+            error_msg   = validation["error"]
+            suggestions = [
+                s for s in (validation.get("suggestions") or [])
+                if s.lower() != schedule_date.lower()
+            ]
+            if len(suggestions) == 1:
+                error_msg = f"Did you mean **{suggestions[0]}**?\n\n{error_msg}"
+            return _build(
+                intent="schedule_report",
+                report_name=ret["name"],
+                response_text=error_msg,
+                result_type="sched_awaiting_dt",
+                options=suggestions if suggestions else None,
+            )
+
+    # ── Missing date or time — save what we have and ask for the rest ──────
     if not schedule_date or not schedule_time:
-        missing = []
-        if not schedule_date:
-            missing.append("date")
-        if not schedule_time:
-            missing.append("time")
         if session_id:
             _session_context[session_id] = {
-                "awaiting":          STAGE_SCHED_DT,
-                "sched_form_id":     ret["form_id"],
-                "sched_return_name": ret["name"],
+                "awaiting":            STAGE_SCHED_DT,
+                "sched_form_id":       ret["form_id"],
+                "sched_return_name":   ret["name"],
+                "sched_frequency":     frequency,
+                "sched_period_name":   period_name,
                 "sched_schedule_date": schedule_date,
                 "sched_schedule_time": schedule_time,
             }
+        if not schedule_date and not schedule_time:
+            prompt_text = (
+                f"Report confirmed: '{ret['name']}'.\n"
+                "Please provide the schedule date and time.\n"
+                'For example: "15-Apr-2026 at 4 PM".'
+            )
+        elif not schedule_date:
+            prompt_text = (
+                f"Time saved: **{schedule_time}**.\n"
+                "Please provide the schedule date.\n"
+                'For example: "15-Apr-2026".'
+            )
+        else:
+            prompt_text = (
+                f"Date saved: **{schedule_date}**.\n"
+                "Please provide the schedule time.\n"
+                'For example: "4 PM" or "16:00".'
+            )
         return _build(
             intent="schedule_report",
             report_name=ret["name"],
-            response_text=(
-                f"Report confirmed: '{ret['name']}'.\n"
-                f"Please provide the schedule {' and '.join(missing)}.\n"
-                'For example: "15-Apr-2026 at 4 PM".'
-            ),
+            response_text=prompt_text,
             result_type="sched_awaiting_dt",
         )
 
@@ -2203,6 +2436,10 @@ async def _handle_generate(
 
     # Date not provided -- ask for it, save context
     if not reporting_date:
+        logger.info(
+            "[REPORT_DATE_DETECTED] no date in query — prompting user for reporting date (report=%r)",
+            ret["name"],
+        )
         if session_id:
             _session_context[session_id] = {
                 "awaiting":        STAGE_GEN_DATE,
@@ -2218,6 +2455,10 @@ async def _handle_generate(
         )
 
     # Both slots filled -- validate and trigger
+    logger.info(
+        "[SKIP_DATE_PROMPT] date=%r already known for report=%r — proceeding to generation",
+        reporting_date, ret["name"],
+    )
     return await _finalize_generation(ret, reporting_date, session_id, asp_session)
 
 

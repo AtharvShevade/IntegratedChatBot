@@ -642,72 +642,77 @@ async def generate_llm_summary(
     prompt = (
         f"You are a financial analyst reviewing XBRL regulatory report data for a bank.\n"
         f"Report: {report_name}\n"
-        f"Comparing period {label_a} (current) vs {label_b} (prior).\n\n"
-        f"Top variance data:\n{data_text}\n\n"
-        f"Summarise the key findings as 5-8 concise bullet points.\n"
+        f"Comparing filing {label_a} (current) vs {label_b} (prior).\n\n"
+        f"Top variance data (concept: prior → current, % change):\n{data_text}\n\n"
+        f"Write exactly 5 bullet points (no more, no less) explaining the most important changes.\n"
         f"Rules:\n"
-        f"- Start every bullet with '* ' (asterisk then space).\n"
-        f"- Lead with the metric name, then state the change and its significance.\n"
-        f"- Highlight significant percentage changes first.\n"
-        f"- Flag any risk indicators (NPA, capital adequacy, profitability).\n"
-        f"- End with one overall trend bullet.\n"
-        f"- Keep each bullet to one sentence. No paragraphs, no headers, no numbering."
+        f"- Output ONLY the bullet list — no intro text, no headers, no numbering.\n"
+        f"- Start each bullet with the Unicode bullet character ‘•’ followed by a space.\n"
+        f"- Use plain business language — avoid jargon. One sentence per bullet.\n"
+        f"- Lead with the metric name, then describe the change and its significance.\n"
+        f"- Prioritise the highest percentage changes first.\n"
+        f"- Ignore concepts with zero or negligible change.\n"
+        f"- End with one overall trend or risk observation."
     )
 
     base_url   = os.getenv("OLLAMA_BASE_URL",      "http://127.0.0.1:11434")
-    model      = os.getenv("OLLAMA_COMPARE_MODEL", "mistral:latest")          # dedicated compare/summary model
+    model      = os.getenv("OLLAMA_COMPARE_MODEL", "mistral:7b-instruct")   # dedicated compare/summary model
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE",    "30m")
-    timeout    = float(os.getenv("OLLAMA_TIMEOUT", "180"))   # same var as llm_service.py
-    payload    = {
+    # Short timeout: summary is decorative - must not block the comparison result.
+    # Override via OLLAMA_SUMMARY_TIMEOUT; default 8 s.
+    timeout    = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "8"))
+
+    chat_payload = {
         "model":      model,
         "messages":   [{"role": "user", "content": prompt}],
         "stream":     False,
         "keep_alive": keep_alive,
         "options":    {"temperature": 0.3, "num_predict": 450},
     }
+    gen_payload = {
+        "model":      model,
+        "prompt":     prompt,
+        "stream":     False,
+        "keep_alive": keep_alive,
+        "options":    {"temperature": 0.3, "num_predict": 450},
+    }
 
-    last_exc: Exception | None = None
-    for attempt in range(1, 3):   # up to 2 attempts
-        try:
-            logger.debug(
-                "[LLM_SUMMARY] attempt=%d model=%s rows=%d timeout=%.0fs",
-                attempt, model, len(lines), timeout,
-            )
-            _t0 = time.monotonic()
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(f"{base_url}/api/chat", json=payload)
+    def _normalise_bullets(raw):
+        out = []
+        for ln in raw.splitlines():
+            ln = ln.strip()
+            if not ln or ln.lower().startswith(("ai summary", "summary:", "key finding")):
+                continue
+            ln = re.sub(r'^(?:\*|-|•|\d+[.)\s])\s*', '', ln)
+            if ln:
+                out.append('• ' + ln)
+        out = out[:5]
+        return ('AI Summary:\n' + '\n'.join(out)) if out else ''
+
+    try:
+        logger.debug('[LLM_SUMMARY] model=%s rows=%d timeout=%.0fs', model, len(lines), timeout)
+        _t0 = time.monotonic()
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                resp = await client.post(f'{base_url}/api/chat', json=chat_payload)
                 resp.raise_for_status()
-                body = resp.json()
+                content = (resp.json().get('message', {}).get('content') or '').strip()
+            except httpx.HTTPStatusError as http_err:
+                if http_err.response.status_code == 404:
+                    logger.warning('[LLM_SUMMARY] /api/chat 404 for model=%s - trying /api/generate. Run: ollama pull %s', model, model)
+                    resp2 = await client.post(f'{base_url}/api/generate', json=gen_payload)
+                    resp2.raise_for_status()
+                    content = (resp2.json().get('response') or '').strip()
+                else:
+                    raise
+        _elapsed = time.monotonic() - _t0
+        if content:
+            result = _normalise_bullets(content)
+            if result:
+                logger.info('[PERF] operation=llm_summary model=%s duration=%.2fs chars=%d', model, _elapsed, len(result))
+                return result
+        logger.warning('[LLM_SUMMARY] model responded but produced no usable bullets')
+    except Exception as exc:
+        logger.warning('[LLM_SUMMARY_FAIL] model=%s error=%s - skipping AI summary silently', model, exc)
 
-            _elapsed = time.monotonic() - _t0
-
-            # Safely extract content — handle both /api/chat and /api/generate layouts
-            content = (
-                body.get("message", {}).get("content")
-                or body.get("response")
-                or ""
-            )
-            content = content.strip()
-
-            if content:
-                logger.info(
-                    "[PERF] operation=llm_summary model=%s duration=%.2fs chars=%d attempt=%d",
-                    model, _elapsed, len(content), attempt,
-                )
-                return content
-
-            logger.warning(
-                "[LLM_SUMMARY] empty content on attempt=%d — body keys=%s",
-                attempt, list(body.keys()),
-            )
-
-        except Exception as exc:
-            last_exc = exc
-            logger.warning(
-                "[LLM_SUMMARY_FAIL] attempt=%d/%d error=%s",
-                attempt, 2, exc,
-                exc_info=True,
-            )
-
-    logger.warning("[LLM_SUMMARY] all attempts exhausted — returning empty summary")
-    return ""
+    return ''

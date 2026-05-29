@@ -265,6 +265,25 @@ def _try_clamp_impossible_date(text: str) -> Optional[str]:
     return clamped_date.strftime("%d-%b-%Y")
 
 
+# Module-level: compiled once for efficiency.
+# Detects a plausible date signal in free-text before invoking fuzzy parsing.
+# Covers all four user-requested formats plus numeric and ISO.
+_DATE_SIGNAL_RE = re.compile(
+    r"(?:"
+    r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}"               # 31/03/2025  31-03-2025  31.03.2025
+    r"|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}"                 # 2025-03-31  (ISO)
+    r"|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b"   # 31 Mar
+    r"|\d{1,2}\s+(?:January|February|March|April|May|June|July|August"    # 31 March
+    r"|September|October|November|December)\b"
+    r"|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May"           # March 31
+    r"|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?"
+    r"|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}"
+    r"|today|yesterday|last\s+month"
+    r")",
+    re.I,
+)
+
+
 def _extract_date_from_query(query: str) -> Optional[str]:
     """Extract and normalise a date from a query string.
 
@@ -274,25 +293,19 @@ def _extract_date_from_query(query: str) -> Optional[str]:
          Only accept the fuzzy result when it looks like the query genuinely
          contains date-like tokens (digits or month names) to avoid false
          positives from report names like 'CIMS_RAQ'.
+
+    Supports:
+      - 31 March 2025  / 31 Mar 2025
+      - 31-Mar-2025
+      - March 31 2025
+      - 31/03/2025  /  31-03-2025  /  31.03.2025
     """
-    # Fast path: strict regex
+    # Fast path: strict DD-MMM-YYYY regex
     m = _DATE_RE.search(query)
     if m:
         return m.group(1)
 
-    # Fuzzy path: only attempt when there's a plausible date signal
-    _DATE_SIGNAL_RE = re.compile(
-        r"\b(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}"        # numeric separators
-        r"|\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}"             # ISO style
-        r"|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"  # "26 Jan"
-        r"|\d{1,2}\s+(?:January|February|March|April|June|July|August"     # "26 January"
-        r"|September|October|November|December)"
-        r"|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May"        # "March 2026"
-        r"|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?"
-        r"|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d"
-        r"|today|yesterday|last\s+month)\b",
-        re.I,
-    )
+    # Fuzzy path: only invoke when a plausible date signal is present in the query
     if not _DATE_SIGNAL_RE.search(query):
         return None
 
@@ -303,7 +316,7 @@ def _extract_date_from_query(query: str) -> Optional[str]:
 _STOP_WORDS: frozenset[str] = frozenset({
     # intent / action
     "status", "state", "progress", "show", "check", "details", "info",
-    "generate", "create", "trigger", "run", "produce", "make", "kick",
+    "generate", "generation", "create", "trigger", "run", "produce", "make", "kick",
     "off", "initiate", "launch", "start", "submit", "build", "execute",
     "fire", "let", "us",
     # scheduling
@@ -614,6 +627,41 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
     """
     from backend.services.llm_service import extract_intent_entities_llm
 
+    # ── Pre-LLM compare shortcut ──────────────────────────────────────────────
+    # When the query clearly signals a comparison intent, classify it immediately
+    # without calling the LLM. This avoids the 60 s timeout when phi3:mini is
+    # cold or overloaded, and guarantees consistent routing for all compare
+    # phrasings: "compare hdfc", "comparative analysis of RAQ",
+    # "give me comparative analysis for HDFC", "compare two instances of cims_raq".
+    _PRECHECK_CMP_RE = re.compile(
+        r'\b(compare\b|compar\w+|comparative|comparison)\b',
+        re.I,
+    )
+    if _PRECHECK_CMP_RE.search(user_query):
+        _CMP_STOP_PRE = re.compile(
+            r'\b(compare|comparing|comparison|comparative|variance|variances'
+            r'|diff(?:er(?:ence)?)?|vs\.?|versus|contrast|analys[ie]s?|give'
+            r'|side|report[s]?|instance[s]?|these|those|me|the|a|an|of|for'
+            r'|to|two|both|and|or|with)\b',
+            re.I,
+        )
+        _pre_cleaned  = _CMP_STOP_PRE.sub(" ", user_query).strip()
+        _pre_tokens   = [t for t in re.split(r'[\s,;]+', _pre_cleaned) if len(t) >= 2]
+        _pre_report   = _pre_tokens[0] if _pre_tokens else _extract_search_terms(user_query) or None
+        logger.info(
+            "[PRE_LLM_SHORTCUT] compare keywords detected → compare_reports "
+            "(report=%r) — LLM call skipped",
+            _pre_report,
+        )
+        return {
+            "intent":             "compare_reports",
+            "search_terms":       _pre_report,
+            "reporting_date":     None,
+            "schedule_date":      None,
+            "schedule_time":      None,
+            "scheduled_datetime": None,
+        }
+
     logger.info("[LLM_EXTRACT_START] query=%r history_len=%d", user_query, len(history or []))
     _t0 = time.monotonic()
 
@@ -661,8 +709,8 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
     # compare_reports uses its own stop-word regex because comparison-intent words
     # like "compare", "variance", "vs" are not in the generic _STOP_WORDS set.
     _CMP_STOP = re.compile(
-        r"\b(compare|comparing|comparison|variance|variances|diff(?:er(?:ence)?)?"
-        r"|vs\.?|versus|contrast|analys[ie]s?|side|report[s]?|instance[s]?"
+        r"\b(compare|comparing|comparison|comparative|variance|variances|diff(?:er(?:ence)?)?"
+        r"|vs\.?|versus|contrast|analys[ie]s?|give|side|report[s]?|instance[s]?"
         r"|these|those|me|the|a|an|of|for|to|two|both|and|or|with)\b",
         re.I,
     )

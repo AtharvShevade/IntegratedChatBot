@@ -931,9 +931,10 @@ INTENT_TO_HANDLER: dict[str, object] = {
     "db_my_cross_val":      handle_my_cross_validation_log,
     "db_my_status":         handle_my_status,
     "db_my_last_login":     handle_my_last_login,
+    "db_my_failed_logins":  handle_my_failed_logins,
     "db_my_submissions":    handle_my_submissions,
     "db_my_dept_returns":   handle_my_dept_returns,
-    
+
     # List queries (admin-only, routes based on query_type parameter)
     "db_list_users":        handle_db_list_users_wrapper,  # query_type: "all", "active", "inactive", "count"
     "db_list_departments":  handle_dept_list,
@@ -943,15 +944,36 @@ INTENT_TO_HANDLER: dict[str, object] = {
     "db_menu_list":         handle_menu_list,
     "db_notifications":     handle_notification_list,
     "db_bank_info":         handle_bank_info,
+
+    # Admin user lookups (extended)
+    "db_user_by_dept":      handle_user_by_dept,
+    "db_user_by_role":      handle_user_by_role,
+    "db_user_never_login":  handle_user_never_login,
+    "db_user_failed_login": handle_user_failed_login,
+    "db_user_dupe_email":   handle_user_duplicate_email,
+
+    # Returns / periods
+    "db_non_xbrl_list":     handle_non_xbrl_list,
+    "db_returns_by_period": handle_returns_by_period,
+    "db_validation_returns": handle_validation_returns,
+    "db_period_list":       handle_period_list,
+
+    # Submissions
+    "db_submission_list":   handle_submission_list,
+
     # Admin audit / log queries
     "db_audit_log":         handle_audit_log,
     "db_cross_val_log":     handle_cross_validation_log,
     "db_upload_log":        handle_upload_log,
-    
+
     # Info queries (admin-only or self-service depending on target)
     "db_user_info":         handle_user_profile,       # target_user parameter
     "db_department_info":   handle_dept_info,          # target_department parameter
     "db_role_info":         handle_role_permissions,   # target_role parameter
+    "db_dept_returns":      handle_dept_returns,       # which returns a dept has
+    "db_role_users":        handle_role_users,         # which users have a role
+    "db_permission_check":  handle_permission_check,   # can role X do action Y
+    "db_segment_info":      handle_segment_info,       # bank segment info
 }
 
 

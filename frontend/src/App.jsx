@@ -84,6 +84,7 @@ export default function App() {
     'schedule_parsed', // scheduling confirmed
     'sql_result',      // database query done
     'db_result',       // SQL agent query done
+    'db_qa_result',    // XML App DB Q&A done
   ])
 
   // ── Helper: push an assistant result into the message list ───────────────
@@ -128,6 +129,7 @@ export default function App() {
       downloadUrl:   result.download_url   || '',
       downloadLabel: result.download_label || '',
       statusNote:    result.status_note    || '',
+      dbQaData:      result.db_qa_data     || null,
     }
     setMessages((prev) => [...prev, resultMsg])
     if (isTerminal) {

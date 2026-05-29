@@ -21,7 +21,7 @@ function triggerBlobDownload(url, label) {
     .catch((err) => console.error('[Download] failed:', err))
 }
 
-export default function MessageBubble({ role, text, data, options, resultType, sqlData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
+export default function MessageBubble({ role, text, data, options, resultType, sqlData, dbQaData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
@@ -98,6 +98,16 @@ export default function MessageBubble({ role, text, data, options, resultType, s
       <div className="bubble-row assistant">
         <div className="avatar assistant-avatar">AI</div>
         <SqlResultBlock data={sqlData} />
+      </div>
+    )
+  }
+
+  // XML App DB Q&A result — structured HTML table / key-value card
+  if (!isUser && resultType === 'db_qa_result') {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <DbQaResultBlock data={dbQaData} fallbackText={text} />
       </div>
     )
   }
@@ -708,6 +718,92 @@ function SqlResultBlock({ data }) {
           No rows returned.
         </div>
       )}
+    </div>
+  )
+}
+
+// ── DB Q&A Result Block ─────────────────────────────────────────────────────
+function DbQaResultBlock({ data, fallbackText }) {
+  if (!data || (data.records?.length === 0 && !data.summary)) {
+    return (
+      <div className="bubble assistant-bubble">
+        {fallbackText || 'No data found.'}
+      </div>
+    )
+  }
+
+  const { label, summary, cols = [], headers = [], records = [], is_count } = data
+
+  // No records — show summary only
+  if (records.length === 0) {
+    return <div className="bubble assistant-bubble">{summary || fallbackText}</div>
+  }
+
+  // Count-only result — stat cards
+  if (is_count) {
+    const rec = records[0]
+    return (
+      <div className="dbqa-block">
+        <div className="dbqa-count-row">
+          {cols.map((c, i) => (
+            <div key={c} className="dbqa-count-card">
+              <div className="dbqa-count-val">{rec[c] ?? '\u2014'}</div>
+              <div className="dbqa-count-label">{headers[i]}</div>
+            </div>
+          ))}
+        </div>
+        {summary && <div className="dbqa-summary">{summary}</div>}
+      </div>
+    )
+  }
+
+  // Single record — key/value card
+  if (records.length === 1) {
+    const rec = records[0]
+    return (
+      <div className="dbqa-block">
+        <div className="dbqa-kv-list">
+          {cols.map((c, i) => (
+            <div key={c} className="dbqa-kv-row">
+              <span className="dbqa-kv-key">{headers[i]}</span>
+              <span className="dbqa-kv-val">{rec[c] ?? '\u2014'}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // Multiple records — HTML table
+  return (
+    <div className="dbqa-block">
+      {label && (
+        <div className="dbqa-header-row">
+          <span className="dbqa-label">{label}</span>
+          <span className="dbqa-record-count">{records.length} records</span>
+        </div>
+      )}
+      <div className="dbqa-table-wrapper">
+        <table className="dbqa-table">
+          <thead>
+            <tr>
+              {headers.map((h) => (
+                <th key={h}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((rec, ri) => (
+              <tr key={ri}>
+                {cols.map((c) => (
+                  <td key={c}>{rec[c] ?? '\u2014'}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {summary && <div className="dbqa-summary">{summary}</div>}
     </div>
   )
 }

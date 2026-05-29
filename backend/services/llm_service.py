@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 OLLAMA_BASE_URL:      str   = os.getenv("OLLAMA_BASE_URL",      "http://127.0.0.1:11434")
 OLLAMA_EXTRACT_MODEL: str   = os.getenv("OLLAMA_EXTRACT_MODEL", "phi3:mini")       # intent/entity extraction
 OLLAMA_MODEL:         str   = os.getenv("OLLAMA_MODEL",         "phi3:mini")       # conversational fallback
-REQUEST_TIMEOUT:      float = float(os.getenv("OLLAMA_TIMEOUT",  "180"))            # 180 s to survive cold load
+REQUEST_TIMEOUT:      float = float(os.getenv("OLLAMA_TIMEOUT",          "180"))   # 180 s for chat/summary calls
+EXTRACT_TIMEOUT:      float = float(os.getenv("OLLAMA_EXTRACT_TIMEOUT",  "30"))    # 30 s for fast intent extraction
 
 # Keep models resident in memory between requests — avoids 60-80 s cold-start penalty.
 _KEEP_ALIVE: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
@@ -38,7 +39,9 @@ Valid intents:
   "generate_instance" — user wants to generate/create/run/trigger/kick off a new report instance
   "schedule_report"   — user wants to schedule a report to run at a specific future date and time
   "compare_reports"   — user wants to compare two instances/periods of a report, see variance/differences
-                        triggers: compare, variance, difference, vs, versus, side by side, contrast
+                        triggers: compare, comparative, comparative analysis, comparison,
+                                  compare instances, compare reports, variance, difference,
+                                  vs, versus, side by side, contrast, analyse, analysis
   "query_database"    — user wants to fetch, retrieve, show, list, or analyse data from the Oracle database
                         triggers: show data, get data, fetch records, list transactions, NPA data, how many,
                         what is the value, retrieve from database, query, select, display records,
@@ -67,7 +70,19 @@ Entities to extract:
   "target_role"       : role name if asking about specific role. null if not present.
   "query_type"        : for list queries: "active", "inactive", "all", "details", "count". null if not present.
 
+Intent routing priority — apply in this order, stop at first match:
+  1. WORKFLOW  — status/generate/schedule/compare keywords + a report context → use report intents
+  2. APP Q&A   — user/department/role/permission/audit/log/return/submission questions → use db_* intents
+               IMPORTANT: XML domain wins over action verb — "how many departments" → db_list_departments,
+               NOT query_database, even though it contains "how many"
+  3. SQL AGENT — Oracle analytics, banking metrics with NO XML domain entity → use "query_database"
+               ONLY use when: NPA, SLR, CRR, CAR, loans, deposits, exposure, provision, transactions
+               and the query does NOT mention users/departments/roles/returns/permissions/audits
+  4. UNKNOWN   — greetings, help, or fully unrelated messages
+
 Rules for all intents:
+  - Workflow takes priority: if BOTH workflow keywords (status/generate/schedule/compare) AND
+    banking metrics (NPA, loan, CAR …) appear together, use the WORKFLOW intent, not query_database.
   - For report intents, follow existing extraction rules (see examples below)
   - For DB Q&A list intents, extract query_type to indicate filter type
   - For DB Q&A info intents, extract target_user/target_department/target_role
@@ -83,12 +98,16 @@ Examples for DB Q&A intents:
   "What can I do?"                        → {"intent":"db_my_permissions",...}
   "Show all inactive users"               → {"intent":"db_list_users","query_type":"inactive",...}
   "Who are all the users?"                → {"intent":"db_list_users","query_type":"all",...}
+  "Department info"                       → {"intent":"db_list_departments",...}
 
 Examples for report intents (existing):
   "Check status of my report"             → {"intent":"get_status","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
   "Generate CIMS_RAQ report"              → {"intent":"generate_instance","report_name":"CIMS_RAQ","reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
   "Show NPA data"                         → {"intent":"query_database","report_name":null,"reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
   "compare HDFC"                          → {"intent":"compare_reports","report_name":"HDFC","reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
+  "give me comparative analysis for HDFC" → {"intent":"compare_reports","report_name":"HDFC","reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
+  "comparative analysis of RAQ"           → {"intent":"compare_reports","report_name":"RAQ","reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
+  "compare two instances of CIMS_RAQ"     → {"intent":"compare_reports","report_name":"CIMS_RAQ","reporting_date":null,"schedule_date":null,"schedule_time":null,"target_user":null,"target_department":null,"target_role":null,"query_type":null}
 
 JSON schema (complete):
 {
@@ -195,11 +214,11 @@ async def extract_intent_entities_llm(user_query: str, history: list[dict] | Non
     }
 
     logger.debug(
-        "[LLM_EXTRACT_CALL] model=%s endpoint=%s/api/chat keep_alive=%s",
-        OLLAMA_EXTRACT_MODEL, OLLAMA_BASE_URL, _KEEP_ALIVE,
+        "[LLM_EXTRACT_CALL] model=%s endpoint=%s/api/chat keep_alive=%s timeout=%.0fs",
+        OLLAMA_EXTRACT_MODEL, OLLAMA_BASE_URL, _KEEP_ALIVE, EXTRACT_TIMEOUT,
     )
     _t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=EXTRACT_TIMEOUT) as client:
         resp = await client.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json=payload,

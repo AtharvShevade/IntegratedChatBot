@@ -214,7 +214,7 @@ _RULES: list[tuple[str, list[re.Pattern], object]] = [
         r"\bshared\s+email\b"),
 
     _mk("USER_COUNT",
-        r"\bhow\s+many\s+users?\b",
+        r"\bhow\s+many\s+(\w+\s+)?users?\b",   # "how many active users", "how many inactive users"
         r"\btotal\s+(number\s+of\s+)?users?\b",
         r"\bcount\s+of\s+users?\b",
         r"\buser\s+count\b"),
@@ -238,20 +238,25 @@ _RULES: list[tuple[str, list[re.Pattern], object]] = [
         r"\buser\s+(detail|profile|info)\b",
         r"\bwhat\s+(are|is)\s+the\s+details?\s+(of|for|about)\s+user\b",
         r"\bwhen\s+(was|did)\s+user\b",
-        r"\bwho\s+created\s+user\b"),
+        r"\bwho\s+created\s+user\b",
+        r"\bwho\s+is\s+\S+\b"),                              # "who is iris810"
 
     # ── DEPARTMENT ───────────────────────────────────────────────────────────
     _mk("DEPT_RETURNS",
         r"\b(return|form|report)s?\s+(assigned\s+to|of|for|in)\s+(department|dept)\b",
         r"\b(department|dept)\s+\S+\s+(return|form|report)\b",
-        r"\bwhat\s+returns?\s+does\s+(department|dept)\b"),
+        r"\bwhat\s+returns?\s+does\s+(department|dept)\b",
+        r"\bwhich\s+(xbrl\s+|non.?xbrl\s+)?returns?\s+(are\s+)?(assigned\s+to|for)\s+(department|dept)\b"),  # "which XBRL returns assigned to dept"
 
     _mk("DEPT_LIST",
         r"\b(list|all|show)\s+(all\s+)?(department|dept)s?\b",
         r"\b(department|dept)s?\s+(list|listing)\b",
-        r"\bwhat\s+are\s+(all\s+)?(the\s+)?(departments|department)s?\b",
-        r"\bwhich\s+(departments|department)s?\s+(are|exist|are\s+there)\b",
-        r"\bwhat\s+(departments|department)s?\s+(are|exist)\b"),
+        r"\bwhat\s+are\s+(all\s+)?(the\s+)?(departments?|dept)s?\b",
+        r"\bwhich\s+(departments?|dept)s?\s+(are|exist|are\s+there)\b",
+        r"\bwhat\s+(departments?|dept)s?\s+(are|exist)\b",
+        r"\bhow\s+many\s+(departments?|depts?)\b",                           # "how many departments"
+        r"\bwhich\s+department\s+has\s+(the\s+)?(most|fewest|highest|lowest)\b",  # rankings
+        r"\bwhich\s+departments?\s+have\s+(no|zero|the\s+most|the\s+fewest)\s+returns?\b"),  # dept stats
 
     _mk("DEPT_INFO",
         r"\b(detail|profile|info)\s+(of|about|for)\s+(department|dept)\b",
@@ -280,7 +285,9 @@ _RULES: list[tuple[str, list[re.Pattern], object]] = [
     _mk("ROLE_LIST",
         r"\b(list|all|show)\s+(all\s+)?roles?\b",
         r"\broles?\s+(list|listing)\b",
-        r"\bwhat\s+roles?\s+(are|exist|available)\b"),
+        r"\bwhat\s+roles?\s+(are|exist|available)\b",
+        r"\bwhich\s+roles?\s+(are|exist|are\s+there)\b",    # "which roles are active"
+        r"\bhow\s+many\s+roles?\b"),                         # "how many roles"
 
     # ── PERIOD ───────────────────────────────────────────────────────────────
     _mk("USER_LEVEL_LIST",

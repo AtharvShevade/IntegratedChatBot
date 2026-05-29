@@ -106,12 +106,12 @@ def resolve_return_exact(report_name: str) -> dict | None:
 
 # -- Date validation ------------------------------------------------------------
 
-def _hint_dates(frequency: str, year: int, *, filter_future: bool = True) -> list[str]:
+def _hint_dates(frequency: str, year: int, *, filter_future: bool = True, filter_past: bool = False) -> list[str]:
     """Return a short list of example valid dates for a frequency.
 
-    When *filter_future* is True (default), any suggestion that falls after
-    today's date is excluded.  This prevents displaying future dates as
-    selectable options — users should never see invalid suggestions.
+    *filter_future* (default True) — exclude dates after today (generate-instance mode).
+    *filter_past*   (default False) — exclude dates on or before today (scheduling mode).
+    Both flags are mutually exclusive; *filter_past* takes priority when both are set.
     """
     freq = (frequency or "").upper()
     today = date.today()
@@ -142,25 +142,37 @@ def _hint_dates(frequency: str, year: int, *, filter_future: bool = True) -> lis
     else:
         return []
 
-    if not filter_future:
+    if not filter_future and not filter_past:
         return candidates
 
-    # Filter out future dates
+    # filter_past (scheduling): keep only strictly future dates.
+    # filter_future (generate, default): keep only past/current dates.
     valid: list[str] = []
     for ds in candidates:
         try:
             d = datetime.strptime(ds, _DATE_FMT).date()
-            if d <= today:
-                valid.append(ds)
+            if filter_past:
+                if d > today:
+                    valid.append(ds)
+            else:  # filter_future
+                if d <= today:
+                    valid.append(ds)
         except ValueError:
             continue
 
-    logger.debug("[VALID_SUGGESTIONS_FILTERED] freq=%s candidates=%d valid=%d", freq, len(candidates), len(valid))
+    logger.debug("[VALID_SUGGESTIONS_FILTERED] freq=%s candidates=%d valid=%d filter_past=%s", freq, len(candidates), len(valid), filter_past)
     return valid
 
 
-def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
+def validate_reporting_date(date_str: str, frequency: str, *, require_future: bool = False) -> dict[str, Any]:
     """Validate a reporting date against frequency rules.
+
+    Args:
+        require_future: When True (scheduling mode) only strictly future dates are
+                        accepted — past/current dates are rejected.  When False
+                        (default, generate-instance mode) only past/current dates
+                        are accepted — future dates are rejected.
+                        All frequency/period checks (Q/M/Y/H/…) are applied in both modes.
 
     Returns: {"valid": bool, "error": str | None, "suggestions": list[str]}
     """
@@ -254,28 +266,56 @@ def validate_reporting_date(date_str: str, frequency: str) -> dict[str, Any]:
             "suggestions": _hint_dates(frequency, date.today().year),
         }
 
-    if parsed > date.today():
-        logger.debug("[FUTURE_DATE_REJECTED] date=%s today=%s", ds, date.today())
-        # Only suggest non-future dates — never show future dates as options
-        past_suggestions = _hint_dates(frequency, date.today().year)
-        return {
-            "valid":       False,
-            "error":       f"'{ds}' is a future date. Future reporting dates are not allowed.",
-            "suggestions": past_suggestions,
-        }
+    today_date = date.today()
+
+    if require_future:
+        # Scheduling mode: require a strictly future date.
+        if parsed <= today_date:
+            logger.debug("[PAST_DATE_REJECTED_SCHEDULE] date=%s today=%s", ds, today_date)
+            # Suggest the next valid future dates for this frequency.
+            future_hints = _hint_dates(frequency, today_date.year, filter_past=True)
+            if not future_hints:
+                # All current-year dates have passed — pull from next year.
+                future_hints = _hint_dates(frequency, today_date.year + 1, filter_past=True)
+            return {
+                "valid":       False,
+                "error":       (
+                    f"'{ds}' is not a future date. "
+                    "Scheduling requires a future reporting date."
+                ),
+                "suggestions": future_hints,
+            }
+    else:
+        # Generate-instance mode: reject future dates.
+        if parsed > today_date:
+            logger.debug("[FUTURE_DATE_REJECTED] date=%s today=%s", ds, today_date)
+            past_suggestions = _hint_dates(frequency, today_date.year)
+            return {
+                "valid":       False,
+                "error":       f"'{ds}' is a future date. Future reporting dates are not allowed.",
+                "suggestions": past_suggestions,
+            }
 
     freq = (frequency or "").strip().upper()
     day, month, year = parsed.day, parsed.month, parsed.year
 
     def _filter_future(suggestions: list[str]) -> list[str]:
-        """Remove any suggestion that is a future date."""
+        """Filter suggestions to match the validation mode.
+
+        Generate mode (require_future=False): keep only past/current dates.
+        Schedule mode  (require_future=True):  keep only strictly future dates.
+        """
         today_ = date.today()
         result = []
         for s in suggestions:
             try:
                 d = datetime.strptime(s, _DATE_FMT).date()
-                if d <= today_:
-                    result.append(s)
+                if require_future:
+                    if d > today_:
+                        result.append(s)
+                else:
+                    if d <= today_:
+                        result.append(s)
             except ValueError:
                 continue
         return result

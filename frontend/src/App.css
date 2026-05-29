@@ -1944,3 +1944,150 @@ html, body, #root {
 .guided-action-btn:hover .guided-action-arrow {
   color: var(--accent);
 }
+
+/* ── DB Q&A result block ─────────────────────────────────────────────────── */
+.dbqa-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(700px, 92vw);
+}
+
+.dbqa-header-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.dbqa-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dbqa-record-count {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* ── Multi-record table ────────────────────────────────────────────────────── */
+.dbqa-table-wrapper {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.dbqa-table-wrapper::-webkit-scrollbar { height: 4px; }
+.dbqa-table-wrapper::-webkit-scrollbar-thumb { background: #A8C4E0; border-radius: 99px; }
+
+.dbqa-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.dbqa-table th {
+  background: var(--decision-bg);
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 0.69rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 8px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.dbqa-table td {
+  padding: 7px 14px;
+  color: var(--text);
+  border-bottom: 1px solid rgba(46,51,80,0.4);
+  font-size: 0.8rem;
+  word-break: break-word;
+  max-width: 220px;
+}
+
+.dbqa-table tbody tr:nth-child(even) td {
+  background: rgba(1,90,170,0.03);
+}
+
+.dbqa-table tbody tr:last-child td { border-bottom: none; }
+.dbqa-table tbody tr:hover td { background: rgba(1,90,170,0.08); transition: background 0.12s; }
+
+/* ── Single-record key/value card ─────────────────────────────────────────── */
+.dbqa-kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.dbqa-kv-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid rgba(46,51,80,0.3);
+}
+.dbqa-kv-row:last-child { border-bottom: none; }
+.dbqa-kv-row:nth-child(even) { background: rgba(1,90,170,0.03); }
+
+.dbqa-kv-key {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 110px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.dbqa-kv-val {
+  font-size: 0.82rem;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* ── Count stat cards ─────────────────────────────────────────────────────── */
+.dbqa-count-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dbqa-count-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 22px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--decision-bg);
+  min-width: 80px;
+}
+
+.dbqa-count-val {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.1;
+}
+
+.dbqa-count-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 5px;
+}
+
+/* ── Summary footer ───────────────────────────────────────────────────────── */
+.dbqa-summary {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
