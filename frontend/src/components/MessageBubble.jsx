@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import ReactMarkdown from 'react-markdown'
 
 // Programmatic fetch → blob → <a click> download.
 // Works for both same-origin and proxied URLs; browser cannot override the filename.
@@ -949,24 +950,13 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
         <div className="variance-summary">
           <div className="variance-summary-label">AI Analysis</div>
           <div className="variance-summary-text">
-            {(() => {
-              const bullets = llmSummary
+            <ReactMarkdown>
+              {llmSummary
+                .replace(/^AI\s+Summary:\s*/i, '')
                 .split('\n')
-                .map((l) => l.trim())
-                .filter((l) => l.startsWith('* ') || l.startsWith('- ') || l.startsWith('• '))
-                .map((l) => l.replace(/^[*\-•]\s+/, ''))
-              if (bullets.length > 0) {
-                return (
-                  <ul className="variance-summary-bullets">
-                    {bullets.map((b, i) => <li key={i}>{b}</li>)}
-                  </ul>
-                )
-              }
-              // Fallback: plain text (e.g. model ignored bullet format)
-              return llmSummary.split('\n').map((line, i) => (
-                <span key={i}>{line}{i < llmSummary.split('\n').length - 1 && <br />}</span>
-              ))
-            })()}
+                .map((l) => l.replace(/^•\s*/, '- '))
+                .join('\n')}
+            </ReactMarkdown>
           </div>
         </div>
       )}
