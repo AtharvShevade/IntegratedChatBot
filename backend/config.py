@@ -13,63 +13,69 @@ import os
 # Override any path via the corresponding environment variable.
 # ---------------------------------------------------------------------------
 
-RETURNS_XML_PATH: str = os.getenv(
-    "RETURNS_XML_PATH",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Database\Returns.xml",
-)
+# RETURNS_XML_PATH: str = os.getenv(
+#     "RETURNS_XML_PATH",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Database\Returns.xml",
+# )
 
-INSTANCE_LOG_XML_PATH: str = os.getenv(
-    "INSTANCE_LOG_XML_PATH",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_InstanceLog.xml",
-)
+# INSTANCE_LOG_XML_PATH: str = os.getenv(
+#     "INSTANCE_LOG_XML_PATH",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_InstanceLog.xml",
+# )
 
-# Base directory that contains one sub-folder per Report ID.
-# Structure: {INSTANCE_BASE_DIR}\{report_id}\*.xml
-INSTANCE_BASE_DIR: str = os.getenv(
-    "INSTANCE_BASE_DIR",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Instance",
-)
+# # Base directory that contains one sub-folder per Report ID.
+# # Structure: {INSTANCE_BASE_DIR}\{report_id}\*.xml
+# INSTANCE_BASE_DIR: str = os.getenv(
+#     "INSTANCE_BASE_DIR",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Instance",
+# )
 
-# Base directory for rendered output files (HTML render documents).
-# Structure: {RENDER_BASE_DIR}\{report_id}\<RenderedExcelDocPath>
-RENDER_BASE_DIR: str = os.getenv(
-    "RENDER_BASE_DIR",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Render",
-)
+# # Base directory for rendered output files (HTML render documents).
+# # Structure: {RENDER_BASE_DIR}\{report_id}\<RenderedExcelDocPath>
+# RENDER_BASE_DIR: str = os.getenv(
+#     "RENDER_BASE_DIR",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Render",
+# )
 
-# ---------------------------------------------------------------------------
-# User / Department authorisation XML file paths
-# XML_User.xml  : maps LoginId → DeptId
-# XML_Dept.xml  : maps DeptId  → pipe-separated list of allowed FormIds
-# ---------------------------------------------------------------------------
+# # ---------------------------------------------------------------------------
+# # User / Department authorisation XML file paths
+# # XML_User.xml  : maps LoginId → DeptId
+# # XML_Dept.xml  : maps DeptId  → pipe-separated list of allowed FormIds
+# # ---------------------------------------------------------------------------
 
-XML_USER_PATH: str = os.getenv(
-    "XML_USER_PATH",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_User.xml",
-)
+# XML_USER_PATH: str = os.getenv(
+#     "XML_USER_PATH",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_User.xml",
+# )
 
-XML_DEPT_PATH: str = os.getenv(
-    "XML_DEPT_PATH",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_Dept.xml",
-)
+# XML_DEPT_PATH: str = os.getenv(
+#     "XML_DEPT_PATH",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_Dept.xml",
+# )
 
-# ---------------------------------------------------------------------------
-# SQL Agent — FAISS index output directory
-# Produced by running:  python sql_agent/main.py  (one-time setup)
-# Override via FAISS_OUTPUT_DIR env var.
-# ---------------------------------------------------------------------------
-_PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# # ---------------------------------------------------------------------------
+# # SQL Agent — FAISS index output directory
+# # Produced by running:  python sql_agent/main.py  (one-time setup)
+# # Override via FAISS_OUTPUT_DIR env var.
+# # ---------------------------------------------------------------------------
+# _PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-FAISS_OUTPUT_DIR: str = os.getenv(
-    "FAISS_OUTPUT_DIR",
-    os.path.join(_PROJECT_ROOT, "sql_agent", "output"),
-)
+# FAISS_OUTPUT_DIR: str = os.getenv(
+#     "FAISS_OUTPUT_DIR",
+#     os.path.join(_PROJECT_ROOT, "sql_agent", "output"),
+# )
 
-# XML_RoleAccess.xml: maps RoleId + OptionId → access flags (HasNew, HasEdit, HasView)
-XML_ROLE_ACCESS_PATH: str = os.getenv(
-    "XML_ROLE_ACCESS_PATH",
-    r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_RoleAccess.xml",
-)
+# # XML_RoleAccess.xml: maps RoleId + OptionId → access flags (HasNew, HasEdit, HasView)
+# XML_ROLE_ACCESS_PATH: str = os.getenv(
+#     "XML_ROLE_ACCESS_PATH",
+#     r"D:\Repo\Repo5.5 3\Repo5.5\Database\XML_RoleAccess.xml",
+# )
+
+
+# for new repo difeerent paths
+
+
+
 
 # ---------------------------------------------------------------------------
 # Application Database Q&A (optional feature — disabled if not configured)

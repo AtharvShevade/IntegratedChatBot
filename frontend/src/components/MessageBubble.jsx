@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
+import VarianceChartModal from './VarianceChartModal.jsx'
 
 // Programmatic fetch → blob → <a click> download.
 // Works for both same-origin and proxied URLs; browser cannot override the filename.
@@ -890,6 +891,8 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
 
 // ── Variance Table Block ──────────────────────────────────────────────────────
 function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
+  const [showChart, setShowChart] = useState(false)
+
   // Extract the first two lines from plain-text response as title/subtitle
   const lines = (headerText || '').split('\n')
   const title    = lines[0] || ''
@@ -948,7 +951,16 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
 
       {llmSummary && (
         <div className="variance-summary">
-          <div className="variance-summary-label">AI Analysis</div>
+          <div className="variance-summary-header">
+            <div className="variance-summary-label">AI Analysis</div>
+            <button
+              className="vc-visualize-btn"
+              onClick={() => setShowChart(true)}
+              title="Open chart visualisation"
+            >
+              📊 Visualize
+            </button>
+          </div>
           <div className="variance-summary-text">
             <ReactMarkdown>
               {llmSummary
@@ -959,6 +971,15 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
             </ReactMarkdown>
           </div>
         </div>
+      )}
+
+      {showChart && (
+        <VarianceChartModal
+          rows={rows}
+          labelA={labelA}
+          labelB={labelB}
+          onClose={() => setShowChart(false)}
+        />
       )}
     </div>
   )

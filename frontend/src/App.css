@@ -1733,6 +1733,296 @@ html, body, #root {
   top: 2px;
 }
 
+/* ── Variance Summary Header (AI Analysis + Visualize button) ────────────── */
+.variance-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.vc-visualize-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(11,92,173,0.08);
+  border: 1px solid rgba(11,92,173,0.25);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background 0.18s, transform 0.12s;
+  white-space: nowrap;
+}
+.vc-visualize-btn:hover {
+  background: rgba(11,92,173,0.16);
+  transform: translateY(-1px);
+}
+
+/* ── Chart Modal Backdrop ────────────────────────────────────────────────── */
+.vc-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(10, 16, 36, 0.62);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: vc-fade-in 0.18s ease;
+}
+
+@keyframes vc-fade-in {
+  from { opacity: 0 }
+  to   { opacity: 1 }
+}
+
+/* ── Chart Modal Panel ───────────────────────────────────────────────────── */
+.vc-modal {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.28);
+  width: min(860px, 95vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  animation: vc-slide-in 0.22s cubic-bezier(0.34,1.56,0.64,1);
+}
+
+@keyframes vc-slide-in {
+  from { opacity: 0; transform: translateY(24px) scale(0.97) }
+  to   { opacity: 1; transform: translateY(0)   scale(1)    }
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.vc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid #E5EAF3;
+  flex-wrap: wrap;
+}
+
+.vc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #1F2937;
+  flex-wrap: wrap;
+}
+
+.vc-title-icon { font-size: 1.1rem; }
+
+.vc-title-labels {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+.vc-label-a {
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #0B5CAD;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+.vc-label-b {
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #38BDF8;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+.vc-vs {
+  font-size: 0.7rem;
+  color: #9CA3AF;
+  font-weight: 500;
+}
+
+.vc-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vc-toggle-group {
+  display: flex;
+  border: 1px solid #D6E2F0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.vc-toggle-btn {
+  padding: 5px 13px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  color: #6B7280;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.vc-toggle-btn + .vc-toggle-btn {
+  border-left: 1px solid #D6E2F0;
+}
+.vc-toggle-btn.active {
+  background: #0B5CAD;
+  color: #fff;
+}
+.vc-toggle-btn:hover:not(.active) {
+  background: #F1F5F9;
+}
+
+.vc-filter-btn {
+  padding: 5px 11px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid #F87171;
+  border-radius: 8px;
+  color: #F87171;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.vc-filter-btn.active {
+  background: #F87171;
+  color: #fff;
+}
+.vc-filter-btn:hover:not(.active) {
+  background: rgba(248,113,113,0.08);
+}
+
+.vc-close-btn {
+  padding: 4px 9px;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid #D6E2F0;
+  border-radius: 8px;
+  color: #6B7280;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.vc-close-btn:hover { background: #F1F5F9; }
+
+/* ── Stats Strip ─────────────────────────────────────────────────────────── */
+.vc-stats-strip {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid #E5EAF3;
+  padding: 8px 20px;
+  background: #F8FAFC;
+  overflow-x: auto;
+}
+.vc-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 80px;
+  padding: 4px 16px 4px 0;
+}
+.vc-stat + .vc-stat {
+  border-left: 1px solid #E5EAF3;
+  padding-left: 16px;
+}
+.vc-stat-val {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1F2937;
+  line-height: 1.2;
+}
+.vc-stat-label {
+  font-size: 0.65rem;
+  color: #9CA3AF;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ── Chart Area ──────────────────────────────────────────────────────────── */
+.vc-chart-area {
+  padding: 20px 20px 8px;
+  min-height: 280px;
+}
+.vc-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #9CA3AF;
+  font-size: 0.85rem;
+}
+
+/* ── Legend Note ─────────────────────────────────────────────────────────── */
+.vc-legend-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px 14px;
+  font-size: 0.72rem;
+  color: #9CA3AF;
+}
+.vc-legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Tooltip ─────────────────────────────────────────────────────────────── */
+.vc-tooltip {
+  background: #1e2740;
+  border: 1px solid #2e3350;
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-size: 0.78rem;
+  color: #E5EAF3;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.3);
+  min-width: 160px;
+}
+.vc-tooltip-title {
+  font-weight: 700;
+  margin-bottom: 7px;
+  color: #fff;
+  font-size: 0.80rem;
+  white-space: normal;
+  word-break: break-word;
+}
+.vc-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.vc-tooltip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.vc-tooltip-key { color: #9CA3AF; }
+.vc-tooltip-val { font-weight: 600; color: #E5EAF3; margin-left: auto; }
+.vc-tooltip-pct {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+.vc-tooltip-high {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: #FBBF24;
+}
+
 /* ── Instance Selection Block ────────────────────────────────────────────── */
 .inst-sel-block {
   display: flex;
