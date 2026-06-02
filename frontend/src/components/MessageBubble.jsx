@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import React, { useState, useMemo, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import VarianceChartModal from './VarianceChartModal.jsx'
 
@@ -179,9 +179,7 @@ export default function MessageBubble({ role, text, data, options, resultType, s
         <div className="avatar assistant-avatar">AI</div>
         <div className="assistant-msg-block">
           <div className="bubble assistant-bubble">
-            {displayText.split('\n').map((line, i, arr) => (
-              <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
-            ))}
+            <BubbleText text={displayText} />
           </div>
           {downloadUrl && (
             <button
@@ -251,16 +249,14 @@ export default function MessageBubble({ role, text, data, options, resultType, s
             isUser ? 'user-bubble' : isError ? 'error-bubble' : 'assistant-bubble'
           }`}
         >
-          {displayText.split('\n').map((line, i, arr) => (
-            <span key={i}>
-              {line}
-              {i < arr.length - 1 && <br />}
-            </span>
-          ))}
+          <BubbleText text={displayText} />
         </div>
 
         {/* Disambiguation / date-selection chips */}
         {!isUser && chips.length > 0 && (
+          chips.length >= 5 ? (
+            <ReportSearchDropdown options={chips} onSelect={onSuggestion} />
+          ) : (
           <div className="welcome-suggestions option-chips">
             {chips.map((opt) => (
               <button
@@ -272,6 +268,7 @@ export default function MessageBubble({ role, text, data, options, resultType, s
               </button>
             ))}
           </div>
+          )
         )}
 
         {/* Download button — rendered for final/ask_previous when a file is available */}
@@ -287,6 +284,51 @@ export default function MessageBubble({ role, text, data, options, resultType, s
 
       {isUser && <div className="avatar user-avatar">You</div>}
     </div>
+  )
+}
+
+// ── BubbleText ── renders plain text with a special red glass box for Failure Reason(s)
+// Detects the "Failure Reason(s):" section and wraps it in a styled container.
+function BubbleText({ text }) {
+  const FAILURE_HEADING = 'Failure Reason(s):'
+  const idx = (text ?? '').indexOf(FAILURE_HEADING)
+
+  if (idx === -1) {
+    // No failure section — plain line-by-line render
+    return (text ?? '').split('\n').map((line, i, arr) => (
+      <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+    ))
+  }
+
+  // Split into: before-failure text, and failure-onwards text
+  const before = (text ?? '').slice(0, idx).replace(/\n+$/, '')
+  const failureBlock = (text ?? '').slice(idx)
+
+  // Separate the bullet lines from any trailing lines after the last bullet
+  const failureLines = failureBlock.split('\n')
+  const bulletEnd = failureLines.reduce((last, line, i) =>
+    line.startsWith('•') ? i : last, 0)
+  const bulletLines = failureLines.slice(1, bulletEnd + 1)  // skip heading line
+  const afterLines  = failureLines.slice(bulletEnd + 1).filter(l => l.trim())
+
+  return (
+    <>
+      {before.split('\n').map((line, i, arr) => (
+        <span key={`b${i}`}>{line}{i < arr.length - 1 && <br />}</span>
+      ))}
+      {before && <br />}
+      <div className="failure-reason-box">
+        <div className="failure-reason-heading">⚠ Failure Reason(s)</div>
+        <ul className="failure-reason-list">
+          {bulletLines.map((line, i) => (
+            <li key={i}>{line.replace(/^•\s*/, '')}</li>
+          ))}
+        </ul>
+      </div>
+      {afterLines.map((line, i) => (
+        <span key={`a${i}`}><br />{line}</span>
+      ))}
+    </>
   )
 }
 
@@ -397,7 +439,7 @@ function WelcomeCard({ onSuggestion, onGuidedAction }) {
         </p>
         <p className="welcome-subtext">I can help you with:</p>
         <ul className="welcome-list">
-          <li>Checking the <strong>status</strong> of a report by name</li>
+          <li>Checking the <strong>status</strong> of a report</li>
           <li><strong>Generating</strong> a new report instance for a date</li>
           <li><strong>Scheduling</strong> reports for a future date and time</li>
           <li>Performing <strong>comparative analysis</strong> on XBRL instances</li>
@@ -508,7 +550,81 @@ function ActionMenu({ onGuidedAction }) {
   )
 }
 
-// ── Clarify card ──────────────────────────────────────────────────────────────
+// ── Report Search Dropdown ────────────────────────────────────────────────────
+// Used when the disambiguation list has 5+ entries to avoid cluttering the UI.
+function ReportSearchDropdown({ options, onSelect }) {
+  const [query,    setQuery]    = useState('')
+  const [isOpen,   setIsOpen]   = useState(false)
+  const [selected, setSelected] = useState(null)
+  const containerRef = useRef(null)
+
+  const filtered = query.trim()
+    ? options.filter((o) => o.toLowerCase().includes(query.toLowerCase()))
+    : options
+
+  // Close on outside click
+  useEffect(() => {
+    function handleClick(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const handleChoose = (opt) => {
+    setSelected(opt)
+    setIsOpen(false)
+    setQuery('')
+    onSelect?.(opt)
+  }
+
+  return (
+    <div className="rsd-wrapper" ref={containerRef}>
+      <div
+        className={`rsd-control${isOpen ? ' rsd-open' : ''}`}
+        onClick={() => setIsOpen((o) => !o)}
+      >
+        {selected
+          ? <span className="rsd-value">{selected}</span>
+          : <span className="rsd-placeholder">Select Report Name</span>
+        }
+        <span className="rsd-arrow">{isOpen ? '▲' : '▼'}</span>
+      </div>
+
+      {isOpen && (
+        <div className="rsd-menu">
+          <div className="rsd-search-wrap">
+            <input
+              autoFocus
+              className="rsd-search"
+              placeholder="Type to filter…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+          <ul className="rsd-list">
+            {filtered.length === 0
+              ? <li className="rsd-no-results">No matches</li>
+              : filtered.map((opt) => (
+                  <li
+                    key={opt}
+                    className="rsd-item"
+                    onClick={() => handleChoose(opt)}
+                  >
+                    {opt}
+                  </li>
+                ))
+            }
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Shared label map ──────────────────────────────────────────────────────────
 const ACTION_LABEL = {
   get_report_status: 'Report Status',
@@ -890,25 +1006,82 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
 }
 
 // ── Variance Table Block ──────────────────────────────────────────────────────
+
+// Severity metadata
+const SEV_CFG = {
+  critical: { label: 'C', title: 'Critical',  cls: 'vt-sev-critical' },
+  high:     { label: 'H', title: 'High',      cls: 'vt-sev-high'     },
+  medium:   { label: 'M', title: 'Medium',    cls: 'vt-sev-medium'   },
+  low:      { label: 'L', title: 'Low',       cls: 'vt-sev-low'      },
+}
+
+// Per-value natural financial formatter — never emits scientific notation
+function fmtFinancial(v) {
+  if (v === null || v === undefined) return '—'
+  if (v === 0) return '0'
+  const abs = Math.abs(v)
+  if (abs >= 1e12)  return `${(v / 1e12).toFixed(2)}T`
+  if (abs >= 1e9)   return `${(v / 1e9).toFixed(2)}B`
+  if (abs >= 1e6)   return `${(v / 1e6).toFixed(2)}M`
+  if (abs >= 1e3)   return `${(v / 1e3).toFixed(2)}K`
+  if (abs >= 1)     return v.toFixed(2)
+  if (abs >= 0.001) return v.toFixed(4)
+  // Very small: enough places to show at least 3 significant digits
+  const places = Math.min(10, Math.max(4, Math.ceil(-Math.log10(abs)) + 3))
+  return v.toFixed(places)
+}
+
+// Raw comma-separated value for tooltips
+function fmtRaw(v) {
+  if (v === null || v === undefined) return '—'
+  return Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 })
+}
+
+// Analyst-friendly percentage
+function fmtPctFin(v) {
+  if (v === null || v === undefined) return 'N/A'
+  const abs = Math.abs(v)
+  const sign = v > 0 ? '+' : ''
+  if (abs > 100_000) return `${sign}Extreme ${v > 0 ? '↑' : '↓'}`
+  if (abs > 10_000)  return `${sign}Very High`
+  if (abs > 1_000)   return `${sign}>1,000%`
+  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+}
+
 function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
   const [showChart, setShowChart] = useState(false)
+  const [sortBy,    setSortBy]    = useState(null)     // null = server order
+  const [sortDir,   setSortDir]   = useState('desc')
 
   // Extract the first two lines from plain-text response as title/subtitle
-  const lines = (headerText || '').split('\n')
+  const lines    = (headerText || '').split('\n')
   const title    = lines[0] || ''
   const subtitle = lines[1] || ''
 
-  const fmtVal = (v) => {
-    if (v === null || v === undefined) return '—'
-    const abs = Math.abs(v)
-    if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`
-    if (abs >= 1_000) return Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })
-    return Number(v).toPrecision ? String(parseFloat(v.toFixed(4))) : String(v)
+  // Sorting
+  const SEV_ORDER = { critical: 4, high: 3, medium: 2, low: 1 }
+  const sortedRows = useMemo(() => {
+    if (!sortBy) return rows
+    const dir = sortDir === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      if (sortBy === 'concept') return dir * (a.concept ?? '').localeCompare(b.concept ?? '')
+      if (sortBy === 'val_a')   return dir * ((a.val_a ?? 0) - (b.val_a ?? 0))
+      if (sortBy === 'val_b')   return dir * ((a.val_b ?? 0) - (b.val_b ?? 0))
+      if (sortBy === 'diff')    return dir * ((a.diff ?? 0) - (b.diff ?? 0))
+      if (sortBy === 'pct')     return dir * (Math.abs(a.pct_change ?? 0) - Math.abs(b.pct_change ?? 0))
+      if (sortBy === 'severity') return dir * ((SEV_ORDER[a.severity] ?? 0) - (SEV_ORDER[b.severity] ?? 0))
+      return 0
+    })
+  }, [rows, sortBy, sortDir])
+
+  const handleSort = (col) => {
+    if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortBy(col); setSortDir('desc') }
   }
 
-  const fmtPct = (v) => {
-    if (v === null || v === undefined) return 'N/A'
-    return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+  const sortIcon = (col) => {
+    if (sortBy !== col) return <span className="vt-sort-icon">⇅</span>
+    return <span className="vt-sort-icon">{sortDir === 'asc' ? '↑' : '↓'}</span>
   }
 
   return (
@@ -920,28 +1093,87 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
         <table className="variance-table">
           <thead>
             <tr>
-              <th className="vt-concept-col">Concept</th>
-              <th className="vt-num-col">{labelA}</th>
-              <th className="vt-num-col">{labelB}</th>
-              <th className="vt-num-col">Diff</th>
-              <th className="vt-num-col">% Chg</th>
+              <th className="vt-concept-col vt-sortable" onClick={() => handleSort('concept')}>
+                Concept {sortIcon('concept')}
+              </th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_a')}>
+                {labelA} {sortIcon('val_a')}
+              </th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_b')}>
+                {labelB} {sortIcon('val_b')}
+              </th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('diff')}>
+                Diff {sortIcon('diff')}
+              </th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('pct')}>
+                % Chg {sortIcon('pct')}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
-              const isPos = row.diff > 0
-              const isNeg = row.diff < 0
+            {sortedRows.map((row, rowIdx) => {
+              const isPos   = (row.diff ?? 0) > 0
+              const isNeg   = (row.diff ?? 0) < 0
               const diffCls = isPos ? 'vt-pos' : isNeg ? 'vt-neg' : ''
+
+              // Row CSS
+              const rowCls = [
+                row.significant  ? 'vt-row-sig'         : '',
+                row.sign_change  ? 'vt-row-sign-change' : '',
+                rowIdx % 2 === 0 ? ''                   : 'vt-row-alt',
+              ].filter(Boolean).join(' ')
+
+              // Full concept tooltip with all metadata
+              const anomalyText = row.anomaly_flags?.length
+                ? `Anomalies: ${row.anomaly_flags.join(', ')}`
+                : ''
+              const conceptTitle = [
+                row.concept,
+                row.context_key && row.context_key !== 'BASE'
+                  ? `Context: ${row.context_key}` : '',
+                row.unit ? `Unit: ${row.unit}` : '',
+                anomalyText,
+              ].filter(Boolean).join('\n')
+
+              // Number cell tooltip: raw value + unit
+              const unitLabel = row.unit ? ` ${row.unit}` : ''
+              const tipA = `Raw: ${fmtRaw(row.val_a)}${unitLabel}`
+              const tipB = `Raw: ${fmtRaw(row.val_b)}${unitLabel}`
+              const tipD = `Raw diff: ${fmtRaw(row.diff)}${unitLabel}`
+
+              // Sign-reversal notation
+              let signNote = null
+              if (row.sign_change) {
+                const notation = (row.val_a ?? 0) > 0 ? '−→+' : '+→−'
+                signNote = (
+                  <span className="vt-sign-note" title={`Direction reversed: ${notation}`}>
+                    {notation}
+                  </span>
+                )
+              }
+
+              // Severity badge
+              const sev = SEV_CFG[row.severity]
+              const sevBadge = sev ? (
+                <span
+                  className={`vt-severity-badge ${sev.cls}`}
+                  title={`Severity: ${sev.title}`}
+                >
+                  {sev.label}
+                </span>
+              ) : null
+
               return (
-                <tr key={row.concept} className={row.significant ? 'vt-row-sig' : ''}>
+                <tr key={rowIdx} className={rowCls}>
                   <td className="vt-concept">
-                    {row.significant && <span className="vt-sig-badge">⚠</span>}
-                    {row.concept}
+                    {row.significant && <span className="vt-sig-badge" title="High variance">⚠</span>}
+                    <span className="vt-concept-text" title={conceptTitle}>{row.concept ?? ''}</span>
+                    {signNote}
                   </td>
-                  <td className="vt-num">{fmtVal(row.val_a)}</td>
-                  <td className="vt-num">{fmtVal(row.val_b)}</td>
-                  <td className={`vt-num ${diffCls}`}>{fmtVal(row.diff)}</td>
-                  <td className={`vt-num ${diffCls}`}>{fmtPct(row.pct_change)}</td>
+                  <td className="vt-num" title={tipA}>{fmtFinancial(row.val_a)}</td>
+                  <td className="vt-num" title={tipB}>{fmtFinancial(row.val_b)}</td>
+                  <td className={`vt-num ${diffCls}`} title={tipD}>{fmtFinancial(row.diff)}</td>
+                  <td className={`vt-num ${diffCls}`}>{fmtPctFin(row.pct_change)}</td>
                 </tr>
               )
             })}

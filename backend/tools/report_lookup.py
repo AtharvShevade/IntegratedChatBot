@@ -395,6 +395,86 @@ def file_exists(path: str) -> bool:
     return os.path.isfile(path)
 
 
+def extract_error_summary(error_file_path: str) -> dict:
+    """Parse an error XML file and extract up to 5 unique <ErrorMessage> values.
+
+    Returns:
+        {"messages": [...]}  — list of unique error strings in document order.
+        Falls back to {"messages": ["Detailed error information could not be extracted."]}
+        on missing file, invalid XML, parse errors, or empty results.
+
+    Future scope: additional XML tags and error structures can be added here
+    without changing the chatbot response format.
+    """
+    import xml.etree.ElementTree as ET
+
+    _FALLBACK = {"messages": ["Detailed error information could not be extracted."]}
+    _MAX_MSGS = 5
+
+    logger.info("[extract_error_summary] Extracting error summary from XML: %s", error_file_path)
+
+    if not error_file_path or not os.path.isfile(error_file_path):
+        logger.warning(
+            "[extract_error_summary] Error XML file not found: %s", error_file_path
+        )
+        return _FALLBACK
+
+    try:
+        tree = ET.parse(error_file_path)
+        root = tree.getroot()
+    except ET.ParseError as exc:
+        logger.warning(
+            "[extract_error_summary] Error XML parsing failed: %s — %s", error_file_path, exc
+        )
+        return _FALLBACK
+    except OSError as exc:
+        logger.warning(
+            "[extract_error_summary] Cannot read error XML: %s — %s", error_file_path, exc
+        )
+        return _FALLBACK
+
+    messages: list[str] = []
+    seen: set[str] = set()
+    for el in root.iter("ErrorMessage"):
+        msg = (el.text or "").strip()
+        if msg and msg not in seen:
+            seen.add(msg)
+            messages.append(msg)
+            if len(messages) >= _MAX_MSGS:
+                break
+
+    if not messages:
+        logger.warning(
+            "[extract_error_summary] No <ErrorMessage> nodes found in: %s", error_file_path
+        )
+        return _FALLBACK
+
+    logger.info(
+        "[extract_error_summary] Extracted %d error message(s) from: %s",
+        len(messages), error_file_path,
+    )
+    return {"messages": messages}
+
+
+def _enrich_with_error_messages(code: int, dl: dict) -> list[str]:
+    """Return extracted error messages when status is Failed and error file exists.
+
+    Args:
+        code: numeric status code from the instance row.
+        dl:   download-info dict returned by _get_download_info (may contain
+              ``error_file_path`` when the error file was found on disk).
+
+    Returns:
+        List of error message strings (empty list when not applicable).
+    """
+    if code not in _FAILED_STATUSES:
+        return []
+    path = dl.get("error_file_path", "")
+    if not path:
+        return []
+    return extract_error_summary(path).get("messages", [])
+
+
 def _get_download_info(row: dict, form_id: str) -> dict:
     """Return download_url, download_label, status_note for a given instance row.
 
@@ -431,7 +511,12 @@ def _get_download_info(row: dict, form_id: str) -> dict:
         if file_exists(full_path):
             url = f"/download-file?form_id={form_id}&type=error&filename={filename}"
             logger.info("[download_info] error file found: %s", full_path)
-            return {"download_url": url, "download_label": "Download Error File", "status_note": ""}
+            return {
+                "download_url":    url,
+                "download_label":  "Download Error File",
+                "status_note":     "",
+                "error_file_path": full_path,
+            }
         logger.info("[download_info] error file NOT found: %s", full_path)
         return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
 
@@ -516,6 +601,7 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
         "download_url":   dl["download_url"],
         "download_label": dl["download_label"],
         "status_note":    dl["status_note"],
+        "error_messages": _enrich_with_error_messages(code, dl),
     }
 
 
@@ -544,6 +630,8 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
     all_instances   = get_available_instances(form_id)  # already sorted DTC desc
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
+    error_messages = _enrich_with_error_messages(code, dl)
+
     if other_instances:
         return {
             "type":            "latest_with_ask",
@@ -558,6 +646,7 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
             "download_url":    dl["download_url"],
             "download_label":  dl["download_label"],
             "status_note":     dl["status_note"],
+            "error_messages":  error_messages,
         }
 
     return {
@@ -570,6 +659,7 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
         "download_url":   dl["download_url"],
         "download_label": dl["download_label"],
         "status_note":    dl["status_note"],
+        "error_messages": error_messages,
     }
 
 
@@ -684,11 +774,14 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str) -> dic
     return {
         "type":           "final",
         "report_name":    return_name,
-        "reporting_date": row.get("ReportingDate", "").strip(),        "dtc":            row.get("DTC", "").strip(),        "status":         map_status(code),
+        "reporting_date": row.get("ReportingDate", "").strip(),
+        "dtc":            row.get("DTC", "").strip(),
+        "status":         map_status(code),
         "status_code":    code,
         "download_url":   dl["download_url"],
         "download_label": dl["download_label"],
         "status_note":    dl["status_note"],
+        "error_messages": _enrich_with_error_messages(code, dl),
     }
 
 

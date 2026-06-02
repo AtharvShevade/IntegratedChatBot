@@ -35,6 +35,19 @@ _LOGS_DIR = os.path.join(_ROOT, "logs")
 from backend.config import INSTANCE_LOG_XML_PATH as _LOG_FILE
 from backend.tools.xml_loader import load_xml_tree
 
+# ---------------------------------------------------------------------------
+# Optional normalization / canonicalization pipeline.
+# Enhances comparison accuracy; falls back silently when not installed.
+# ---------------------------------------------------------------------------
+try:
+    from backend.tools.xbrl_normalizer import (
+        canonicalize_facts as _canonicalize_facts,
+        detect_anomalies   as _detect_anomalies,
+    )
+    _NORMALIZER_AVAILABLE = True
+except ImportError:
+    _NORMALIZER_AVAILABLE = False
+
 
 def _parse_rd(s: str) -> datetime:
     """Parse a reporting-date string like '15-Jun-2024' into a datetime for sorting."""
@@ -96,6 +109,30 @@ def _dim_key_from_ctx_id(ctx_id: str) -> str:
     # Strip the date part prefix (8+ digits joined by underscores)
     stripped = re.sub(r'^(asof|fromto)_\d{8}(?:_\d{8})?', '', ctx_id, flags=re.I)
     return stripped  # '' → base context; non-empty → dimensional
+
+
+def _ctx_key_from_ref(ctx_ref: str) -> str:
+    """Derive a stable context key by tokenising a raw context-reference ID.
+
+    Used as a last-resort fallback when dim_key has no axis=member pairs
+    (e.g. when _dim_key_from_ctx_id returned a bare numeric suffix like '_1').
+
+    Examples
+    --------
+    'asof_20240615_OneMonthMember'        → 'ctx=OneMonth'
+    'fromto_20240615_20240715_TwoMonths'  → 'ctx=TwoMonths'
+    'asof_20240615_1'                     → 'BASE'  (purely numeric suffix)
+    'asof_20240615'                       → 'BASE'  (base context)
+    """
+    stripped = re.sub(r'^(asof|fromto)_\d{8}(?:_\d{8})?', '', ctx_ref, flags=re.I)
+    if not stripped:
+        return "BASE"
+    tokens = [t for t in stripped.split('_') if t and not t.isdigit()]
+    if not tokens:
+        return "BASE"
+    clean = [t[:-6] if t.lower().endswith('member') else t for t in tokens]
+    return "ctx=" + "|".join(clean)
+
 
 # ---------------------------------------------------------------------------
 # Step 1 – Instance discovery via InstanceLog + disk scan
@@ -555,6 +592,7 @@ def _load_via_arelle(file_path: str) -> list[dict]:
                 "value_str":      value_str.strip(),
                 "value_num":      num_val,
                 "unit":           str(fact.unit) if fact.unit else "",
+                "decimals":       str(getattr(fact, "decimals", "") or ""),
                 "ctx_ref":        getattr(fact, "contextID", "") or "",
                 "dim_key":        dim_key,
                 "is_dimensional": bool(dim_key),
@@ -685,6 +723,7 @@ def _load_via_xml(file_path: str) -> list[dict]:
             "value_str":      value_str,
             "value_num":      num_val,
             "unit":           el.get("unitRef", ""),
+            "decimals":       el.get("decimals", ""),
             "ctx_ref":        ctx_ref,
             "dim_key":        ctx_info["dim_key"],
             "is_dimensional": ctx_info["is_dimensional"],
@@ -703,107 +742,280 @@ def compute_variance(
     label_b: str,
     top_n:   int = 30,
 ) -> list[dict]:
-    """Align facts on concept name and compute diff + % change.
+    """Align facts on (concept, context_key) and compute diff + % change.
 
-    Only numeric concepts present in both files are included.
-    Enhancement improvements (API unchanged):
-      - Base-context facts (is_dimensional=False) are preferred over
-        typed-member dimensional facts — fixes the prior ctx_ref-length
-        heuristic which was fragile for non-standard context ID patterns.
-      - Structural/metadata concepts (text, code, identifier, …) are
-        filtered out to remove noisy non-financial rows.
-      - Significance uses tiered thresholds based on absolute magnitude
-        rather than a flat 20% cutoff, reducing false positives for
-        very large or very small values.
-      - Sorting uses a composite score (normalised pct × log-magnitude)
-        so small-value outliers don't dominate the top-N list.
-    Returns top_n rows sorted by composite importance score descending.
+    Pipeline (when xbrl_normalizer is available):
+      1. Canonicalize both fact lists — normalize percentage values, resolve
+         context dimensions, build stable context_key per fact.
+      2. Build (concept, context_key) → value + unit maps, preferring
+         base-context (non-dimensional) aggregates over typed-member rows.
+      3. Compute diff / % change only for matching dimensional pairs;
+         missing-from-one-side facts are excluded (NOT treated as zero).
+      4. Validate units, detect anomalies, sort by composite importance score.
+
+    API is fully backward compatible: same signature and return-row structure.
+    Rows are enriched with optional extra fields (context_key, unit,
+    anomaly_flags) that existing downstream code safely ignores.
     """
     import math
 
-    def _build_map(facts: list[dict]) -> dict[str, float]:
-        """Build concept → value map, preferring base-context (non-dimensional) facts.
+    # ── Step 1: canonicalize (normalize values + resolve context dimensions) ──
+    # Idempotent: facts already carrying 'context_key' are left unchanged.
+    if _NORMALIZER_AVAILABLE:
+        if facts_a and "context_key" not in facts_a[0]:
+            facts_a = _canonicalize_facts(facts_a)
+        if facts_b and "context_key" not in facts_b[0]:
+            facts_b = _canonicalize_facts(facts_b)
+
+    # Build is_percentage lookup once (one scan, O(N)) for anomaly detection
+    _is_pct_lookup: dict[str, bool] = {}
+    if _NORMALIZER_AVAILABLE:
+        for _f in facts_a:
+            _c = _f.get("concept", "")
+            if _c and "is_percentage" in _f:
+                _is_pct_lookup[_c] = bool(_f["is_percentage"])
+        for _f in facts_b:
+            _c = _f.get("concept", "")
+            if _c and _c not in _is_pct_lookup and "is_percentage" in _f:
+                _is_pct_lookup[_c] = bool(_f["is_percentage"])
+
+    def _build_map(
+        facts: list[dict],
+    ) -> tuple[dict[tuple, float], dict[tuple, str], set[tuple]]:
+        """Build (concept, context_key) → value and unit maps.
+
+        Key change vs previous version: the comparison key is now a
+        (concept, context_key) tuple so dimensional facts are compared
+        only against the same dimensional combination in the other instance.
 
         Priority order (highest wins):
           1. is_dimensional=False  (base/aggregate context — preferred)
           2. is_dimensional=True   (typed-member row — fallback only)
-        Within each tier, pick the fact whose ctx_ref is shortest
-        (smallest dimensional suffix).
+        Within each tier, prefer the fact with the shortest ctx_ref.
+        Canonical facts use 'value' (normalized); raw facts fall back to 'value_num'.
+
+        Also detects same-tier duplicates (same concept + context_key appearing
+        more than once at equal priority) and returns them as a set for anomaly
+        flagging.  Duplicate detection signals XBRL data quality issues.
         """
-        # tier: 0 = base context, 1 = dimensional
-        best_tier: dict[str, int]   = {}
-        best_clen: dict[str, int]   = {}
-        m: dict[str, float]         = {}
+        best_tier: dict[tuple, int]   = {}
+        best_clen: dict[tuple, int]   = {}
+        seen_tier: dict[tuple, int]   = {}   # tier at which this key was first seen
+        m:         dict[tuple, float] = {}
+        u:         dict[tuple, str]   = {}   # unit map
+        dups:      set[tuple]         = set()  # same-tier duplicate keys
 
         for f in facts:
-            if f["value_num"] is None:
+            # Use canonical 'value' if present, else fall back to 'value_num'
+            val = f.get("value") if "value" in f else f.get("value_num")
+            if val is None:
                 continue
             name = f["concept"]
-            # Filter out structural/metadata concepts early
             if _is_structural(name):
                 continue
+            # Canonical path → raw dim_key fallback → BASE
+            # This ensures dimensional separation works even when the normalizer
+            # is unavailable or canonicalize_facts hasn't been called yet.
+            if "context_key" in f:
+                ctx_key = f["context_key"] or "BASE"
+            elif f.get("dim_key"):
+                _dk_parts = sorted(
+                    p.strip() for p in f["dim_key"].split(";") if "=" in p.strip()
+                )
+                if _dk_parts:
+                    ctx_key = "|".join(_dk_parts)
+                else:
+                    # dim_key present but no axis=member pairs (e.g. came from
+                    # _dim_key_from_ctx_id which returns a bare suffix like "_1").
+                    # Tokenise ctx_ref directly to recover member names.
+                    ctx_key = _ctx_key_from_ref(f.get("ctx_ref", ""))
+            else:
+                ctx_key = "BASE"
+            map_key  = (name, ctx_key)
             tier     = 0 if not f.get("is_dimensional", False) else 1
             cref_len = len(f.get("ctx_ref", ""))
-            cur_tier = best_tier.get(name, 999)
-            cur_clen = best_clen.get(name, 9999)
-            # Accept if better tier, or same tier with shorter ctx_ref
+            cur_tier = best_tier.get(map_key, 999)
+            cur_clen = best_clen.get(map_key, 9999)
             if tier < cur_tier or (tier == cur_tier and cref_len < cur_clen):
-                m[name]          = f["value_num"]
-                best_tier[name]  = tier
-                best_clen[name]  = cref_len
-        return m
+                m[map_key]         = val
+                u[map_key]         = f.get("unit", "")
+                # If we already saw this key at the same tier, it's a duplicate
+                if map_key in seen_tier and seen_tier[map_key] == tier:
+                    dups.add(map_key)
+                best_tier[map_key] = tier
+                best_clen[map_key] = cref_len
+                seen_tier[map_key] = tier
+            elif tier == cur_tier:
+                # Same tier, not a better fact — still a duplicate
+                dups.add(map_key)
+        return m, u, dups
 
-    def _is_significant(pct: float | None, abs_val_a: float, abs_val_b: float) -> bool:
-        """Tiered significance: threshold depends on value magnitude.
+    def _is_significant(
+        pct: float | None,
+        abs_val_a: float,
+        abs_val_b: float,
+        sign_chg: bool,
+        anomaly_flags: list[str],
+    ) -> bool:
+        """Tiered materiality-aware significance.
 
-        Very large values (>1 M): flag at 10%+ change — they matter even
-            if the percentage looks small in isolation.
-        Medium values (10 K – 1 M): flag at 20%+ — the standard cutoff.
-        Small values (<10 K): flag at 50%+ — avoids flagging rounding noise.
-        Zero baseline: always flag (pct would be None / infinite).
+        Avoids flagging every row by applying magnitude-aware thresholds:
+          - Very large values (≥ 1B): require ≥ 15% movement
+          - Large values (≥ 1M): require ≥ 25% movement
+          - Medium values (≥ 10K): require ≥ 40% movement
+          - Small values: require ≥ 75% movement
+        Sign reversals and detected anomalies always surface as significant.
+        Zero-baseline rows (pct = None) are considered significant only when
+        the non-zero value is itself materially large (≥ 10K).
         """
+        if anomaly_flags:
+            return True   # data-quality / anomaly flags always surface
+        if sign_chg:
+            return True   # sign reversal is always noteworthy
         if pct is None:
-            return True   # zero baseline → something changed from nothing
+            # New non-zero value with zero baseline — significant if large
+            return max(abs_val_a, abs_val_b) >= 10_000
         abs_pct = abs(pct)
         ref_mag = max(abs_val_a, abs_val_b)
+        if ref_mag >= 1_000_000_000:
+            return abs_pct >= 15.0
         if ref_mag >= 1_000_000:
-            return abs_pct >= 10.0
+            return abs_pct >= 25.0
         if ref_mag >= 10_000:
-            return abs_pct >= 20.0
-        return abs_pct >= 50.0
+            return abs_pct >= 40.0
+        return abs_pct >= 75.0
 
-    def _importance_score(pct: float | None, abs_val: float) -> float:
-        """Composite sort key: blends % change with log-scaled magnitude.
+    def _importance_score(
+        pct: float | None,
+        abs_val: float,
+        sign_chg: bool,
+        anomaly_count: int,
+    ) -> float:
+        """Multi-tier composite sort key.
 
-        This prevents tiny-value outliers (pct=1000%, abs=1) from pushing
-        meaningful large-value rows off the top-N list.
+        Priority order (descending):
+          1. Anomaly severity (each anomaly adds a large bonus)
+          2. Sign change (large fixed bonus)
+          3. Percentage magnitude (log-weighted by value magnitude)
+          4. Absolute magnitude (tiebreaker)
         """
-        pct_score = abs(pct) if pct is not None else 200.0   # None → treat as large
-        mag_score = math.log10(max(abs_val, 1.0))            # 0–7 for typical banking
-        return pct_score * (1 + 0.15 * mag_score)            # magnitude acts as tie-breaker
+        pct_score  = min(abs(pct), 10_000) if pct is not None else 5_000.0
+        mag_score  = math.log10(max(abs_val, 1.0))
+        base       = pct_score * (1 + 0.15 * mag_score)
+        bonus      = anomaly_count * 20_000 + (10_000 if sign_chg else 0)
+        return base + bonus
 
-    map_a = _build_map(facts_a)
-    map_b = _build_map(facts_b)
+    map_a, units_a, dups_a = _build_map(facts_a)
+    map_b, units_b, dups_b = _build_map(facts_b)
     common = set(map_a) & set(map_b)
 
+    # Log missing-fact counts for diagnostics (NOT treated as zero)
+    only_in_a = len(set(map_a) - common)
+    only_in_b = len(set(map_b) - common)
+    if only_in_a or only_in_b:
+        logger.debug(
+            "[COMPARE_MISSING] keys only in A=%d, only in B=%d (excluded from variance)",
+            only_in_a, only_in_b,
+        )
+
     rows: list[dict] = []
-    for concept in common:
-        val_a = map_a[concept]
-        val_b = map_b[concept]
-        diff  = val_b - val_a
-        pct   = ((diff / abs(val_a)) * 100) if val_a != 0 else None
-        sig   = _is_significant(pct, abs(val_a), abs(val_b))
-        rows.append({
-            "concept":     concept,
-            label_a:       val_a,
-            label_b:       val_b,
-            "diff":        diff,
-            "pct_change":  pct,
-            "significant": sig,
-        })
+    for key in common:
+        concept, ctx_key = key
+        val_a   = map_a[key]
+        val_b   = map_b[key]
+        unit_a  = units_a.get(key, "")
+        unit_b  = units_b.get(key, "")
+
+        # ── Unit validation: skip incompatible comparisons ───────────────────
+        # Allow empty/unknown units through (many XBRL facts omit unitRef).
+        if unit_a and unit_b and unit_a.upper() != unit_b.upper():
+            logger.debug(
+                "[UNIT_MISMATCH] concept=%r ctx=%r unit_a=%r unit_b=%r — skipped",
+                concept, ctx_key, unit_a, unit_b,
+            )
+            continue
+
+        # diff = new - old  (label_a = first/left column = newer instance)
+        # pct denominator = abs(old) = abs(val_b)
+        diff = val_a - val_b
+        pct  = ((diff / abs(val_b)) * 100) if val_b != 0 else None
+
+        # ── Sign-reversal detection ─────────────────────────────────────────
+        # True when the two values straddle zero (e.g. -1879M → +130000M).
+        sign_chg = (val_a > 0 and val_b < 0) or (val_a < 0 and val_b > 0)
+
+        unit = unit_a or unit_b
+
+        # ── Anomaly detection ────────────────────────────────────────────────
+        anomaly_flags: list[str] = []
+        if _NORMALIZER_AVAILABLE:
+            is_pct        = _is_pct_lookup.get(concept, False)
+            anomaly_flags = _detect_anomalies(
+                concept, val_a, val_b, unit_a, unit_b, is_pct, pct,
+            )
+        # Duplicate dimensional facts — data quality flag (always checked)
+        if key in dups_a:
+            anomaly_flags.append("duplicated_fact_in_A")
+        if key in dups_b:
+            anomaly_flags.append("duplicated_fact_in_B")
+        if sign_chg:
+            anomaly_flags.append("sign_reversal")
+
+        sig = _is_significant(pct, abs(val_a), abs(val_b), sign_chg, anomaly_flags)
+
+        # ── Severity scoring ─────────────────────────────────────────────────
+        _n_anomaly = len(anomaly_flags)
+        _abs_pct   = abs(pct) if pct is not None else 5_000.0
+        _ref_mag   = max(abs(val_a), abs(val_b))
+        if _n_anomaly >= 2 or (sign_chg and _ref_mag >= 1_000_000) or _abs_pct > 500:
+            severity = "critical"
+        elif _n_anomaly >= 1 or sign_chg or _abs_pct > 100:
+            severity = "high"
+        elif sig:
+            severity = "medium"
+        else:
+            severity = "low"
+
+        # ── Embed context label in concept name for frontend compatibility ──
+        # The serialized list in _run_comparison only propagates "concept",
+        # so we embed the readable context label here so that the frontend
+        # table and LLM summary both show dimension membership without any
+        # schema changes to the API response.
+        if ctx_key and ctx_key != "BASE":
+            _sfx_parts: list[str] = []
+            for _p in ctx_key.split("|"):
+                _raw = _p.split("=", 1)[1] if "=" in _p else _p
+                if _raw.lower().endswith("member"):
+                    _raw = _raw[:-6]
+                if _raw:
+                    _sfx_parts.append(_raw)
+            _ctx_suffix = f" [{', '.join(_sfx_parts)}]" if _sfx_parts else ""
+        else:
+            _ctx_suffix = ""
+
+        row: dict = {
+            "concept":       concept + _ctx_suffix,  # includes label for frontend
+            label_a:         val_a,
+            label_b:         val_b,
+            "diff":          diff,
+            "pct_change":    pct,
+            "significant":   sig,
+            # Enrichment fields (silently ignored by existing downstream code)
+            "context_key":   ctx_key,
+            "unit":          unit,
+            "anomaly_flags": anomaly_flags,
+            "sign_change":   sign_chg,
+            "severity":      severity,
+        }
+        rows.append(row)
 
     rows.sort(
-        key=lambda r: _importance_score(r["pct_change"], max(abs(r[label_a]), abs(r[label_b]))),
+        key=lambda r: _importance_score(
+            r["pct_change"],
+            max(abs(r[label_a]), abs(r[label_b])),
+            r["sign_change"],
+            len(r["anomaly_flags"]),
+        ),
         reverse=True,
     )
     return rows[:top_n]
@@ -820,45 +1032,161 @@ def format_variance_table(
 ) -> str:
     """Format variance rows as a plain-text table for chat display.
 
-    Enhancement: concept names are displayed as CamelCase-split human-
-    readable words (e.g. 'NetOpenExchangePosition' → 'Net Open Exchange
-    Position') so that the table is easier to read in the chat UI.
-    Numeric values auto-scale to M / K / raw based on magnitude.
+    Rendering rules:
+    - Dimensional context labels are appended to concept names so rows for
+      different dimension members are visually distinct:
+        e.g. "Foreign Curr Maturity Mismatch [OneMonth]"
+             "Foreign Curr Maturity Mismatch [TwoMonths]"
+    - All numeric columns (val_a, val_b, diff) in the same row share one
+      magnitude scale determined by max(abs(val_a), abs(val_b)) so values
+      are never formatted with mixed units (e.g. "2,200.00M" vs "544,400").
+    - Raw values are NOT modified; scaling is render-only.
     """
     if not rows:
         return "No comparable numeric facts found between the two instances."
 
-    def _short(name: str, n: int = 38) -> str:
-        human = _humanise(name, max_len=n)
-        return human if len(human) <= n else human[: n - 1] + "\u2026"
+    # ── Context label helper ────────────────────────────────────────────────
+    def _ctx_label(ctx_key: str) -> str:
+        """Extract readable member values from a context_key string.
 
-    def _fmt(v: float | None) -> str:
+        "BASE"                                    → ""
+        "CurrencyMismatchDurationDimension=OneMonth" → " [OneMonth]"
+        "axis1=val1|axis2=val2"                   → " [val1|val2]"
+        """
+        if not ctx_key or ctx_key == "BASE":
+            return ""
+        members = []
+        for part in ctx_key.split("|"):
+            raw = part.split("=", 1)[1] if "=" in part else part
+            # Strip the XBRL "Member" suffix for readable display
+            # e.g. "OneMonthMember" → "OneMonth"
+            if raw.endswith("Member"):
+                raw = raw[:-6]
+            members.append(raw)
+        label = "|".join(members)
+        if len(label) > 22:
+            label = label[:21] + "\u2026"
+        return f" [{label}]"
+    # ── Concept display ─────────────────────────────────────────────────────
+    def _concept_display(r: dict, col: int = 55) -> str:
+        """Human-readable concept name + context label, fitted to col chars.
+
+        If the concept string already has an embedded label added by
+        compute_variance (e.g. "ForeignCurrencyMaturityMismatch [OneMonth]"),
+        we split on " [" first so _humanise is only applied to the base name —
+        otherwise CamelCase splitting would mangle "OneMonth" into "One Month".
+        """
+        concept_raw = r["concept"]
+        ctx_key     = r.get("context_key", "BASE")
+
+        # Detect embedded label (e.g. "ConceptName [OneMonth]")
+        if " [" in concept_raw:
+            split_idx    = concept_raw.index(" [")
+            concept_part = concept_raw[:split_idx]
+            label_part   = concept_raw[split_idx:]    # e.g. " [OneMonth]"
+        else:
+            concept_part = concept_raw
+            label_part   = _ctx_label(ctx_key)
+
+        # Reserve space for label; leave at least 20 chars for the concept name
+        name_budget = max(col - len(label_part), 20)
+        base = _humanise(concept_part, max_len=name_budget)
+        full = base + label_part
+        return full if len(full) <= col else full[: col - 1] + "\u2026"
+
+    # ── Row-level consistent scale ──────────────────────────────────────────
+    def _row_scale(r: dict) -> tuple[float, str]:
+        """Pick one magnitude scale for all numeric columns in this row.
+
+        Scale is based on max(abs(val_a), abs(val_b)) so the two primary
+        comparison values always use the same unit. Diff follows naturally.
+        """
+        v_a = r.get(label_a)
+        v_b = r.get(label_b)
+        max_abs = max(
+            abs(v_a) if v_a is not None else 0.0,
+            abs(v_b) if v_b is not None else 0.0,
+        )
+        if max_abs >= 1_000_000_000:
+            return 1_000_000_000.0, "B"
+        if max_abs >= 1_000_000:
+            return 1_000_000.0, "M"
+        if max_abs >= 1_000:
+            return 1_000.0, "K"
+        return 1.0, ""
+
+    def _fmt_natural(v: float) -> str:
+        """Format v in its natural financial unit — never scientific notation."""
+        abs_v = abs(v)
+        if v == 0:
+            return "0"
+        if abs_v >= 1_000_000_000:
+            return f"{v/1_000_000_000:,.2f}B"
+        if abs_v >= 1_000_000:
+            return f"{v/1_000_000:,.2f}M"
+        if abs_v >= 1_000:
+            return f"{v/1_000:,.2f}K"
+        if abs_v >= 1:
+            return f"{v:,.2f}"
+        # Fractional — enough decimal places to show 3 significant figures
+        if abs_v >= 0.001:
+            return f"{v:,.4f}"
+        return f"{v:,.8f}".rstrip('0').rstrip('.')
+
+    def _fmt(v: float | None, div: float, sfx: str) -> str:
         if v is None:
             return "\u2014"
-        if abs(v) >= 1_000_000:
-            return f"{v / 1_000_000:,.2f}M"
-        if abs(v) >= 1_000:
-            return f"{v:,.0f}"
-        return f"{v:.4g}"
+        if v == 0:
+            return f"0{sfx}"
+        scaled = v / div
+        if sfx:
+            abs_s = abs(scaled)
+            if abs_s >= 1_000:
+                return f"{scaled:,.0f}{sfx}"
+            if abs_s >= 10:
+                return f"{scaled:,.2f}{sfx}"
+            if abs_s >= 0.001:
+                return f"{scaled:,.4f}{sfx}"
+            # Tiny relative to row scale — switch to natural unit
+            return _fmt_natural(v)
+        # No scale — natural unit, never scientific
+        return _fmt_natural(v)
 
     def _pct(v: float | None) -> str:
         if v is None:
             return "N/A"
-        return f"{'+'if v >= 0 else ''}{v:.1f}%"
+        sign  = '+' if v > 0 else ''
+        abs_v = abs(v)
+        if abs_v > 100_000:
+            return f"{sign}Extreme {'\u2191' if v > 0 else '\u2193'}"
+        if abs_v > 10_000:
+            return f"{sign}Very High"
+        if abs_v > 1_000:
+            return f"{sign}>1,000%"
+        return f"{sign}{v:.1f}%"
 
+    # ── Table rendering ─────────────────────────────────────────────────────
     lbl_a  = label_a[:12]
     lbl_b  = label_b[:12]
     header = (
-        f"{'Concept':<40} | {lbl_a:>12} | {lbl_b:>12} | "
-        f"{'Diff':>12} | {'%Chg':>8} |"
+        f"{'Concept':<55} | {lbl_a:>13} | {lbl_b:>13} | "
+        f"{'Diff':>13} | {'%Chg':>8} |"
     )
     sep   = "-" * len(header)
     lines = [header, sep]
     for r in rows:
-        flag = " \u26a0" if r["significant"] else ""
+        div, sfx = _row_scale(r)
+        flag  = ""
+        if r.get("sign_change"):
+            flag += " \u21d5"   # ⇕ sign-reversal marker
+        if r["significant"]:
+            flag += " \u26a0"   # ⚠ high-variance marker
         lines.append(
-            f"{_short(r['concept']):<40} | {_fmt(r[label_a]):>12} | {_fmt(r[label_b]):>12} | "
-            f"{_fmt(r['diff']):>12} | {_pct(r['pct_change']):>8} |{flag}"
+            f"{_concept_display(r):<55} | "
+            f"{_fmt(r[label_a], div, sfx):>13} | "
+            f"{_fmt(r[label_b], div, sfx):>13} | "
+            f"{_fmt(r['diff'],  div, sfx):>13} | "
+            f"{_pct(r['pct_change']):>12} |{flag}"
         )
     return "\n".join(lines)
 
@@ -928,34 +1256,65 @@ async def generate_llm_summary(
 
     data_text = "\n".join(lines)
     prompt = (
-        f"You are an expert RBI banking regulatory and financial analyst.\n"
-        f"Analyze XBRL variance data from an Indian banking report and generate precise, high-impact insights.\n\n"
+        f"You are an RBI banking variance analysis assistant.\n"
+        f"Your task is to generate STRICTLY DATA-GROUNDED insights from XBRL variance tables.\n\n"
 
         f"Report: {report_name or 'RBI Banking Report'}\n"
-        f"Period A (current):  {label_a}\n"
+        f"Period A (current): {label_a}\n"
         f"Period B (previous): {label_b}\n"
         f"Scale context: {scale_note}\n\n"
 
-        f"Variance Data (concept: Period A → Period B, % change):\n{data_text}\n\n"
+        f"Variance Data (concept: Period A → Period B, % change):\n"
+        f"{data_text}\n\n"
 
         f"Generate EXACTLY 5 bullet points.\n\n"
 
         f"STRICT RULES:\n"
+        f"- Use ONLY the provided numerical data.\n"
+        f"- Do NOT assume causes, business strategy, intent, economic conditions, trading behavior, or regulatory breaches.\n"
+        f"- Do NOT invent liquidity crises, market stress, aggressive positioning, or management decisions.\n"
+        f"- Focus ONLY on:\n"
+        f"  * increase/decrease\n"
+        f"  * percentage movement\n"
+        f"  * absolute difference\n"
+        f"  * ranking of changes\n"
+        f"  * unusual spikes\n"
+        f"  * concentration patterns\n"
+        f"- Keep explanations concise, factual, and neutral.\n"
+        f"- Use business-friendly analytical language without speculation.\n"
+        f"- Prefer wording like:\n"
+        f"  * 'recorded the highest increase'\n"
+        f"  * 'showed moderate growth'\n"
+        f"  * 'remained relatively stable'\n"
+        f"- Avoid speculative phrases like:\n"
+        f"  * 'due to'\n"
+        f"  * 'because'\n"
+        f"  * 'indicates aggressive'\n"
+        f"  * 'suggests strategy'\n"
+        f"  * 'reflects management intent'\n"
+        f"- If data is insufficient for causal inference, avoid assumptions completely.\n\n"
+
+        f"OUTPUT FORMAT RULES:\n"
         f"- Start every line with '• '\n"
-        f"- Maximum 18 words per bullet.\n"
+        f"- Maximum 22 words per bullet.\n"
         f"- One sentence per bullet only.\n"
-        f"- Focus only on the most significant increases/decreases.\n"
-        f"- Mention the metric name, direction of change (increased/decreased/surged/fell), magnitude, and business implication.\n"
-        f"- Provide real-world banking/regulatory inference: e.g. liquidity risk, NPA exposure, capital adequacy, forex risk, credit growth.\n"
-        f"- Use the humanised metric name (not the raw technical code).\n"
-        f"- Keep insights executive-style — sharp and scannable.\n"
-        f"- No headings. No introduction. No conclusion. No numbering.\n"
+        f"- Mention exact values and percentage changes from the table.\n"
+        f"- Use the human-readable metric name, not raw technical codes.\n"
+        f"- No headings.\n"
+        f"- No introduction.\n"
+        f"- No conclusion.\n"
+        f"- No numbering.\n"
         f"- Output ONLY the 5 bullet points.\n\n"
 
-        f"- Bold the metric name AND the percentage/value change using markdown ** **.\n"
-        f"Example format:\n"
-        f"• **Net Open Exchange Position surged +1160%** signalling aggressive expansion in foreign currency exposure.\n"
+        f"- Bold the metric name and percentage/value movement using markdown ** **.\n\n"
+
+        f"GOOD EXAMPLE:\n"
+        f"• **Foreign Currency Maturity Mismatch [One Month] increased by +41.7%**, rising from 1.20B to 1.70B, the highest growth observed.\n\n"
+
+        f"BAD EXAMPLE:\n"
+        f"• The increase may indicate liquidity stress and aggressive forex positioning.\n"
     )
+
 
 
 

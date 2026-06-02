@@ -1791,6 +1791,10 @@ def _from_result(
         )
         if run_time:
             text += f"\nGenerated On          : {run_time}"
+        error_messages = result.get("error_messages", [])
+        if error_messages:
+            text += "\n\nFailure Reason(s):\n"
+            text += "\n".join(f"\u2022 {m}" for m in error_messages)
         if status_note:
             text += f"\n{status_note}"
         if other_instances:
@@ -1824,6 +1828,10 @@ def _from_result(
         if dtc:
             text += f"Generated On   : {dtc}\n"
         text += f"Status         : {result['status']}"
+        error_messages = result.get("error_messages", [])
+        if error_messages:
+            text += "\n\nFailure Reason(s):\n"
+            text += "\n".join(f"\u2022 {m}" for m in error_messages)
         status_note = result.get("status_note", "")
         if status_note:
             text += f"\n{status_note}"
@@ -1933,6 +1941,10 @@ def _ask_another_date(
     if dtc:
         text += f"Generated On   : {dtc}\n"
     text += f"Status         : {result['status']}"
+    error_messages = result.get("error_messages", [])
+    if error_messages:
+        text += "\n\nFailure Reason(s):\n"
+        text += "\n".join(f"\u2022 {m}" for m in error_messages)
     status_note = result.get("status_note", "")
     if status_note:
         text += f"\n{status_note}"
