@@ -86,9 +86,9 @@ function VarTooltip({ active, payload, label, labelA, labelB }) {
       {row.sign_change && (
         <div className="vc-tooltip-sign">⇕ Direction reversed</div>
       )}
-      {row.significant && (
+      {/* {row.significant && (
         <div className="vc-tooltip-high">⚠ High variance</div>
-      )}
+      )} */}
       {row.anomaly_flags?.length > 0 && (
         <div className="vc-tooltip-anomaly">
           {row.anomaly_flags.join(' · ')}
@@ -203,18 +203,19 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
 
   const sharedChartProps = {
     data: chartData,
-    margin: { top: 10, right: 20, bottom: 60, left: 20 },
+    margin: { top: 10, right: 20, bottom: 75, left: 20 },
   }
 
   const sharedXAxis = (
-    <XAxis
-      dataKey="name"
-      tick={{ fontSize: 11, fill: '#6B7280' }}
-      angle={-35}
-      textAnchor="end"
-      interval={0}
-    />
-  )
+  <XAxis
+    dataKey="name"
+    tick={{ fontSize: 11, fill: '#6B7280' }}
+    angle={-35}
+    textAnchor="end"
+    interval={0}
+    height={70}
+  />
+)
 
   const sharedYAxis = (
     <YAxis
@@ -225,7 +226,17 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
   )
 
   const sharedGrid    = <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,120,160,0.15)" />
-  const sharedLegend  = <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+  const sharedLegend = (
+  <Legend
+    verticalAlign="bottom"
+    align="center"
+    wrapperStyle={{
+      fontSize: 12,
+      bottom: 8,
+      paddingTop: 10
+    }}
+  />
+)
   const sharedTooltip = (
     <Tooltip
       content={<VarTooltip labelA={labelA} labelB={labelB} />}
@@ -250,7 +261,7 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
             </span>
           </div>
           <div className="vc-header-controls">
-            {sigCount > 0 && (
+            {/* {sigCount > 0 && (
               <button
                 className={`vc-filter-btn${showSig ? ' active' : ''}`}
                 onClick={() => setShowSig((s) => !s)}
@@ -258,14 +269,14 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
               >
                 ⚠ High variance ({sigCount})
               </button>
-            )}
-            <button
+            )} */}
+            {/* <button
               className={`vc-filter-btn${effectiveLog ? ' active' : ''}`}
               onClick={() => setUseLogScale((s) => !s)}
               title="Toggle logarithmic scale for better readability across large value ranges"
             >
               {effectiveLog ? '〜 Log scale' : '— Linear'}
-            </button>
+            </button> */}
             <div className="vc-toggle-group">
               <button
                 className={`vc-toggle-btn${chartType === 'bar' ? ' active' : ''}`}
@@ -297,7 +308,7 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
             <span className="vc-stat-val">{rows.length}</span>
             <span className="vc-stat-label">Concepts</span>
           </div>
-          <div className="vc-stat">
+          {/* <div className="vc-stat">
             <span className="vc-stat-val" style={{ color: '#F87171' }}>{sigCount}</span>
             <span className="vc-stat-label">High Variance</span>
           </div>
@@ -306,7 +317,7 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
               <span className="vc-stat-val" style={{ color: COLOR_SIGN }}>{signChgCount}</span>
               <span className="vc-stat-label">Sign Reversed</span>
             </div>
-          )}
+          )} */}
           <div className="vc-stat">
             <span className="vc-stat-val" style={{ color: COLOR_POS }}>
               {rows.filter((r) => (r.pct_change ?? 0) > 0).length}
@@ -328,7 +339,7 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
           ) : chartType === 'pct' ? (
             /* ── % Change chart ── */
             <ResponsiveContainer width="100%" height={340}>
-              <BarChart data={chartData} margin={{ top: 10, right: 20, bottom: 60, left: 20 }}>
+              <BarChart data={chartData} margin={{ top: 10, right: 20, bottom: 75, left: 20 }}>
                 {sharedGrid}
                 {sharedXAxis}
                 <YAxis tickFormatter={pctTickFmt} tick={{ fontSize: 11, fill: '#6B7280' }} width={70} />
@@ -403,7 +414,7 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
         </div>
 
         {/* ── Legend note for high-variance and sign-change ── */}
-        <div className="vc-legend-notes">
+        {/* <div className="vc-legend-notes">
           {sigCount > 0 && !showSig && (
             <div className="vc-legend-note">
               <span className="vc-legend-dot" style={{ background: COLOR_HIGH }} />
@@ -421,7 +432,7 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
               Y-axis uses signed-log scale — sign(v)·log₁₀(|v|+1)
             </div>
           )}
-        </div>
+        </div> */}
       </div>
     </div>
   )

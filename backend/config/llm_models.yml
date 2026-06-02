@@ -1,0 +1,127 @@
+# LLM model configuration used by the Chat-SystemWorking project
+# This file enumerates supported LLMs, embedding models, and recommended sizes
+# for local deployment and remote provider usage. Use this as canonical reference
+# for deployment, resource planning and routing in the LLM router.
+
+# Notes:
+# - "size_label" shows the common parameter-size shorthand (e.g. 7B, 13B, 70B, mini).
+# - "approx_vram_gb" and "approx_host_ram_gb" are conservative guidance for inference.
+# - Keep this file in source control; do NOT commit API keys or other secrets.
+
+models:
+  - id: ollama_phi3_mini
+    provider: ollama
+    model: phi3-mini
+    size_label: mini
+    approx_params: ~
+    approx_vram_gb: 2            # approximate GPU VRAM for small/quantized local runtimes
+    approx_host_ram_gb: 4
+    recommended_use:
+      - low-latency chat
+      - short-form generation
+      - trickle/edge inference
+    env_var: OLLAMA_MODEL
+    notes: "Local Ollama model used for low-cost, low-latency responses. Good for demos and short replies. Quantized variants reduce VRAM."
+
+  - id: hf_llama2_7b
+    provider: huggingface_local
+    model: llm-llama2-7b
+    size_label: 7B
+    approx_params: 7000000000
+    approx_vram_gb: 8
+    approx_host_ram_gb: 16
+    recommended_use:
+      - on-prem interactive assistant
+      - RAG and short to medium narratives
+    env_var: HF_LOCAL_LLM_7B
+    notes: "Local Llama2 7B class model; CPU-only runtimes possible but slow. Quantized (4-bit) variants recommended for commodity GPUs."
+
+  - id: hf_llama2_13b
+    provider: huggingface_local
+    model: llm-llama2-13b
+    size_label: 13B
+    approx_params: 13000000000
+    approx_vram_gb: 12
+    approx_host_ram_gb: 24
+    recommended_use:
+      - higher-quality narratives
+      - longer-context summarization
+    env_var: HF_LOCAL_LLM_13B
+    notes: "13B models balance quality and resource usage; prefer GPUs with at least 12-16GB VRAM (or quantized engines)."
+
+  - id: hf_llama2_70b
+    provider: huggingface_local
+    model: llm-llama2-70b
+    size_label: 70B
+    approx_params: 70000000000
+    approx_vram_gb: 48
+    approx_host_ram_gb: 128
+    recommended_use:
+      - high-quality inferences
+      - complex instruction following
+    env_var: HF_LOCAL_LLM_70B
+    notes: "70B-class models require substantial GPU & host RAM; generally run on multi-GPU nodes or via optimized inference engines."
+
+  - id: openai_gpt4o
+    provider: openai
+    model: gpt-4o
+    size_label: provider_managed
+    approx_params: ~
+    approx_vram_gb: null
+    approx_host_ram_gb: null
+    recommended_use:
+      - production-grade high quality generation
+      - fallback for complex queries when local models lack capability
+    env_var: OPENAI_API_KEY
+    notes: "Managed cloud model — scale is opaque. Use when SLAs and quality requirements mandate a managed provider. Monitor usage and costs."
+
+  - id: openai_text_embedding_3_small
+    provider: openai
+    model: text-embedding-3-small
+    size_label: provider_managed
+    approx_params: ~
+    approx_vram_gb: null
+    approx_host_ram_gb: null
+    recommended_use:
+      - embeddings for semantic search (cost-effective)
+    env_var: OPENAI_API_KEY
+    notes: "Managed embeddings. Use for RAG indexing or similarity search where accuracy tradeoffs are acceptable."
+
+  - id: sentence_transformers_all_minilm_l6_v2
+    provider: sentence-transformers
+    model: all-MiniLM-L6-v2
+    size_label: 22M
+    approx_params: 22000000
+    approx_vram_gb: 1
+    approx_host_ram_gb: 2
+    recommended_use:
+      - local embedding generation (low compute)
+    env_var: EMBEDDING_MODEL
+    notes: "Lightweight embedding model appropriate for CPU or small GPU inference; excellent for indexing large corpora locally."
+
+  - id: local_faiss_store
+    provider: faiss
+    model: faiss-cpu
+    size_label: n/a
+    approx_params: ~
+    approx_vram_gb: ~
+    approx_host_ram_gb: 8
+    recommended_use:
+      - vector similarity search
+    env_var: VECTOR_STORE
+    notes: "FAISS is used as an on-host vector index. For scale, consider Weaviate/Pinecone managed services."
+
+routing:
+  default_priority:
+    - ollama_phi3_mini         # fast, low-cost local responses
+    - hf_llama2_7b             # local fallback for richer outputs
+    - openai_gpt4o             # managed provider for highest-fidelity responses
+
+# Memory sizing guidance (approximate). Use these to plan hardware and GPU allocation.
+memory_guidance:
+  mini: { cpu_threads: 2, host_ram_gb: 4, gpu_vram_gb: 2 }
+  7B:   { cpu_threads: 4, host_ram_gb: 16, gpu_vram_gb: 8 }
+  13B:  { cpu_threads: 8, host_ram_gb: 32, gpu_vram_gb: 12 }
+  70B:  { cpu_threads: 16, host_ram_gb: 128, gpu_vram_gb: 48 }
+
+# Last updated: 2026-06-02
