@@ -207,6 +207,7 @@ User Input (Natural Language)
 | Connection Model      | Connection Pool    | —         | min=1, max=5, increment=1                |
 | Locale Configuration  | NLS_DATE_LANGUAGE  | AMERICAN  | Set via session callback on pool init    |
 
+
 ### 3.4 AI/LLM Components
 
 | Component              | Technology                | Notes                                        |

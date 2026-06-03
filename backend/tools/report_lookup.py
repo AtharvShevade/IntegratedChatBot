@@ -145,11 +145,17 @@ def _parse_instances() -> tuple[dict, ...]:
 # Public pipeline functions
 
 def _normalise(s: str) -> str:
-    """Lowercase and strip every non-alphanumeric character for matching.
-    'CIMS_RAQ(Quarterly)' → 'cimsraqquarterly'
-    'raq(monthly)'        → 'raqmonthly'
+    """Lowercase, convert separators to spaces, and strip remaining special chars.
+    Preserves word boundaries so fuzzy/token matching works correctly.
+    'CIMS_LR (Quarterly)' → 'cims lr quarterly'
+    'CIMS-RAQ'            → 'cims raq'
+    'raq(monthly)'        → 'raq monthly'
     """
-    return re.sub(r"[^a-z0-9]", "", s.lower())
+    s = s.lower()
+    s = re.sub(r"[_()/\-]", " ", s)   # convert separators to spaces
+    s = re.sub(r"[^a-z0-9 ]", "", s)  # remove remaining special chars
+    s = re.sub(r" +", " ", s)          # collapse multiple spaces
+    return s.strip()
 
 
 def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
@@ -188,9 +194,10 @@ def find_matching_reports(user_input: str) -> list[dict]:
       6.  Partial/bidirectional ReturnId match
       7.  All-keyword token match against Name
       8.  All-keyword token match against AltName
-      9.  Any-keyword token match against Name
-      10. Any-keyword token match against AltName
-      11. Any-keyword token match against ReturnId
+      9+. Scored any-token fallback (whole-word preferred over substring):
+          - whole-word matches score highest; pure substring-only matches score
+            lowest and are suppressed when stronger matches exist.
+          - Results sorted by score descending.
 
     All comparisons are case-insensitive (via _normalise) and trim-safe.
     Null/missing XML attributes are handled gracefully.
@@ -207,6 +214,7 @@ def find_matching_reports(user_input: str) -> list[dict]:
         return []
 
     quads = _normalised_returns()  # (norm_name, norm_return_id, norm_alt_name, raw_dict)
+    from rapidfuzz import fuzz as _fuzz  # used in stage 9+ ranking bonus and final fuzzy fallback
 
     def _dedup(lst: list[dict]) -> list[dict]:
         """Deduplicate by (Name, Id) pair while preserving order."""
@@ -261,8 +269,9 @@ def find_matching_reports(user_input: str) -> list[dict]:
         return _dedup(partial_rid)
 
     # ── Keyword token matching ───────────────────────────────────────────────
-    # Tokens: split on non-alphanumeric, keep tokens with at least 2 chars
-    tokens = [t for t in re.split(r"[^a-z0-9]+", needle) if len(t) >= 2]
+    # Tokens: split on spaces (normalised form uses spaces as separators),
+    # keep tokens with at least 2 chars
+    tokens = [t for t in needle.split() if len(t) >= 2]
     if tokens:
         # 7. All tokens in Name
         all_name = [r for (nname, _, _, r) in quads if nname and all(t in nname for t in tokens)]
@@ -274,20 +283,91 @@ def find_matching_reports(user_input: str) -> list[dict]:
         if all_alt:
             return _dedup(all_alt)
 
-        # 9. Any token in Name
-        any_name = [r for (nname, _, _, r) in quads if nname and any(t in nname for t in tokens)]
-        if any_name:
-            return _dedup(any_name)
+        # 9+. Scored any-token fallback
+        # Whole-word matches score much higher than pure substring matches.
+        # When whole-word matches exist (_WW_THRESHOLD), substring-only hits
+        # are suppressed — this eliminates accidental AltName/ReturnId
+        # collisions (e.g. "cims" matching ROF via an unrelated AltName).
+        # When NO whole-word matches exist at all (e.g. "gold" → "importofgold"),
+        # all substring matches are returned unchanged, preserving broad search.
+        _WW_THRESHOLD = 40  # minimum score achievable only via ≥1 whole-word token hit
+        n_tok = len(tokens)
+        scored: list[tuple[int, dict]] = []
+        seen_keys: set[str] = set()
 
-        # 10. Any token in AltName
-        any_alt = [r for (_, _, nalt, r) in quads if nalt and any(t in nalt for t in tokens)]
-        if any_alt:
-            return _dedup(any_alt)
+        for (nname, nrid, nalt, r) in quads:
+            name_words = set(nname.split()) if nname else set()
+            alt_words  = set(nalt.split())  if nalt  else set()
 
-        # 11. Any token in ReturnId
-        any_rid = [r for (_, nrid, _, r) in quads if nrid and any(t in nrid for t in tokens)]
-        if any_rid:
-            return _dedup(any_rid)
+            # Whole-word token counts (precise)
+            name_ww  = sum(1 for t in tokens if t in name_words)
+            alt_ww   = sum(1 for t in tokens if t in alt_words)
+            # Substring token counts (broad, lower signal)
+            name_sub = sum(1 for t in tokens if nname and t in nname)
+            alt_sub  = sum(1 for t in tokens if nalt  and t in nalt)
+            rid_sub  = sum(1 for t in tokens if nrid  and t in nrid)
+
+            if not (name_ww or alt_ww or name_sub or alt_sub or rid_sub):
+                continue
+
+            score = 0
+            # Name scoring: whole-word > all-substring > any-substring
+            if   name_ww == n_tok:    score += 80
+            elif name_ww > 0:         score += 40
+            elif name_sub == n_tok:   score += 30
+            elif name_sub > 0:        score += 10
+            # AltName scoring (slightly lower priority than Name)
+            if   alt_ww == n_tok:     score += 70
+            elif alt_ww > 0:          score += 35
+            elif alt_sub == n_tok:    score += 25
+            elif alt_sub > 0:         score +=  8
+            # ReturnId scoring (lowest; useful mainly for ID-style tokens)
+            if rid_sub > 0:           score +=  5
+            # Fuzzy ranking bonus: improves tie-breaking between structurally
+            # similar candidates without overriding structural signal.
+            # Capped at +25 (100 // 4) so it never promotes a weak match above
+            # a strong one (strong structural scores are ≥ 40).
+            fuzzy_bonus = max(
+                _fuzz.partial_ratio(needle, nname) if nname else 0,
+                _fuzz.partial_ratio(needle, nalt)  if nalt  else 0,
+            ) // 4
+            score += fuzzy_bonus
+
+            key = r.get("Name", "") + "|" + r.get("Id", "")
+            if key not in seen_keys:
+                seen_keys.add(key)
+                scored.append((score, r))
+
+        if scored:
+            scored.sort(key=lambda x: x[0], reverse=True)
+            best = scored[0][0]
+            if best >= _WW_THRESHOLD:
+                # Strong whole-word matches exist — exclude pure-substring noise
+                return [r for s, r in scored if s >= _WW_THRESHOLD]
+            # No whole-word matches — return all substring matches
+            # (preserves broad searches like "gold" → "importofgold")
+            return [r for _, r in scored]
+
+    # ── Final fuzzy fallback ──────────────────────────────────────────────────
+    # Catches typos that have no substring overlap with any report name:
+    # e.g. "phishing" vs report named "Phising", "quaaterly" vs "quarterly".
+    # Only executes when ALL prior structural stages returned nothing.
+    # Cutoff of 72 avoids spurious weak matches while catching close typos.
+    _FUZZY_CUTOFF = 72
+    fuzzy_scored: list[tuple[int, dict]] = []
+    fuzzy_seen: set[str] = set()
+    for (nname, nrid, nalt, r) in quads:
+        name_score = _fuzz.partial_ratio(needle, nname) if nname else 0
+        alt_score  = _fuzz.partial_ratio(needle, nalt)  if nalt  else 0
+        best_fuzz  = max(name_score, alt_score)
+        if best_fuzz >= _FUZZY_CUTOFF:
+            key = r.get("Name", "") + "|" + r.get("Id", "")
+            if key not in fuzzy_seen:
+                fuzzy_seen.add(key)
+                fuzzy_scored.append((best_fuzz, r))
+    if fuzzy_scored:
+        fuzzy_scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in fuzzy_scored]
 
     return []
 
@@ -295,9 +375,9 @@ def find_matching_reports(user_input: str) -> list[dict]:
 def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.35) -> list[str]:
     """Return up to *n* report names whose normalised form is similar to *user_input*.
 
-    Uses difflib.get_close_matches (SequenceMatcher ratio) as a last-resort
-    fallback when find_matching_reports returns nothing.  Returns original
-    (non-normalised) report names suitable for display.
+    Uses rapidfuzz partial_ratio as a last-resort fallback when
+    find_matching_reports returns nothing.  Returns original (non-normalised)
+    report names suitable for display.
 
     Args:
         user_input: Raw user-provided text.
@@ -305,13 +385,19 @@ def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.35) 
         cutoff:     Minimum similarity ratio (0–1).  0.35 is intentionally
                     permissive to surface near-misses.
     """
-    import difflib
+    from rapidfuzz import fuzz, process as rf_process
     needle = _normalise(user_input)
     if not needle:
         return []
     norm_to_orig = {norm_name: r.get("Name", "") for (norm_name, _, _, r) in _normalised_returns()}
-    close_norms  = difflib.get_close_matches(needle, list(norm_to_orig.keys()), n=n, cutoff=cutoff)
-    return [norm_to_orig[c] for c in close_norms if norm_to_orig[c]]
+    matches = rf_process.extract(
+        needle,
+        list(norm_to_orig.keys()),
+        scorer=fuzz.partial_ratio,
+        limit=n,
+        score_cutoff=cutoff * 100,
+    )
+    return [norm_to_orig[m[0]] for m in matches if norm_to_orig.get(m[0])]
 
 
 def get_instances_by_form_id(form_id: str) -> list[dict]:

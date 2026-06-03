@@ -92,57 +92,184 @@
 
 # config.py — Centralised path configuration for the Chat-System backend.
 
-from __future__ import annotations
+# from __future__ import annotations
+
+# import os
+
+# # ---------------------------------------------------------------------------
+# # Repository XML file paths
+# # ---------------------------------------------------------------------------
+
+# RETURNS_XML_PATH: str = os.getenv(
+#     "RETURNS_XML_PATH",
+#     r"D:\Repo(new)\DataBase\Returns.xml",
+# )
+
+# INSTANCE_LOG_XML_PATH: str = os.getenv(
+#     "INSTANCE_LOG_XML_PATH",
+#     r"D:\Repo(new)\DataBase\XML_InstanceLog.xml",
+# )
+
+# # ---------------------------------------------------------------------------
+# # Instance / Render directories
+# # ---------------------------------------------------------------------------
+
+# INSTANCE_BASE_DIR: str = os.getenv(
+#     "INSTANCE_BASE_DIR",
+#     r"D:\Repo(new)\Instance",
+# )
+
+# RENDER_BASE_DIR: str = os.getenv(
+#     "RENDER_BASE_DIR",
+#     r"D:\Repo(new)\Render",
+# )
+
+# # ---------------------------------------------------------------------------
+# # User / Department authorisation XML file paths
+# # ---------------------------------------------------------------------------
+
+# XML_USER_PATH: str = os.getenv(
+#     "XML_USER_PATH",
+#     r"D:\Repo(new)\DataBase\XML_User.xml",
+# )
+
+# XML_DEPT_PATH: str = os.getenv(
+#     "XML_DEPT_PATH",
+#     r"D:\Repo(new)\DataBase\XML_Dept.xml",
+# )
+
+# # ---------------------------------------------------------------------------
+# # SQL Agent — FAISS index output directory
+# # ---------------------------------------------------------------------------
+
+# _PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# FAISS_OUTPUT_DIR: str = os.getenv(
+#     "FAISS_OUTPUT_DIR",
+#     os.path.join(_PROJECT_ROOT, "sql_agent", "output"),
+# )
+
+# # ---------------------------------------------------------------------------
+# # Role access XML
+# # ---------------------------------------------------------------------------
+
+
+
+# XML_ROLE_ACCESS_PATH: str = os.getenv(
+#     "XML_ROLE_ACCESS_PATH",
+#     r"D:\Repo(new)\DataBase\XML_RoleAccess.xml",
+# )
+
+# # ---------------------------------------------------------------------------
+# # Application Database Q&A
+# # ---------------------------------------------------------------------------
+
+# APP_DB_BASE_PATH: str | None = os.getenv(
+#     "APP_DB_BASE_PATH",
+#     r"D:\Repo(new)\DataBase",
+# )
+
+# # Admin role ID for DB Q&A access control
+# APP_DB_ADMIN_ROLE_ID: str = os.getenv(
+#     "APP_DB_ADMIN_ROLE_ID",
+#     "101",
+# )
+
+# # Enable LLM beautification of DB Q&A responses
+# APP_DB_ENABLE_BEAUTIFY: bool = (
+#     os.getenv("APP_DB_ENABLE_BEAUTIFY", "true").lower() == "true"
+# )
+
+# # Ollama model for DB Q&A beautification
+# APP_DB_BEAUTIFY_MODEL: str = os.getenv(
+#     "APP_DB_BEAUTIFY_MODEL",
+#     "phi3:mini",
+# )
+
 
 import os
+
+# ---------------------------------------------------------------------------
+# Base repository path
+# ---------------------------------------------------------------------------
+
+BASE_REPO_PATH: str = os.getenv(
+    "BASE_REPO_PATH",
+    r"D:\Repo(new)"
+)
 
 # ---------------------------------------------------------------------------
 # Repository XML file paths
 # ---------------------------------------------------------------------------
 
-RETURNS_XML_PATH: str = os.getenv(
-    "RETURNS_XML_PATH",
-    r"D:\Repo(new)\DataBase\Returns.xml",
+RETURNS_XML_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase",
+    "Returns.xml"
 )
 
-INSTANCE_LOG_XML_PATH: str = os.getenv(
-    "INSTANCE_LOG_XML_PATH",
-    r"D:\Repo(new)\DataBase\XML_InstanceLog.xml",
+INSTANCE_LOG_XML_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase",
+    "XML_InstanceLog.xml"
 )
 
 # ---------------------------------------------------------------------------
 # Instance / Render directories
 # ---------------------------------------------------------------------------
 
-INSTANCE_BASE_DIR: str = os.getenv(
-    "INSTANCE_BASE_DIR",
-    r"D:\Repo(new)\Instance",
+INSTANCE_BASE_DIR: str = os.path.join(
+    BASE_REPO_PATH,
+    "Instance"
 )
 
-RENDER_BASE_DIR: str = os.getenv(
-    "RENDER_BASE_DIR",
-    r"D:\Repo(new)\Render",
+RENDER_BASE_DIR: str = os.path.join(
+    BASE_REPO_PATH,
+    "Render"
 )
 
 # ---------------------------------------------------------------------------
 # User / Department authorisation XML file paths
 # ---------------------------------------------------------------------------
 
-XML_USER_PATH: str = os.getenv(
-    "XML_USER_PATH",
-    r"D:\Repo(new)\DataBase\XML_User.xml",
+XML_USER_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase",
+    "XML_User.xml"
 )
 
-XML_DEPT_PATH: str = os.getenv(
-    "XML_DEPT_PATH",
-    r"D:\Repo(new)\DataBase\XML_Dept.xml",
+XML_DEPT_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase",
+    "XML_Dept.xml"
+)
+
+# ---------------------------------------------------------------------------
+# Role access XML
+# ---------------------------------------------------------------------------
+
+XML_ROLE_ACCESS_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase",
+    "XML_RoleAccess.xml"
+)
+
+# ---------------------------------------------------------------------------
+# Application Database Q&A
+# ---------------------------------------------------------------------------
+
+APP_DB_BASE_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase"
 )
 
 # ---------------------------------------------------------------------------
 # SQL Agent — FAISS index output directory
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PROJECT_ROOT: str = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
 FAISS_OUTPUT_DIR: str = os.getenv(
     "FAISS_OUTPUT_DIR",
@@ -150,35 +277,26 @@ FAISS_OUTPUT_DIR: str = os.getenv(
 )
 
 # ---------------------------------------------------------------------------
-# Role access XML
-# ---------------------------------------------------------------------------
-
-XML_ROLE_ACCESS_PATH: str = os.getenv(
-    "XML_ROLE_ACCESS_PATH",
-    r"D:\Repo(new)\DataBase\XML_RoleAccess.xml",
-)
-
-# ---------------------------------------------------------------------------
-# Application Database Q&A
-# ---------------------------------------------------------------------------
-
-APP_DB_BASE_PATH: str | None = os.getenv(
-    "APP_DB_BASE_PATH",
-    r"D:\Repo(new)\DataBase",
-)
-
 # Admin role ID for DB Q&A access control
+# ---------------------------------------------------------------------------
+
 APP_DB_ADMIN_ROLE_ID: str = os.getenv(
     "APP_DB_ADMIN_ROLE_ID",
     "101",
 )
 
+# ---------------------------------------------------------------------------
 # Enable LLM beautification of DB Q&A responses
+# ---------------------------------------------------------------------------
+
 APP_DB_ENABLE_BEAUTIFY: bool = (
     os.getenv("APP_DB_ENABLE_BEAUTIFY", "true").lower() == "true"
 )
 
+# ---------------------------------------------------------------------------
 # Ollama model for DB Q&A beautification
+# ---------------------------------------------------------------------------
+
 APP_DB_BEAUTIFY_MODEL: str = os.getenv(
     "APP_DB_BEAUTIFY_MODEL",
     "phi3:mini",

@@ -164,20 +164,10 @@ class XMLStore:
     # ── convenience lookups ──────────────────────────────────────────────────
 
     def role_name_by_id(self, role_id: str) -> str:
-        for r in self.roles():
-            if get_attr(r, "RoleId", "Role_Id") == str(role_id):
-                return r.get("Name", role_id)
-        return role_id
-
-    def dept_by_id(self, dept_id: str) -> dict | None:
-        """Find a department row by DeptId.  Returns None only when ID is empty."""
-        did = str(dept_id).strip()
-        if not did:
-            return None
-        for d in self.departments():
-            if get_attr(d, "DeptId", "Id") == did:
-                return d
-        return None
+        """O(1) role-name lookup via the role index."""
+        by_id, _ = self._role_index()
+        r = by_id.get(str(role_id).strip())
+        return r.get("Name", role_id) if r else role_id
 
     def dept_name_by_id(self, dept_id: str) -> str:
         did = str(dept_id).strip()
@@ -246,26 +236,6 @@ class XMLStore:
                 return _safe(u)
         return None
 
-    def dept_by_name(self, name: str) -> dict | None:
-        nl = name.lower()
-        for d in self.departments():
-            if d.get("Name", "").lower() == nl:
-                return d
-        return None
-
-    def role_by_name(self, name: str) -> dict | None:
-        nl = name.lower()
-        for r in self.roles():
-            if r.get("Name", "").lower() == nl:
-                return r
-        return None
-
-    def return_by_name(self, name: str) -> dict | None:
-        nl = name.lower()
-        for r in self.returns():
-            if r.get("Name", "").lower() == nl:
-                return r
-        return None
 
     def enrich_user(self, user: dict) -> dict:
         """Return safe user dict with RoleName and DeptName added."""
@@ -369,3 +339,156 @@ class XMLStore:
         if login_id:
             r["UserName"] = self.login_id_to_name(login_id)
         return r
+
+    # ── Generic indexes (built once, O(1) lookups after first call) ──────────
+
+    def _dept_index(self) -> tuple[dict, dict]:
+        """Build and cache (by_id, by_name_lower) maps for departments."""
+        key = "__dept_index__"
+        if key not in self._cache:
+            by_id: dict[str, dict] = {}
+            by_name: dict[str, dict] = {}
+            for d in self.departments():
+                did = get_attr(d, "DeptId", "Id", default="")
+                nl = d.get("Name", "").strip().lower()
+                if did:
+                    by_id[did] = d
+                if nl:
+                    by_name[nl] = d
+            self._cache[key] = (by_id, by_name)  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
+
+    def _role_index(self) -> tuple[dict, dict]:
+        """Build and cache (by_id, by_name_lower) maps for roles."""
+        key = "__role_index__"
+        if key not in self._cache:
+            by_id: dict[str, dict] = {}
+            by_name: dict[str, dict] = {}
+            for r in self.roles():
+                rid = get_attr(r, "RoleId", "Role_Id", default="")
+                nl = r.get("Name", "").strip().lower()
+                if rid:
+                    by_id[rid] = r
+                if nl:
+                    by_name[nl] = r
+            self._cache[key] = (by_id, by_name)  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
+
+    def _return_index(self) -> tuple[dict, dict]:
+        """Build and cache (by_id, by_name_lower) maps for returns (XBRL + non-XBRL)."""
+        key = "__return_index__"
+        if key not in self._cache:
+            by_id: dict[str, dict] = {}
+            by_name: dict[str, dict] = {}
+            for r in list(self.returns()) + list(self.non_xbrl_returns()):
+                rid = get_attr(r, "ReturnId", "Id", default="")
+                nl = r.get("Name", "").strip().lower()
+                if rid:
+                    by_id[rid] = r
+                if nl:
+                    by_name[nl] = r
+            self._cache[key] = (by_id, by_name)  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
+
+    # ── Optimised lookups using indexes ──────────────────────────────────────
+
+    def dept_by_id(self, dept_id: str) -> dict | None:
+        """O(1) lookup: department by DeptId.  Returns None when ID is empty."""
+        did = str(dept_id).strip()
+        if not did:
+            return None
+        by_id, _ = self._dept_index()
+        return by_id.get(did)
+
+    def dept_by_name(self, name: str) -> dict | None:
+        """O(1) case-insensitive lookup: department by Name."""
+        nl = name.strip().lower()
+        _, by_name = self._dept_index()
+        return by_name.get(nl)
+
+    def role_by_name(self, name: str) -> dict | None:
+        """O(1) case-insensitive lookup: role by Name."""
+        nl = name.strip().lower()
+        _, by_name = self._role_index()
+        return by_name.get(nl)
+
+    def role_by_id(self, role_id: str) -> dict | None:
+        """O(1) lookup: role by RoleId."""
+        by_id, _ = self._role_index()
+        return by_id.get(str(role_id).strip())
+
+    def return_by_name(self, name: str) -> dict | None:
+        """O(1) case-insensitive lookup: return by Name (XBRL + non-XBRL)."""
+        nl = name.strip().lower()
+        _, by_name = self._return_index()
+        return by_name.get(nl)
+
+    def return_by_id(self, return_id: str) -> dict | None:
+        """O(1) lookup: return by ReturnId (XBRL + non-XBRL)."""
+        by_id, _ = self._return_index()
+        return by_id.get(str(return_id).strip())
+
+    # ── Fuzzy resolve helpers (uses difflib — no ML) ──────────────────────────
+
+    def resolve_user(self, query: str) -> dict | None:
+        """Best-effort user lookup: exact by LoginId/Name/UserId, then fuzzy on Name.
+
+        Suitable for entity extraction where the user typed a partial name.
+        Returns a safe (password-stripped) user dict, or None.
+        """
+        if not query:
+            return None
+        # Fast path — exact matches
+        u = self.user_by_name(query) or self.user_by_id(query)
+        if u:
+            return u
+        # Fuzzy fallback on display names
+        import difflib
+        names = [u.get("Name", "") for u in self.users() if u.get("Name")]
+        matches = difflib.get_close_matches(query, names, n=1, cutoff=0.65)
+        if matches:
+            return self.user_by_name(matches[0])
+        return None
+
+    def resolve_dept(self, query: str) -> dict | None:
+        """Best-effort department lookup: exact by Name, then fuzzy."""
+        if not query:
+            return None
+        d = self.dept_by_name(query)
+        if d:
+            return d
+        import difflib
+        names = [d.get("Name", "") for d in self.departments() if d.get("Name")]
+        matches = difflib.get_close_matches(query, names, n=1, cutoff=0.70)
+        if matches:
+            return self.dept_by_name(matches[0])
+        return None
+
+    def resolve_role(self, query: str) -> dict | None:
+        """Best-effort role lookup: exact by Name, then fuzzy."""
+        if not query:
+            return None
+        r = self.role_by_name(query)
+        if r:
+            return r
+        import difflib
+        names = [r.get("Name", "") for r in self.roles() if r.get("Name")]
+        matches = difflib.get_close_matches(query, names, n=1, cutoff=0.70)
+        if matches:
+            return self.role_by_name(matches[0])
+        return None
+
+    def resolve_return(self, query: str) -> dict | None:
+        """Best-effort return lookup: exact by Name or ID, then fuzzy on Name."""
+        if not query:
+            return None
+        r = self.return_by_name(query) or self.return_by_id(query)
+        if r:
+            return r
+        import difflib
+        _, by_name = self._return_index()
+        names = list(by_name.keys())
+        matches = difflib.get_close_matches(query.lower(), names, n=1, cutoff=0.65)
+        if matches:
+            return by_name.get(matches[0])
+        return None
