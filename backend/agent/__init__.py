@@ -918,12 +918,32 @@ async def decide(
                 result_type="sched_awaiting_name",
             )
         # "Schedule" button or any confirmation → finalize
+        sched_form_id = session.get("sched_form_id", "")
         if session_id:
             _session_context.pop(session_id, None)
         logger.info(
             "[SCHEDULE_CONFIRMED] report=%r date=%s time=%s session=%s",
             sched_name, sched_date, sched_time, session_id,
         )
+        # Append confirmed schedule entry to SchedulerQueue.xml
+        from backend.services.scheduler_queue_service import append_schedule_entry
+        _sq_ok, _sq_id = append_schedule_entry(
+            report_name=sched_name,
+            form_id=sched_form_id,
+            reporting_date=sched_date or "",
+            schedule_dt=sched_dt or f"{sched_date} {sched_time}",
+            user_id=login_id or "",
+        )
+        if _sq_ok:
+            logger.info(
+                "[SCHEDULER_QUEUE] Entry appended: id=%s report=%r session=%s",
+                _sq_id, sched_name, session_id,
+            )
+        else:
+            logger.error(
+                "[SCHEDULER_QUEUE] Failed to append entry for report=%r session=%s",
+                sched_name, session_id,
+            )
         return _build(
             intent="schedule_report",
             report_name=sched_name,
@@ -1812,12 +1832,14 @@ def _from_result(
                 options=["Yes", "No"],
                 download_url=result.get("download_url", ""),
                 download_label=result.get("download_label", ""),
+                error_details=result.get("error_details") or None,
             )
         # No other instances — just show final status
         return _build(intent=intent, report_name=ret_name,
                       response_text=text, result_type="final",
                       download_url=result.get("download_url", ""),
-                      download_label=result.get("download_label", ""))
+                      download_label=result.get("download_label", ""),
+                      error_details=result.get("error_details") or None)
 
     if rtype == "final":
         dtc = result.get("dtc", "")
@@ -1840,7 +1862,8 @@ def _from_result(
         return _build(intent=intent, report_name=result["report_name"],
                       response_text=text, result_type="final",
                       download_url=result.get("download_url", ""),
-                      download_label=result.get("download_label", ""))
+                      download_label=result.get("download_label", ""),
+                      error_details=result.get("error_details") or None)
 
     if rtype == "disambiguation":
         opts = result.get("options", [])
@@ -2463,6 +2486,7 @@ def _build(
     download_url:     str = "",
     download_label:   str = "",
     status_note:      str = "",
+    error_details:    list[dict] | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "intent":             intent,
@@ -2488,6 +2512,8 @@ def _build(
         out["llm_summary"]      = llm_summary or ""
     if instances_data is not None:
         out["instances_data"] = instances_data
+    if error_details:
+        out["error_details"] = error_details
     return out
 
 

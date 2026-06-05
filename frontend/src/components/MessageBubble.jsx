@@ -23,7 +23,7 @@ function triggerBlobDownload(url, label) {
     .catch((err) => console.error('[Download] failed:', err))
 }
 
-export default function MessageBubble({ role, text, data, options, resultType, sqlData, dbQaData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
+export default function MessageBubble({ role, text, data, options, resultType, sqlData, dbQaData, varianceData, labelA, labelB, llmSummary, instancesData, downloadUrl, downloadLabel, statusNote, errorDetails, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
@@ -181,14 +181,17 @@ export default function MessageBubble({ role, text, data, options, resultType, s
           <div className="bubble assistant-bubble">
             <BubbleText text={displayText} />
           </div>
-          {downloadUrl && (
-            <button
-              className="download-btn"
-              onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
-            >
-              ⬇ {downloadLabel || 'Download'}
-            </button>
-          )}
+          {errorDetails?.length > 0
+            ? <ErrorDetailsPanel details={errorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
+            : downloadUrl && (
+                <button
+                  className="download-btn"
+                  onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
+                >
+                  ⬇ {downloadLabel || 'Download'}
+                </button>
+              )
+          }
           <div className="bubble assistant-bubble" style={{ marginTop: 6, fontStyle: 'italic', fontSize: '0.88em' }}>
             Would you also like to check status for another reporting date?
           </div>
@@ -271,18 +274,196 @@ export default function MessageBubble({ role, text, data, options, resultType, s
           )
         )}
 
-        {/* Download button — rendered for final/ask_previous when a file is available */}
-        {!isUser && downloadUrl && resultType !== 'ask_previous' && (
-          <button
-            className="download-btn"
-            onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
-          >
-            ⬇ {downloadLabel || 'Download'}
-          </button>
+        {/* Download button OR expandable technical details panel */}
+        {!isUser && resultType !== 'ask_previous' && (
+          errorDetails?.length > 0
+            ? <ErrorDetailsPanel details={errorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
+            : downloadUrl
+              ? <button
+                  className="download-btn"
+                  onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
+                >
+                  ⬇ {downloadLabel || 'Download'}
+                </button>
+              : null
         )}
       </div>
 
       {isUser && <div className="avatar user-avatar">You</div>}
+    </div>
+  )
+}
+
+// ── ErrorDetailsPanel ── expandable rich error cards for 4000-series XBRL errors
+function ErrorDetailsPanel({ details, downloadUrl, downloadLabel }) {
+  const [open, setOpen] = useState(false)
+  const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+  if (!details || details.length === 0) return null
+
+  const severityMeta = (sev) => {
+    if (sev === 'warning') return { label: 'Warning', color: '#FB923C', bg: 'rgba(251,146,60,0.12)' }
+    if (sev === 'info')    return { label: 'Info',    color: '#38BDF8', bg: 'rgba(56,189,248,0.10)' }
+    return                        { label: 'Error',   color: '#F87171', bg: 'rgba(248,113,113,0.12)' }
+  }
+
+  // Group by errorType so same-category errors are together
+  const groups = details.reduce((acc, err) => {
+    const key = err.errorType || 'VALIDATION ERROR'
+    if (!acc[key]) acc[key] = []
+    acc[key].push(err)
+    return acc
+  }, {})
+
+  const errorCount = details.length
+  const warnCount  = details.filter(e => e.severity === 'warning').length
+
+  return (
+    <div className="error-details-panel">
+      <button
+        className="error-details-toggle"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+      >
+        <span className="error-details-icon">{open ? '▲' : '▼'}</span>
+        <span>Technical Details</span>
+        <span className="error-details-badges">
+          {errorCount - warnCount > 0 && (
+            <span className="edbadge edbadge-error">{errorCount - warnCount} error{errorCount - warnCount !== 1 ? 's' : ''}</span>
+          )}
+          {warnCount > 0 && (
+            <span className="edbadge edbadge-warning">{warnCount} warning{warnCount !== 1 ? 's' : ''}</span>
+          )}
+        </span>
+        {downloadUrl && (
+          <button
+            className="error-details-dl-btn"
+            onClick={e => {
+              e.stopPropagation()
+              const filename = (() => { try { return new URL(downloadUrl, window.location.origin).searchParams.get('filename') || downloadLabel } catch { return downloadLabel } })()
+              fetch(`${API_BASE}${downloadUrl}`).then(r => r.ok ? r.blob() : null).then(blob => {
+                if (!blob) return
+                const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename
+                document.body.appendChild(a); a.click(); document.body.removeChild(a)
+              })
+            }}
+          >
+            ⬇ {downloadLabel || 'Error File'}
+          </button>
+        )}
+      </button>
+
+      {open && (
+        <div className="error-details-body">
+          {Object.entries(groups).map(([category, errors]) => (
+            <div key={category} className="error-detail-group">
+              <div className="error-detail-category">{category.replace(/_/g, ' ')}</div>
+              {errors.map((err, idx) => {
+                const meta = severityMeta(err.severity)
+                // cell reference: normalised by backend, may also live in cellCode
+                const cellRef = err.cell || err.cellCode || ''
+                return (
+                  <div key={idx} className="error-card" style={{ borderLeftColor: meta.color }}>
+                    {/* ── Card header ── */}
+                    <div className="error-card-header">
+                      <span className="error-sev-badge" style={{ background: meta.bg, color: meta.color }}>
+                        {meta.label}
+                      </span>
+                      {err.title && <span className="error-card-title">{err.title}</span>}
+                      {cellRef && <span className="error-cell-badge">{cellRef}</span>}
+                    </div>
+
+                    {/* ── Business Explanation (AI — most prominent) ── */}
+                    {err.business_explanation && (
+                      <div className="error-llm-explanation">
+                        <span className="error-llm-label">Business Explanation</span>
+                        <div className="error-llm-text">{err.business_explanation}</div>
+                      </div>
+                    )}
+
+                    {/* ── Root Cause ── */}
+                    {err.root_cause && (
+                      <div className="error-root-cause">
+                        <span className="error-root-cause-label">Root Cause</span>
+                        <div className="error-root-cause-text">{err.root_cause}</div>
+                      </div>
+                    )}
+
+                    {/* ── Validation Rule ── */}
+                    {err.rule && (
+                      <div className="error-rule-block">
+                        <div className="error-rule-label">Validation Rule</div>
+                        <div className="error-rule-text">{err.rule}</div>
+                      </div>
+                    )}
+
+                    {/* ── Main technical message ── */}
+                    {err.message && (
+                      <div className="error-card-message">{err.message}</div>
+                    )}
+
+                    {/* ── Expected vs Actual ── */}
+                    {(err.actualValue || err.enteredValue || err.expectedValue) && (
+                      <div className="error-compare-row">
+                        {(err.actualValue || err.enteredValue) && (
+                          <div className="error-compare-cell error-compare-actual">
+                            <span className="ecc-label">Entered</span>
+                            <span className="ecc-val">{err.actualValue || err.enteredValue}</span>
+                          </div>
+                        )}
+                        {err.expectedValue && (
+                          <div className="error-compare-cell error-compare-expected">
+                            <span className="ecc-label">Expected</span>
+                            <span className="ecc-val">{err.expectedValue}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ── Supplementary fields ── */}
+                    {[
+                      ['Table',     err.table],
+                      ['Context',   err.context],
+                      ['Unit',      err.unit],
+                      ['Assertion', err.assertionLabel],
+                    ].filter(([, v]) => v).map(([label, val]) => (
+                      <div key={label} className="error-card-row">
+                        <span className="eck">{label}</span>
+                        <span className="ecv">{val}</span>
+                      </div>
+                    ))}
+
+                    {/* ── Variable substitutions ── */}
+                    {err.variables?.length > 0 && (
+                      <div className="error-vars-block">
+                        <div className="error-vars-heading">Variables</div>
+                        <div className="error-vars-table">
+                          {err.variables.map((v, vi) => (
+                            <div key={vi} className="error-vars-row">
+                              {v.variableName && <span className="error-var-name">{v.variableName}</span>}
+                              {(v.variableValue || v.value || v.actualValue) && (
+                                <span className="error-var-val">{v.variableValue || v.value || v.actualValue}</span>
+                              )}
+                              {v.cellCode && <span className="error-var-cell">{v.cellCode}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Suggestion ── */}
+                    {err.suggestion && (
+                      <div className="error-suggestion">
+                        <span className="error-suggestion-icon">💡</span>
+                        {err.suggestion}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

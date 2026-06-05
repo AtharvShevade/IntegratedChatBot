@@ -57,3 +57,4 @@ class CompareRequest(BaseModel):
     session_id:  str = Field(..., max_length=128)
     instance_a:  int = Field(..., ge=0)   # 0-based index into session's cmp_instances
     instance_b:  int = Field(..., ge=0)
+

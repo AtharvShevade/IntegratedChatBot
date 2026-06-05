@@ -255,6 +255,18 @@ XML_ROLE_ACCESS_PATH: str = os.path.join(
 )
 
 # ---------------------------------------------------------------------------
+# Scheduler Queue XML — one PENDING entry is appended per confirmed schedule
+# ---------------------------------------------------------------------------
+
+
+
+SCHEDULER_QUEUE_XML_PATH: str = os.path.join(
+    BASE_REPO_PATH,
+    "DataBase",
+    "SchedulerQueue.xml"
+)
+
+# ---------------------------------------------------------------------------
 # Application Database Q&A
 # ---------------------------------------------------------------------------
 

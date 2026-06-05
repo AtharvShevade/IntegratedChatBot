@@ -130,6 +130,7 @@ export default function App() {
       downloadLabel: result.download_label || '',
       statusNote:    result.status_note    || '',
       dbQaData:      result.db_qa_data     || null,
+      errorDetails:  result.error_details  || [],
     }
     setMessages((prev) => [...prev, resultMsg])
     if (isTerminal) {

@@ -27,16 +27,32 @@ from backend.models import ChatRequest, ChatResponse, CompareRequest  # noqa: E4
 
 logger = logging.getLogger(__name__)
 
+# ── Warmup guard ──────────────────────────────────────────────────────────────
+# In development (--reload / dev_server.py), Uvicorn re-imports this module
+# in the reloader child process after every code change.  The lifespan context
+# manager therefore runs again, which would repeat SentenceTransformer, FAISS,
+# and Ollama warm-up — the exact slow operations we want to avoid.
+#
+# This flag is set to True the first time _warmup_embedding() completes so
+# subsequent reloads skip the heavy work.  Because Python module state is
+# process-local, the flag resets naturally on a genuine fresh start.
+_warmup_done: bool = False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm Ollama models, SentenceTransformer, and FAISS indexes on startup."""
+    global _warmup_done
     import asyncio
 
     # ── Pre-load SentenceTransformer + FAISS indexes in a thread so the async
     # event loop is not blocked.  This moves the cold-start penalty from the
     # first user query to server startup (invisible to users).
     def _warmup_embedding():
+        global _warmup_done
+        if _warmup_done:
+            logger.info("[WARMUP] Skipping — already completed in this process")
+            return
         try:
             import backend.sql_agent.vectorizer as _vec  # noqa: F401  triggers module-level load
             logger.info("[WARMUP] SentenceTransformer model loaded")
@@ -74,7 +90,13 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("[WARMUP] DB Q&A XML store load failed (feature disabled): %s", exc)
 
+        _warmup_done = True
+
     await asyncio.get_event_loop().run_in_executor(None, _warmup_embedding)
+
+    if not _warmup_done:
+        # Embedding warmup failed entirely — still attempt Ollama ping
+        pass
 
     from backend.services.llm_service import (
         OLLAMA_BASE_URL, OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL, _KEEP_ALIVE,

@@ -29,6 +29,7 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           downloadUrl={msg.downloadUrl}
           downloadLabel={msg.downloadLabel}
           statusNote={msg.statusNote}
+          errorDetails={msg.errorDetails}
 
           onFollowUp={onFollowUp}
           onSuggestion={onSuggestion}
