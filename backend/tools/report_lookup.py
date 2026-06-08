@@ -945,14 +945,52 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
         logger.warning("[parse_backtrack_html] parse error: %s — %s", html_path, exc)
         return _FALLBACK
 
-    # Post-process: guarantee every entry has severity + suggestion
-    for err in parser.errors:
+    # ── Post-process step 1: merge msgHead title rows with their data rows ──────
+    # BTDetails HTML emits errors as two consecutive rows per error:
+    #   Row A (msgHead):  col_0 = "▼ '<value>' is not a valid value for '<type>'..."
+    #   Row B (msgBody):  db_tablename, cellCode, actualValue, row_label, unit, ...
+    # We merge them so the LLM gets both the human-readable title AND the
+    # rich structured fields in a single dict.
+    def _merge_title_and_data_rows(raw_rows: list[dict]) -> list[dict]:
+        merged: list[dict] = []
+        i = 0
+        while i < len(raw_rows):
+            row = raw_rows[i]
+            # A "title-only" row has col_0 but lacks cell data fields
+            is_title_row = (
+                "col_0" in row
+                and "cellCode" not in row
+                and "actualValue" not in row
+                and "db_tablename" not in row
+            )
+            if is_title_row and i + 1 < len(raw_rows):
+                # Start from the data row so all structured fields are present
+                combined = dict(raw_rows[i + 1])
+                # Clean col_0: strip leading "▼ " + NBSP, keep meaningful text
+                import re as _re_merge
+                raw_title = row["col_0"].replace(" ", " ").lstrip("▼").strip()
+                # Keep only the first sentence — discard cvc-* XML schema noise
+                clean_title = _re_merge.split("cvc-", raw_title, maxsplit=1)[0].split("\n")[0].strip().rstrip(".")
+
+                if clean_title:
+                    combined["message"] = clean_title
+                merged.append(combined)
+                i += 2  # consumed both rows
+            else:
+                merged.append(row)
+                i += 1
+        return merged
+
+    merged_errors = _merge_title_and_data_rows(parser.errors)
+
+    # ── Post-process step 2: guarantee every entry has severity + suggestion ──
+    for err in merged_errors:
         if "severity" not in err:
             err["severity"] = _infer_severity(err.get("errorType", ""))
         if "suggestion" not in err:
             err["suggestion"] = _generate_suggestion(err)
 
-    errors = parser.errors
+    errors = merged_errors
     logger.info(
         "[parse_backtrack_html] extracted %d error(s) from: %s", len(errors), html_path
     )
@@ -1002,16 +1040,26 @@ def _normalize_error_for_llm(err: dict) -> dict:
                 return
 
     _set("cell",          "cellCode",      "cell")
-    _set("message",       "message",       "col_0",          "title")
     _set("entered_value", "entered_data(s)", "instance_data(s)", "actualValue", "enteredValue")
     _set("expected_value","expectedValue")
     _set("table",         "db_tablename",  "table")
-    _set("row_label",     "row_label(s)",  "row_label")
+    _set("row_label",     "row_label",     "row_label(s)",   "row_label(s) ")
     _set("unit",          "unit")
     _set("decimal",       "decimal")
     _set("context",       "context")
     _set("severity",      "severity")
     _set("rule",          "rule")
+
+    # Clean the raw validator message: strip leading "▼ ", NBSP, and remove
+    # XML schema noise (cvc-* lines) so the LLM only sees the business-relevant part.
+    raw_msg = (err.get("message") or err.get("col_0") or err.get("title") or "").strip()
+    if raw_msg:
+        import re as _re
+        raw_msg = raw_msg.replace("\u00a0", " ").lstrip("▼").strip()
+        # Keep only the first sentence / line — drop cvc-complex-type jargon
+        first_line = _re.split("cvc-", raw_msg, maxsplit=1)[0].split("\n")[0].strip().rstrip(".")
+        if first_line:
+            normalized["message"] = first_line
 
     # Variable substitutions as compact facts dict
     if err.get("variables"):

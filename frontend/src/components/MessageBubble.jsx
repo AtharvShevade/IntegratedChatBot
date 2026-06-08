@@ -384,28 +384,45 @@ const hasTableData = filteredTableRows.length > 0
       )}
 
       {/* ── Collapsible Technical Details ── */}
-      <button
-        className="error-details-toggle"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-      >        
-        {downloadUrl && (
-          <button
-            className="error-details-dl-btn"
-            onClick={e => {
-              e.stopPropagation()
-              const filename = (() => { try { return new URL(downloadUrl, window.location.origin).searchParams.get('filename') || downloadLabel } catch { return downloadLabel } })()
-              fetch(`${API_BASE}${downloadUrl}`).then(r => r.ok ? r.blob() : null).then(blob => {
-                if (!blob) return
-                const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename
-                document.body.appendChild(a); a.click(); document.body.removeChild(a)
-              })
-            }}
-          >
-            ⬇ {downloadLabel || 'Error File'}
-          </button>
-        )}
-      </button>
+      <div className="error-details-actions">
+  {downloadUrl && (
+    <button
+      className="error-details-dl-btn"
+      onClick={() => {
+        const filename = (() => {
+          try {
+            return (
+              new URL(downloadUrl, window.location.origin)
+                .searchParams.get('filename') || downloadLabel
+            )
+          } catch {
+            return downloadLabel
+          }
+        })()
+
+        fetch(`${API_BASE}${downloadUrl}`)
+          .then(r => (r.ok ? r.blob() : null))
+          .then(blob => {
+            if (!blob) return
+
+            const blobUrl = URL.createObjectURL(blob)
+
+            const a = document.createElement('a')
+            a.href = blobUrl
+            a.download = filename
+
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+
+            URL.revokeObjectURL(blobUrl)
+          })
+      }}
+    >
+      ⬇ {downloadLabel || 'Error File'}
+    </button>
+  )}
+</div>
     </div>
   )
 }

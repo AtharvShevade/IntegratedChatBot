@@ -36,6 +36,7 @@ python-dotenv>=1.0.0
 
 # ollama pull qwen2.5-coder:latest      # ~6 GB, balanced
 
+
 # ── Flexible date parsing ────────────────────────────────────────────────────
 
 python-dateutil>=2.9.0          # fuzzy date parsing
