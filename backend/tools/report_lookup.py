@@ -1,4 +1,4 @@
-# report_lookup.py â€” Multi-step pipeline: report name â†’ returns.xml â†’ instance.xml â†’ status.
+# report_lookup.py – Multi-step pipeline: report name → returns.xml → instance.xml → status.
 # Modules: parse_returns, find_matching_reports, get_instances_by_form_id, map_status.
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ _FAILED_STATUSES: frozenset[int] = frozenset({3, 5, 8, 10, 13})
 # Statuses that should prefer RenderedExcelDocPath for download
 _SUCCESS_STATUSES: frozenset[int] = frozenset({9, 11})
 
-# â”€â”€ Parsers (cached once per server lifetime) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Parsers (cached once per server lifetime) ────────────────────────────────
 
 # TTL values — can be overridden via environment variables.
 _returns_ttl   = float(os.getenv("RETURNS_TTL_SEC",   "3600"))   # 1 hour
@@ -968,7 +968,7 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
                 combined = dict(raw_rows[i + 1])
                 # Clean col_0: strip leading "▼ " + NBSP, keep meaningful text
                 import re as _re_merge
-                raw_title = row["col_0"].replace(" ", " ").lstrip("▼").strip()
+                raw_title = row["col_0"].replace("\u00a0", " ").lstrip("▼").strip()
                 # Keep only the first sentence — discard cvc-* XML schema noise
                 clean_title = _re_merge.split("cvc-", raw_title, maxsplit=1)[0].split("\n")[0].strip().rstrip(".")
 
@@ -1074,6 +1074,50 @@ def _normalize_error_for_llm(err: dict) -> dict:
     return normalized
 
 
+def _extract_raw_validation_message(err: dict) -> str:
+    """Extract the single best raw validation message from a parsed error dict.
+
+    This is the source-of-truth helper used to populate:
+      - the ``validation_error`` field on ``table_info`` (Validation Details table)
+      - the failure reason bullets shown in the chat bubble
+
+    Priority order:
+      1. ``message``   — already cleaned by _merge_title_and_data_rows
+      2. ``col_0``     — raw BTDetails title cell (fallback for unmerged rows)
+      3. ``title``     — section heading captured by the HTML parser
+      4. Compose from actualValue + expectedValue when no text fields exist
+
+    The returned string is trimmed and has leading "▼ " / NBSP stripped.
+    Returns an empty string when nothing useful can be extracted.
+    """
+    import re as _re_msg
+
+    raw = (
+        err.get("message") or
+        err.get("col_0") or
+        err.get("title") or
+        ""
+    ).strip()
+
+    if raw:
+        # Strip leading triangle / NBSP artifacts injected by the .NET renderer
+        raw = raw.replace("\u00a0", " ").lstrip("▼").strip()
+        # Drop cvc-* XML schema noise — keep only the human-readable first line
+        raw = _re_msg.split("cvc-", raw, maxsplit=1)[0].split("\n")[0].strip().rstrip(".")
+        if raw:
+            return raw
+
+    # Compose a minimal message from value + type when no text field exists
+    actual   = (err.get("actualValue") or err.get("entered_data(s)") or "").strip()
+    expected = (err.get("expectedValue") or "").strip()
+    if actual and expected:
+        return f"'{actual}' is not a valid value for '{expected}'"
+    if actual:
+        return f"Invalid value: '{actual}'"
+
+    return ""
+
+
 def explain_validation_errors(errors: list[dict]) -> list[dict]:
     """Enrich parsed XBRL validation errors with a single LLM-generated explanation.
 
@@ -1089,8 +1133,9 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
     (minimal surface of raw validation text) only when Ollama is completely
     unreachable.
 
-    The ``table_info`` dict (DB table, row label, context, cell code) is always
-    populated from the parser output regardless of LLM success/failure.
+    The ``table_info`` dict (DB table, row label, context, cell code,
+    validation_error) is always populated from the parser output regardless
+    of LLM success/failure.
     """
     import json as _json
     import httpx as _httpx
@@ -1196,6 +1241,30 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
         "none",
     }
 
+    def _build_table_info(err: dict, cell: str) -> dict:
+        """Build the table_info dict for a single error, including validation_error.
+
+        ``validation_error`` is the single source-of-truth raw validation
+        message used by the frontend for both:
+          - the "Error" column in the Validation Details table
+          - the Failure Reason bullet text (cell → message format)
+        """
+        return {
+            "db_table_name": (
+                err.get("db_tablename") or err.get("table") or ""
+            ).strip(),
+            "row_label": (
+                err.get("row_label")
+                or err.get("row_label(s)")
+                or err.get("row_label(s) ")
+                or ""
+            ).strip(),
+            "context":          err.get("context", "").strip(),
+            "cell_code":        (cell or err.get("cellCode", "") or err.get("cell", "")).strip(),
+            # Single source-of-truth raw validation message for this cell
+            "validation_error": _extract_raw_validation_message(err),
+        }
+
     try:
         with _httpx.Client(timeout=timeout) as client:
             resp = client.post(f"{ollama_base}/api/chat", json=payload)
@@ -1283,22 +1352,10 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
             if cell:
                 merged["cell"] = cell
 
-            # ── table_info: 4 metadata fields shown as a summary table ────────
-            merged["table_info"] = {
-                "db_table_name": (
-                    err.get("db_tablename") or err.get("table") or ""
-                ).strip(),
-                "row_label": (
-                    err.get("row_label")
-                    or err.get("row_label(s)")
-                    or err.get("row_label(s) ")
-                    or ""
-                ).strip(),
-                "context":   err.get("context", "").strip(),
-                "cell_code": (
-                    cell or err.get("cellCode", "") or err.get("cell", "")
-                ).strip(),
-            }
+            # ── table_info: metadata fields + validation_error ─────────────────
+            # validation_error is the single source-of-truth raw message used by
+            # the frontend for both the "Error" column and failure reason bullets.
+            merged["table_info"] = _build_table_info(err, cell)
 
             enriched.append(merged)
 
@@ -1316,17 +1373,7 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
             cell   = err.get("cellCode", "") or err.get("cell", "")
             merged["explanation"] = _build_fallback_business_explanation(err)
             merged.setdefault("cell", cell)
-            merged["table_info"] = {
-                "db_table_name": (err.get("db_tablename") or err.get("table") or "").strip(),
-                "row_label": (
-                    err.get("row_label")
-                    or err.get("row_label(s)")
-                    or err.get("row_label(s) ")
-                    or ""
-                ).strip(),
-                "context":   err.get("context", "").strip(),
-                "cell_code": cell.strip(),
-            }
+            merged["table_info"] = _build_table_info(err, cell)
             fallback.append(merged)
 
         logger.info("[STATUS_FLOW] Final error_details populated=%d (fallback)", len(fallback))
@@ -1348,6 +1395,9 @@ def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str
 
     Returns ([], []) when the status is not in _FAILED_STATUSES or no error
     file path is present.
+
+    Bubble messages use the format: "CELL_CODE → validation message"
+    so the chat bubble Failure Reason section shows cell code + error together.
     """
     import json as _json
 
@@ -1384,8 +1434,12 @@ def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str
                 "[STATUS_FLOW] Final error_details populated=%d", len(error_details)
             )
 
-            # Build bubble messages from enriched results
-            # Use the single LLM-generated explanation; fall back to raw message/title
+            # ── Build bubble messages ────────────────────────────────────────
+            # Format: "CELL_CODE → validation message"  (or just the message
+            # when there is no cell code).  The raw validation_error from
+            # table_info is used as the single source of truth — the same
+            # value that populates the "Error" column in the Validation Details
+            # table — so both surfaces are always in sync.
             _BAD_BUBBLE = {
                 "no error information provided",
                 "no information provided",
@@ -1396,14 +1450,28 @@ def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str
             bubble_msgs: list[str] = []
             seen: set[str] = set()
             for err in error_details:
-                msg = (
-                    err.get("explanation")
-                    or err.get("message")
-                    or err.get("col_0")
-                    or err.get("title")
-                    or ""
-                ).strip()
-                # Filter out useless LLM non-answers
+                ti            = err.get("table_info", {})
+                cell_code     = ti.get("cell_code", "").strip()
+                # Prefer the raw validation message (source of truth for the
+                # "Error" column) for the bubble so they always match.
+                raw_val_error = ti.get("validation_error", "").strip()
+
+                if raw_val_error and raw_val_error.lower().rstrip(".") not in _BAD_BUBBLE:
+                    # Format: "CELL → message"  or just "message" when no cell
+                    if cell_code:
+                        msg = f"{cell_code} → {raw_val_error}"
+                    else:
+                        msg = raw_val_error
+                else:
+                    # Fall back to the LLM explanation when raw message is absent
+                    msg = (
+                        err.get("explanation")
+                        or err.get("message")
+                        or err.get("col_0")
+                        or err.get("title")
+                        or ""
+                    ).strip()
+
                 if msg and msg.lower().rstrip(".") not in _BAD_BUBBLE and msg not in seen:
                     seen.add(msg)
                     bubble_msgs.append(msg)
@@ -1509,7 +1577,7 @@ def _get_download_info(row: dict, form_id: str) -> dict:
     return result if result is not None else {"download_url": "", "download_label": "", "status_note": ""}
 
 
-# â”€â”€ Main entry points â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Main entry points ──────────────────────────────────────────────────────────
 
 
 # ── Instance-based selection helpers ─────────────────────────────────────────
