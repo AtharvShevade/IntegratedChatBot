@@ -718,19 +718,10 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
         "validation message":       "message",
         "detail":                   "message",
         "details":                  "message",
-        # Table / DB table name
+        # Table
         "table":                    "table",
         "table name":               "table",
         "sheet":                    "table",
-        "db tablename":             "db_tablename",
-        "db table name":            "db_tablename",
-        "database table":           "db_tablename",
-        # Row label
-        "row label(s)":             "row_label",
-        "row label":                "row_label",
-        "row labels":               "row_label",
-        "row label(s) ":            "row_label",   # trailing-space variant seen in some files
-        "row_label(s)":             "row_label",
         # Cell code
         "cell code":                "cellCode",
         "cell":                     "cellCode",
@@ -968,95 +959,25 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
     return errors
 
 
-# ── Prompt template for 4000-series LLM explanation ─────────────────────────
-def _build_last_resort_explanation(err: dict) -> str:
-    """Absolute last-resort explanation used ONLY when Ollama is completely unreachable.
+# ── Last-resort fallback — used ONLY when Ollama is completely unreachable ───
+def _build_fallback_business_explanation(err: dict) -> str:
+    """Minimal last-resort explanation used ONLY when Ollama is completely unreachable.
 
-    This is intentionally minimal — it just surfaces whatever raw text is
-    available so the user sees *something* rather than nothing.  All normal
-    explanation paths go through _explain_single_error_with_ollama first.
+    No regex, no rule-based logic, no template sentences.
+    Surfaces the raw validation message so the user sees *something* rather
+    than nothing.  All normal explanation paths go through the LLM.
     """
-    cell = err.get("cellCode") or err.get("cell", "")
+    cell    = err.get("cellCode") or err.get("cell", "")
     cell_str = f"Cell {cell}" if cell else "A reported field"
     message = (
         err.get("message") or err.get("col_0") or err.get("title") or ""
     ).strip()
     if message:
-        short_msg = message[:200].rstrip(".")
-        return f"{cell_str} failed validation: {short_msg}."
+        return f"{cell_str} failed validation: {message[:200].rstrip('.')}."
     return (
         f"{cell_str} did not pass validation. "
         "Please review the reported value and correct it before resubmitting."
     )
-
-
-def _build_fallback_business_explanation(err: dict) -> str:
-    """Generate a plain-language explanation for a single error using Ollama.
-
-    Replaces the old regex/rule-based approach entirely.  Calls the local
-    Ollama model (OLLAMA_MODEL env var, default qwen2.5-coder:latest) with a
-    focused single-error prompt and returns the model's explanation as a plain
-    string.
-
-    Falls back to ``_build_last_resort_explanation`` only when Ollama is
-    completely unreachable or returns an empty/unparseable response.
-    """
-    import json as _json
-    import httpx as _httpx
-
-    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
-    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "60"))
-    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
-
-    # Normalise error fields into a clean dict for the prompt
-    normalised = _normalize_error_for_llm(err)
-    err_json   = _json.dumps(normalised, indent=2, ensure_ascii=False)
-
-    prompt = (
-        "You are a regulatory reporting expert helping a business user understand "
-        "why their report submission failed.\n\n"
-        "Below is one validation error from a failed regulatory report:\n\n"
-        f"{err_json}\n\n"
-        "Write a single plain-English sentence (max 60 words) explaining:\n"
-        "  - what value was entered (if known)\n"
-        "  - why it is wrong for that field\n"
-        "  - what the user should enter instead\n\n"
-        "Rules:\n"
-        "  - Mention the cell code if present\n"
-        "  - Never use XML/XBRL/schema jargon\n"
-        "  - Write for a regulatory officer, not a developer\n"
-        "  - Return ONLY the explanation sentence, no preamble, no JSON\n"
-    )
-
-    payload = {
-        "model":      model,
-        "messages":   [{"role": "user", "content": prompt}],
-        "stream":     False,
-        "keep_alive": keep_alive,
-        "options":    {"temperature": 0.05, "num_predict": 200},
-    }
-
-    try:
-        with _httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{ollama_base}/api/chat", json=payload)
-            resp.raise_for_status()
-        explanation = resp.json()["message"]["content"].strip()
-        if explanation and len(explanation) >= 10:
-            logger.info(
-                "[fallback_explanation] Ollama generated explanation for cell=%r",
-                normalised.get("cell", ""),
-            )
-            return explanation
-        logger.warning(
-            "[fallback_explanation] Ollama returned empty/short response — using last-resort"
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[fallback_explanation] Ollama call failed: %s — using last-resort", exc
-        )
-
-    return _build_last_resort_explanation(err)
 
 
 def _normalize_error_for_llm(err: dict) -> dict:
@@ -1085,7 +1006,7 @@ def _normalize_error_for_llm(err: dict) -> dict:
     _set("entered_value", "entered_data(s)", "instance_data(s)", "actualValue", "enteredValue")
     _set("expected_value","expectedValue")
     _set("table",         "db_tablename",  "table")
-    _set("row_label",     "row_label",     "row_label(s)",   "row_label(s) ")
+    _set("row_label",     "row_label(s)",  "row_label")
     _set("unit",          "unit")
     _set("decimal",       "decimal")
     _set("context",       "context")
@@ -1106,18 +1027,22 @@ def _normalize_error_for_llm(err: dict) -> dict:
 
 
 def explain_validation_errors(errors: list[dict]) -> list[dict]:
-    """Enrich parsed XBRL validation errors with LLM-generated business explanations.
+    """Enrich parsed XBRL validation errors with a single LLM-generated explanation.
 
-    Takes a list of structured error dicts (as returned by
-    ``parse_backtrack_html_errors``) and calls the configured Ollama model to
-    generate per-error human-readable explanations.  The LLM output is merged
-    back into each error dict, adding three new keys:
-        - ``business_explanation``: what went wrong in plain language
-        - ``root_cause``:           why the validation rule failed
-        - ``suggestion``:           specific corrective action
+    Calls the configured Ollama model once with all errors batched.  For each
+    error the LLM returns one clean ``explanation`` string that:
+      - names the entered value
+      - explains why it is invalid for that field/type
+      - states what is expected
+      - describes the impact on report submission
 
-    Falls back to ``_build_fallback_business_explanation`` per error if the LLM
-    call or JSON parsing fails — never raises.
+    No regex, no template sentences, no rule-based logic — the explanation is
+    purely LLM-generated.  Falls back to ``_build_fallback_business_explanation``
+    (minimal surface of raw validation text) only when Ollama is completely
+    unreachable.
+
+    The ``table_info`` dict (DB table, row label, context, cell code) is always
+    populated from the parser output regardless of LLM success/failure.
     """
     import json as _json
     import httpx as _httpx
@@ -1132,110 +1057,73 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
 
     logger.info("[STATUS_FLOW] Starting LLM enrichment")
     logger.info("[STATUS_FLOW] Parsed validation errors=%d", len(errors))
-    logger.debug("[STATUS_FLOW] Validation payload=%s", errors)
 
-    # ── Build rich normalised payload ────────────────────────────────────────
+    # ── Normalise errors for the LLM ─────────────────────────────────────────
     payload_items: list[dict] = [_normalize_error_for_llm(e) for e in errors]
 
-    logger.debug(
-        "[STATUS_FLOW] Normalized payload sent to LLM=%s",
-        _json.dumps(payload_items, ensure_ascii=False),
-    )
-
-    # Warn if any item is suspiciously sparse
     for i, item in enumerate(payload_items):
-        meaningful = {k for k in item if k not in ("severity", "cell")}
-        if not meaningful:
+        if not {k for k in item if k not in ("severity", "cell")}:
             logger.warning(
-                "[STATUS_FLOW] Error index=%d has no meaningful fields for LLM — "
-                "will use fallback explanation",
-                i,
+                "[STATUS_FLOW] Error index=%d has no meaningful fields for LLM", i
             )
 
     errors_json = _json.dumps(payload_items, indent=2, ensure_ascii=False)
     n = len(errors)
 
     prompt = (
-    "You are an enterprise XBRL regulatory reporting expert helping business users understand report validation failures.\n\n"
-
-    f"The following {n} validation error(s) caused a regulatory report submission to fail.\n"
-
-    "Each error object may contain:\n"
-    "  - cell: the affected cell reference (e.g. R0020_10)\n"
-    "  - message: the raw validation message\n"
-    "  - entered_value: the value entered by the user\n"
-    "  - expected_value / decimal: expected datatype or reporting requirement\n"
-    "  - table: the report table name\n"
-    "  - row_label: business row description\n"
-    "  - rule: validation rule name\n"
-    "  - unit: reporting currency or unit if available\n"
-    "  - context: reporting context/date if available\n\n"
-
-    f"{errors_json}\n\n"
-
-    "For EACH error, generate a realistic business-oriented explanation.\n\n"
-
-    "Write explanations like a regulatory reporting analyst speaking to a business user.\n\n"
-
-    "Your explanation must clearly describe:\n"
-    "  - what value the user entered\n"
-    "  - why that value is incorrect for that reporting field\n"
-    "  - what kind of value is expected instead\n"
-    "  - how the issue impacts regulatory report submission\n\n"
-
-    "IMPORTANT INSTRUCTIONS:\n"
-    "  - Always mention the cell code if available\n"
-    "  - Always mention the entered value if available\n"
-    "  - Explain the issue in business/reporting language\n"
-    "  - Never use XML/XBRL schema terminology\n"
-    "  - Never mention parser errors, schema names, or technical validator codes\n"
-    "  - Never sound robotic or template-generated\n"
-    "  - Avoid generic phrases such as:\n"
-    "      * 'invalid value'\n"
-    "      * 'expected format'\n"
-    "      * 'validation failed'\n"
-    "      * 'datatype mismatch'\n"
-    "  - Use natural professional language\n"
-    "  - Keep explanations concise but meaningful\n"
-    "  - Write for regulatory reporting officers, not developers\n"
-    "  - Focus on helping the user correct the report submission\n\n"
-
-    "GOOD EXAMPLE:\n"
-    "Cell R0020_10 contains the text value 'abc' instead of a monetary amount. "
-    "This field is used for reporting EUR figures, so the report could not be processed until a valid numeric amount is entered.\n\n"
-
-    "ANOTHER GOOD EXAMPLE:\n"
-    "The value 'text123' was entered in a field intended for percentage reporting. "
-    "Because the field accepts numeric percentage values only, the submission could not proceed until a valid percentage was provided.\n\n"
-
-    "Respond ONLY with a valid JSON array.\n"
-    "Do not return markdown.\n"
-    "Do not include explanations outside JSON.\n"
-    f"The JSON array must contain exactly {n} object(s) in the same order as input.\n\n"
-
-    "[\n"
-    "  {\n"
-    '    "cell": "<cell reference or empty string>",\n'
-    '    "business_explanation": "<business-friendly explanation max 60 words>",\n'
-    '    "root_cause": "<plain English root cause max 30 words>",\n'
-    '    "suggestion": "<clear corrective action max 30 words>"\n'
-    "  }\n"
-    "]\n\n"
-
-    "Strictly return valid JSON only.\n"
-    "No trailing commas.\n"
-    "No comments.\n"
-    "No extra text."
-)
+        "You are an enterprise regulatory reporting expert helping business users "
+        "understand why their XBRL report submission failed validation.\n\n"
+        f"The following {n} validation error(s) caused the submission to fail.\n\n"
+        "Each error object may contain:\n"
+        "  - cell:           the affected cell reference (e.g. R0020_10)\n"
+        "  - message:        the raw validation message from the validator\n"
+        "  - entered_value:  the value the user submitted\n"
+        "  - expected_value / decimal: the required data type or format\n"
+        "  - table:          the report table name\n"
+        "  - row_label:      the business description of the row\n"
+        "  - rule:           the validation rule name\n"
+        "  - unit:           reporting currency or unit\n"
+        "  - context:        reporting period/context\n\n"
+        f"{errors_json}\n\n"
+        "For EACH error write ONE plain-English explanation that:\n"
+        "  1. States what value was entered (quote it exactly if available)\n"
+        "  2. Explains why that value is wrong for this specific field or type\n"
+        "  3. States what type or value IS expected\n"
+        "  4. Describes the impact on the report submission\n\n"
+        "RULES — follow strictly:\n"
+        "  - Always mention the cell code when present\n"
+        "  - Always quote the entered value when present\n"
+        "  - Write in natural, professional business language\n"
+        "  - NEVER use XML, XBRL, schema, or technical validator terminology\n"
+        "  - NEVER generate generic phrases like 'invalid value', "
+        "'validation failed', 'expected format', or 'datatype mismatch'\n"
+        "  - NEVER produce duplicate or template-sounding sentences\n"
+        "  - ONE explanation per error — no sub-sections, no bullet points\n"
+        "  - Max 70 words per explanation\n\n"
+        "GOOD EXAMPLE OUTPUT:\n"
+        "\"The value 'abc' was entered in cell R0020_10, but this field is "
+        "reserved for EUR monetary amounts. Because a text string was provided "
+        "instead of a numeric figure, the report failed schema validation and "
+        "cannot be submitted until a valid decimal amount is entered.\"\n\n"
+        "Respond ONLY with a valid JSON array — no markdown, no extra text.\n"
+        f"The array must contain exactly {n} object(s) in the same order as input.\n\n"
+        "[\n"
+        "  {\n"
+        '    "cell": "<cell reference or empty string>",\n'
+        '    "explanation": "<single plain-English explanation, max 70 words>"\n'
+        "  }\n"
+        "]\n\n"
+        "Strictly return valid JSON only. No trailing commas. No comments."
+    )
 
     logger.debug("[STATUS_FLOW] LLM prompt=\n%s", prompt)
-    logger.info("[STATUS_FLOW] Sending errors to LLM: model=%s count=%d", model, n)
+    logger.info("[STATUS_FLOW] Sending %d error(s) to LLM: model=%s", n, model)
 
     payload = {
-        "model": model,
-        "messages": [
+        "model":      model,
+        "messages":   [
             {
-                "role": "system",
+                "role":    "system",
                 "content": (
                     "You are an enterprise XBRL validation assistant. "
                     "Always respond with a valid JSON array only — "
@@ -1244,17 +1132,21 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
             },
             {"role": "user", "content": prompt},
         ],
-        "stream": False,
-        "format": "json",   # ADD THIS
+        "stream":     False,
+        "format":     "json",
         "keep_alive": keep_alive,
-        "options": {
-            "temperature": 0.05,
-            "num_predict": 1024
-        },
+        "options":    {"temperature": 0.05, "num_predict": 1024},
     }
 
-
     start = time.perf_counter()
+
+    _BAD_RESPONSES = {
+        "no error information provided",
+        "no information provided",
+        "no context provided",
+        "n/a",
+        "none",
+    }
 
     try:
         with _httpx.Client(timeout=timeout) as client:
@@ -1263,139 +1155,90 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
 
         raw_response: str = resp.json()["message"]["content"].strip()
         elapsed = time.perf_counter() - start
-
         logger.debug("[STATUS_FLOW] LLM raw response=%s", raw_response)
         logger.info("[STATUS_FLOW] LLM enrichment completed in %.3fs", elapsed)
 
         # ── Robust JSON extraction ────────────────────────────────────────────
         cleaned = raw_response
-
-        # Strip markdown code fences
         if "```" in cleaned:
             cleaned = "\n".join(
                 line for line in cleaned.splitlines()
                 if not line.strip().startswith("```")
             ).strip()
 
-        # Extract the outermost JSON structure (array preferred, object accepted)
-        # Try array first; fall back to object if no array brackets found
         start_arr = cleaned.find("[")
         start_obj = cleaned.find("{")
         if start_arr != -1 and (start_obj == -1 or start_arr < start_obj):
-            # Array found before any object — extract it
             end_idx = cleaned.rfind("]")
             if end_idx > start_arr:
                 cleaned = cleaned[start_arr : end_idx + 1]
         elif start_obj != -1:
-            # No array, but an object exists — extract it (will be wrapped below)
             end_idx = cleaned.rfind("}")
             if end_idx > start_obj:
                 cleaned = cleaned[start_obj : end_idx + 1]
 
         explained_raw = _json.loads(cleaned)
 
-        # ── Normalise dict → list (LLM sometimes wraps single error in {})
         if isinstance(explained_raw, dict):
-            logger.warning(
-                "[STATUS_FLOW] LLM returned a JSON object instead of array — wrapping in list"
-            )
+            logger.warning("[STATUS_FLOW] LLM returned object instead of array — wrapping")
             explained_raw = [explained_raw]
 
         if not isinstance(explained_raw, list):
-            raise ValueError(
-                f"LLM returned {type(explained_raw).__name__}, expected list or dict"
-            )
+            raise ValueError(f"LLM returned {type(explained_raw).__name__}, expected list")
 
         explained: list[dict] = explained_raw
-        logger.info("[STATUS_FLOW] Parsed explained errors=%d", len(explained))
+        logger.info("[STATUS_FLOW] Parsed LLM responses=%d", len(explained))
 
-        # ── Validate and reconcile count ─────────────────────────────────────
-        if len(explained) != n:
-            logger.warning(
-                "[STATUS_FLOW] Count mismatch: LLM returned %d explanation(s) for %d error(s)",
-                len(explained), n,
-            )
-
-        # Auto-fill any missing explanations with deterministic fallbacks
+        # ── Reconcile count ───────────────────────────────────────────────────
         while len(explained) < n:
             missing_idx = len(explained)
-            logger.warning(
-                "[STATUS_FLOW] Auto-filling missing explanation for error index=%d", missing_idx
-            )
+            logger.warning("[STATUS_FLOW] Auto-filling missing explanation index=%d", missing_idx)
             explained.append({
-                "cell":                 errors[missing_idx].get("cellCode") or errors[missing_idx].get("cell", ""),
-                "business_explanation": _build_fallback_business_explanation(errors[missing_idx]),
-                "root_cause":           "",
-                "suggestion":           errors[missing_idx].get("suggestion", ""),
+                "cell":        errors[missing_idx].get("cellCode") or errors[missing_idx].get("cell", ""),
+                "explanation": _build_fallback_business_explanation(errors[missing_idx]),
             })
-
-        # Truncate extras if LLM returned more than requested
         if len(explained) > n:
-            logger.warning(
-                "[STATUS_FLOW] Truncating %d extra explanation(s) returned by LLM",
-                len(explained) - n,
-            )
             explained = explained[:n]
 
-        # ── Merge LLM output back into original parsed errors ─────────────────
+        # ── Merge back into original error dicts ──────────────────────────────
         enriched: list[dict] = []
         for i, err in enumerate(errors):
-            merged = dict(err)  # preserve all original HTML-parsed fields
-            llm_item = explained[i] if i < len(explained) else {}
+            merged    = dict(err)
+            llm_item  = explained[i] if i < len(explained) else {}
 
-            # Defensive key extraction — handle common LLM typos / key variations
-            business_exp = (
-                str(llm_item.get("business_explanation")
+            # Extract the single explanation — accept common LLM key variations
+            explanation = (
+                str(
+                    llm_item.get("explanation")
+                    or llm_item.get("business_explanation")  # old key compat
                     or llm_item.get("business_explanature")  # known phi3 typo
-                    or llm_item.get("explanation")
-                    or "").strip()
+                    or ""
+                ).strip()
             )
-            root_cause = str(llm_item.get("root_cause") or llm_item.get("cause") or "").strip()
-            llm_suggestion = str(llm_item.get("suggestion") or "").strip()
 
-            # Validate: never accept "No error information provided" or near-empty strings
-            _BAD_RESPONSES = {
-                "no error information provided",
-                "no information provided",
-                "no context provided",
-                "n/a",
-                "none",
-            }
-            if business_exp.lower().rstrip(".") in _BAD_RESPONSES or len(business_exp) < 10:
+            # Reject empty, too-short, or known boilerplate non-answers
+            if not explanation or len(explanation) < 10 or explanation.lower().rstrip(".") in _BAD_RESPONSES:
                 logger.warning(
-                    "[STATUS_FLOW] LLM returned empty/bad explanation for error index=%d "
-                    "('%s') — using fallback",
-                    i, business_exp[:60],
+                    "[STATUS_FLOW] Bad LLM explanation at index=%d ('%s') — using fallback",
+                    i, explanation[:60],
                 )
-                business_exp = _build_fallback_business_explanation(err)
+                explanation = _build_fallback_business_explanation(err)
 
-            if not business_exp:
-                business_exp = _build_fallback_business_explanation(err)
-
-            merged["business_explanation"] = business_exp
-            merged["root_cause"]           = root_cause
-            # Normalise cell field
+            # Normalise cell reference
             cell = (
                 str(llm_item.get("cell", "")).strip()
                 or err.get("cellCode", "")
                 or err.get("cell", "")
             )
+
+            merged["explanation"] = explanation
             if cell:
                 merged["cell"] = cell
 
-            # LLM suggestion overwrites parser suggestion only when meaningful
-            if llm_suggestion and llm_suggestion.lower().rstrip(".") not in _BAD_RESPONSES:
-                merged["suggestion"] = llm_suggestion
-
-            # ── table_info: the 4 fields shown as a summary table in the UI ──
-            # Resolve each field from the most specific source available.
-            # db_tablename / row_label may come in with their raw header-derived
-            # key names (e.g. "row_label(s)") so we check all variants.
+            # ── table_info: 4 metadata fields shown as a summary table ────────
             merged["table_info"] = {
                 "db_table_name": (
-                    err.get("db_tablename")
-                    or err.get("table")
-                    or ""
+                    err.get("db_tablename") or err.get("table") or ""
                 ).strip(),
                 "row_label": (
                     err.get("row_label")
@@ -1403,11 +1246,9 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
                     or err.get("row_label(s) ")
                     or ""
                 ).strip(),
-                "context": err.get("context", "").strip(),
+                "context":   err.get("context", "").strip(),
                 "cell_code": (
-                    cell
-                    or err.get("cellCode", "")
-                    or err.get("cell", "")
+                    cell or err.get("cellCode", "") or err.get("cell", "")
                 ).strip(),
             }
 
@@ -1420,18 +1261,15 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
         elapsed = time.perf_counter() - start
         logger.warning("[STATUS_FLOW] LLM explanation failed: %s (%.3fs)", exc, elapsed)
 
-        # Deterministic fallback — every error gets a meaningful explanation
+        # ── Minimal fallback — surfaces raw validation text, no logic ─────────
         fallback: list[dict] = []
         for err in errors:
             merged = dict(err)
-            merged["business_explanation"] = _build_fallback_business_explanation(err)
-            merged["root_cause"]           = ""
-            cell = err.get("cellCode", "") or err.get("cell", "")
+            cell   = err.get("cellCode", "") or err.get("cell", "")
+            merged["explanation"] = _build_fallback_business_explanation(err)
             merged.setdefault("cell", cell)
             merged["table_info"] = {
-                "db_table_name": (
-                    err.get("db_tablename") or err.get("table") or ""
-                ).strip(),
+                "db_table_name": (err.get("db_tablename") or err.get("table") or "").strip(),
                 "row_label": (
                     err.get("row_label")
                     or err.get("row_label(s)")
@@ -1445,133 +1283,6 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
 
         logger.info("[STATUS_FLOW] Final error_details populated=%d (fallback)", len(fallback))
         return fallback
-
-
-def _explain_xml_errors_with_ollama(raw_messages: list[str]) -> list[str]:
-    """Enrich raw XML error strings with plain-English Ollama explanations.
-
-    Called from ``_enrich_error_info`` for the XML path so that XML-sourced
-    errors receive the same LLM treatment as HTML (backtrack) errors.
-
-    Each raw message is sent to Ollama in a single batch call.  If Ollama is
-    unreachable or returns an unusable response, the original raw messages are
-    returned unchanged so the user always sees *something*.
-
-    Args:
-        raw_messages: List of raw error strings from ``extract_error_summary``.
-
-    Returns:
-        List of plain-English explanation strings, same length as input.
-    """
-    import json as _json
-    import httpx as _httpx
-
-    if not raw_messages:
-        return []
-
-    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest")
-    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "60"))
-    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
-
-    n         = len(raw_messages)
-    msgs_json = _json.dumps(raw_messages, indent=2, ensure_ascii=False)
-
-    prompt = (
-        "You are a regulatory reporting expert helping a business user understand "
-        "why their report submission failed.\n\n"
-        f"The following {n} error message(s) were produced by a report validation engine:\n\n"
-        f"{msgs_json}\n\n"
-        "For EACH error message, rewrite it as a single plain-English sentence (max 50 words) that:\n"
-        "  - Explains what went wrong in simple business language\n"
-        "  - Avoids all XML, XBRL, schema, or technical validator jargon\n"
-        "  - Tells the user what to check or fix\n\n"
-        "IMPORTANT:\n"
-        "  - Return ONLY a valid JSON array of strings\n"
-        f"  - The array must contain exactly {n} string(s) in the same order as input\n"
-        "  - No markdown, no preamble, no extra keys\n\n"
-        '["<explanation 1>", "<explanation 2>", ...]\n\n'
-        "Strictly return valid JSON only."
-    )
-
-    payload = {
-        "model":      model,
-        "messages":   [
-            {
-                "role":    "system",
-                "content": (
-                    "You are a regulatory reporting assistant. "
-                    "Always respond with a valid JSON array of strings only — "
-                    "no markdown, no extra text before or after the JSON."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "stream":     False,
-        "format":     "json",
-        "keep_alive": keep_alive,
-        "options":    {"temperature": 0.05, "num_predict": 1024},
-    }
-
-    logger.info(
-        "[STATUS_FLOW] Sending %d XML error(s) to Ollama for plain-English explanation", n
-    )
-
-    try:
-        with _httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{ollama_base}/api/chat", json=payload)
-            resp.raise_for_status()
-
-        raw_response = resp.json()["message"]["content"].strip()
-        logger.debug("[STATUS_FLOW] Ollama XML explanation raw response=%s", raw_response)
-
-        # Strip markdown fences if present
-        if "```" in raw_response:
-            raw_response = "\n".join(
-                line for line in raw_response.splitlines()
-                if not line.strip().startswith("```")
-            ).strip()
-
-        # Extract the JSON array
-        start_idx = raw_response.find("[")
-        end_idx   = raw_response.rfind("]")
-        if start_idx != -1 and end_idx > start_idx:
-            raw_response = raw_response[start_idx : end_idx + 1]
-
-        explained = _json.loads(raw_response)
-
-        if not isinstance(explained, list):
-            raise ValueError(f"Expected list, got {type(explained).__name__}")
-
-        # Reconcile count: pad with originals or truncate
-        while len(explained) < n:
-            explained.append(raw_messages[len(explained)])
-        if len(explained) > n:
-            explained = explained[:n]
-
-        # Validate each entry — keep original if LLM returned empty/bad text
-        _BAD = {"no error information provided", "no information provided", "n/a", "none"}
-        result: list[str] = []
-        for i, exp in enumerate(explained):
-            exp_str = str(exp).strip()
-            if exp_str and len(exp_str) >= 10 and exp_str.lower().rstrip(".") not in _BAD:
-                result.append(exp_str)
-            else:
-                logger.warning(
-                    "[STATUS_FLOW] Bad XML explanation at index %d, keeping original", i
-                )
-                result.append(raw_messages[i])
-
-        logger.info(
-            "[STATUS_FLOW] Ollama XML explanation complete: %d message(s) enriched", len(result)
-        )
-        return result
-
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[STATUS_FLOW] Ollama XML explanation failed: %s — returning raw messages", exc
-        )
-        return raw_messages
 
 
 def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str], list[dict]]:
@@ -1626,7 +1337,7 @@ def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str
             )
 
             # Build bubble messages from enriched results
-            # Prefer business_explanation; fall back to col_0/message/title
+            # Use the single LLM-generated explanation; fall back to raw message/title
             _BAD_BUBBLE = {
                 "no error information provided",
                 "no information provided",
@@ -1638,11 +1349,11 @@ def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str
             seen: set[str] = set()
             for err in error_details:
                 msg = (
-                    err.get("business_explanation")
+                    err.get("explanation")
                     or err.get("message")
                     or err.get("col_0")
                     or err.get("title")
-                    or err.get("suggestion", "")
+                    or ""
                 ).strip()
                 # Filter out useless LLM non-answers
                 if msg and msg.lower().rstrip(".") not in _BAD_BUBBLE and msg not in seen:
@@ -1661,15 +1372,8 @@ def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str
         )
 
     # ── XML / fallback path ───────────────────────────────────────────────────
-    # Extract raw error strings from the XML, then enrich each one through
-    # Ollama so the user receives a plain-English explanation rather than a
-    # raw technical validator message.
-    raw_messages = extract_error_summary(path).get("messages", [])
-    if not raw_messages:
-        return [], []
-
-    explained_messages = _explain_xml_errors_with_ollama(raw_messages)
-    return explained_messages, []
+    messages = extract_error_summary(path).get("messages", [])
+    return messages, []
 
 
 def _enrich_with_error_messages(code: int, dl: dict) -> list[str]:

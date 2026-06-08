@@ -172,6 +172,20 @@ export default function MessageBubble({ role, text, data, options, resultType, s
         .trim()
     : (text ?? '')
 
+  // ── Resolve errorDetails ───────────────────────────────────────────────────
+  // The chat handler may pass error_details from the backend response in
+  // different ways depending on how the API response is mapped to props.
+  // We check all common locations so the table always renders when data exists:
+  //   1. errorDetails prop (direct, camelCase)          ← ideal
+  //   2. data?.error_details (snake_case inside data)   ← common mapping miss
+  //   3. data?.errorDetails                             ← alternate casing
+  const resolvedErrorDetails = (
+    (Array.isArray(errorDetails) && errorDetails.length > 0 ? errorDetails : null) ||
+    (Array.isArray(data?.error_details) && data.error_details.length > 0 ? data.error_details : null) ||
+    (Array.isArray(data?.errorDetails) && data.errorDetails.length > 0 ? data.errorDetails : null) ||
+    []
+  )
+
   // Ask-previous-dates card — shows latest status then Yes/No chips
   if (!isUser && resultType === 'ask_previous') {
     return (
@@ -181,8 +195,8 @@ export default function MessageBubble({ role, text, data, options, resultType, s
           <div className="bubble assistant-bubble">
             <BubbleText text={displayText} />
           </div>
-          {errorDetails?.length > 0
-            ? <ErrorDetailsPanel details={errorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
+          {resolvedErrorDetails.length > 0
+            ? <ErrorDetailsPanel details={resolvedErrorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
             : downloadUrl && (
                 <button
                   className="download-btn"
@@ -276,8 +290,8 @@ export default function MessageBubble({ role, text, data, options, resultType, s
 
         {/* Download button OR expandable technical details panel */}
         {!isUser && resultType !== 'ask_previous' && (
-          errorDetails?.length > 0
-            ? <ErrorDetailsPanel details={errorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
+          resolvedErrorDetails.length > 0
+            ? <ErrorDetailsPanel details={resolvedErrorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
             : downloadUrl
               ? <button
                   className="download-btn"
@@ -294,7 +308,9 @@ export default function MessageBubble({ role, text, data, options, resultType, s
   )
 }
 
-// ── ErrorDetailsPanel ── expandable rich error cards for 4000-series XBRL errors
+// ── ErrorDetailsPanel ─────────────────────────────────────────────────────────
+// Always-visible Validation Details table (DB Table, Row Label, Context, Cell Code)
+// + collapsible Technical Details section with the single LLM explanation per error.
 function ErrorDetailsPanel({ details, downloadUrl, downloadLabel }) {
   const [open, setOpen] = useState(false)
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -306,7 +322,28 @@ function ErrorDetailsPanel({ details, downloadUrl, downloadLabel }) {
     return                        { label: 'Error',   color: '#F87171', bg: 'rgba(248,113,113,0.12)' }
   }
 
-  // Group by errorType so same-category errors are together
+  const errorCount = details.length
+  const warnCount  = details.filter(e => e.severity === 'warning').length
+
+  // ── 
+  //  table rows ─────────────────────────────────────────
+  // Reads table_info (set by backend) with full fallback chain for each field.
+  const tableRows = details.map((err, i) => {
+    const ti = err?.table_info ?? {}
+    return {
+      idx:          i,
+      db_table_name: (ti.db_table_name || err.db_tablename  || err.table         || '').toString().trim(),
+      row_label:     (ti.row_label     || err.row_label     || err['row_label(s)'] || err['row_label(s) '] || '').toString().trim(),
+      context:       (ti.context       || err.context       || '').toString().trim(),
+      cell_code:     (ti.cell_code     || err.cellCode      || err.cell           || '').toString().trim(),
+    }
+  })
+const filteredTableRows = tableRows.filter(
+  r => r.db_table_name || r.row_label || r.context
+)
+
+const hasTableData = filteredTableRows.length > 0
+  // Group by errorType for the collapsible technical section
   const groups = details.reduce((acc, err) => {
     const key = err.errorType || 'VALIDATION ERROR'
     if (!acc[key]) acc[key] = []
@@ -314,26 +351,44 @@ function ErrorDetailsPanel({ details, downloadUrl, downloadLabel }) {
     return acc
   }, {})
 
-  const errorCount = details.length
-  const warnCount  = details.filter(e => e.severity === 'warning').length
-
   return (
     <div className="error-details-panel">
+
+      {/* ── Always-visible Validation Details table ── */}
+      {hasTableData && (
+        <div className="error-table-info-section">
+          <div className="error-table-info-heading">📋 Validation Details</div>
+          <div className="error-table-info-scroll">
+            <table className="error-table-info-tbl">
+              <thead>
+                <tr>
+                  <th>DB Table Name</th>
+                  <th>Row Label</th>
+                  <th>Context</th>
+                  <th>Cell Code</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTableRows.map((r) => (
+                  <tr key={r.idx}>
+                    <td title={r.db_table_name}>{r.db_table_name || '—'}</td>
+                    <td title={r.row_label}>{r.row_label     || '—'}</td>
+                    <td title={r.context}>{r.context       || '—'}</td>
+                    <td>{r.cell_code     || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Collapsible Technical Details ── */}
       <button
         className="error-details-toggle"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
-      >
-        <span className="error-details-icon">{open ? '▲' : '▼'}</span>
-        <span>Technical Details</span>
-        <span className="error-details-badges">
-          {errorCount - warnCount > 0 && (
-            <span className="edbadge edbadge-error">{errorCount - warnCount} error{errorCount - warnCount !== 1 ? 's' : ''}</span>
-          )}
-          {warnCount > 0 && (
-            <span className="edbadge edbadge-warning">{warnCount} warning{warnCount !== 1 ? 's' : ''}</span>
-          )}
-        </span>
+      >        
         {downloadUrl && (
           <button
             className="error-details-dl-btn"
@@ -351,145 +406,28 @@ function ErrorDetailsPanel({ details, downloadUrl, downloadLabel }) {
           </button>
         )}
       </button>
-
-      {open && (
-        <div className="error-details-body">
-          {Object.entries(groups).map(([category, errors]) => (
-            <div key={category} className="error-detail-group">
-              <div className="error-detail-category">{category.replace(/_/g, ' ')}</div>
-              {errors.map((err, idx) => {
-                const meta = severityMeta(err.severity)
-                // cell reference: normalised by backend, may also live in cellCode
-                const cellRef = err.cell || err.cellCode || ''
-                return (
-                  <div key={idx} className="error-card" style={{ borderLeftColor: meta.color }}>
-                    {/* ── Card header ── */}
-                    <div className="error-card-header">
-                      <span className="error-sev-badge" style={{ background: meta.bg, color: meta.color }}>
-                        {meta.label}
-                      </span>
-                      {err.title && <span className="error-card-title">{err.title}</span>}
-                      {cellRef && <span className="error-cell-badge">{cellRef}</span>}
-                    </div>
-
-                    {/* ── Business Explanation (AI — most prominent) ── */}
-                    {err.business_explanation && (
-                      <div className="error-llm-explanation">
-                        <span className="error-llm-label">Business Explanation</span>
-                        <div className="error-llm-text">{err.business_explanation}</div>
-                      </div>
-                    )}
-
-                    {/* ── Root Cause ── */}
-                    {err.root_cause && (
-                      <div className="error-root-cause">
-                        <span className="error-root-cause-label">Root Cause</span>
-                        <div className="error-root-cause-text">{err.root_cause}</div>
-                      </div>
-                    )}
-
-                    {/* ── Validation Rule ── */}
-                    {err.rule && (
-                      <div className="error-rule-block">
-                        <div className="error-rule-label">Validation Rule</div>
-                        <div className="error-rule-text">{err.rule}</div>
-                      </div>
-                    )}
-
-                    {/* ── Main technical message ── */}
-                    {err.message && (
-                      <div className="error-card-message">{err.message}</div>
-                    )}
-
-                    {/* ── Expected vs Actual ── */}
-                    {(err.actualValue || err.enteredValue || err.expectedValue) && (
-                      <div className="error-compare-row">
-                        {(err.actualValue || err.enteredValue) && (
-                          <div className="error-compare-cell error-compare-actual">
-                            <span className="ecc-label">Entered</span>
-                            <span className="ecc-val">{err.actualValue || err.enteredValue}</span>
-                          </div>
-                        )}
-                        {err.expectedValue && (
-                          <div className="error-compare-cell error-compare-expected">
-                            <span className="ecc-label">Expected</span>
-                            <span className="ecc-val">{err.expectedValue}</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* ── Supplementary fields ── */}
-                    {[
-                      ['Table',     err.table],
-                      ['Context',   err.context],
-                      ['Unit',      err.unit],
-                      ['Assertion', err.assertionLabel],
-                    ].filter(([, v]) => v).map(([label, val]) => (
-                      <div key={label} className="error-card-row">
-                        <span className="eck">{label}</span>
-                        <span className="ecv">{val}</span>
-                      </div>
-                    ))}
-
-                    {/* ── Variable substitutions ── */}
-                    {err.variables?.length > 0 && (
-                      <div className="error-vars-block">
-                        <div className="error-vars-heading">Variables</div>
-                        <div className="error-vars-table">
-                          {err.variables.map((v, vi) => (
-                            <div key={vi} className="error-vars-row">
-                              {v.variableName && <span className="error-var-name">{v.variableName}</span>}
-                              {(v.variableValue || v.value || v.actualValue) && (
-                                <span className="error-var-val">{v.variableValue || v.value || v.actualValue}</span>
-                              )}
-                              {v.cellCode && <span className="error-var-cell">{v.cellCode}</span>}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* ── Suggestion ── */}
-                    {err.suggestion && (
-                      <div className="error-suggestion">
-                        <span className="error-suggestion-icon">💡</span>
-                        {err.suggestion}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
 
 // ── BubbleText ── renders plain text with a special red glass box for Failure Reason(s)
-// Detects the "Failure Reason(s):" section and wraps it in a styled container.
 function BubbleText({ text }) {
   const FAILURE_HEADING = 'Failure Reason(s):'
   const idx = (text ?? '').indexOf(FAILURE_HEADING)
 
   if (idx === -1) {
-    // No failure section — plain line-by-line render
     return (text ?? '').split('\n').map((line, i, arr) => (
       <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
     ))
   }
 
-  // Split into: before-failure text, and failure-onwards text
   const before = (text ?? '').slice(0, idx).replace(/\n+$/, '')
   const failureBlock = (text ?? '').slice(idx)
 
-  // Separate the bullet lines from any trailing lines after the last bullet
   const failureLines = failureBlock.split('\n')
   const bulletEnd = failureLines.reduce((last, line, i) =>
     line.startsWith('•') ? i : last, 0)
-  const bulletLines = failureLines.slice(1, bulletEnd + 1)  // skip heading line
+  const bulletLines = failureLines.slice(1, bulletEnd + 1)
   const afterLines  = failureLines.slice(bulletEnd + 1).filter(l => l.trim())
 
   return (
@@ -525,13 +463,9 @@ function getStatusMeta(code) {
 }
 
 // ── Instance Dropdown ─────────────────────────────────────────────────────────────
-// Used for date_selection when the list is too long for chips.
-// Renders a custom scrollable listbox with colored status dots when instancesData
-// is provided; gracefully falls back to plain labels when it is not.
 function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
   const [selected, setSelected] = useState(options[0] ?? '')
 
-  // Build label → status-meta map for O(1) lookup while rendering
   const statusMap = useMemo(() => {
     if (!instancesData?.length) return {}
     return Object.fromEntries(
@@ -582,16 +516,12 @@ const SUGGESTION_GROUPS = [
   {
     label:  '📋 Check report status',
     action: 'Check report status',
-    chips:  [
-      
-    ],
+    chips:  [],
   },
   {
     label:  '⚙️ Generate a report instance',
     action: 'Generate instance for a report',
-    chips:  [
-      
-    ],
+    chips:  [],
   },
   {
     label:  '🗓️ Schedule a report',
@@ -693,8 +623,8 @@ function SupportContact() {
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
       <div className="bubble assistant-bubble support-contact-bubble">
-        <p className="support-sorry">I’m sorry the experience wasn’t helpful.</p>
-        <p className="support-desc">If you’re facing an issue, have a query, or want to report a problem, please contact our support team:</p>
+        <p className="support-sorry">I'm sorry the experience wasn't helpful.</p>
+        <p className="support-desc">If you're facing an issue, have a query, or want to report a problem, please contact our support team:</p>
         <div className="support-emails">
           <a href="mailto:support@company.com" className="support-email-link">📧 support@company.com</a>
           <a href="mailto:chatbot-support@company.com" className="support-email-link">📧 chatbot-support@company.com</a>
@@ -705,7 +635,6 @@ function SupportContact() {
 }
 
 // ── Action Menu ─────────────────────────────────────────────────────────────
-// Compact reusable "What next?" prompt shown after every completed workflow.
 function ActionMenu({ onGuidedAction }) {
   return (
     <div className="bubble-row assistant">
@@ -732,7 +661,6 @@ function ActionMenu({ onGuidedAction }) {
 }
 
 // ── Report Search Dropdown ────────────────────────────────────────────────────
-// Used when the disambiguation list has 5+ entries to avoid cluttering the UI.
 function ReportSearchDropdown({ options, onSelect }) {
   const [query,    setQuery]    = useState('')
   const [isOpen,   setIsOpen]   = useState(false)
@@ -743,7 +671,6 @@ function ReportSearchDropdown({ options, onSelect }) {
     ? options.filter((o) => o.toLowerCase().includes(query.toLowerCase()))
     : options
 
-  // Close on outside click
   useEffect(() => {
     function handleClick(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
@@ -852,7 +779,6 @@ function ActionResult({ action, output }) {
     )
   }
 
-  // ── get_report_status ──────────────────────────────────────────────────────
   if (action === 'get_report_status' && output?.found) {
     const group      = output.status_group ?? 'unknown'
     const badgeClass = STATUS_CLASS[group]  ?? 'status-unknown'
@@ -882,7 +808,6 @@ function ActionResult({ action, output }) {
     )
   }
 
-  // ── get_report_error ───────────────────────────────────────────────────────
   if (action === 'get_report_error' && output?.found) {
     return (
       <div className="action-result">
@@ -897,7 +822,6 @@ function ActionResult({ action, output }) {
     )
   }
 
-  // ── generic fallback ───────────────────────────────────────────────────────
   return null
 }
 
@@ -941,7 +865,6 @@ function SqlResultBlock({ data }) {
 
   return (
     <div className="sql-result-block">
-      {/* Matched schema chips */}
       {matched_tables.length > 0 && (
         <div>
           <div className="sql-result-label">Schema Match</div>
@@ -959,7 +882,6 @@ function SqlResultBlock({ data }) {
         </div>
       )}
 
-      {/* Generated SQL */}
       {sql && (
         <div>
           <div className="sql-result-label">Generated SQL</div>
@@ -967,19 +889,16 @@ function SqlResultBlock({ data }) {
         </div>
       )}
 
-      {/* Validation error */}
       {!is_valid && (
         <div className="sql-invalid-msg">
           ⚠ {validation_reason || 'SQL validation failed.'}
         </div>
       )}
 
-      {/* DB error */}
       {db_error && (
         <div className="sql-db-error">⚠ DB error: {db_error}</div>
       )}
 
-      {/* Results table */}
       {is_valid && !db_error && columns.length > 0 && (
         <div>
           <div className="sql-result-label">Query Results</div>
@@ -1011,7 +930,6 @@ function SqlResultBlock({ data }) {
         </div>
       )}
 
-      {/* Valid SQL but no rows */}
       {is_valid && !db_error && columns.length === 0 && (
         <div className="sql-db-error" style={{ color: 'var(--text-muted)', background: 'transparent', border: 'none' }}>
           No rows returned.
@@ -1021,7 +939,6 @@ function SqlResultBlock({ data }) {
   )
 }
 
-// ── DB Q&A Result Block ─────────────────────────────────────────────────────
 function DbQaResultBlock({ data, fallbackText }) {
   if (!data || (data.records?.length === 0 && !data.summary)) {
     return (
@@ -1031,14 +948,62 @@ function DbQaResultBlock({ data, fallbackText }) {
     )
   }
 
-  const { label, summary, cols = [], headers = [], records = [], is_count } = data
+  const {
+    label,
+    summary,
+    cols = [],
+    headers = [],
+    records = [],
+    is_count,
+    tableNames = [],
+    rowLabels = [],
+    contexts = [],
+    cellCodes = [],
+  } = data
 
-  // No records — show summary only
   if (records.length === 0) {
     return <div className="bubble assistant-bubble">{summary || fallbackText}</div>
   }
 
-  // Count-only result — stat cards
+  const hasStructuredMeta =
+    tableNames.length || rowLabels.length || contexts.length || cellCodes.length
+
+  if (hasStructuredMeta) {
+    return (
+      <div className="dbqa-block structured-dbqa">
+        {label && (
+          <div className="dbqa-header-row">
+            <span className="dbqa-label">{label}</span>
+            <span className="dbqa-record-count">{records.length} records</span>
+          </div>
+        )}
+        <div className="dbqa-table-wrapper">
+          <table className="dbqa-table">
+            <thead>
+              <tr>
+                <th>DB TableName</th>
+                <th>Row Label(s)</th>
+                <th>Context</th>
+                <th>Cell Code</th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((_, i) => (
+                <tr key={i}>
+                  <td>{tableNames[i] ?? '—'}</td>
+                  <td>{rowLabels[i] ?? '—'}</td>
+                  <td>{contexts[i] ?? '—'}</td>
+                  <td>{cellCodes[i] ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {summary && <div className="dbqa-summary">{summary}</div>}
+      </div>
+    )
+  }
+
   if (is_count) {
     const rec = records[0]
     return (
@@ -1046,7 +1011,7 @@ function DbQaResultBlock({ data, fallbackText }) {
         <div className="dbqa-count-row">
           {cols.map((c, i) => (
             <div key={c} className="dbqa-count-card">
-              <div className="dbqa-count-val">{rec[c] ?? '\u2014'}</div>
+              <div className="dbqa-count-val">{rec[c] ?? '—'}</div>
               <div className="dbqa-count-label">{headers[i]}</div>
             </div>
           ))}
@@ -1056,7 +1021,6 @@ function DbQaResultBlock({ data, fallbackText }) {
     )
   }
 
-  // Single record — key/value card
   if (records.length === 1) {
     const rec = records[0]
     return (
@@ -1065,7 +1029,7 @@ function DbQaResultBlock({ data, fallbackText }) {
           {cols.map((c, i) => (
             <div key={c} className="dbqa-kv-row">
               <span className="dbqa-kv-key">{headers[i]}</span>
-              <span className="dbqa-kv-val">{rec[c] ?? '\u2014'}</span>
+              <span className="dbqa-kv-val">{rec[c] ?? '—'}</span>
             </div>
           ))}
         </div>
@@ -1073,7 +1037,6 @@ function DbQaResultBlock({ data, fallbackText }) {
     )
   }
 
-  // Multiple records — HTML table
   return (
     <div className="dbqa-block">
       {label && (
@@ -1095,7 +1058,7 @@ function DbQaResultBlock({ data, fallbackText }) {
             {records.map((rec, ri) => (
               <tr key={ri}>
                 {cols.map((c) => (
-                  <td key={c}>{rec[c] ?? '\u2014'}</td>
+                  <td key={c}>{rec[c] ?? '—'}</td>
                 ))}
               </tr>
             ))}
@@ -1114,72 +1077,42 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
   const [sel2, setSel2] = useState(NONE)
   const [error, setError] = useState('')
 
-  // Build label for each instance — prefer the parsed label, fall back gracefully
   const labelFor = (inst) =>
     inst.label ||
     `${inst.reporting_date || '—'} | Generated: ${inst.run_at || '—'}`
 
   const handleCompare = () => {
-    if (!sel1 || !sel2) {
-      setError('Please select an instance in both dropdowns.')
-      return
-    }
-    if (sel1 === sel2) {
-      setError('Please select two different instances.')
-      return
-    }
+    if (!sel1 || !sel2) { setError('Please select an instance in both dropdowns.'); return }
+    if (sel1 === sel2)  { setError('Please select two different instances.'); return }
     setError('')
-    // Convert 1-based UI strings to 0-based indices for the /compare-execute endpoint
     onCompare?.(parseInt(sel1, 10) - 1, parseInt(sel2, 10) - 1)
   }
 
   return (
     <div className="inst-sel-block">
       <div className="inst-sel-header">{headerText}</div>
-
       <div className="inst-sel-dropdowns">
-        {/* ── Dropdown 1 ── */}
         <div className="inst-sel-dropdown-group">
           <label className="inst-sel-label">Instance 1</label>
-          <select
-            className="inst-sel-select"
-            value={sel1}
-            onChange={(e) => { setSel1(e.target.value); setError('') }}
-          >
+          <select className="inst-sel-select" value={sel1} onChange={(e) => { setSel1(e.target.value); setError('') }}>
             <option value="">— Select instance —</option>
             {instances.map((inst, idx) => (
-              <option key={idx} value={String(idx + 1)}>
-                {labelFor(inst)}
-              </option>
+              <option key={idx} value={String(idx + 1)}>{labelFor(inst)}</option>
             ))}
           </select>
         </div>
-
-        {/* ── Dropdown 2 ── */}
         <div className="inst-sel-dropdown-group">
           <label className="inst-sel-label">Instance 2</label>
-          <select
-            className="inst-sel-select"
-            value={sel2}
-            onChange={(e) => { setSel2(e.target.value); setError('') }}
-          >
+          <select className="inst-sel-select" value={sel2} onChange={(e) => { setSel2(e.target.value); setError('') }}>
             <option value="">— Select instance —</option>
             {instances.map((inst, idx) => (
-              <option key={idx} value={String(idx + 1)} disabled={String(idx + 1) === sel1}>
-                {labelFor(inst)}
-              </option>
+              <option key={idx} value={String(idx + 1)} disabled={String(idx + 1) === sel1}>{labelFor(inst)}</option>
             ))}
           </select>
         </div>
       </div>
-
       {error && <div className="inst-sel-error">{error}</div>}
-
-      <button
-        className="inst-sel-btn"
-        disabled={!sel1 || !sel2 || sel1 === sel2}
-        onClick={handleCompare}
-      >
+      <button className="inst-sel-btn" disabled={!sel1 || !sel2 || sel1 === sel2} onClick={handleCompare}>
         Compare Instances
       </button>
     </div>
@@ -1187,8 +1120,6 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
 }
 
 // ── Variance Table Block ──────────────────────────────────────────────────────
-
-// Severity metadata
 const SEV_CFG = {
   critical: { label: 'C', title: 'Critical',  cls: 'vt-sev-critical' },
   high:     { label: 'H', title: 'High',      cls: 'vt-sev-high'     },
@@ -1196,7 +1127,6 @@ const SEV_CFG = {
   low:      { label: 'L', title: 'Low',       cls: 'vt-sev-low'      },
 }
 
-// Per-value natural financial formatter — never emits scientific notation
 function fmtFinancial(v) {
   if (v === null || v === undefined) return '—'
   if (v === 0) return '0'
@@ -1207,18 +1137,13 @@ function fmtFinancial(v) {
   if (abs >= 1e3)   return `${(v / 1e3).toFixed(2)}K`
   if (abs >= 1)     return v.toFixed(2)
   if (abs >= 0.001) return v.toFixed(4)
-  // Very small: enough places to show at least 3 significant digits
   const places = Math.min(10, Math.max(4, Math.ceil(-Math.log10(abs)) + 3))
   return v.toFixed(places)
 }
-
-// Raw comma-separated value for tooltips
 function fmtRaw(v) {
   if (v === null || v === undefined) return '—'
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 })
 }
-
-// Analyst-friendly percentage
 function fmtPctFin(v) {
   if (v === null || v === undefined) return 'N/A'
   const abs = Math.abs(v)
@@ -1231,25 +1156,23 @@ function fmtPctFin(v) {
 
 function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
   const [showChart, setShowChart] = useState(false)
-  const [sortBy,    setSortBy]    = useState(null)     // null = server order
+  const [sortBy,    setSortBy]    = useState(null)
   const [sortDir,   setSortDir]   = useState('desc')
 
-  // Extract the first two lines from plain-text response as title/subtitle
   const lines    = (headerText || '').split('\n')
   const title    = lines[0] || ''
   const subtitle = lines[1] || ''
 
-  // Sorting
   const SEV_ORDER = { critical: 4, high: 3, medium: 2, low: 1 }
   const sortedRows = useMemo(() => {
     if (!sortBy) return rows
     const dir = sortDir === 'asc' ? 1 : -1
     return [...rows].sort((a, b) => {
-      if (sortBy === 'concept') return dir * (a.concept ?? '').localeCompare(b.concept ?? '')
-      if (sortBy === 'val_a')   return dir * ((a.val_a ?? 0) - (b.val_a ?? 0))
-      if (sortBy === 'val_b')   return dir * ((a.val_b ?? 0) - (b.val_b ?? 0))
-      if (sortBy === 'diff')    return dir * ((a.diff ?? 0) - (b.diff ?? 0))
-      if (sortBy === 'pct')     return dir * (Math.abs(a.pct_change ?? 0) - Math.abs(b.pct_change ?? 0))
+      if (sortBy === 'concept')  return dir * (a.concept ?? '').localeCompare(b.concept ?? '')
+      if (sortBy === 'val_a')    return dir * ((a.val_a ?? 0) - (b.val_a ?? 0))
+      if (sortBy === 'val_b')    return dir * ((a.val_b ?? 0) - (b.val_b ?? 0))
+      if (sortBy === 'diff')     return dir * ((a.diff ?? 0) - (b.diff ?? 0))
+      if (sortBy === 'pct')      return dir * (Math.abs(a.pct_change ?? 0) - Math.abs(b.pct_change ?? 0))
       if (sortBy === 'severity') return dir * ((SEV_ORDER[a.severity] ?? 0) - (SEV_ORDER[b.severity] ?? 0))
       return 0
     })
@@ -1259,7 +1182,6 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
     if (sortBy === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortBy(col); setSortDir('desc') }
   }
-
   const sortIcon = (col) => {
     if (sortBy !== col) return <span className="vt-sort-icon">⇅</span>
     return <span className="vt-sort-icon">{sortDir === 'asc' ? '↑' : '↓'}</span>
@@ -1269,26 +1191,15 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
     <div className="variance-block">
       {title    && <div className="variance-title">{title}</div>}
       {subtitle && <div className="variance-subtitle">{subtitle}</div>}
-
       <div className="variance-table-wrapper">
         <table className="variance-table">
           <thead>
             <tr>
-              <th className="vt-concept-col vt-sortable" onClick={() => handleSort('concept')}>
-                Concept {sortIcon('concept')}
-              </th>
-              <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_a')}>
-                {labelA} {sortIcon('val_a')}
-              </th>
-              <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_b')}>
-                {labelB} {sortIcon('val_b')}
-              </th>
-              <th className="vt-num-col vt-sortable" onClick={() => handleSort('diff')}>
-                Diff {sortIcon('diff')}
-              </th>
-              <th className="vt-num-col vt-sortable" onClick={() => handleSort('pct')}>
-                % Chg {sortIcon('pct')}
-              </th>
+              <th className="vt-concept-col vt-sortable" onClick={() => handleSort('concept')}>Concept {sortIcon('concept')}</th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_a')}>{labelA} {sortIcon('val_a')}</th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_b')}>{labelB} {sortIcon('val_b')}</th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('diff')}>Diff {sortIcon('diff')}</th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('pct')}>% Chg {sortIcon('pct')}</th>
             </tr>
           </thead>
           <tbody>
@@ -1296,54 +1207,24 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
               const isPos   = (row.diff ?? 0) > 0
               const isNeg   = (row.diff ?? 0) < 0
               const diffCls = isPos ? 'vt-pos' : isNeg ? 'vt-neg' : ''
-
-              // Row CSS
-              const rowCls = [
-                row.significant  ? 'vt-row-sig'         : '',
-                row.sign_change  ? 'vt-row-sign-change' : '',
-                rowIdx % 2 === 0 ? ''                   : 'vt-row-alt',
+              const rowCls  = [
+                row.significant ? 'vt-row-sig' : '',
+                row.sign_change ? 'vt-row-sign-change' : '',
+                rowIdx % 2 === 0 ? '' : 'vt-row-alt',
               ].filter(Boolean).join(' ')
-
-              // Full concept tooltip with all metadata
-              const anomalyText = row.anomaly_flags?.length
-                ? `Anomalies: ${row.anomaly_flags.join(', ')}`
-                : ''
-              const conceptTitle = [
-                row.concept,
-                row.context_key && row.context_key !== 'BASE'
-                  ? `Context: ${row.context_key}` : '',
-                row.unit ? `Unit: ${row.unit}` : '',
-                anomalyText,
-              ].filter(Boolean).join('\n')
-
-              // Number cell tooltip: raw value + unit
+              const anomalyText  = row.anomaly_flags?.length ? `Anomalies: ${row.anomaly_flags.join(', ')}` : ''
+              const conceptTitle = [row.concept, row.context_key && row.context_key !== 'BASE' ? `Context: ${row.context_key}` : '', row.unit ? `Unit: ${row.unit}` : '', anomalyText].filter(Boolean).join('\n')
               const unitLabel = row.unit ? ` ${row.unit}` : ''
               const tipA = `Raw: ${fmtRaw(row.val_a)}${unitLabel}`
               const tipB = `Raw: ${fmtRaw(row.val_b)}${unitLabel}`
               const tipD = `Raw diff: ${fmtRaw(row.diff)}${unitLabel}`
-
-              // Sign-reversal notation
               let signNote = null
               if (row.sign_change) {
                 const notation = (row.val_a ?? 0) > 0 ? '−→+' : '+→−'
-                signNote = (
-                  <span className="vt-sign-note" title={`Direction reversed: ${notation}`}>
-                    {notation}
-                  </span>
-                )
+                signNote = <span className="vt-sign-note" title={`Direction reversed: ${notation}`}>{notation}</span>
               }
-
-              // Severity badge
               const sev = SEV_CFG[row.severity]
-              const sevBadge = sev ? (
-                <span
-                  className={`vt-severity-badge ${sev.cls}`}
-                  title={`Severity: ${sev.title}`}
-                >
-                  {sev.label}
-                </span>
-              ) : null
-
+              const sevBadge = sev ? <span className={`vt-severity-badge ${sev.cls}`} title={`Severity: ${sev.title}`}>{sev.label}</span> : null
               return (
                 <tr key={rowIdx} className={rowCls}>
                   <td className="vt-concept">
@@ -1361,39 +1242,20 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
           </tbody>
         </table>
       </div>
-
       {llmSummary && (
         <div className="variance-summary">
           <div className="variance-summary-header">
             <div className="variance-summary-label">AI Analysis</div>
-            <button
-              className="vc-visualize-btn"
-              onClick={() => setShowChart(true)}
-              title="Open chart visualisation"
-            >
-              📊 Visualize
-            </button>
+            <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
           </div>
           <div className="variance-summary-text">
             <ReactMarkdown>
-              {llmSummary
-                .replace(/^AI\s+Summary:\s*/i, '')
-                .split('\n')
-                .map((l) => l.replace(/^•\s*/, '- '))
-                .join('\n')}
+              {llmSummary.replace(/^AI\s+Summary:\s*/i, '').split('\n').map((l) => l.replace(/^•\s*/, '- ')).join('\n')}
             </ReactMarkdown>
           </div>
         </div>
       )}
-
-      {showChart && (
-        <VarianceChartModal
-          rows={rows}
-          labelA={labelA}
-          labelB={labelB}
-          onClose={() => setShowChart(false)}
-        />
-      )}
+      {showChart && <VarianceChartModal rows={rows} labelA={labelA} labelB={labelB} onClose={() => setShowChart(false)} />}
     </div>
   )
 }
@@ -1415,11 +1277,7 @@ function GuidedMenuCard({ text, options, onSelect }) {
         {(options || []).map((opt) => {
           const meta = GUIDED_ACTION_META[opt] || { icon: '•', desc: '' }
           return (
-            <button
-              key={opt}
-              className="guided-action-btn"
-              onClick={() => onSelect?.(opt)}
-            >
+            <button key={opt} className="guided-action-btn" onClick={() => onSelect?.(opt)}>
               <span className="guided-action-icon">{meta.icon}</span>
               <div className="guided-action-body">
                 <span className="guided-action-label">{opt}</span>

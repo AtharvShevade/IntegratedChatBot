@@ -32,6 +32,7 @@ class ChatResponse(BaseModel):
     download_url:     str        = ""   # relative /download-file URL (empty when N/A)
     download_label:   str        = ""   # e.g. "Download Render File"
     status_note:      str        = ""   # e.g. in-progress message or "file not found"
+    error_details:    list[dict] = []   # structured XBRL validation errors with LLM explanations
 
 
     # ── SQL / Database query result fields ────────────────────────────────────

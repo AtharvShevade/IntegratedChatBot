@@ -1472,6 +1472,56 @@ html, body, #root {
   max-width: 660px;
 }
 
+/* ── Always-visible validation details table ─────────────────────────────── */
+.error-table-info-section {
+  padding: 10px 12px 6px;
+  border-bottom: 1px solid rgba(248,113,113,0.18);
+}
+.error-table-info-heading {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+  margin-bottom: 8px;
+}
+.error-table-info-scroll {
+  overflow-x: auto;
+}
+.error-table-info-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78em;
+  color: rgba(255,255,255,0.85);
+}
+.error-table-info-tbl th {
+  text-align: left;
+  padding: 5px 10px 5px 0;
+  font-size: 0.70em;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.40);
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+  white-space: nowrap;
+}
+.error-table-info-tbl td {
+  padding: 6px 10px 6px 0;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  line-height: 1.45;
+  word-break: break-word;
+}
+.error-table-info-tbl tr:last-child td {
+  border-bottom: none;
+}
+.error-table-info-tbl td:last-child,
+.error-table-info-tbl th:last-child {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  color: #93C5FD;
+  white-space: nowrap;
+}
+
 /* toggle header row */
 .error-details-toggle {
   width: 100%;
@@ -1741,6 +1791,40 @@ html, body, #root {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.error-details-panel {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+.error-table-info-section {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+.error-table-info-tbl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+}
+
+.error-table-info-tbl th,
+.error-table-info-tbl td {
+  opacity: 1 !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.error-details-dl-btn {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  opacity: 1 !important;
 }
 
 /* ── Mode selection screen ───────────────────────────────────────────────── */
