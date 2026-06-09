@@ -999,35 +999,49 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
 
 # ── Last-resort fallback — used ONLY when Ollama is completely unreachable ───
 def _build_fallback_business_explanation(err: dict) -> str:
-    """Minimal last-resort explanation used ONLY when Ollama is completely unreachable.
-
-    No regex, no rule-based logic, no template sentences.
-    Surfaces the raw validation message so the user sees *something* rather
-    than nothing.  All normal explanation paths go through the LLM.
-    """
-    cell    = err.get("cellCode") or err.get("cell", "")
+    """Fallback when LLM is unreachable or returns unusable output."""
+    import re as _re_fb
+    cell     = err.get("cellCode") or err.get("cell", "")
     cell_str = f"Cell {cell}" if cell else "A reported field"
-    message = (
-        err.get("message") or err.get("col_0") or err.get("title") or ""
+
+    # Pull the entered value and expected type from structured fields first
+    actual   = (
+        err.get("entered_data(s)") or err.get("actualValue") or
+        err.get("instance_data(s)") or ""
     ).strip()
-    if message:
-        return f"{cell_str} failed validation: {message[:200].rstrip('.')}."
+    expected = (err.get("expectedValue") or err.get("decimal") or "").strip()
+
+    # ✅ FIX: Extract entered value from the raw message when structured fields absent
+    # e.g. "'-19.91cd' is not a valid value for 'decimal'" → actual='-19.91cd', expected='decimal'
+    if not actual:
+        raw = (err.get("message") or err.get("col_0") or err.get("title") or "")
+        m = _re_fb.search(r"['\"]([^'\"]+)['\"].*?valid.*?value.*?['\"]([^'\"]+)['\"]", raw, _re_fb.IGNORECASE)
+        if m:
+            actual, expected = m.group(1), m.group(2)
+        else:
+            m2 = _re_fb.search(r"['\"]([^'\"]+)['\"]", raw)
+            if m2:
+                actual = m2.group(1)
+
+    if actual and expected:
+        return (
+            f"{cell_str} contains '{actual}', which is not a valid {expected} value. "
+            f"This field requires a pure numeric decimal — remove any letters or special "
+            f"characters and resubmit."
+        )
+    if actual:
+        return (
+            f"{cell_str} contains '{actual}', which failed validation. "
+            f"Ensure the value is a valid numeric decimal before resubmitting."
+        )
+
     return (
-        f"{cell_str} did not pass validation. "
+        f"{cell_str} failed validation. "
         "Please review the reported value and correct it before resubmitting."
     )
 
 
 def _normalize_error_for_llm(err: dict) -> dict:
-    """Map the raw parsed HTML error dict into a clean, rich payload for the LLM.
-
-    The HTML parser produces field names that depend on the column headings in
-    the BTDetails.html file (e.g. ``col_0``, ``entered_data(s)``, ``db_tablename``).
-    This function normalises those into a consistent set of human-readable keys
-    that give the LLM maximum context.
-
-    Only non-empty values are included in the returned dict.
-    """
     normalized: dict = {}
 
     def _set(key: str, *sources: str) -> None:
@@ -1050,18 +1064,25 @@ def _normalize_error_for_llm(err: dict) -> dict:
     _set("severity",      "severity")
     _set("rule",          "rule")
 
-    # Clean the raw validator message: strip leading "▼ ", NBSP, and remove
-    # XML schema noise (cvc-* lines) so the LLM only sees the business-relevant part.
+    import re as _re
     raw_msg = (err.get("message") or err.get("col_0") or err.get("title") or "").strip()
     if raw_msg:
-        import re as _re
         raw_msg = raw_msg.replace("\u00a0", " ").lstrip("▼").strip()
-        # Keep only the first sentence / line — drop cvc-complex-type jargon
         first_line = _re.split("cvc-", raw_msg, maxsplit=1)[0].split("\n")[0].strip().rstrip(".")
+        
+        # ✅ FIX: Strip "Cell XXXX failed validation:" prefix — this is validator
+        # boilerplate that causes the LLM to echo it back verbatim instead of
+        # writing a real business explanation.
+        first_line = _re.sub(
+            r"^Cell\s+\S+\s+failed\s+validation\s*:\s*",
+            "",
+            first_line,
+            flags=_re.IGNORECASE,
+        ).strip().rstrip(".")
+        
         if first_line:
             normalized["message"] = first_line
 
-    # Variable substitutions as compact facts dict
     if err.get("variables"):
         facts = {
             v.get("variableName", f"V{i}"): v.get("variableValue", "")
@@ -1117,6 +1138,72 @@ def _extract_raw_validation_message(err: dict) -> str:
 
     return ""
 
+def _explain_single_error(err: dict, ollama_base: str, model: str, timeout: float, keep_alive: str) -> str:
+    """Call the LLM for exactly one validation error. Returns the explanation string,
+    or empty string on failure (caller falls back to _build_fallback_business_explanation).
+    """
+    import json as _json
+    import httpx as _httpx
+
+    payload_item = _normalize_error_for_llm(err)
+    error_json   = _json.dumps(payload_item, indent=2, ensure_ascii=False)
+    cell         = payload_item.get("cell", "")
+
+    prompt = (
+        "You are a senior regulatory reporting analyst.\n"
+        "Explain the following validation issue to a business user.\n\n"
+        "Requirements:\n"
+        "- Mention the cell code.\n"
+        "- Quote the entered value exactly.\n"
+        "- Explain why the value is incorrect for this specific field.\n"
+        "- Explain what type of value is expected.\n"
+        "- Explain why the report cannot be submitted until it is corrected.\n"
+        "- Use natural business language.\n"
+        "- Do not mention XML, XBRL, schema, validator, datatype, parsing, "
+        "technical validation terms, or internal system concepts.\n"
+        "- Do not use bullet points.\n"
+        "- Do not use generic phrases such as \"invalid value\", \"validation failed\", "
+        "\"expected format\", or \"datatype mismatch\".\n"
+        "- Write one paragraph only.\n"
+        "- Maximum 80 words.\n\n"
+        f"Validation Error: {error_json}\n\n"
+        "Return ONLY the explanation text. No JSON. No markdown."
+    )
+
+    payload = {
+        "model":      model,
+        "messages":   [
+            {
+                "role":    "system",
+                "content": (
+                    "You are a regulatory reporting analyst. "
+                    "Return only a plain-English paragraph. No JSON, no markdown, no lists."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream":     False,
+        "keep_alive": keep_alive,
+        "options":    {"temperature": 0.05, "num_predict": 200},
+    }
+
+    try:
+        with _httpx.Client(timeout=timeout) as client:
+            resp = client.post(f"{ollama_base}/api/chat", json=payload)
+            resp.raise_for_status()
+        explanation = resp.json()["message"]["content"].strip()
+
+        logger.info(
+            "[LLM_RETRY] cell=%r  raw_response=%r  parsed=%r",
+            cell,
+            explanation[:200],
+            explanation[:80],
+        )
+        return explanation
+
+    except Exception as exc:
+        logger.warning("[LLM_RETRY] cell=%r  failed: %s", cell, exc)
+        return ""
 
 def explain_validation_errors(errors: list[dict]) -> list[dict]:
     """Enrich parsed XBRL validation errors with a single LLM-generated explanation.
@@ -1306,16 +1393,14 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
         explained: list[dict] = explained_raw
         logger.info("[STATUS_FLOW] Parsed LLM responses=%d", len(explained))
 
-        # ── Reconcile count ───────────────────────────────────────────────────
-        while len(explained) < n:
-            missing_idx = len(explained)
-            logger.warning("[STATUS_FLOW] Auto-filling missing explanation index=%d", missing_idx)
-            explained.append({
-                "cell":        errors[missing_idx].get("cellCode") or errors[missing_idx].get("cell", ""),
-                "explanation": _build_fallback_business_explanation(errors[missing_idx]),
-            })
-        if len(explained) > n:
-            explained = explained[:n]
+        # ── Count check: if mismatch, discard and retry per-error ─────────────
+        if len(explained) != n:
+            logger.warning(
+                "[STATUS_FLOW] LLM returned %d explanation(s) for %d error(s) — "
+                "retrying with one call per error",
+                len(explained), n,
+            )
+            raise ValueError(f"explanation count mismatch: got {len(explained)}, expected {n}")
 
         # ── Merge back into original error dicts ──────────────────────────────
         enriched: list[dict] = []
@@ -1364,20 +1449,35 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
 
     except Exception as exc:  # noqa: BLE001
         elapsed = time.perf_counter() - start
-        logger.warning("[STATUS_FLOW] LLM explanation failed: %s (%.3fs)", exc, elapsed)
+        logger.warning(
+            "[STATUS_FLOW] Batch LLM call failed or count mismatch: %s (%.3fs) — "
+            "retrying with one LLM call per error",
+            exc, elapsed,
+        )
 
-        # ── Minimal fallback — surfaces raw validation text, no logic ─────────
-        fallback: list[dict] = []
-        for err in errors:
+        # ── Per-error retry: one LLM call per validation error ────────────────
+        retry_results: list[dict] = []
+        for i, err in enumerate(errors):
+            cell = err.get("cellCode", "") or err.get("cell", "")
+            explanation = _explain_single_error(err, ollama_base, model, timeout, keep_alive)
+
+            if not explanation or len(explanation) < 10:
+                logger.warning(
+                    "[LLM_RETRY] index=%d cell=%r — empty/short response, using fallback",
+                    i, cell,
+                )
+                explanation = _build_fallback_business_explanation(err)
+
             merged = dict(err)
-            cell   = err.get("cellCode", "") or err.get("cell", "")
-            merged["explanation"] = _build_fallback_business_explanation(err)
+            merged["explanation"] = explanation
             merged.setdefault("cell", cell)
-            merged["table_info"] = _build_table_info(err, cell)
-            fallback.append(merged)
+            merged["table_info"]  = _build_table_info(err, cell)
+            retry_results.append(merged)
 
-        logger.info("[STATUS_FLOW] Final error_details populated=%d (fallback)", len(fallback))
-        return fallback
+        logger.info(
+            "[STATUS_FLOW] Per-error retry complete — populated=%d", len(retry_results)
+        )
+        return retry_results
 
 
 def _enrich_error_info(code: int, dl: dict, form_id: str = "") -> tuple[list[str], list[dict]]:

@@ -132,6 +132,15 @@ export default function App() {
       dbQaData:      result.db_qa_data     || null,
       errorDetails:  result.error_details  || [],
     }
+
+    // Add before the resultMsg object is built:
+console.debug('[_pushResult] error_details received:', result.error_details?.length,
+  result.error_details?.map(e => ({
+    cell: e?.table_info?.cell_code,
+    explanation: e?.explanation?.slice(0, 60),
+    validation_error: e?.table_info?.validation_error?.slice(0, 40),
+  }))
+)
     setMessages((prev) => [...prev, resultMsg])
     if (isTerminal) {
       setTimeout(() => {

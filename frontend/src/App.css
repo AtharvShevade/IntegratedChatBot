@@ -2804,3 +2804,20 @@ html, body, #root {
   color: var(--text-muted);
   padding: 2px 0;
 }
+
+
+.error-table-info-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed; /* makes all columns equal */
+}
+
+.error-table-info-tbl th,
+.error-table-info-tbl td {
+  width: 20%; /* 5 columns = 20% each */
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}

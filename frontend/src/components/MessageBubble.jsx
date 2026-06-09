@@ -193,7 +193,7 @@ export default function MessageBubble({ role, text, data, options, resultType, s
         <div className="avatar assistant-avatar">AI</div>
         <div className="assistant-msg-block">
           <div className="bubble assistant-bubble">
-            <BubbleText text={displayText} />
+            <BubbleText text={displayText} errorDetails={resolvedErrorDetails} />
           </div>
           {resolvedErrorDetails.length > 0
             ? <ErrorDetailsPanel details={resolvedErrorDetails} downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
@@ -266,7 +266,7 @@ export default function MessageBubble({ role, text, data, options, resultType, s
             isUser ? 'user-bubble' : isError ? 'error-bubble' : 'assistant-bubble'
           }`}
         >
-          <BubbleText text={displayText} />
+          <BubbleText text={displayText} errorDetails={resolvedErrorDetails} />
         </div>
 
         {/* Disambiguation / date-selection chips */}
@@ -309,47 +309,42 @@ export default function MessageBubble({ role, text, data, options, resultType, s
 }
 
 // ── ErrorDetailsPanel ─────────────────────────────────────────────────────────
-// Always-visible Validation Details table (DB Table, Row Label, Context, Cell Code)
-// + collapsible Technical Details section with the single LLM explanation per error.
+// Always-visible Validation Details table:
+//   DB Table Name | Row Label | Context | Cell Code | Error
+// The "Error" column is populated from table_info.validation_error — the single
+// source-of-truth raw validation message set by the backend.
 function ErrorDetailsPanel({ details, downloadUrl, downloadLabel }) {
-  const [open, setOpen] = useState(false)
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   if (!details || details.length === 0) return null
 
-  const severityMeta = (sev) => {
-    if (sev === 'warning') return { label: 'Warning', color: '#FB923C', bg: 'rgba(251,146,60,0.12)' }
-    if (sev === 'info')    return { label: 'Info',    color: '#38BDF8', bg: 'rgba(56,189,248,0.10)' }
-    return                        { label: 'Error',   color: '#F87171', bg: 'rgba(248,113,113,0.12)' }
+  // ── Build table rows from table_info with full fallback chain ─────────────
+  // validation_error is the new field added to table_info by the backend.
+  // It holds the cleaned raw validation message (e.g. "'–84.55ab' is not a
+  // valid value for 'decimal'") so the Error column is always accurate and
+  // consistent with the Failure Reason bullets in the chat bubble.
+  // In ErrorDetailsPanel, inside the tableRows mapping:
+const tableRows = details.map((err, i) => {
+  const ti = err?.table_info ?? {}
+  return {
+    idx:              i,
+    db_table_name:    (ti.db_table_name    || err.db_tablename || err.table || '').toString().trim(),
+    row_label:        (ti.row_label        || err.row_label    || err['row_label(s)'] || err['row_label(s) '] || '').toString().trim(),
+    context:          (ti.context          || err.context      || '').toString().trim(),
+    cell_code:        (ti.cell_code        || err.cellCode     || err.cell  || '').toString().trim(),
+    validation_error: (
+      ti.validation_error || err.message || err.col_0 || err.title || ''
+    ).toString().trim(),
+    // ✅ FIX: capture the LLM explanation for the tooltip
+    explanation: (err.explanation || '').toString().trim(),
   }
+})
 
-  const errorCount = details.length
-  const warnCount  = details.filter(e => e.severity === 'warning').length
+  // Only show rows that have at least one piece of meaningful metadata
+  const filteredTableRows = tableRows.filter(
+    (r) => r.db_table_name || r.row_label || r.context || r.cell_code || r.validation_error
+  )
 
-  // ── 
-  //  table rows ─────────────────────────────────────────
-  // Reads table_info (set by backend) with full fallback chain for each field.
-  const tableRows = details.map((err, i) => {
-    const ti = err?.table_info ?? {}
-    return {
-      idx:          i,
-      db_table_name: (ti.db_table_name || err.db_tablename  || err.table         || '').toString().trim(),
-      row_label:     (ti.row_label     || err.row_label     || err['row_label(s)'] || err['row_label(s) '] || '').toString().trim(),
-      context:       (ti.context       || err.context       || '').toString().trim(),
-      cell_code:     (ti.cell_code     || err.cellCode      || err.cell           || '').toString().trim(),
-    }
-  })
-const filteredTableRows = tableRows.filter(
-  r => r.db_table_name || r.row_label || r.context
-)
-
-const hasTableData = filteredTableRows.length > 0
-  // Group by errorType for the collapsible technical section
-  const groups = details.reduce((acc, err) => {
-    const key = err.errorType || 'VALIDATION ERROR'
-    if (!acc[key]) acc[key] = []
-    acc[key].push(err)
-    return acc
-  }, {})
+  const hasTableData = filteredTableRows.length > 0
 
   return (
     <div className="error-details-panel">
@@ -366,16 +361,28 @@ const hasTableData = filteredTableRows.length > 0
                   <th>Row Label</th>
                   <th>Context</th>
                   <th>Cell Code</th>
+                  <th>Error</th>
+                  <th>Explanation</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredTableRows.map((r) => (
                   <tr key={r.idx}>
                     <td title={r.db_table_name}>{r.db_table_name || '—'}</td>
-                    <td title={r.row_label}>{r.row_label     || '—'}</td>
-                    <td title={r.context}>{r.context       || '—'}</td>
-                    <td>{r.cell_code     || '—'}</td>
-                  </tr>
+                    <td title={r.row_label}>{r.row_label || '—'}</td>
+                    <td title={r.context}>{r.context || '—'}</td>
+                    <td>{r.cell_code || '—'}</td>
+                    <td
+                      className="vd-error-cell"
+                      title={r.explanation || r.validation_error}  // ✅ tooltip shows LLM explanation
+                    >
+                      {r.validation_error || '—'}
+  </td>
+  <td className="vd-explanation-cell" title={r.explanation}>
+  {r.explanation || '—'}
+</td>
+                    </tr>
+                    
                 ))}
               </tbody>
             </table>
@@ -383,52 +390,58 @@ const hasTableData = filteredTableRows.length > 0
         </div>
       )}
 
-      {/* ── Collapsible Technical Details ── */}
+      {/* ── Download button ── */}
       <div className="error-details-actions">
-  {downloadUrl && (
-    <button
-      className="error-details-dl-btn"
-      onClick={() => {
-        const filename = (() => {
-          try {
-            return (
-              new URL(downloadUrl, window.location.origin)
-                .searchParams.get('filename') || downloadLabel
-            )
-          } catch {
-            return downloadLabel
-          }
-        })()
+        {downloadUrl && (
+          <button
+            className="error-details-dl-btn"
+            onClick={() => {
+              const filename = (() => {
+                try {
+                  return (
+                    new URL(downloadUrl, window.location.origin)
+                      .searchParams.get('filename') || downloadLabel
+                  )
+                } catch {
+                  return downloadLabel
+                }
+              })()
 
-        fetch(`${API_BASE}${downloadUrl}`)
-          .then(r => (r.ok ? r.blob() : null))
-          .then(blob => {
-            if (!blob) return
-
-            const blobUrl = URL.createObjectURL(blob)
-
-            const a = document.createElement('a')
-            a.href = blobUrl
-            a.download = filename
-
-            document.body.appendChild(a)
-            a.click()
-            document.body.removeChild(a)
-
-            URL.revokeObjectURL(blobUrl)
-          })
-      }}
-    >
-      ⬇ {downloadLabel || 'Error File'}
-    </button>
-  )}
-</div>
+              fetch(`${API_BASE}${downloadUrl}`)
+                .then((r) => (r.ok ? r.blob() : null))
+                .then((blob) => {
+                  if (!blob) return
+                  const blobUrl = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = blobUrl
+                  a.download = filename
+                  document.body.appendChild(a)
+                  a.click()
+                  document.body.removeChild(a)
+                  URL.revokeObjectURL(blobUrl)
+                })
+            }}
+          >
+            ⬇ {downloadLabel || 'Error File'}
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 
-// ── BubbleText ── renders plain text with a special red glass box for Failure Reason(s)
-function BubbleText({ text }) {
+// ── BubbleText ─────────────────────────────────────────────────────────────────
+// Renders plain text with a special red glass box for Failure Reason(s).
+//
+// Failure Reason items use the format set by the backend:
+//   "CELL_CODE → validation message"   (e.g. "R0830_10 → '-84.55ab' is not a valid value for 'decimal'")
+//
+// When errorDetails are available the bullet list is built directly from
+// table_info.cell_code + table_info.validation_error so the chat bubble is
+// always in sync with the Validation Details table.  The raw text fallback
+// (parsing "•" lines from the bubble text) is kept for backward-compatibility
+// with non-structured error paths (e.g. XML error files).
+function BubbleText({ text, errorDetails }) {
   const FAILURE_HEADING = 'Failure Reason(s):'
   const idx = (text ?? '').indexOf(FAILURE_HEADING)
 
@@ -441,11 +454,115 @@ function BubbleText({ text }) {
   const before = (text ?? '').slice(0, idx).replace(/\n+$/, '')
   const failureBlock = (text ?? '').slice(idx)
 
-  const failureLines = failureBlock.split('\n')
-  const bulletEnd = failureLines.reduce((last, line, i) =>
-    line.startsWith('•') ? i : last, 0)
-  const bulletLines = failureLines.slice(1, bulletEnd + 1)
-  const afterLines  = failureLines.slice(bulletEnd + 1).filter(l => l.trim())
+  // ── Build structured failure items from errorDetails when available ────────
+  // Each item: { cellCode, message } rendered as "CELL → message".
+  // This keeps the bubble in sync with the Validation Details table "Error" column.
+  // In BubbleText(), inside the structuredItems builder:
+const structuredItems = (() => {
+  if (!Array.isArray(errorDetails) || errorDetails.length === 0) return []
+  const items = []
+  const seen = new Set()
+  for (const err of errorDetails) {
+    const ti       = err?.table_info ?? {}
+    const cellCode = (ti.cell_code || err.cellCode || err.cell || '').trim()
+
+    // ✅ FIX: prefer LLM explanation; fall back to raw validation_error
+    const rawErrMsg = (
+      err.explanation       ||   // ← LLM-generated business explanation (primary)
+      ti.validation_error   ||   // ← raw validator message (fallback)
+      err.message           ||
+      err.col_0             ||
+      err.title             ||
+      ''
+    ).trim()
+
+    if (!rawErrMsg) continue
+    const label = cellCode ? `${cellCode} → ${rawErrMsg}` : rawErrMsg
+    if (!seen.has(label)) {
+      seen.add(label)
+      items.push({ cellCode, message: rawErrMsg, label })
+    }
+    if (items.length >= 5) break
+  }
+  return items
+})()
+
+  // ── Fallback: parse bullet lines from the raw text ─────────────────────────
+  // Used when errorDetails are not available (e.g. XML error path).
+  // Backend formats these as "• CELL_CODE → message" or "• plain message".
+  const rawBulletItems = (() => {
+    if (structuredItems.length > 0) return []  // prefer structured when available
+    const failureLines = failureBlock.split('\n')
+    const bulletEnd = failureLines.reduce(
+      (last, line, i) => (line.startsWith('•') ? i : last),
+      0,
+    )
+    return failureLines
+      .slice(1, bulletEnd + 1)
+      .map((line) => line.replace(/^•\s*/, '').trim())
+      .filter(Boolean)
+  })()
+
+  // After-the-bullets text (anything after the last bullet line)
+  const afterLines = (() => {
+    const failureLines = failureBlock.split('\n')
+    const bulletEnd = failureLines.reduce(
+      (last, line, i) => (line.startsWith('•') ? i : last),
+      0,
+    )
+    return failureLines.slice(bulletEnd + 1).filter((l) => l.trim())
+  })()
+
+  // ── Render helpers ────────────────────────────────────────────────────────
+  // Structured item: split on " → " to highlight the cell code badge separately
+  const renderStructuredItem = (item, i) => {
+    if (item.cellCode) {
+      return (
+        <li key={i} className="failure-reason-item">
+          <span className="failure-cell-badge">{item.cellCode}</span>
+          <span className="failure-reason-arrow">→</span>
+          <span className="failure-reason-msg">{item.message}</span>
+        </li>
+      )
+    }
+    return (
+      <li key={i} className="failure-reason-item">
+        <span className="failure-reason-msg">{item.message}</span>
+      </li>
+    )
+  }
+
+  // Raw bullet item: detect "CELL → message" pattern and split for consistent styling
+  const renderRawBulletItem = (line, i) => {
+    const arrowIdx = line.indexOf(' → ')
+    if (arrowIdx !== -1) {
+      const cell = line.slice(0, arrowIdx).trim()
+      const msg  = line.slice(arrowIdx + 3).trim()
+      return (
+        <li key={i} className="failure-reason-item">
+          <span className="failure-cell-badge">{cell}</span>
+          <span className="failure-reason-arrow">→</span>
+          <span className="failure-reason-msg">{msg}</span>
+        </li>
+      )
+    }
+    return (
+      <li key={i} className="failure-reason-item">
+        <span className="failure-reason-msg">{line}</span>
+      </li>
+    )
+  }
+
+  const itemsToRender    = structuredItems.length > 0 ? structuredItems    : null
+  const rawItemsToRender = structuredItems.length === 0 ? rawBulletItems   : []
+
+  // Add right after structuredItems is built:
+if (structuredItems.length > 0) {
+  console.debug('[BubbleText] structuredItems:', structuredItems.map(i => ({
+    cellCode: i.cellCode,
+    message: i.message?.slice(0, 60),
+  })))
+}
 
   return (
     <>
@@ -456,9 +573,10 @@ function BubbleText({ text }) {
       <div className="failure-reason-box">
         <div className="failure-reason-heading">⚠ Failure Reason(s)</div>
         <ul className="failure-reason-list">
-          {bulletLines.map((line, i) => (
-            <li key={i}>{line.replace(/^•\s*/, '')}</li>
-          ))}
+          {itemsToRender
+            ? itemsToRender.map((item, i) => renderStructuredItem(item, i))
+            : rawItemsToRender.map((line, i) => renderRawBulletItem(line, i))
+          }
         </ul>
       </div>
       {afterLines.map((line, i) => (
