@@ -1081,6 +1081,9 @@ function SqlResultBlock({ data }) {
     sql, is_valid, validation_reason, db_error,
     matched_tables = [], matched_columns = [],
     columns = [], rows = [],
+    accuracy_hint = null,
+    needs_more_info = false,
+    more_info_hint = null,
   } = data
   return (
     <div className="sql-result-block">
@@ -1128,6 +1131,12 @@ function SqlResultBlock({ data }) {
         <div className="sql-db-error" style={{ color: 'var(--text-muted)', background: 'transparent', border: 'none' }}>
           No rows returned.
         </div>
+      )}
+      {accuracy_hint && (
+        <div className="sql-accuracy-hint">💡 {accuracy_hint}</div>
+      )}
+      {needs_more_info && more_info_hint && (
+        <div className="sql-more-info-hint"><strong>Need more detail:</strong><br />{more_info_hint}</div>
       )}
     </div>
   )

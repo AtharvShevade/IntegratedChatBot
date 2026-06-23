@@ -95,13 +95,35 @@ const _pushResult = (result) => {
   console.log('[_pushResult] jobId extracted:', jobId) 
 console.debug('[_pushResult] job_id received:', jobId, '| full result keys:', Object.keys(result))
 
+  // Build sqlData for db_result type: map backend field names to SqlResultBlock shape.
+  // sqlData is only set when there is a generated SQL or actual columns to display;
+  // pure guidance responses (query too short, no tables found) keep sqlData null
+  // so the text bubble with the guidance message is shown instead.
+  const _isSqlResult = result.result_type === 'db_result'
+  const _hasSqlContent = _isSqlResult && !!(result.db_sql || (result.db_columns && result.db_columns.length > 0))
+  const _sqlData = _hasSqlContent
+    ? {
+        sql:               result.db_sql        || '',
+        is_valid:          !result.db_error,
+        validation_reason: result.db_error       || '',
+        db_error:          result.db_error        || null,
+        columns:           result.db_columns      || [],
+        rows:              result.db_rows         || [],
+        matched_tables:    [],
+        matched_columns:   [],
+        accuracy_hint:     result.accuracy_hint   || null,
+        needs_more_info:   result.needs_more_info || false,
+        more_info_hint:    result.more_info_hint  || null,
+      }
+    : null
+
   const resultMsg = {
     role: "assistant",
     text: result.response_text || result.text || "",
     data: result.data || null,
     options: result.options || [],
     resultType: result.result_type || "",
-    sqlData: null,
+    sqlData: _sqlData,
     varianceData: result.variance_data || [],
     labelA: result.variance_label_a || "",
     labelB: result.variance_label_b || "",

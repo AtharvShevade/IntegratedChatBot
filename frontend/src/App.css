@@ -1035,6 +1035,8 @@ html, body, #root {
 
 .sql-invalid-msg { font-size: 0.85rem; color: #f87171; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 10px 14px; }
 .sql-db-error    { font-size: 0.82rem; color: #fbbf24; background: rgba(251,191,36,0.07); border: 1px solid rgba(251,191,36,0.25); border-radius: 8px; padding: 10px 14px; }
+.sql-accuracy-hint { font-size: 0.8rem; color: var(--text-muted); background: rgba(99,179,237,0.06); border: 1px solid rgba(99,179,237,0.2); border-radius: 8px; padding: 8px 12px; }
+.sql-more-info-hint { font-size: 0.82rem; color: #93c5fd; background: rgba(147,197,253,0.07); border: 1px solid rgba(147,197,253,0.2); border-radius: 8px; padding: 10px 14px; white-space: pre-wrap; }
 
 /* ── SQL data table ──────────────────────────────────────────────────────── */
 .sql-table-wrapper { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); box-shadow: var(--shadow-sm); }

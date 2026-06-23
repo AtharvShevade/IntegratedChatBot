@@ -615,6 +615,7 @@ def validate_sql(sql, tables, columns):
         t for t in col_tokens
         if (
             t not in valid_col_names
+            and t not in valid_table_names          # table names in inline subqueries are valid
             and t not in _SQL_KEYWORDS
             and t not in subquery_aliases
             and t not in _ORACLE_FORMAT_TOKENS
