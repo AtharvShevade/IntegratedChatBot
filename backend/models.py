@@ -34,6 +34,8 @@ class ChatResponse(BaseModel):
     status_note:      str        = ""   # e.g. in-progress message or "file not found"
     error_details:    list[dict] = []   # structured XBRL validation errors with LLM explanations
 
+    # ── NEW: generic status/error metadata for frontend (status_code, error_category_counts) ──
+    data: dict = {}
 
     # ── SQL / Database query result fields ────────────────────────────────────
     db_columns:      list[str]       = []    # column headers from Oracle
@@ -52,10 +54,21 @@ class ChatResponse(BaseModel):
     db_beautified:   str             = ""   # LLM-formatted response (when beautify=True)
     db_qa_data:      dict            = {}   # structured table data for frontend renderer
 
+    # ── Async error enrichment ─────────────────────────────────────────────────
+    job_id: Optional[str] = None
 
 class CompareRequest(BaseModel):
     """Direct compare-execute request — bypasses intent detection entirely."""
     session_id:  str = Field(..., max_length=128)
     instance_a:  int = Field(..., ge=0)   # 0-based index into session's cmp_instances
     instance_b:  int = Field(..., ge=0)
+
+class ExplainCategoryRequest(BaseModel):
+    """Request body for /explain-category — on-demand error explanation."""
+    error_file_path: str = Field(..., max_length=1024)
+    category:        str = Field(..., max_length=64)   # formula_error | xbrl_schema | dimensional
+    form_id:         Optional[str] = Field(None, max_length=64)
+    report_name:     Optional[str] = Field(None, max_length=256)
+
+
 

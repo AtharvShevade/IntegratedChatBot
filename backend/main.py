@@ -21,9 +21,9 @@ load_dotenv()
 from backend.utils.logger import setup_logging  # noqa: E402
 setup_logging()
 
-from backend.agent import decide                      # noqa: E402
+from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
-from backend.models import ChatRequest, ChatResponse, CompareRequest  # noqa: E402
+from backend.models import ChatRequest, ChatResponse, CompareRequest, ExplainCategoryRequest  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -174,13 +174,17 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
         # ── Debug trace: log the response summary ──────────────────────────────
         debug_log(
-            "/chat RESPONSE",
-            intent=intent_for_log,
-            db_found=result.db_found if isinstance(result, ChatResponse) else result.get("db_found", "N/A"),
-            result_type=result.result_type if isinstance(result, ChatResponse) else result.get("result_type", "?"),
-            response_preview=(result.response_text if isinstance(result, ChatResponse) else result.get("response_text", ""))[:120],
-            elapsed_s=f"{elapsed:.3f}s",
-        )
+    "/chat RESPONSE",
+    intent=intent_for_log,
+    db_found=result.db_found if isinstance(result, ChatResponse) else result.get("db_found", "N/A"),
+    result_type=result.result_type if isinstance(result, ChatResponse) else result.get("result_type", "?"),
+    job_id=result.job_id if isinstance(result, ChatResponse) else result.get("job_id"),  # ← ADD THIS
+    response_preview=(
+        result.response_text if isinstance(result, ChatResponse)
+        else result.get("response_text", "")
+    )[:120],
+    elapsed_s=f"{elapsed:.3f}s",
+)
         if isinstance(result, ChatResponse):
             return result
         return ChatResponse(**result)
@@ -223,6 +227,40 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         logger.error(
             "[LLM_UNAVAILABLE] Ollama unreachable for /compare-execute — %s", exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI model unavailable. Make sure Ollama is running.",
+        ) from exc
+
+
+@app.post("/explain-category", response_model=ChatResponse, status_code=status.HTTP_200_OK)
+async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
+    """On-demand error explanation for a single category (formula_error,
+    xbrl_schema, dimensional). Triggered when the user clicks an
+    "Explain ... Errors" button in the ErrorSummaryPanel.
+    """
+    logger.info(
+        "[REQUEST] mode=explain-category category=%s form_id=%s path=%s",
+        request.category, request.form_id, request.error_file_path,
+    )
+    start = time.monotonic()
+    try:
+        result = await explain_category_for_report(
+            error_file_path=request.error_file_path,
+            category=request.category,
+            form_id=request.form_id,
+            report_name=request.report_name,
+        )
+        elapsed = time.monotonic() - start
+        logger.info(
+            "[PERF] endpoint=/explain-category category=%s duration=%.2fs",
+            request.category, elapsed,
+        )
+        return ChatResponse(**result)
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        logger.error(
+            "[LLM_UNAVAILABLE] Ollama unreachable for /explain-category — %s", exc,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -355,6 +393,32 @@ async def list_reports() -> dict:
     from backend.tools.report_lookup import _parse_returns
     names = sorted({r.get("Name", "") for r in _parse_returns() if r.get("Name")})
     return {"reports": names}
+
+
+@app.get("/status-errors/{job_id}", status_code=status.HTTP_200_OK)
+async def get_status_errors(job_id: str) -> dict:
+    """Poll for the result of a background LLM error-enrichment job.
+
+    Returns:
+        {"status": "not_found"}  — unknown job_id
+        {"status": "pending"}    — job still running
+        {"status": "done", "error_messages": [...], "error_details": [...]}  — complete
+    """
+    from backend.agent import _error_jobs
+    job = _error_jobs.get(job_id)
+    if job is None:
+        return {"status": "not_found"}
+    if job["status"] == "pending":
+        return {"status": "pending"}
+    # Done — return payload and clean up
+    payload = job["payload"]
+    logger.warning(
+    "[POLL] job_id=%s keys=%s",
+    job_id,
+    list(payload.keys()) if payload else []
+)
+    _error_jobs.pop(job_id, None)
+    return {"status": "done", **(payload or {})}
 
 
 @app.post("/guided", response_model=ChatResponse, status_code=status.HTTP_200_OK)

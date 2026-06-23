@@ -142,3 +142,33 @@ export async function transcribeAudio(audioBlob) {
   return data.transcript ?? ''
 }
 
+/**
+ * Request on-demand explanations for a single error category
+ * (formula_error | xbrl_schema | dimensional). Triggered when the user
+ * clicks an "Explain ... Errors" button in the Error Summary panel.
+ *
+ * @param {string} errorFilePath - Absolute path to the error HTML/XML file
+ *                                  (from error_category_counts.error_file_path).
+ * @param {string} category - One of "formula_error", "xbrl_schema", "dimensional".
+ * @param {string|null} formId - Report form ID (needed for xbrl_schema 4000-series tagging).
+ * @param {string|null} reportName - Report display name (for the response header).
+ * @returns {Promise<object>} - ChatResponse-shaped object with error_details populated.
+ */
+export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null) {
+  const body = { error_file_path: errorFilePath, category }
+  if (formId)     body.form_id     = formId
+  if (reportName) body.report_name = reportName
+  // Use the same BASE_URL as sendMessage — relies on Vite proxy in dev,
+  // VITE_API_BASE_URL in production. Do NOT use a hardcoded localhost fallback
+  // here (unlike the polling fetch in App.jsx which correctly uses port 8001).
+  const res = await fetch(`${BASE_URL}/explain-category`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `Explain error (${res.status})`)
+  }
+  return await res.json()
+}

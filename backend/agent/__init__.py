@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
+import uuid as _uuid_mod
 from typing import Any
+
+import uuid
+import asyncio
 
 from rapidfuzz import process as _fuzz
 from backend.llm_extractor import (
@@ -24,6 +29,7 @@ from backend.tools.instance_generator import (
     resolve_return_exact,
     validate_reporting_date,
 )
+# existing import block — add the two new names:
 from backend.tools.report_lookup import (
     _parse_returns,
     find_matching_reports,
@@ -32,9 +38,158 @@ from backend.tools.report_lookup import (
     get_form_id_by_name,
     get_instance_by_date,
     get_instance_by_dtc,
+    get_instance_by_dtc_fast,          # ← new
     get_report_status,
+    get_report_status_fast,
     get_report_status_exact,
+    get_report_status_exact_fast,      # ← new
+    _FAILED_STATUSES,
+    _get_download_info,
+    get_instances_by_form_id,
+    _safe_status,
+    _dtc_sort_key,
 )
+
+# ── In-memory async error-enrichment job store ────────────────────────────────
+# Structure: { job_id: {"status": "pending"|"done", "payload": dict|None} }
+# For multi-worker deployments replace with Redis.
+_error_jobs: dict[str, dict] = {}
+
+
+async def _run_error_enrichment(job_id: str, form_id: str, ret_name: str, instances: list[dict]):
+    from backend.tools.report_lookup import _build_status_result
+    try:
+        result = _build_status_result(form_id, ret_name, instances)
+
+        _error_jobs[job_id] = {
+            "status": "done",
+            "payload": {
+                "error_messages": result.get("error_messages", []),
+                "error_details": result.get("error_details", []),
+            },
+        }
+
+    except Exception as exc:
+        _error_jobs[job_id] = {
+            "status": "done",
+            "payload": {"error_messages": [], "error_details": []},
+        }
+
+
+
+def _get_instance_by_dtc_fast_with_bg_job(
+    form_id: str, dtc: str, return_name: str
+) -> dict:
+    """Call get_instance_by_dtc_fast and kick off background LLM enrichment
+    for failed statuses."""
+    result = get_instance_by_dtc_fast(form_id, dtc, return_name)
+
+    if (
+        result.get("type") == "final"
+        and result.get("status_code") in _FAILED_STATUSES
+        and result.get("error_count", 0) > 0
+    ):
+        job_id = str(_uuid_mod.uuid4())
+        _error_jobs[job_id] = {"status": "pending", "payload": None}
+
+        instances   = get_instances_by_form_id(form_id)
+        target_dtc  = result["dtc"]
+        row         = next(
+            (r for r in instances if r.get("DTC", "").strip() == target_dtc), None
+        )
+        if row:
+            code = _safe_status(row)
+            dl   = _get_download_info(row, form_id)
+            thread = threading.Thread(
+                target=_run_error_enrichment_async,
+                args=(job_id, form_id, row, dl, code),
+                daemon=True,
+            )
+            thread.start()
+            result["job_id"] = job_id
+
+    return result
+
+
+def _get_instance_by_date_fast_with_bg_job(
+    form_id: str, date_query: str, return_name: str
+) -> dict:
+    """Find instance by reporting date, then apply the fast+bg-job pattern."""
+    rows = get_instances_by_form_id(form_id)
+    date_clean = date_query.strip()
+    row = next(
+        (r for r in rows if r.get("ReportingDate", "").strip() == date_clean), None
+    ) or next(
+        (r for r in rows if date_clean.lower() in r.get("ReportingDate", "").lower()), None
+    )
+    if not row:
+        return {
+            "type":                "date_not_found",
+            "message":             f"No instance found for '{date_clean}'.",
+            "form_id":             form_id,
+            "return_name":         return_name,
+            "available_instances": get_available_instances(form_id),
+        }
+    dtc = row.get("DTC", "").strip()
+    return _get_instance_by_dtc_fast_with_bg_job(form_id, dtc, return_name)
+
+
+def _run_error_enrichment_async(job_id: str, form_id: str, latest_row: dict, dl: dict, code: int) -> None:
+    """Runs in a background thread. Calls existing LLM enrichment and stores result."""
+    try:
+        from backend.tools.report_lookup import _enrich_error_info
+        error_messages, error_details = _enrich_error_info(code, dl, form_id)
+        _error_jobs[job_id] = {
+            "status": "done",
+            "payload": {
+                "error_messages": error_messages,
+                "error_details":  error_details,
+            },
+        }
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("[BG_ENRICH] job=%s failed: %s", job_id, exc)
+        _error_jobs[job_id] = {
+            "status": "done",
+            "payload": {"error_messages": [], "error_details": []},
+        }
+
+
+def _get_status_fast_with_bg_job(query: str) -> dict:
+    """Call get_report_status_fast and, for failed statuses with errors, kick off
+    background LLM enrichment.  Returns the result dict with job_id attached when
+    a background job was started.
+    """
+    result = get_report_status_fast(query)
+    
+
+    if (
+        result.get("type") in ("final", "latest_with_ask")
+        and result.get("status_code") in _FAILED_STATUSES
+        and result.get("error_count", 0) > 0
+    ):
+        job_id = str(_uuid_mod.uuid4())
+        _error_jobs[job_id] = {"status": "pending", "payload": None}
+
+        form_id     = result["form_id"]
+        instances   = get_instances_by_form_id(form_id)
+        sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
+        latest_row  = sorted_rows[0]
+        code        = _safe_status(latest_row)
+        dl          = _get_download_info(latest_row, form_id)
+
+        thread = threading.Thread(
+            target=_run_error_enrichment_async,
+            args=(job_id, form_id, latest_row, dl, code),
+            daemon=True,
+        )
+        thread.start()
+
+        result["job_id"]      = job_id
+        result["result_type"] = result.get("result_type", "final")
+
+    return result
+
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +655,7 @@ async def decide(
         if dtc_from_label:
             form_id     = session["pending_form_id"]
             return_name = session["pending_return_name"]
-            result = get_instance_by_dtc(form_id, dtc_from_label, return_name)
+            result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc_from_label, return_name)
             if result["type"] == "date_not_found":
                 available = get_available_instances(form_id)
                 return _build(
@@ -550,7 +705,7 @@ async def decide(
                 return_name = session["pending_return_name"]
 
                 # Fallback: user typed a raw date string
-                result = get_instance_by_date(form_id, user_query.strip(), return_name)
+                result = _get_instance_by_date_fast_with_bg_job(form_id,user_query.strip(),return_name)
 
                 if result["type"] == "date_not_found":
                     available = get_available_instances(form_id)
@@ -699,7 +854,9 @@ async def decide(
             auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status")
             if auth_err:
                 return auth_err
-            result = get_report_status_exact(resolved_name)
+            result = _get_status_exact_fast_with_bg_job(resolved_name)
+            if allowed_form_ids is not None:
+                result = _apply_auth_to_status_result(result, allowed_form_ids)
             return _from_result(result, intent="get_status", session_id=session_id)
 
     # -- Generate: disambiguation (user picks a report) -----------------------
@@ -1069,7 +1226,7 @@ async def decide(
                         )
                         if session_id:
                             _session_context[session_id] = {"last_search_terms": candidate}
-                        result = get_report_status(candidate)
+                        result = _get_status_fast_with_bg_job(candidate)
                         if allowed_form_ids is not None:
                             result = _apply_auth_to_status_result(result, allowed_form_ids)
                         return _from_result(result, intent="get_status", session_id=session_id)
@@ -1244,7 +1401,7 @@ async def decide(
             # Default: treat as a status query
             if session_id:
                 _session_context[session_id] = {"last_search_terms": _matched_query}
-            result = get_report_status(_matched_query)
+            result = _get_status_fast_with_bg_job(_matched_query)
             if allowed_form_ids is not None:
                 result = _apply_auth_to_status_result(result, allowed_form_ids)
             return _from_result(result, intent="get_status", session_id=session_id)
@@ -1407,7 +1564,7 @@ async def decide(
     # name here bypasses that check and jumps directly to instance lookup,
     # which gives a misleading "No instances found" when the user typed only
     # a partial name like "raq".
-    result = get_report_status(search_terms or user_query)
+    result = _get_status_fast_with_bg_job(search_terms or user_query)
     if allowed_form_ids is not None:
         result = _apply_auth_to_status_result(result, allowed_form_ids)
     _decide_elapsed = time.monotonic() - _decide_start
@@ -1804,6 +1961,11 @@ def _from_result(
         run_time        = result.get("run_time", "")
         other_instances = result.get("other_instances", [])
         status_note     = result.get("status_note", "")
+        job_id          = result.get("job_id")
+        status_code     = result.get("status_code")
+        error_category_counts = result.get("error_category_counts") or None
+        is_4000_series = result.get("is_4000_series", False)   # ADD THIS
+
         text = (
             f"{ret_name}\n"
             f"Latest Reporting Date : {rep_date}\n"
@@ -1811,12 +1973,27 @@ def _from_result(
         )
         if run_time:
             text += f"\nGenerated On          : {run_time}"
-        error_messages = result.get("error_messages", [])
-        if error_messages:
-            text += "\n\nFailure Reason(s):\n"
-            text += "\n".join(f"\u2022 {m}" for m in error_messages)
+        if job_id:
+            error_count = result.get("error_count", 0)
+            if error_count > 0:
+                text += f"\n\nErrors Found : {error_count}\n\nGenerating error explanations\u2026"
+        else:
+            error_messages = result.get("error_messages", [])
+            if error_messages:
+                text += "\n\nFailure Reason(s):\n"
+                text += "\n".join(f"\u2022 {m}" for m in error_messages)
         if status_note:
             text += f"\n{status_note}"
+
+        response_data: dict[str, Any] = {}
+        if status_code is not None:
+            response_data["status_code"] = status_code
+        if error_category_counts:
+            response_data["error_category_counts"] = error_category_counts
+        response_data["is_4000_series"] = is_4000_series   # ADD THIS
+        response_data["form_id"] = result.get("form_id", "")   # ← ADD THIS LINE
+
+
         if other_instances:
             if session_id:
                 _session_context[session_id] = {
@@ -1833,16 +2010,25 @@ def _from_result(
                 download_url=result.get("download_url", ""),
                 download_label=result.get("download_label", ""),
                 error_details=result.get("error_details") or None,
+                job_id=job_id,
+                data=response_data,
             )
         # No other instances — just show final status
         return _build(intent=intent, report_name=ret_name,
                       response_text=text, result_type="final",
                       download_url=result.get("download_url", ""),
                       download_label=result.get("download_label", ""),
-                      error_details=result.get("error_details") or None)
+                      error_details=result.get("error_details") or None,
+                      job_id=job_id,
+                      data=response_data)
 
     if rtype == "final":
-        dtc = result.get("dtc", "")
+        dtc    = result.get("dtc", "")
+        job_id = result.get("job_id")
+        status_code = result.get("status_code")
+        error_category_counts = result.get("error_category_counts") or None
+        is_4000_series = result.get("is_4000_series", False)   # ADD THIS
+
         text = (
             f"{result['report_name']}\n"
             f"Reporting Date : {result['reporting_date']}\n"
@@ -1850,20 +2036,36 @@ def _from_result(
         if dtc:
             text += f"Generated On   : {dtc}\n"
         text += f"Status         : {result['status']}"
-        error_messages = result.get("error_messages", [])
-        if error_messages:
-            text += "\n\nFailure Reason(s):\n"
-            text += "\n".join(f"\u2022 {m}" for m in error_messages)
+        if job_id:
+            error_count = result.get("error_count", 0)
+            if error_count > 0:
+                text += f"\n\nErrors Found : {error_count}\n\nGenerating error explanations\u2026"
+        else:
+            error_messages = result.get("error_messages", [])
+            if error_messages:
+                text += "\n\nFailure Reason(s):\n"
+                text += "\n".join(f"\u2022 {m}" for m in error_messages)
         status_note = result.get("status_note", "")
         if status_note:
             text += f"\n{status_note}"
         if keep_date_ctx:
             text += '\n\nYou can select another reporting date, or say "new report" to switch reports.'
+
+        response_data: dict[str, Any] = {}
+        if status_code is not None:
+            response_data["status_code"] = status_code
+        if error_category_counts:
+            response_data["error_category_counts"] = error_category_counts
+        response_data["is_4000_series"] = is_4000_series   # ADD THIS
+        response_data["form_id"] = result.get("form_id", "")   # ← ADD THIS LINE
+
         return _build(intent=intent, report_name=result["report_name"],
                       response_text=text, result_type="final",
                       download_url=result.get("download_url", ""),
                       download_label=result.get("download_label", ""),
-                      error_details=result.get("error_details") or None)
+                      error_details=result.get("error_details") or None,
+                      job_id=job_id,
+                      data=response_data)
 
     if rtype == "disambiguation":
         opts = result.get("options", [])
@@ -1980,6 +2182,36 @@ def _ask_another_date(
             "pending_return_name":     return_name,
             "pending_other_instances": all_instances,
         }
+
+    job_id = result.get("job_id")  # ★ FIX: propagate background job id
+    status_code = result.get("status_code")
+    error_category_counts = result.get("error_category_counts") or None
+    is_4000_series = result.get("is_4000_series", False)   # ADD THIS
+
+
+
+    # ★ FIX: if a bg job was kicked off, add the "Generating..." marker to text
+    if job_id:
+        error_count = result.get("error_count", 0)
+        if error_count > 0:
+            text += f"\n\nErrors Found : {error_count}\n\nGenerating error explanations\u2026"
+    else:
+        # Synchronous path — error_messages already populated
+        error_messages = result.get("error_messages", [])
+        if error_messages:
+            text += "\n\nFailure Reason(s):\n"
+            text += "\n".join(f"\u2022 {m}" for m in error_messages)
+
+    response_data: dict[str, Any] = {}
+    if status_code is not None:
+        response_data["status_code"] = status_code
+    if error_category_counts:
+        response_data["error_category_counts"] = error_category_counts
+    response_data["is_4000_series"] = is_4000_series   # ADD THIS
+    response_data["form_id"] = form_id   # ← ADD THIS LINE
+
+
+
     return _build(
         intent=intent,
         report_name=return_name,
@@ -1988,6 +2220,9 @@ def _ask_another_date(
         options=["Yes", "No"],
         download_url=result.get("download_url", ""),
         download_label=result.get("download_label", ""),
+        error_details=result.get("error_details") or None,  # ★ FIX
+        job_id=job_id,                                       # ★ FIX
+        data=response_data,                                  # ★ FIX
     )
 
 
@@ -2487,6 +2722,8 @@ def _build(
     download_label:   str = "",
     status_note:      str = "",
     error_details:    list[dict] | None = None,
+    job_id:           str | None = None,
+    data:             dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "intent":             intent,
@@ -2514,6 +2751,10 @@ def _build(
         out["instances_data"] = instances_data
     if error_details:
         out["error_details"] = error_details
+    if job_id is not None:
+        out["job_id"] = job_id
+    if data:
+        out["data"] = data
     return out
 
 
@@ -2626,3 +2867,122 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> d
         )
         return {"type": "error", "message": "You are not authorised to access this report."}
     return result  # generic error / unknown — pass through
+
+def _get_status_exact_fast_with_bg_job(report_name: str) -> dict:
+    """Call get_report_status_exact_fast and kick off background LLM enrichment
+    for failed statuses, exactly like _get_status_fast_with_bg_job."""
+    result = get_report_status_exact_fast(report_name)
+
+    if (
+        result.get("type") in ("final", "latest_with_ask")
+        and result.get("status_code") in _FAILED_STATUSES
+        and result.get("error_count", 0) > 0
+    ):
+        job_id = str(_uuid_mod.uuid4())
+        _error_jobs[job_id] = {"status": "pending", "payload": None}
+
+        form_id     = result["form_id"]
+        instances   = get_instances_by_form_id(form_id)
+        sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
+        latest_row  = sorted_rows[0]
+        code        = _safe_status(latest_row)
+        dl          = _get_download_info(latest_row, form_id)
+
+        thread = threading.Thread(
+            target=_run_error_enrichment_async,
+            args=(job_id, form_id, latest_row, dl, code),
+            daemon=True,
+        )
+        thread.start()
+
+        result["job_id"]      = job_id
+        result["result_type"] = result.get("result_type", "final")
+
+    return result
+
+# ---------------------------------------------------------------------------
+# On-demand error category explanation (new — triggered by ErrorSummaryPanel)
+# ---------------------------------------------------------------------------
+
+_CATEGORY_DISPLAY = {
+    "formula_error": "Formula Errors",
+    "xbrl_schema":    "XBRL Schema Errors",
+    "dimensional":    "Dimension Errors",
+}
+
+
+async def explain_category_for_report(
+    error_file_path: str,
+    category: str,
+    form_id: str | None = None,
+    report_name: str | None = None,
+) -> dict[str, Any]:
+    """Explain up to 5 errors for the given category from error_file_path.
+
+    Runs the existing on-demand explanation pipeline
+    (explain_errors_by_category_for_form, unchanged) in a background thread
+    since it performs blocking LLM calls, then formats the result as a
+    chat-style response so the frontend can append it as a new bubble.
+    """
+    from backend.tools.report_lookup import explain_errors_by_category_for_form
+
+    category_label = _CATEGORY_DISPLAY.get(category, category)
+
+    if category not in ("formula_error", "xbrl_schema", "dimensional"):
+        return _build(
+            intent="explain_errors",
+            report_name=report_name,
+            response_text=f"Unsupported error category: {category}",
+            result_type="error",
+        )
+
+    if not error_file_path:
+        return _build(
+            intent="explain_errors",
+            report_name=report_name,
+            response_text="No error file is available for this report.",
+            result_type="error",
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+        explained = await loop.run_in_executor(
+            None,
+            explain_errors_by_category_for_form,
+            error_file_path,
+            category,
+            form_id or "",
+        )
+    except Exception as exc:
+        logger.error(
+            "[EXPLAIN_CATEGORY] category=%s path=%s failed: %s",
+            category, error_file_path, exc,
+        )
+        return _build(
+            intent="explain_errors",
+            report_name=report_name,
+            response_text=(
+                f"Sorry, I couldn't generate explanations for {category_label} right now. "
+                "Please try again."
+            ),
+            result_type="error",
+        )
+
+    if not explained:
+        return _build(
+            intent="explain_errors",
+            report_name=report_name,
+            response_text=f"No {category_label.lower()} could be parsed from the error file.",
+            result_type="error",
+        )
+
+    n = len(explained)
+    text = f"⚙ {category_label} — showing {n} of up to 5"
+
+    return _build(
+        intent="explain_errors",
+        report_name=report_name,
+        response_text=text,
+        result_type="final",
+        error_details=explained,
+    )

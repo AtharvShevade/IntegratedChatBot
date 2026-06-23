@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
-import { sendMessage, sendGuidedMessage, compareInstances } from './services/api.js'
-
+import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
 // survives a page refresh (the .NET params are only in the URL on first load).
@@ -55,8 +54,9 @@ export default function App() {
   const [inputText, setInputText]     = useState('')
   const [isLoading, setIsLoading]     = useState(false)
   const [isGuidedFlow, setIsGuidedFlow] = useState(false)
-  const inputRef  = useRef(null)
-  const sessionId = useRef(_uid || crypto.randomUUID())
+  const inputRef       = useRef(null)
+  const sessionId      = useRef(_uid || crypto.randomUUID())
+  const pollIntervalRef = useRef(null)
 
   // ── Persist messages to localStorage on every change ─────────────────────
   useEffect(() => {
@@ -88,66 +88,146 @@ export default function App() {
   ])
 
   // ── Helper: push an assistant result into the message list ───────────────
-  const _pushResult = (result) => {
-    const isTerminal    = _TERMINAL_TYPES.has(result.result_type)
-    const isStillGuided =
-      result.result_type === 'guided_menu' || result.result_type === 'guided_input'
-    setIsGuidedFlow(isTerminal ? false : isStillGuided)
+const _pushResult = (result) => {
+  console.log('[_pushResult] FULL RESULT:', JSON.stringify(result, null, 2))  // ADD
+  const isTerminal = _TERMINAL_TYPES.has(result.result_type)
+  const jobId = result.job_id ?? result.jobId ?? result.job?.id ?? null
+  console.log('[_pushResult] jobId extracted:', jobId) 
+console.debug('[_pushResult] job_id received:', jobId, '| full result keys:', Object.keys(result))
 
-    // Append more_info_hint to the displayed text when the backend signals
-    // that the query needs more detail (short query, no results, etc.)
-    const moreInfoHint = result.needs_more_info && result.more_info_hint
-      ? result.more_info_hint : null
-    const displayText = moreInfoHint
-      ? `${result.response_text}\n\n${moreInfoHint}` : result.response_text
+  const resultMsg = {
+    role: "assistant",
+    text: result.response_text || result.text || "",
+    data: result.data || null,
+    options: result.options || [],
+    resultType: result.result_type || "",
+    sqlData: null,
+    varianceData: result.variance_data || [],
+    labelA: result.variance_label_a || "",
+    labelB: result.variance_label_b || "",
+    llmSummary: result.llm_summary || "",
+    instancesData: result.instances_data || [],
+    downloadUrl: result.download_url || "",
+    downloadLabel: result.download_label || "",
+    statusNote: result.status_note || "",
+    dbQaData: result.db_qa_data || null,
 
-    // Only pass sqlData when there are actual rows — triggers the table UI.
-    // For no-results / error / too-short cases the text bubble is used instead.
-    const sqlData = result.result_type === 'db_result' && result.db_rows?.length > 0
-      ? {
-          sql:             result.db_sql      || '',
-          is_valid:        !result.db_error,
-          db_error:        result.db_error    || null,
-          columns:         result.db_columns  || [],
-          rows:            result.db_rows     || [],
-          matched_tables:  [],
-          matched_columns: [],
-        }
-      : null
+    // IMPORTANT FIX
+    errorDetails: result.error_details || [],
+    jobId: jobId
+  }
 
-    const resultMsg = {
-      role:          'assistant',
-      text:          displayText,
-      options:       result.options || [],
-      resultType:    result.result_type || '',
-      sqlData,
-      varianceData:  result.variance_data || [],
-      labelA:        result.variance_label_a || '',
-      labelB:        result.variance_label_b || '',
-      llmSummary:    result.llm_summary || '',
-      instancesData: result.instances_data || [],
-      downloadUrl:   result.download_url   || '',
-      downloadLabel: result.download_label || '',
-      statusNote:    result.status_note    || '',
-      dbQaData:      result.db_qa_data     || null,
-      errorDetails:  result.error_details  || [],
+  console.debug(
+    "[_pushResult] error_details received:",
+    result.error_details?.length
+  )
+
+  setMessages((prev) => [...prev, resultMsg])
+  // After step 2 of the guided workflow the backend clears _guided_sessions and
+  // hands control to _session_context (handled by /chat → decide()).
+  // Any result_type that is NOT 'guided_input' or 'guided_menu' means the guided
+  // report-name step is complete and all subsequent messages must go via /chat.
+  if (result.result_type !== 'guided_input' && result.result_type !== 'guided_menu') {
+    setIsGuidedFlow(false)
+  }
+  if (jobId) {
+    setTimeout(() => pollForErrors(jobId), 500)
+  }
+
+  if (isTerminal && !jobId) {
+    setTimeout(() => {
+      setMessages((prev) => [...prev, { role: "feedback_prompt" }])
+    }, 1000)
+  }
+}
+
+  // ── Poll for background error enrichment ─────────────────────────────────
+  // In pollForErrors, add a counter
+const pollForErrors = (jobId) => {
+  console.log('[pollForErrors] CALLED with jobId:', jobId)
+
+  if (pollIntervalRef.current) {
+    clearInterval(pollIntervalRef.current)
+    pollIntervalRef.current = null
+  }
+
+  let attempts = 0
+  const MAX_ATTEMPTS = 150  // 150 × 3s = 7.5 min — covers even slow 5-rule formula jobs
+
+  const tick = async () => {
+    attempts++
+    console.log('[poll] attempt:', attempts, 'jobId:', jobId)
+
+    if (attempts > MAX_ATTEMPTS) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+      return
     }
 
-    // Add before the resultMsg object is built:
-console.debug('[_pushResult] error_details received:', result.error_details?.length,
-  result.error_details?.map(e => ({
-    cell: e?.table_info?.cell_code,
-    explanation: e?.explanation?.slice(0, 60),
-    validation_error: e?.table_info?.validation_error?.slice(0, 40),
-  }))
-)
-    setMessages((prev) => [...prev, resultMsg])
-    if (isTerminal) {
-      setTimeout(() => {
-        setMessages((prev) => [...prev, { role: 'feedback_prompt' }])
-      }, 1000)
+    try {
+      const res = await fetch(`/status-errors/${jobId}`)
+      const data = await res.json()
+      console.log('[poll] response:', JSON.stringify(data, null, 2))
+
+      // ── FIX: stop polling if job was cleaned up before we got it ──────────
+      if (data.status === "not_found") {
+        console.warn('[poll] job not found — stopping poll for', jobId)
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+        return
+      }
+
+      if (data.status === "done") {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (String(msg.jobId) !== String(jobId)) return msg
+
+            const cleanText = msg.text
+              .replace(/\n*Generating error explanations…/g, '')
+              .replace(/\n*Errors Found\s*:\s*\d+/g, '')
+              .trimEnd()
+
+            const newErrorDetails = data.error_details || []
+
+            const errorMessages = newErrorDetails
+              .map((e) => {
+                const ti = e?.table_info ?? {}
+                const cell = ti.cell_code || e.cellCode || e.cell || ''
+                const msg = e.explanation || ti.validation_error || e.message || ''
+                return cell && msg ? `${cell} → ${msg}` : msg
+              })
+              .filter(Boolean)
+
+            const failureText = errorMessages.length
+              ? `\n\nFailure Reason(s):\n${errorMessages.map((m) => `• ${m}`).join('\n')}`
+              : ''
+
+            return {
+              ...msg,
+              text: cleanText + failureText,
+              errorDetails: newErrorDetails,
+            }
+          })
+        )
+
+        setTimeout(() => {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1]
+            if (last?.role === 'feedback_prompt') return prev
+            return [...prev, { role: 'feedback_prompt' }]
+          })
+        }, 800)
+      }
+    } catch (err) {
+      console.warn("[poll] error-job poll failed:", err)
     }
   }
+
+  pollIntervalRef.current = setInterval(tick, 3000)
+}
 
   // ── Free-text chat ────────────────────────────────────────────────────────
   const submitChatMessage = async (text) => {
@@ -156,6 +236,11 @@ console.debug('[_pushResult] error_details received:', result.error_details?.len
 
     // Capture history BEFORE appending the current user message
     const recentHistory = _getRecentHistory(messages)
+
+    if (pollIntervalRef.current) {
+  clearInterval(pollIntervalRef.current)
+  pollIntervalRef.current = null
+}
 
     setMessages((prev) => [...prev, { role: 'user', text: trimmed }])
     setIsLoading(true)
@@ -182,11 +267,16 @@ console.debug('[_pushResult] error_details received:', result.error_details?.len
     }
   }
 
+
   // ── Guided workflow step ──────────────────────────────────────────────────
   const submitGuidedStep = async (text) => {
     const trimmed = text.trim()
     if (!trimmed || isLoading) return
 
+    if (pollIntervalRef.current) {
+  clearInterval(pollIntervalRef.current)
+  pollIntervalRef.current = null
+}
     setMessages((prev) => [...prev, { role: 'user', text: trimmed }])
     setIsLoading(true)
 
@@ -254,6 +344,25 @@ console.debug('[_pushResult] error_details received:', result.error_details?.len
     }
   }
 
+  // ── Explain a single error category (Formula / XBRL Schema / Dimension) ──
+  const handleExplainCategory = async (category, errorFilePath, formId = null, reportName = null) => {
+    if (isLoading) return
+    setIsLoading(true)
+    try {
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName)
+      _pushResult(result)
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'error', text: err.message || 'Failed to generate explanations. Please try again.' },
+      ])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+
+
   // ── Feedback after completed action ──────────────────────────────────────
   const handleFeedback = (response) => {
     if (response === 'yes') {
@@ -313,6 +422,7 @@ console.debug('[_pushResult] error_details received:', result.error_details?.len
           onGuidedAction={handleGuidedAction}
           onCompare={handleCompareInstances}
           onFeedback={handleFeedback}
+          onExplainCategory={handleExplainCategory}
         />
       </main>
 

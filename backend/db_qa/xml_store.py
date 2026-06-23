@@ -1,10 +1,15 @@
 """XML data store — loads and caches all iDEAL application XML files.
 
-All data is held in memory as plain dicts.  Files are parsed once and reused.
+All data is held in memory as plain dicts.  Files are parsed on first access
+and re-parsed automatically whenever the underlying file changes on disk
+(detected via mtime comparison).  The cache is never stale for more than one
+request cycle, without requiring a backend restart.
 """
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -89,20 +94,123 @@ def _safe(record: dict) -> dict:
 class XMLStore:
     """Thread-safe, lazily-populated in-memory cache for iDEAL XML databases.
 
+    Each raw XML file is loaded on first access and automatically reloaded
+    whenever its on-disk modification time changes.  Derived in-memory indexes
+    (user, dept, role, return) are evicted whenever their source file is
+    reloaded so they are rebuilt on the next access.
+
     Usage::
 
         store = XMLStore("D:/Repo5.5/Database")
         active = [u for u in store.users() if u["Status"] == "true"]
     """
 
+    # Maps each raw XML filename → derived index sentinel keys that must be
+    # evicted from _cache whenever that file is reloaded.
+    _INDEX_DEPS: dict[str, list[str]] = {
+        "XML_User.xml":       ["__user_index__"],
+        "XML_Dept.xml":       ["__dept_index__"],
+        "XML_Role.xml":       ["__role_index__"],
+        "Returns.xml":        ["__return_index__"],
+        "NonXBRLReturns.xml": ["__return_index__"],
+    }
+
     def __init__(self, db_path: str | Path):
         self._db = Path(db_path)
+        # Raw-data cache: filename → list[row_dict]
         self._cache: dict[str, list[dict[str, str]]] = {}
+        # Last-known mtime for each cached file
+        self._mtime: dict[str, float] = {}
+        # One lock per store instance; guards both _cache and _mtime
+        self._lock = threading.Lock()
 
     def _load(self, filename: str) -> list[dict[str, str]]:
-        if filename not in self._cache:
-            self._cache[filename] = _parse_xml(self._db / filename)
-        return self._cache[filename]
+        """Return cached rows for *filename*, reloading from disk if the file
+        has been modified since the last load.
+
+        Thread-safe: concurrent callers block on the per-store lock only for
+        the brief mtime check (cache hit) or the full re-parse (cache miss /
+        file changed).
+
+        Edge cases:
+        - File deleted / inaccessible: logs a warning and returns the stale
+          cache if available, otherwise returns an empty list.
+        - Parse error on reload: logs an error, keeps the previous good cache,
+          and does NOT advance the stored mtime so the next request will retry.
+        - Concurrent reload: the lock serialises all loaders; only the first
+          thread does the actual disk I/O; subsequent threads see the freshly
+          updated cache.
+        """
+        path = self._db / filename
+
+        # ── 1. Read current mtime outside the lock (fast syscall, no I/O)
+        try:
+            current_mtime = os.path.getmtime(path)
+        except OSError:
+            # File is missing or inaccessible.
+            with self._lock:
+                if filename in self._cache:
+                    logger.warning(
+                        "[XMLStore] File inaccessible: %s — serving stale cache (%d rows)",
+                        filename, len(self._cache[filename]),
+                    )
+                    return self._cache[filename]
+            logger.warning(
+                "[XMLStore] File inaccessible and no prior cache for %s — returning []",
+                filename,
+            )
+            return []
+
+        # ── 2. Fast-path cache hit: no lock needed for a pure read check
+        #    (safe because Python dict reads are GIL-protected and we only
+        #    confirm validity under the lock below when a reload is needed)
+        if self._mtime.get(filename) == current_mtime and filename in self._cache:
+            logger.debug("[XMLStore] Cache HIT: %s", filename)
+            return self._cache[filename]
+
+        # ── 3. Cache miss or file changed — acquire lock and re-check
+        with self._lock:
+            # Re-check inside the lock in case another thread already reloaded
+            if self._mtime.get(filename) == current_mtime and filename in self._cache:
+                logger.debug("[XMLStore] Cache HIT (post-lock): %s", filename)
+                return self._cache[filename]
+
+            prev_mtime = self._mtime.get(filename)
+            if prev_mtime is None:
+                logger.info("[XMLStore] Cache LOAD: %s", filename)
+            else:
+                logger.info(
+                    "[XMLStore] File changed (mtime %.3f → %.3f), reloading: %s",
+                    prev_mtime, current_mtime, filename,
+                )
+
+            data = _parse_xml(path)
+
+            if not data and filename in self._cache:
+                # Parse returned nothing (error or genuinely empty file).
+                # Keep the previous good cache rather than silently wiping data.
+                # Do NOT update _mtime so the next request will retry.
+                logger.warning(
+                    "[XMLStore] Reload of %s returned 0 rows — keeping stale cache",
+                    filename,
+                )
+                return self._cache[filename]
+
+            self._cache[filename] = data
+            self._mtime[filename] = current_mtime
+
+            # Evict derived indexes whose source data just changed
+            for idx_key in self._INDEX_DEPS.get(filename, []):
+                if self._cache.pop(idx_key, None) is not None:
+                    logger.debug(
+                        "[XMLStore] Evicted derived index %s (source: %s)",
+                        idx_key, filename,
+                    )
+
+            logger.info(
+                "[XMLStore] Loaded %d rows from %s", len(data), filename
+            )
+            return data
 
     # ── raw data accessors ───────────────────────────────────────────────────
 

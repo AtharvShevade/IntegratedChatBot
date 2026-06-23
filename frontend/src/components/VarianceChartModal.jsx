@@ -201,48 +201,53 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
     return `${v >= 0 ? '+' : ''}${v.toFixed(0)}%`
   }
 
-  const sharedChartProps = {
-    data: chartData,
-    margin: { top: 10, right: 20, bottom: 75, left: 20 },
-  }
+  // ── Replace sharedXAxis, sharedYAxis, sharedChartProps, sharedLegend ─────────
 
-  const sharedXAxis = (
+const sharedChartProps = {
+  data: chartData,
+  layout: "vertical",
+  margin: { top: 10, right: 30, bottom: 10, left: 10 },
+}
+
+const sharedXAxis = (
   <XAxis
-    dataKey="name"
+    type="number"
+    tickFormatter={effectiveLog ? fmtLogAxis : fmtAxis}
     tick={{ fontSize: 11, fill: '#6B7280' }}
-    angle={-35}
-    textAnchor="end"
-    interval={0}
-    height={70}
+    width={70}
   />
 )
 
-  const sharedYAxis = (
-    <YAxis
-      tickFormatter={effectiveLog ? fmtLogAxis : fmtAxis}
-      tick={{ fontSize: 11, fill: '#6B7280' }}
-      width={70}
-    />
-  )
+const sharedYAxis = (
+  <YAxis
+    type="category"
+    dataKey="fullName"
+    tick={{ fontSize: 11, fill: '#6B7280', textAnchor: 'end' }}
+    width={250}
+    tickLine={false}
+    dx={-4}
+  />
+)
+
 
   const sharedGrid    = <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,120,160,0.15)" />
   const sharedLegend = (
   <Legend
-    verticalAlign="bottom"
+    verticalAlign="top"
     align="center"
-    wrapperStyle={{
-      fontSize: 12,
-      bottom: 8,
-      paddingTop: 10
-    }}
+    wrapperStyle={{ fontSize: 12, paddingBottom: 10 }}
   />
 )
+
   const sharedTooltip = (
     <Tooltip
       content={<VarTooltip labelA={labelA} labelB={labelB} />}
       cursor={{ fill: 'rgba(11,92,173,0.07)' }}
     />
   )
+
+  const chartHeight = Math.max(340, chartData.length * 36 + 60)   
+
 
   return (
     /* backdrop */
@@ -333,85 +338,100 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
         </div>
 
         {/* ── Chart area ── */}
-        <div className="vc-chart-area">
-          {chartData.length === 0 ? (
-            <div className="vc-empty">No rows to display.</div>
-          ) : chartType === 'pct' ? (
-            /* ── % Change chart ── */
-            <ResponsiveContainer width="100%" height={340}>
-              <BarChart data={chartData} margin={{ top: 10, right: 20, bottom: 75, left: 20 }}>
-                {sharedGrid}
-                {sharedXAxis}
-                <YAxis tickFormatter={pctTickFmt} tick={{ fontSize: 11, fill: '#6B7280' }} width={70} />
-                {sharedTooltip}
-                <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
-                <ReferenceLine y={0} stroke="rgba(100,120,160,0.3)" />
-                <Bar dataKey="pct_display" name="% Change" radius={[4, 4, 0, 0]} maxBarSize={32} animationDuration={600}>
-                  {chartData.map((entry, i) => (
-                    <Cell
-                      key={i}
-                      fill={entry.sign_change ? COLOR_SIGN
-                           : entry.significant ? COLOR_HIGH
-                           : (entry.pct_display ?? 0) >= 0 ? COLOR_POS : COLOR_NEG}
-                    />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <ResponsiveContainer width="100%" height={340}>
-              {chartType === 'bar' ? (
-                <BarChart {...sharedChartProps}>
-                  {sharedGrid}
-                  {sharedXAxis}
-                  {sharedYAxis}
-                  {sharedTooltip}
-                  {sharedLegend}
-                  <ReferenceLine y={0} stroke="rgba(100,120,160,0.3)" />
-                  <Bar dataKey={aKey} name={labelA} radius={[4, 4, 0, 0]} maxBarSize={32} animationDuration={600}>
-                    {chartData.map((entry, i) => (
-                      <Cell key={i} fill={barFillA(entry)} opacity={entry.significant ? 1 : 0.85} />
-                    ))}
-                  </Bar>
-                  <Bar dataKey={bKey} name={labelB} radius={[4, 4, 0, 0]} maxBarSize={32} animationDuration={600}>
-                    {chartData.map((entry, i) => (
-                      <Cell key={i} fill={barFillB(entry)} opacity={entry.significant ? 1 : 0.75} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              ) : (
-                <LineChart {...sharedChartProps}>
-                  {sharedGrid}
-                  {sharedXAxis}
-                  {sharedYAxis}
-                  {sharedTooltip}
-                  {sharedLegend}
-                  <ReferenceLine y={0} stroke="rgba(100,120,160,0.3)" />
-                  <Line
-                    type="monotone"
-                    dataKey={aKey}
-                    name={labelA}
-                    stroke={COLOR_A}
-                    strokeWidth={2.5}
-                    dot={{ r: 4, fill: COLOR_A, strokeWidth: 0 }}
-                    activeDot={{ r: 6 }}
-                    animationDuration={600}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey={bKey}
-                    name={labelB}
-                    stroke={COLOR_B}
-                    strokeWidth={2.5}
-                    dot={{ r: 4, fill: COLOR_B, strokeWidth: 0 }}
-                    activeDot={{ r: 6 }}
-                    animationDuration={600}
-                  />
-                </LineChart>
-              )}
-            </ResponsiveContainer>
-          )}
-        </div>
+        <div className="vc-chart-area" style={{ overflowY: "auto", maxHeight: "65vh" }}>
+  {chartData.length === 0 ? (
+    <div className="vc-empty">No rows to display.</div>
+  ) : chartType === 'pct' ? (
+    /* ── % Change chart ── */
+    <ResponsiveContainer width="100%" height={chartHeight}>
+      <BarChart
+        data={chartData}
+        layout="vertical"                          // ← flip
+        margin={{ top: 10, right: 30, bottom: 10, left: 10 }}
+      >
+        {sharedGrid}
+        <XAxis
+          type="number"
+          tickFormatter={pctTickFmt}
+          tick={{ fontSize: 11, fill: '#6B7280' }}
+          width={70}
+        />
+        <YAxis
+          type="category"
+          dataKey="name"
+          tick={{ fontSize: 11, fill: '#6B7280' }}
+          width={220}
+          tickLine={false}
+        />
+        {sharedTooltip}
+        <Legend wrapperStyle={{ fontSize: 12, paddingBottom: 10 }} verticalAlign="top" />
+        <ReferenceLine x={0} stroke="rgba(100,120,160,0.3)" />   {/* ← x not y */}
+        <Bar dataKey="pct_display" name="% Change" radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
+          {chartData.map((entry, i) => (
+            <Cell
+              key={i}
+              fill={entry.sign_change ? COLOR_SIGN
+                   : entry.significant ? COLOR_HIGH
+                   : (entry.pct_display ?? 0) >= 0 ? COLOR_POS : COLOR_NEG}
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  ) : (
+    <ResponsiveContainer width="100%" height={chartHeight}>
+      {chartType === 'bar' ? (
+        <BarChart {...sharedChartProps}>
+          {sharedGrid}
+          {sharedXAxis}
+          {sharedYAxis}
+          {sharedTooltip}
+          {sharedLegend}
+          <ReferenceLine x={0} stroke="rgba(100,120,160,0.3)" />   {/* ← x not y */}
+          <Bar dataKey={aKey} name={labelA} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
+            {chartData.map((entry, i) => (
+              <Cell key={i} fill={barFillA(entry)} opacity={entry.significant ? 1 : 0.85} />
+            ))}
+          </Bar>
+          <Bar dataKey={bKey} name={labelB} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
+            {chartData.map((entry, i) => (
+              <Cell key={i} fill={barFillB(entry)} opacity={entry.significant ? 1 : 0.75} />
+            ))}
+          </Bar>
+        </BarChart>
+      ) : (
+        <LineChart {...sharedChartProps}>
+          {sharedGrid}
+          {sharedXAxis}
+          {sharedYAxis}
+          {sharedTooltip}
+          {sharedLegend}
+          <ReferenceLine x={0} stroke="rgba(100,120,160,0.3)" />   {/* ← x not y */}
+          <Line
+            type="monotone"
+            dataKey={aKey}
+            name={labelA}
+            stroke={COLOR_A}
+            strokeWidth={2.5}
+            dot={{ r: 4, fill: COLOR_A, strokeWidth: 0 }}
+            activeDot={{ r: 6 }}
+            animationDuration={600}
+          />
+          <Line
+            type="monotone"
+            dataKey={bKey}
+            name={labelB}
+            stroke={COLOR_B}
+            strokeWidth={2.5}
+            dot={{ r: 4, fill: COLOR_B, strokeWidth: 0 }}
+            activeDot={{ r: 6 }}
+            animationDuration={600}
+          />
+        </LineChart>
+      )}
+    </ResponsiveContainer>
+  )}
+</div>
 
         {/* ── Legend note for high-variance and sign-change ── */}
         {/* <div className="vc-legend-notes">
