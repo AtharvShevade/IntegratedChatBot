@@ -6,7 +6,7 @@ import os
 
 BASE_REPO_PATH: str = os.getenv(
     "BASE_REPO_PATH",
-    r"D:\Repo\Repo5.5 3\Repo5.5"
+    r"D:\Repo(new)"
 )
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,14 @@ _DOTNET_URL            = os.getenv("DOTNET_API_URL",        "https://localhost:5
 _DOTNET_CONTROLLER     = os.getenv("DOTNET_CONTROLLER",     "CreateInstance")
 _DOTNET_SESSION_COOKIE = os.getenv("DOTNET_SESSION_COOKIE", "")
 _DATE_FMT    = "%d-%b-%Y"
-# Additional numeric formats tried when DD-MMM-YYYY fails
-_EXTRA_FMTS  = ["%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d.%m.%Y"]
+
+logger.info(
+    "[GENERATE_CONFIG] DOTNET_API_URL=%s  DOTNET_CONTROLLER=%s  "
+    "DOTNET_SESSION_COOKIE=%s",
+    _DOTNET_URL,
+    _DOTNET_CONTROLLER,
+    "SET" if _DOTNET_SESSION_COOKIE else "NOT SET (will rely on forwarded aspSession)",
+)
 
 # Valid (day, month) terminal pairs per frequency type
 _Q_ENDS    = {(31, 3), (30, 6), (30, 9), (31, 12)}   # Quarterly
@@ -465,7 +471,9 @@ async def call_generate_api(
     )
     _t0 = time.time()
     try:
-        # verify=False bypasses the self-signed dev certificate on localhost
+        # verify=False bypasses the self-signed dev certificate on localhost.
+        # follow_redirects=False so we can distinguish an HTTPS-upgrade redirect
+        # (HTTP→HTTPS, safe to follow) from a Login-page redirect (auth failure).
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
             follow_redirects=False,
@@ -484,19 +492,56 @@ async def call_generate_api(
             resp.status_code, _elapsed, form_id,
         )
 
-        # ASP.NET redirects to Login page when session is not authenticated
+        # Handle redirects — two distinct cases:
+        #   1. HTTP→HTTPS upgrade (EnableHttpsRedirection):
+        #      location is the same path but on https://  → retry once over HTTPS
+        #   2. Session expired / unauthenticated:
+        #      location points to a login path  → auth failure
         if resp.status_code in (301, 302):
             location = resp.headers.get("location", "")
-            logger.error(
-                "[API_FAILURE] Generate API redirect → %s (session not authenticated?)", location,
-            )
-            return {
-                "success": False,
-                "message": (
-                    "Authentication failed. The .NET session cookie is missing or expired. "
-                    "Please update DOTNET_SESSION_COOKIE in .env."
-                ),
-            }
+            logger.info("[GENERATE_API] Redirect → %s", location)
+
+            # Case 1: HTTPS upgrade — location starts with https:// and same host
+            if location.lower().startswith("https://") and "/account" not in location.lower() and "/login" not in location.lower():
+                logger.info("[GENERATE_API] HTTP→HTTPS redirect detected — retrying over HTTPS")
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0),
+                    follow_redirects=False,
+                    verify=False,
+                ) as client2:
+                    resp = await client2.post(
+                        location,
+                        data=form_data,
+                        cookies=cookies,
+                        headers={"X-Requested-With": "XMLHttpRequest"},
+                    )
+                logger.info(
+                    "[GENERATE_API] HTTPS retry status=%s", resp.status_code
+                )
+                # If the HTTPS response is also a redirect it's an auth failure
+                if resp.status_code in (301, 302):
+                    loc2 = resp.headers.get("location", "")
+                    logger.error("[API_FAILURE] HTTPS retry redirected to %s — auth failure", loc2)
+                    return {
+                        "success": False,
+                        "message": (
+                            "Authentication failed. The .NET session cookie is missing or expired. "
+                            "Please ensure the chatbot is accessed through the .NET application."
+                        ),
+                    }
+            else:
+                # Case 2: login redirect
+                logger.error(
+                    "[API_FAILURE] Generate API redirect to login → %s "
+                    "(session not authenticated)", location,
+                )
+                return {
+                    "success": False,
+                    "message": (
+                        "Authentication failed. The .NET session cookie is missing or expired. "
+                        "Please ensure the chatbot is accessed through the .NET application."
+                    ),
+                }
 
         if resp.status_code not in (200, 201, 202):
             logger.error(
@@ -549,8 +594,21 @@ async def call_generate_api(
         return {"success": True, "message": "Instance generation started successfully."}
 
     except httpx.ConnectError:
-        logger.error("[API_FAILURE] Cannot connect to .NET API at %s", url)
-        return {"success": False, "message": "Generation service is unavailable. Please try again later."}
+        logger.error(
+            "[API_FAILURE] Cannot connect to .NET API at %s — "
+            "check DOTNET_API_URL in .env (current value: %s)",
+            url, _DOTNET_URL,
+        )
+        return {
+            "success": False,
+            "message": (
+                f"Cannot reach the .NET generation service at {_DOTNET_URL}. "
+                "Please verify DOTNET_API_URL in .env matches the actual .NET application URL."
+            ),
+        }
+    except httpx.TimeoutException:
+        logger.error("[API_FAILURE] Timeout calling .NET API at %s", url)
+        return {"success": False, "message": "Generation service timed out. Please try again."}
     except Exception as exc:
         logger.exception("[API_FAILURE] Unexpected error calling generate API: %s", exc)
         return {"success": False, "message": "Instance generation failed. Please try again."}
