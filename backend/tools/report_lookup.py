@@ -130,33 +130,58 @@ _instances_ttl = float(os.getenv("INSTANCES_TTL_SEC", "120"))
 
 
 class _TTLCache:
-    __slots__ = ("_ttl", "_data", "_ts")
+    __slots__ = ("_ttl", "_data", "_ts", "_file_path", "_file_mtime")
 
-    def __init__(self, ttl: float) -> None:
-        self._ttl  = ttl
-        self._data = None
-        self._ts   = 0.0
+    def __init__(self, ttl: float, file_path: str = "") -> None:
+        self._ttl        = ttl
+        self._data       = None
+        self._ts         = 0.0
+        self._file_path  = file_path
+        self._file_mtime = 0.0
 
     @property
     def loaded_at(self) -> float:
         return self._ts
 
+    def _file_changed(self) -> bool:
+        """Return True if the tracked file has been modified since last cache load."""
+        if not self._file_path or self._data is None:
+            return False
+        try:
+            return os.path.getmtime(self._file_path) != self._file_mtime
+        except OSError:
+            return False
+
     def get(self):
-        if self._data is not None and (time.monotonic() - self._ts) < self._ttl:
-            return self._data
-        return None
+        if self._data is None:
+            return None
+        if self._file_changed():
+            logger.info(
+                "[cache] %s changed on disk — invalidating cache",
+                os.path.basename(self._file_path),
+            )
+            self._data = None
+            return None
+        if (time.monotonic() - self._ts) >= self._ttl:
+            return None
+        return self._data
 
     def set(self, data, *, cache_empty: bool = True):
         if not cache_empty and not data:
             return data
         self._data = data
         self._ts   = time.monotonic()
+        if self._file_path:
+            try:
+                self._file_mtime = os.path.getmtime(self._file_path)
+            except OSError:
+                self._file_mtime = 0.0
         return data
 
 
-_returns_cache   = _TTLCache(ttl=_returns_ttl)
-_instances_cache = _TTLCache(ttl=_instances_ttl)
-_norm_cache      = _TTLCache(ttl=_returns_ttl)
+_returns_cache   = _TTLCache(ttl=_returns_ttl,   file_path=_RETURNS_FILE)
+_instances_cache = _TTLCache(ttl=_instances_ttl,  file_path=_INSTANCE_FILE)
+_norm_cache      = _TTLCache(ttl=_returns_ttl,    file_path=_RETURNS_FILE)
 
 
 def _parse_returns() -> tuple[dict, ...]:

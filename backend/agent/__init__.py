@@ -1,9 +1,10 @@
-# agent/__init__.py -- Pipeline: intent → entity resolution → lookup → response.
+﻿# agent/__init__.py -- Pipeline: intent → entity resolution → lookup → response.
 # Session tracks last_search_terms and multi-turn stage state.
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -574,6 +575,7 @@ async def decide(
     # ── Auth: resolve allowed FormIds for this user ───────────────────────────────
     # None  = no login_id provided — allow all (dev / backward compat)
     # set   = restrict to this user’s department forms
+    _REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
     allowed_form_ids: set[str] | None = None
     if login_id:
         from backend.services.auth_service import get_allowed_form_ids as _get_auth
@@ -593,6 +595,16 @@ async def decide(
             login_id, len(allowed_form_ids), session_id,
         )
 
+    elif _REQUIRE_AUTH:
+        logger.warning(
+            "[AUTH_DENY] No login_id provided and REQUIRE_AUTH=true, session=%s", session_id
+        )
+        return _build(
+            intent="unknown",
+            report_name=None,
+            response_text="Authentication required. Please access this application through the authorised portal.",
+            result_type="error",
+        )
     # ── Auth: resolve CreateInstance role-based access ────────────────────────
     # True when no login_id is present (dev / backward compat — allow all).
     # False when the user's role does not have HasNew=true for CreateInstance.
@@ -967,7 +979,7 @@ async def decide(
     if not is_reset and session.get("awaiting") == STAGE_SCHED_NAME:
         if session_id:
             _session_context.pop(session_id, None)
-        return _handle_schedule(user_query.strip(), None, None, None, session_id)
+        return _handle_schedule(user_query.strip(), None, None, None, session_id, allowed_form_ids)
 
     # -- Schedule: disambiguation (user picks a report) -----------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_REPORT:
@@ -2786,9 +2798,17 @@ def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) ->
     if allowed is None:
         return None
     fid = get_form_id_by_name(report_name) or ""
-    if fid not in allowed:
+    in_allowed = fid in allowed
+    logger.info(
+        "[AUTH_CHECK] Requested Return: %r | Resolved FormId: %r | "
+        "Allowed Forms Contains %r: %s | Authorization: %s",
+        report_name, fid, fid, str(in_allowed).upper(),
+        "Allowed" if in_allowed else "DENIED",
+    )
+    if not in_allowed:
         logger.warning(
-            "[AUTH_DENY] report=%r form_id=%r not in allowed set", report_name, fid
+            "[AUTH_DENY] report=%r form_id=%r not in allowed set (allowed has %d entries)",
+            report_name, fid, len(allowed),
         )
         return _build(
             intent=intent,

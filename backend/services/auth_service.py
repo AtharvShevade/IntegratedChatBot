@@ -36,11 +36,25 @@ _USER_ROLE_ATTR:  str = os.getenv("XML_USER_ROLE_ATTR",  "RoleId")
 # TTL in seconds — override via AUTH_TTL_SEC env var (default 1 hour)
 _AUTH_TTL: float = float(os.getenv("AUTH_TTL_SEC", "3600"))
 
-# Per-login cache: { login_id: (allowed_form_ids | None, timestamp) }
-_cache: dict[str, tuple[set[str] | None, float]] = {}
+# Per-login cache: { login_id: (result, monotonic_ts, xml_mtime) }
+_cache: dict[str, tuple[set[str] | None, float, float]] = {}
 
 # Per-login cache for role-based CreateInstance access: { login_id: (can_create, timestamp) }
 _create_cache: dict[str, tuple[bool, float]] = {}
+
+
+def _auth_xml_mtime() -> float:
+    """Return the max mtime of XML_User.xml and XML_Dept.xml.
+
+    If either file changes, the auth cache is considered stale regardless of TTL.
+    """
+    mtime = 0.0
+    for path in (XML_USER_PATH, XML_DEPT_PATH):
+        try:
+            mtime = max(mtime, os.path.getmtime(path))
+        except OSError:
+            pass
+    return mtime
 
 
 # ---------------------------------------------------------------------------
@@ -67,12 +81,20 @@ def get_allowed_form_ids(login_id: str) -> set[str] | None:
     if not clean:
         return None
 
+    current_mtime = _auth_xml_mtime()
     entry = _cache.get(clean)
-    if entry and (time.monotonic() - entry[1]) < _AUTH_TTL:
-        return entry[0]
+    if entry:
+        result, ts, cached_mtime = entry
+        if current_mtime != cached_mtime:
+            logger.info(
+                "[AUTH_CACHE] XML_User.xml or XML_Dept.xml changed on disk — "
+                "invalidating cache for login_id=%r", clean,
+            )
+        elif (time.monotonic() - ts) < _AUTH_TTL:
+            return result
 
     result = _lookup(clean)
-    _cache[clean] = (result, time.monotonic())
+    _cache[clean] = (result, time.monotonic(), current_mtime)
     logger.info(
         "[AUTH_CACHE] login_id=%r result=%s",
         clean,
@@ -92,7 +114,7 @@ def invalidate(login_id: str) -> None:
 
 def _lookup(login_id: str) -> set[str] | None:
     """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids."""
-    # ── Step 1: resolve DeptId from XML_User.xml ────────────────────────────
+    # ── Step 1: resolve DepartmentId from XML_User.xml ──────────────────────
     user_root = load_xml_tree(XML_USER_PATH, "XML_User.xml")
     if user_root is None:
         logger.error(
@@ -106,21 +128,35 @@ def _lookup(login_id: str) -> set[str] | None:
     for el in user_root.findall("Row"):
         if el.attrib.get(_USER_LOGIN_ATTR, "").strip().lower() == login_lower:
             dept_id = el.attrib.get(_USER_DEPT_ATTR, "").strip()
-            logger.debug("[AUTH] login_id=%r → dept_id=%r", login_id, dept_id)
+            logger.info(
+                "[AUTH] Step 1 | LoginId: %r  →  DepartmentId (attr=%r): %r",
+                login_id, _USER_DEPT_ATTR, dept_id,
+            )
             break
 
     if dept_id is None:
         logger.warning(
-            "[AUTH] login_id=%r not found in XML_User.xml (attr=%s)",
+            "[AUTH] Step 1 FAILED | LoginId %r not found in XML_User.xml "
+            "(looking for attr=%r)",
             login_id, _USER_LOGIN_ATTR,
         )
         return None
+
+    if not dept_id:
+        logger.error(
+            "[AUTH] Step 1 FAILED | LoginId %r found but attr %r is empty. "
+            "Check XML_USER_DEPT_ATTR env var (current=%r). "
+            "Possible values: 'DepartmentId', 'DeptId'",
+            login_id, _USER_DEPT_ATTR, _USER_DEPT_ATTR,
+        )
+        return set()  # deny rather than allow
 
     # ── Step 2: resolve Forms from XML_Dept.xml ─────────────────────────────
     dept_root = load_xml_tree(XML_DEPT_PATH, "XML_Dept.xml")
     if dept_root is None:
         logger.error(
-            "[AUTH] Cannot load XML_Dept.xml (path=%s) — denying access for login_id=%r",
+            "[AUTH] Step 2 FAILED | Cannot load XML_Dept.xml (path=%s) — "
+            "denying access for LoginId=%r",
             XML_DEPT_PATH, login_id,
         )
         return None
@@ -130,13 +166,20 @@ def _lookup(login_id: str) -> set[str] | None:
             forms_raw = el.attrib.get("Forms", "")
             form_ids  = {f.strip() for f in forms_raw.split("|") if f.strip()}
             logger.info(
-                "[AUTH] login_id=%r dept_id=%r allowed_form_count=%d",
+                "[AUTH] Step 2 | DepartmentId: %r  →  Forms count: %d  |  "
+                "Sample (first 5): %s",
+                dept_id, len(form_ids), sorted(form_ids)[:5],
+            )
+            logger.info(
+                "[AUTH] SUMMARY | LoginId: %r | DepartmentId: %r | "
+                "Allowed FormIds: %d forms loaded",
                 login_id, dept_id, len(form_ids),
             )
             return form_ids
 
     logger.warning(
-        "[AUTH] DeptId=%r not found in XML_Dept.xml for login_id=%r",
+        "[AUTH] Step 2 FAILED | DepartmentId %r not found in XML_Dept.xml "
+        "for LoginId=%r",
         dept_id, login_id,
     )
     return set()  # user exists but dept entry is missing → no access
