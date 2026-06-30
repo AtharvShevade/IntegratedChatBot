@@ -89,11 +89,8 @@ export default function App() {
 
   // ── Helper: push an assistant result into the message list ───────────────
 const _pushResult = (result) => {
-  console.log('[_pushResult] FULL RESULT:', JSON.stringify(result, null, 2))  // ADD
   const isTerminal = _TERMINAL_TYPES.has(result.result_type)
   const jobId = result.job_id ?? result.jobId ?? result.job?.id ?? null
-  console.log('[_pushResult] jobId extracted:', jobId) 
-console.debug('[_pushResult] job_id received:', jobId, '| full result keys:', Object.keys(result))
 
   // Build sqlData for db_result type: map backend field names to SqlResultBlock shape.
   // sqlData is only set when there is a generated SQL or actual columns to display;
@@ -139,11 +136,6 @@ console.debug('[_pushResult] job_id received:', jobId, '| full result keys:', Ob
     jobId: jobId
   }
 
-  console.debug(
-    "[_pushResult] error_details received:",
-    result.error_details?.length
-  )
-
   setMessages((prev) => [...prev, resultMsg])
   // After step 2 of the guided workflow the backend clears _guided_sessions and
   // hands control to _session_context (handled by /chat → decide()).
@@ -166,8 +158,6 @@ console.debug('[_pushResult] job_id received:', jobId, '| full result keys:', Ob
   // ── Poll for background error enrichment ─────────────────────────────────
   // In pollForErrors, add a counter
 const pollForErrors = (jobId) => {
-  console.log('[pollForErrors] CALLED with jobId:', jobId)
-
   if (pollIntervalRef.current) {
     clearInterval(pollIntervalRef.current)
     pollIntervalRef.current = null
@@ -178,8 +168,6 @@ const pollForErrors = (jobId) => {
 
   const tick = async () => {
     attempts++
-    console.log('[poll] attempt:', attempts, 'jobId:', jobId)
-
     if (attempts > MAX_ATTEMPTS) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -189,11 +177,9 @@ const pollForErrors = (jobId) => {
     try {
       const res = await fetch(`/status-errors/${jobId}`)
       const data = await res.json()
-      console.log('[poll] response:', JSON.stringify(data, null, 2))
 
-      // ── FIX: stop polling if job was cleaned up before we got it ──────────
-      if (data.status === "not_found") {
-        console.warn('[poll] job not found — stopping poll for', jobId)
+      // ── Fix: stop polling if job was cleaned up before we got it ──────────
+        if (data.status === "not_found") {
         clearInterval(pollIntervalRef.current)
         pollIntervalRef.current = null
         return
@@ -244,7 +230,6 @@ const pollForErrors = (jobId) => {
         }, 800)
       }
     } catch (err) {
-      console.warn("[poll] error-job poll failed:", err)
     }
   }
 

@@ -23,7 +23,9 @@ function triggerBlobDownload(url, label) {
       document.body.removeChild(a)
       URL.revokeObjectURL(blobUrl)
     })
-    .catch((err) => console.error('[Download] failed:', err))
+    .catch(() => {
+      // Ignore download failures in the UI; they are handled elsewhere.
+    })
 }
 
 // ── Failed status codes (mirrors backend _FAILED_STATUSES) ───────────────────
@@ -704,11 +706,6 @@ const statusCode = data?.status_code ?? null
 const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCode))
 
 // TEMP DEBUG — move it here, AFTER all three are declared
-console.log('[MessageBubble] data=', data)
-console.log('[MessageBubble] is4000Series=', is4000Series)
-console.log('[MessageBubble] errorCategoryCounts=', errorCategoryCounts)
-console.log('[MessageBubble] isFailed=', isFailed, 'statusCode=', statusCode)
-
   // ── Decide which error panel to show ──────────────────────────────────────
   // Priority:
   //   1. If error_details already populated (user clicked Explain) → show detail panel
@@ -1104,7 +1101,7 @@ function SqlResultBlock({ data }) {
         </div>
       )}
       {!is_valid && <div className="sql-invalid-msg">⚠ {validation_reason || 'SQL validation failed.'}</div>}
-      {db_error  && <div className="sql-db-error">⚠ DB error: {db_error}</div>}
+      {db_error  && <div className="sql-db-error">⚠ A database error occurred. Please try again.</div>}
       {is_valid && !db_error && columns.length > 0 && (
         <div>
           <div className="sql-result-label">Query Results</div>

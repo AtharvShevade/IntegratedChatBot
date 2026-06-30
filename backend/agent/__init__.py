@@ -1338,7 +1338,7 @@ async def decide(
         except Exception as exc:
             logger.exception("[DB_QA_ERROR] intent=%s error=%s", intent, exc)
             return {
-                "result": f"Error processing database query: {str(exc)}",
+                "result": "An error occurred while processing your database request. Please try again.",
                 "db_found": False,
                 "result_type": "error",
             }

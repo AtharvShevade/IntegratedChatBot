@@ -121,8 +121,8 @@ class QueryRouter:
                 "label": "Error",
                 "found": False,
                 "records": [],
-                "summary": f"An error occurred while processing your query.",
-                "meta": {"error": str(exc)},
+                "summary": "An error occurred while processing your query.",
+                "meta": {},
             }
 
         return result

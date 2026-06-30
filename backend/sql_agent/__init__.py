@@ -125,7 +125,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
         return _build_result(
             response_text="Unable to process your database query right now. Please try again later.",
             result_type="db_result",
-            db_error=str(exc),
+            db_error=None,
         )
 
     if not tables:
@@ -155,17 +155,17 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
         except RuntimeError as exc:
             logger.error("[SQL_AGENT] SQL generation failed: %s", exc)
             return _build_result(
-                response_text="Unable to process your query right now. Please try again.",
+                response_text="SQL generation failed. Please try again.",
                 result_type="db_result",
-                db_error=str(exc),
+                db_error=None,
                 accuracy_hint=accuracy_hint,
             )
         except Exception as exc:
             logger.error("[SQL_AGENT] Unexpected error in generate_sql: %s", exc)
             return _build_result(
-                response_text="An unexpected error occurred while generating SQL.",
+                response_text="An unexpected error occurred while generating SQL. Please try again.",
                 result_type="db_result",
-                db_error=str(exc),
+                db_error=None,
             )
 
         # Step 3: validation
@@ -196,7 +196,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
                 response_text="Unable to retrieve the requested information. Please try again.",
                 result_type="db_result",
                 db_sql=sql,
-                db_error=str(exc),
+                db_error=None,
                 accuracy_hint=accuracy_hint,
             )
 
@@ -210,7 +210,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
                 response_text="Unable to retrieve the requested information. Please try again.",
                 result_type="db_result",
                 db_sql=sql,
-                db_error=db_error,
+                db_error=None,
                 accuracy_hint=accuracy_hint,
             )
 
@@ -247,6 +247,6 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
     return _build_result(
         response_text="Unable to generate a valid SQL query after multiple attempts. Please rephrase your question.",
         result_type="db_result",
-        db_error="Max retries exceeded",
+        db_error=None,
         accuracy_hint=accuracy_hint,
     )
