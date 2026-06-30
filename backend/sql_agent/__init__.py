@@ -123,7 +123,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
     except Exception as exc:
         logger.error("[SQL_AGENT] Schema retrieval failed: %s", exc)
         return _build_result(
-            response_text="Could not search the database schema. Make sure FAISS indexes are built (`python sql_agent/main.py`).",
+            response_text="Unable to process your database query right now. Please try again later.",
             result_type="db_result",
             db_error=str(exc),
         )
@@ -155,7 +155,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
         except RuntimeError as exc:
             logger.error("[SQL_AGENT] SQL generation failed: %s", exc)
             return _build_result(
-                response_text=f"SQL generation failed: {exc}",
+                response_text="Unable to process your query right now. Please try again.",
                 result_type="db_result",
                 db_error=str(exc),
                 accuracy_hint=accuracy_hint,
@@ -178,7 +178,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
                 logger.info("[SQL_AGENT] retrying after validation failure")
                 continue
             return _build_result(
-                response_text=f"The generated SQL did not pass validation: {reason}",
+                response_text="Unable to process your query right now. Please try again.",
                 result_type="db_result",
                 db_sql=sql,
                 db_error=reason,
@@ -193,7 +193,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
         except Exception as exc:
             logger.error("[SQL_AGENT] Execution error: %s", exc)
             return _build_result(
-                response_text="Failed to execute the query against Oracle.",
+                response_text="Unable to retrieve the requested information. Please try again.",
                 result_type="db_result",
                 db_sql=sql,
                 db_error=str(exc),
@@ -207,7 +207,7 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
                 logger.info("[SQL_AGENT] retrying after DB error: %s", db_error)
                 continue
             return _build_result(
-                response_text="Query executed but the database returned an error.",
+                response_text="Unable to retrieve the requested information. Please try again.",
                 result_type="db_result",
                 db_sql=sql,
                 db_error=db_error,

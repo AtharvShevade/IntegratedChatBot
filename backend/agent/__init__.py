@@ -1448,7 +1448,7 @@ async def decide(
         reply = (
             "Sorry, I didn't understand your query. "
             "I can help with report status, generation, scheduling, "
-            "user/role/department information, or data queries. "
+            "or data queries. "
             "Could you please rephrase?"
         )
         return _build(intent="unknown", report_name=None, response_text=reply)
@@ -1772,11 +1772,11 @@ async def _run_comparison(
             facts_b = load_xbrl_facts(inst_b["full_path"])
         except ImportError as exc:
             return _build(intent="compare_reports", report_name=name,
-                          response_text=f"XBRL analysis unavailable: {exc}", result_type="error")
+                          response_text="Unable to perform the comparison right now. Please try again.", result_type="error")
         except Exception as exc:
             logger.error("XBRL load error: %s", exc, exc_info=True)
             return _build(intent="compare_reports", report_name=name,
-                          response_text="Failed to load XBRL instance files. Check server logs.",
+                          response_text="Unable to perform the comparison right now. Please try again.",
                           result_type="error")
         variance_rows = compute_variance(facts_a, label_a, facts_b, label_b)
         table = format_variance_table(variance_rows, label_a, label_b)
@@ -1852,13 +1852,13 @@ async def _run_comparison(
     except ImportError as exc:
         return _build(
             intent="compare_reports", report_name=name,
-            response_text=f"XBRL analysis unavailable: {exc}", result_type="error",
+            response_text="Unable to perform the comparison right now. Please try again.", result_type="error",
         )
     except Exception as exc:
         logger.error("XBRL load error: %s", exc, exc_info=True)
         return _build(
             intent="compare_reports", report_name=name,
-            response_text="Failed to load XBRL instance files. Check server logs.",
+            response_text="Unable to perform the comparison right now. Please try again.",
             result_type="error",
         )
 

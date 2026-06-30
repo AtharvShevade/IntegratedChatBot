@@ -526,8 +526,8 @@ async def call_generate_api(
                     return {
                         "success": False,
                         "message": (
-                            "Authentication failed. The .NET session cookie is missing or expired. "
-                            "Please ensure the chatbot is accessed through the .NET application."
+                            "Authentication failed. Your session may have expired. "
+                            "Please try again."
                         ),
                     }
             else:
@@ -539,8 +539,8 @@ async def call_generate_api(
                 return {
                     "success": False,
                     "message": (
-                        "Authentication failed. The .NET session cookie is missing or expired. "
-                        "Please ensure the chatbot is accessed through the .NET application."
+                        "Authentication failed. Your session may have expired. "
+                        "Please try again."
                     ),
                 }
 
@@ -549,7 +549,7 @@ async def call_generate_api(
                 "[API_FAILURE] Generate API returned HTTP %s: %s",
                 resp.status_code, resp.text[:200],
             )
-            return {"success": False, "message": f"Instance generation failed (HTTP {resp.status_code})."}
+            return {"success": False, "message": "Instance generation failed. Please try again."}
 
         # Parse response array: [bool, date, message, bool?, successMsg?]
         try:
@@ -602,10 +602,7 @@ async def call_generate_api(
         )
         return {
             "success": False,
-            "message": (
-                f"Cannot reach the .NET generation service at {_DOTNET_URL}. "
-                "Please verify DOTNET_API_URL in .env matches the actual .NET application URL."
-            ),
+            "message": "Unable to process the request right now. Please try again.",
         }
     except httpx.TimeoutException:
         logger.error("[API_FAILURE] Timeout calling .NET API at %s", url)

@@ -33,7 +33,7 @@ export async function compareInstances(sessionId, instanceA, instanceB) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? `Compare error (${res.status})`)
+    throw new Error(body.detail ?? 'We could not compare those instances right now. Please try again.')
   }
 
   return res.json()
@@ -72,7 +72,7 @@ export async function sendMessage(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? `Server error (${res.status})`)
+    throw new Error(body.detail ?? 'We could not process your request right now. Please try again.')
   }
 
   return await res.json()
@@ -103,7 +103,7 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `Guided workflow error (${res.status})`)
+    throw new Error(err.detail ?? 'We could not process your request right now. Please try again.')
   }
 
   return await res.json()
@@ -134,7 +134,7 @@ export async function transcribeAudio(audioBlob) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? `Transcription error (${res.status})`)
+    throw new Error(body.detail ?? 'Sorry, voice transcription failed. Please try again.')
   }
 
   const data = await res.json()
@@ -167,7 +167,7 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `Explain error (${res.status})`)
+    throw new Error(err.detail ?? 'We could not load the explanation right now. Please try again.')
   }
   return await res.json()
 }

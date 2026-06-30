@@ -194,7 +194,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI model unavailable. Make sure Ollama is running.",
+            detail="Unable to process your request at the moment. Please try again.",
         ) from exc
 
 
@@ -230,7 +230,7 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI model unavailable. Make sure Ollama is running.",
+            detail="Unable to process your request at the moment. Please try again.",
         ) from exc
 
 
@@ -264,7 +264,7 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI model unavailable. Make sure Ollama is running.",
+            detail="Unable to process your request at the moment. Please try again.",
         ) from exc
 
 
@@ -274,7 +274,7 @@ async def speech_to_text(file: UploadFile = File(...)) -> dict:
     if not sarvam_api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="SARVAM_API_KEY is not configured on the server.",
+            detail="Voice transcription is unavailable right now. Please try again later.",
         )
 
     audio_bytes = await file.read()
@@ -308,12 +308,12 @@ async def speech_to_text(file: UploadFile = File(...)) -> dict:
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Sarvam AI error: {exc.response.text}",
+            detail="Unable to transcribe audio right now. Please try again.",
         ) from exc
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not reach Sarvam AI. Check network connectivity.",
+            detail="Unable to transcribe audio right now. Please try again.",
         ) from exc
 
     transcript: str = resp.json().get("transcript", "").strip()
@@ -350,11 +350,11 @@ async def download_file(form_id: str, type: str, filename: str):
     safe_name = os.path.basename(filename)  # strips any directory component
 
     if not safe_fid:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid form_id.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
     if not safe_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
     if type not in ("render", "error"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type must be 'render' or 'error'.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
 
     # ── Path construction ─────────────────────────────────────────────────────
     if type == "render":
@@ -452,5 +452,5 @@ async def guided(request: ChatRequest) -> ChatResponse:
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI model unavailable. Make sure Ollama is running.",
+            detail="Unable to process your request at the moment. Please try again.",
         ) from exc

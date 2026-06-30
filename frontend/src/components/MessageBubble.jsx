@@ -86,7 +86,7 @@ function DownloadButton({ downloadUrl, downloadLabel, className = 'download-btn'
 // ── Summary category metadata ─────────────────────────────────────────────────
 const _SUMMARY_CAT_META = {
   formula_error: { label: 'Formula Errors',      btnLabel: 'Explain Formula Errors',      cls: 'formula',   icon: '⚙' },
-  xbrl_schema:   { label: 'XBRL Schema Errors',  btnLabel: 'Explain XBRL Schema Errors',  cls: 'xbrl',      icon: '⚠' },
+  xbrl_schema:   { label: 'Schema Errors',       btnLabel: 'Explain Schema Errors',       cls: 'xbrl',      icon: '⚠' },
   dimensional:   { label: 'Dimension Errors',    btnLabel: 'Explain Dimension Errors',    cls: 'dimension', icon: '📐' },
 }
 const _CAT_ORDER = ['formula_error', 'xbrl_schema', 'dimensional']
@@ -120,12 +120,12 @@ function ErrorSummaryPanelReadOnly({ counts, downloadUrl, downloadLabel }) {
           </div>
         )}
         <div className="error-summary-actions">
-          {downloadUrl && (
+            {downloadUrl && (
             <button
               className="error-summary-dl-btn"
               onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
             >
-              ⬇ {downloadLabel || 'Download Error File'}
+              ⬇ {downloadLabel || 'Download error report'}
             </button>
           )}
         </div>
@@ -196,7 +196,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
               className="error-summary-dl-btn"
               onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
             >
-              ⬇ {downloadLabel || 'Download Error File'}
+              ⬇ {downloadLabel || 'Download error report'}
             </button>
           )}
         </div>
@@ -928,7 +928,7 @@ function WelcomeCard({ onSuggestion, onGuidedAction }) {
           <li>Checking the <strong>status</strong> of a report</li>
           <li><strong>Generating</strong> a new report instance for a date</li>
           <li><strong>Scheduling</strong> reports for a future date and time</li>
-          <li>Performing <strong>comparative analysis</strong> on XBRL instances</li>
+          <li>Performing <strong>comparative analysis</strong> on report instances</li>
           <li>Retrieving data from the <strong>database</strong></li>
         </ul>
         <p className="welcome-subtext">Click a category to use guided mode, or type freely:</p>
@@ -1252,8 +1252,8 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
   const labelFor = (inst) =>
     inst.label || `${inst.reporting_date || '—'} | Generated: ${inst.run_at || '—'}`
   const handleCompare = () => {
-    if (!sel1 || !sel2)  { setError('Please select an instance in both dropdowns.'); return }
-    if (sel1 === sel2)   { setError('Please select two different instances.'); return }
+    if (!sel1 || !sel2)  { setError('Select an instance in each dropdown.'); return }
+    if (sel1 === sel2)   { setError('Choose two different instances to compare.'); return }
     setError('')
     onCompare?.(parseInt(sel1, 10) - 1, parseInt(sel2, 10) - 1)
   }
@@ -1440,8 +1440,8 @@ const GUIDED_ACTION_META = {
   'Check report status':            { icon: '📋', desc: 'Look up the latest status of any report' },
   'Generate instance for a report': { icon: '⚙️', desc: 'Trigger a new report instance for a period' },
   'Schedule a report':              { icon: '🗓️', desc: 'Schedule a report to run at a future date/time' },
-  'Perform comparative analysis':   { icon: '📊', desc: 'Compare two XBRL instances period-over-period' },
-  'Retrieve data from database':    { icon: '🗄️', desc: 'Query the Oracle database in plain English' },
+  'Perform comparative analysis':   { icon: '📊', desc: 'Compare two report instances period-over-period' },
+  'Retrieve data from database':    { icon: '🗄️', desc: 'Query the database using plain English' },
 }
 
 function GuidedMenuCard({ text, options, onSelect }) {

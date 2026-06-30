@@ -25,7 +25,7 @@ export default function VoiceInput({ onTranscript, disabled }) {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (err) {
-      setError('Microphone access denied.')
+      setError('Microphone access is required to use voice input.')
       return
     }
 
@@ -55,10 +55,10 @@ export default function VoiceInput({ onTranscript, disabled }) {
         if (transcript) {
           onTranscript(transcript)
         } else {
-          setError('No speech detected. Please try again.')
+          setError('We could not hear your speech clearly. Please try again.')
         }
       } catch (err) {
-        setError(err.message || 'Transcription failed.')
+        setError(err.message || 'Voice transcription failed. Please try again.')
       } finally {
         setState('idle')
       }

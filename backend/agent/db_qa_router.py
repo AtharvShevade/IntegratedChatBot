@@ -511,7 +511,7 @@ def handle_db_qa_query(
         logger.exception("db_qa_query: unhandled error")
         error_response = ChatResponse(
             intent="error",
-            response_text=f"Error querying database: {str(exc)}",
+            response_text="Unable to retrieve the requested information. Please try again.",
             result_type="error",
             db_intent=intent,
             db_found=False,
