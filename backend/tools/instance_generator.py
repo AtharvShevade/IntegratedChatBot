@@ -21,6 +21,7 @@ _DOTNET_URL            = os.getenv("DOTNET_API_URL",        "https://localhost:5
 _DOTNET_CONTROLLER     = os.getenv("DOTNET_CONTROLLER",     "CreateInstance")
 _DOTNET_SESSION_COOKIE = os.getenv("DOTNET_SESSION_COOKIE", "")
 _DATE_FMT    = "%d-%b-%Y"
+_EXTRA_FMTS  = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
 
 logger.info(
     "[GENERATE_CONFIG] DOTNET_API_URL=%s  DOTNET_CONTROLLER=%s  "

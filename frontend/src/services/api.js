@@ -8,7 +8,6 @@
  */
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
-
 /**
  * Directly execute a pre-staged instance comparison.
  *
