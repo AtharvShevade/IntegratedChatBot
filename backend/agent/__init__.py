@@ -344,23 +344,43 @@ _DATE_RE = re.compile(
     r'\b(\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})\b', re.I
 )
 
-# Stop words used when checking if a query has meaningful non-intent tokens
-_QUERY_STOP = frozenset({
-    "status", "state", "progress", "check", "details", "info",
-    "generate", "create", "trigger", "run", "produce",
-    "the", "of", "for", "a", "an", "is", "it", "this", "that",
-    "what", "how", "has", "did", "been", "done",
+_STATUS_GENERIC_TERMS = frozenset({
+    "database", "missing", "unknown", "not", "found", "any",
+    "some", "all", "please", "tell", "me", "show", "give",
+    "check", "status", "report", "reports", "instance", "instances",
 })
 
 
 def _extract_status_search_terms(text: str) -> str:
-    """Extract likely report-identifying tokens from a status-style query."""
-    clean = re.sub(r"[?!.,:;|()\[\]{}]+", " ", text)
-    words = [
-        w for w in clean.split()
-        if w and w.lower() not in _QUERY_STOP and len(w) > 1
-    ]
-    return " ".join(words).strip()
+    """Extract likely report-identifying tokens from a status-style query.
+
+    Uses the shared query extractor plus an additional generic-token filter
+    so generic status requests do not trigger report lookup on words like
+    "database" or "missing".
+    """
+    terms = extract_search_terms(text)
+    if not terms:
+        return ""
+
+    tokens = terms.split()
+    if all(token.lower() in _STATUS_GENERIC_TERMS for token in tokens):
+        return ""
+    return terms
+
+
+def _is_generic_status_terms(terms: str) -> bool:
+    """Return True when a status search string contains only generic tokens."""
+    if not terms:
+        return False
+    tokens = terms.split()
+    return bool(tokens) and all(token.lower() in _STATUS_GENERIC_TERMS for token in tokens)
+
+
+def _is_meaningful_report_terms(terms: str | None) -> bool:
+    """Return True when terms likely identify a report rather than generic status text."""
+    if not terms:
+        return False
+    return not _is_generic_status_terms(terms)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +431,11 @@ def _extract_schedule_search_terms(text: str) -> str:
     terms = extract_search_terms(clean)
     # 5. Post-filter: remove any remaining schedule-context words
     words = [w for w in terms.split() if w.lower() not in _SCHED_EXTRA_STOP]
-    return " ".join(words).strip()
+    terms = " ".join(words).strip()
+    # 6. Treat generic status/report filler terms as no report name.
+    if terms and all(token.lower() in _STATUS_GENERIC_TERMS for token in terms.split()):
+        return ""
+    return terms
 
 
 def _is_staged_session(session: dict[str, Any] | None) -> bool:
@@ -1227,21 +1251,33 @@ async def decide(
             if _fuzzy_has_status(user_query):
                 raw_query = user_query.strip()
                 extracted_query = _extract_status_search_terms(raw_query)
-                for candidate in (raw_query, extracted_query):
-                    if not candidate:
-                        continue
-                    matches = find_matching_reports(candidate)
+                if extracted_query:
+                    matches = find_matching_reports(extracted_query)
                     if matches:
                         logger.info(
                             "[INTENT:STEP1] status fast-path matched %d report(s) session=%s",
                             len(matches), session_id,
                         )
                         if session_id:
-                            _session_context[session_id] = {"last_search_terms": candidate}
-                        result = _get_status_fast_with_bg_job(candidate)
+                            _session_context[session_id] = {"last_search_terms": extracted_query}
+                        result = _get_status_fast_with_bg_job(extracted_query)
                         if allowed_form_ids is not None:
                             result = _apply_auth_to_status_result(result, allowed_form_ids)
                         return _from_result(result, intent="get_status", session_id=session_id)
+                    logger.debug(
+                        "[INTENT:STEP1] status fast-path: extracted_query=%r had no matches, skipping raw query lookup",
+                        extracted_query,
+                    )
+                elif _is_generic_status_terms(raw_query):
+                    logger.debug(
+                        "[INTENT:STEP1] status fast-path: raw_query=%r contains only generic status terms, skipping lookup",
+                        raw_query,
+                    )
+                else:
+                    logger.debug(
+                        "[INTENT:STEP1] status fast-path: no extractable report terms in %r, skipping lookup",
+                        raw_query,
+                    )
             # Generate / schedule / compare, or status with no matching report:
             # SQL and QA checks are skipped — LLM extraction (STEP 4) resolves intent.
             debug_log(
@@ -1349,20 +1385,70 @@ async def decide(
         return await handle_db_query(user_query, session_id=session_id)
 
     if intent == "unknown":
+        # Only attempt report lookup for unknown queries when the message
+        # explicitly looks like a report workflow request.
+        # This avoids treating greetings / random chatter as report requests.
+        if not (
+            _fuzzy_has_status(user_query)
+            or _fuzzy_has_generate(user_query)
+            or _fuzzy_has_schedule(user_query)
+            or _fuzzy_has_compare(user_query)
+        ):
+            debug_log(
+                "UNKNOWN INTENT FALLBACK",
+                question=user_query,
+                fallback_reason=(
+                    "intent='unknown' — no report-related keywords detected, "
+                    "skipping report lookup"
+                ),
+            )
+            reply = (
+                "Sorry, I didn't understand your query. "
+                "I can help with report status, generation, scheduling, "
+                "or data queries. "
+                "Could you please rephrase?"
+            )
+            return _build(intent="unknown", report_name=None, response_text=reply)
+
         # Try backend report matching with stripped query first, then progressively
         # broader candidates. This handles short ids (r091, raq) AND full natural
         # sentences like "what is the status of emi laon" — where the raw query
         # would normalise to one unrecognisable token without stripping first.
         _stripped_q   = extract_search_terms(user_query)
+        if not search_terms and not _stripped_q:
+            debug_log(
+                "UNKNOWN_FALLBACK_SKIPPED",
+                question=user_query,
+                fallback_reason=(
+                    "intent='unknown' with status/generate/schedule keywords but no report-identifying tokens "
+                    "found — skipping backend lookup"
+                ),
+            )
+            reply = (
+                "Sorry, I didn't understand your query. "
+                "I can help with report status, generation, scheduling, "
+                "or data queries. Could you please mention the report name?"
+            )
+            return _build(intent="unknown", report_name=None, response_text=reply)
+
         _matched_query: str | None = None
-        for _candidate in filter(None, [search_terms, _stripped_q, user_query.strip()]):
-            if find_matching_reports(_candidate):
+        for _candidate in filter(None, [search_terms, _stripped_q]):
+            if _is_meaningful_report_terms(_candidate) and find_matching_reports(_candidate):
                 _matched_query = _candidate
                 logger.info(
                     "[UNKNOWN_FALLBACK] query=%r matched report(s) — re-classifying intent",
                     _candidate,
                 )
                 break
+
+        if not _matched_query and _extract_status_search_terms(user_query):
+            # If the extracted status search terms already produced no matches,
+            # do not perform a second lookup on the full raw query. This avoids
+            # reclassifying unknown report requests as get_status simply because
+            # the raw sentence contains fuzzy tokens that accidentally match.
+            logger.debug(
+                "[UNKNOWN_FALLBACK] extracted status terms had no match, skipping raw query lookup"
+            )
 
         if _matched_query:
             # Re-classify to the correct intent based on fuzzy keyword detection
@@ -1428,6 +1514,15 @@ async def decide(
             or _fuzzy_has_generate(user_query)
             or _fuzzy_has_schedule(user_query)
         ):
+            if _is_generic_status_terms(_report_query):
+                return _build(
+                    intent="unknown", report_name=None,
+                    response_text=(
+                        "Sorry, I didn't understand your query. "
+                        "I can help with report status, generation, scheduling, "
+                        "or data queries. Could you please mention the report name?"
+                    ),
+                )
             _fb_intent = (
                 "generate_instance" if _fuzzy_has_generate(user_query) else
                 "schedule_report"   if _fuzzy_has_schedule(user_query) else
@@ -1435,7 +1530,10 @@ async def decide(
             )
             return _build(
                 intent=_fb_intent, report_name=None,
-                response_text=f"No matching report found for '{_report_query}'.",
+                response_text=(
+                    f"I couldn't find any report matching '{_report_query}'.\n"
+                    "Please check the report name and try again."
+                ),
                 result_type="error",
             )
 
@@ -1457,37 +1555,55 @@ async def decide(
     if not search_terms and intent == "get_status":
         search_terms = session.get("last_search_terms", "")
 
-    if not search_terms:
-        # Use the shared resolver: tries stripped query THEN raw query so that
-        # filler words like "generate", "instance", "for" are stripped before
-        # matching.  Without this, "generate instance for cims" normalises to
-        # the single token "generateinstanceforcims" and finds nothing.
-        search_terms, _direct_matches = _resolve_report_name(user_query)
-        if not _direct_matches:
-            search_terms = ""
-            hint = (
-                'Please provide the report name. '
-                'For example: "Generate CIMS_RAQ for 30-Jun-2024".'
-                if intent == "generate_instance"
-                else (
-                    'Please provide the report name and schedule datetime. '
-                    'For example: "Schedule CIMS_RAQ for 15-Apr-2026 at 4 PM".'
-                ) if intent == "schedule_report"
-                else (
-                    'Please mention the report name to compare. '
-                    'For example: "Compare CIMS_RAQ" or "Variance analysis of RAQ".'
-                ) if intent == "compare_reports"
-                else (
-                    'Please mention the report name. '
-                    'For example: "Status of CIMS_RAQ" or "Status of RAQ monthly".'
+    if not search_terms or (intent == "get_status" and _is_generic_status_terms(search_terms)):
+        if intent == "get_status":
+            # Prefer deterministic status-term extraction for get_status.
+            # This prevents LLM-generated generic search terms like "missing"
+            # or "database" from being treated as report names.
+            status_terms = _extract_status_search_terms(user_query)
+            if status_terms:
+                search_terms = status_terms
+            else:
+                return _build(
+                    intent=intent, report_name=None,
+                    response_text=(
+                        'Please mention the report name. '
+                        'For example: "Status of CIMS_RAQ" or "Status of RAQ monthly".'
+                    ),
+                    need_clarification=True,
                 )
+
+        if not search_terms:
+            # Use the shared resolver: tries stripped query THEN raw query so that
+            # filler words like "generate", "instance", "for" are stripped before
+            # matching.  Without this, "generate instance for cims" normalises to
+            # the single token "generateinstanceforcims" and finds nothing.
+            search_terms, _direct_matches = _resolve_report_name(user_query)
+            if not _direct_matches:
+                search_terms = ""
+                hint = (
+                    'Please provide the report name. '
+                    'For example: "Generate CIMS_RAQ for 30-Jun-2024".'
+                    if intent == "generate_instance"
+                    else (
+                        'Please provide the report name and schedule datetime. '
+                        'For example: "Schedule CIMS_RAQ for 15-Apr-2026 at 4 PM".'
+                    ) if intent == "schedule_report"
+                    else (
+                        'Please mention the report name to compare. '
+                        'For example: "Compare CIMS_RAQ" or "Variance analysis of RAQ".'
+                    ) if intent == "compare_reports"
+                    else (
+                        'Please mention the report name. '
+                        'For example: "Status of CIMS_RAQ" or "Status of RAQ monthly".'
+                    )
+                )
+                return _build(intent=intent, report_name=None, response_text=hint, need_clarification=True)
+            logger.info(
+                "[RESOLVED_MATCH] LLM gave no search_terms; resolver matched %d report(s) "
+                "for %r → using %r",
+                len(_direct_matches), user_query, search_terms,
             )
-            return _build(intent=intent, report_name=None, response_text=hint, need_clarification=True)
-        logger.info(
-            "[RESOLVED_MATCH] LLM gave no search_terms; resolver matched %d report(s) "
-            "for %r → using %r",
-            len(_direct_matches), user_query, search_terms,
-        )
 
     if intent == "generate_instance":
         # ── Deterministic preprocessing: extract date + clean report name ──
@@ -1594,6 +1710,7 @@ async def decide(
 async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None) -> dict[str, Any]:
     """Entry point for compare_reports intent — handles disambiguation."""
     matches = find_matching_reports(report_ident)
+    all_matches = matches
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
@@ -1614,6 +1731,12 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
                     f"{opts_text}\n\nReply with the number."
                 ),
                 result_type="disambiguation", options=suggestions,
+            )
+        if allowed_form_ids is not None and all_matches:
+            return _build(
+                intent="compare_reports", report_name=None,
+                response_text="You are not authorised to access this report.",
+                result_type="error",
             )
         return _build(
             intent="compare_reports", report_name=None,
@@ -2625,6 +2748,7 @@ async def _handle_generate(
 ) -> dict[str, Any]:
     """Entry point for generate_instance intent from the normal (non-staged) flow."""
     matches = find_matching_reports(report_name)
+    original_matches = matches
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
@@ -2648,10 +2772,16 @@ async def _handle_generate(
                 ),
                 result_type="disambiguation", options=suggestions,
             )
+        if allowed_form_ids is not None and original_matches:
+            return _build(
+                intent="generate_instance", report_name=None,
+                response_text="You are not authorised to access this report.",
+                result_type="error",
+            )
         if allowed_form_ids is not None:
             return _build(
                 intent="generate_instance", report_name=None,
-                response_text="You are not authorised to access any matching reports.",
+                response_text=f"No matching reports found for '{report_name}'. Please try a different name.",
                 result_type="error",
             )
         return _build(
@@ -2797,7 +2927,20 @@ def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) ->
     """
     if allowed is None:
         return None
-    fid = get_form_id_by_name(report_name) or ""
+    fid = get_form_id_by_name(report_name)
+    if not fid:
+        logger.warning(
+            "[AUTH_MISS] report=%r could not be resolved to a FormId before auth", report_name,
+        )
+        return _build(
+            intent=intent,
+            report_name=report_name,
+            response_text=(
+                f"I couldn't find any report matching '{report_name}'.\n"
+                "Please check the report name and try again."
+            ),
+            result_type="error",
+        )
     in_allowed = fid in allowed
     logger.info(
         "[AUTH_CHECK] Requested Return: %r | Resolved FormId: %r | "

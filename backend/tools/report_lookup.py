@@ -2687,6 +2687,13 @@ def _normalise(s: str) -> str:
     return s.strip()
 
 
+def _compact_normalise(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"[_\-\s/()]+", "", s)
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s.strip()
+
+
 def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
     if _norm_cache.loaded_at < _returns_cache.loaded_at:
         _norm_cache._data = None
@@ -2703,6 +2710,7 @@ def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
 def find_matching_reports(user_input: str) -> list[dict]:
     needle = _normalise(user_input)
     if not needle: return []
+    needle_compact = _compact_normalise(user_input)
     quads = _normalised_returns()
     from rapidfuzz import fuzz as _fuzz
 
@@ -2713,18 +2721,39 @@ def find_matching_reports(user_input: str) -> list[dict]:
             if key not in seen: seen.add(key); out.append(r)
         return out
 
+    def _compact(text: str) -> str:
+        return text.replace(" ", "")
+
     exact_rid = [r for (_, nrid, _, r) in quads if nrid and nrid == needle]
     if exact_rid: return _dedup(exact_rid)
     exact_name = [r for (nname, _, _, r) in quads if nname and nname == needle]
     if exact_name: return _dedup(exact_name)
     exact_alt = [r for (_, _, nalt, r) in quads if nalt and nalt == needle]
     if exact_alt: return _dedup(exact_alt)
-    partial_name = [r for (nname, _, _, r) in quads if nname and (needle in nname or nname in needle)]
-    if partial_name: return _dedup(partial_name)
-    partial_alt = [r for (_, _, nalt, r) in quads if nalt and (needle in nalt or nalt in needle)]
-    if partial_alt: return _dedup(partial_alt)
-    partial_rid = [r for (_, nrid, _, r) in quads if nrid and (needle in nrid or nrid in needle)]
-    if partial_rid: return _dedup(partial_rid)
+
+    if len(needle_compact) >= 2:
+        prefix_name = [r for (nname, _, _, r) in quads if nname and _compact(nname).startswith(needle_compact)]
+        if prefix_name: return _dedup(prefix_name)
+        prefix_alt = [r for (_, _, nalt, r) in quads if nalt and _compact(nalt).startswith(needle_compact)]
+        if prefix_alt: return _dedup(prefix_alt)
+        prefix_rid = [r for (_, nrid, _, r) in quads if nrid and _compact(nrid).startswith(needle_compact)]
+        if prefix_rid: return _dedup(prefix_rid)
+
+    if len(needle_compact) >= 2:
+        token_name = [r for (nname, _, _, r) in quads if nname and needle_compact in nname.split()]
+        if token_name: return _dedup(token_name)
+        token_alt = [r for (_, _, nalt, r) in quads if nalt and needle_compact in nalt.split()]
+        if token_alt: return _dedup(token_alt)
+        token_rid = [r for (_, nrid, _, r) in quads if nrid and needle_compact in nrid.split()]
+        if token_rid: return _dedup(token_rid)
+
+    if len(needle_compact) >= 2:
+        partial_name = [r for (nname, _, _, r) in quads if nname and (needle_compact in _compact(nname) or _compact(nname) in needle_compact)]
+        if partial_name: return _dedup(partial_name)
+        partial_alt = [r for (_, _, nalt, r) in quads if nalt and (needle_compact in _compact(nalt) or _compact(nalt) in needle_compact)]
+        if partial_alt: return _dedup(partial_alt)
+        partial_rid = [r for (_, nrid, _, r) in quads if nrid and (needle_compact in _compact(nrid) or _compact(nrid) in needle_compact)]
+        if partial_rid: return _dedup(partial_rid)
 
     tokens = [t for t in needle.split() if len(t) >= 2]
     if tokens:
@@ -2754,7 +2783,7 @@ def find_matching_reports(user_input: str) -> list[dict]:
             elif alt_sub == n_tok: score += 25
             elif alt_sub > 0:      score +=  8
             if rid_sub > 0:        score +=  5
-            score += max(_fuzz.partial_ratio(needle, nname) if nname else 0, _fuzz.partial_ratio(needle, nalt) if nalt else 0) // 4
+            score += max(_fuzz.partial_ratio(needle_compact, _compact(nname)) if nname else 0, _fuzz.partial_ratio(needle_compact, _compact(nalt)) if nalt else 0) // 4
             key = r.get("Name", "") + "|" + r.get("Id", "")
             if key not in seen_keys: seen_keys.add(key); scored.append((score, r))
         if scored:
@@ -2763,23 +2792,32 @@ def find_matching_reports(user_input: str) -> list[dict]:
             if best >= _WW_THRESHOLD: return [r for s, r in scored if s >= _WW_THRESHOLD]
             return [r for _, r in scored]
 
-    _FUZZY_CUTOFF = 72; fuzzy_scored: list[tuple[int, dict]] = []; fuzzy_seen: set[str] = set()
-    for (nname, nrid, nalt, r) in quads:
-        best_fuzz = max(_fuzz.partial_ratio(needle, nname) if nname else 0, _fuzz.partial_ratio(needle, nalt) if nalt else 0)
-        if best_fuzz >= _FUZZY_CUTOFF:
-            key = r.get("Name", "") + "|" + r.get("Id", "")
-            if key not in fuzzy_seen: fuzzy_seen.add(key); fuzzy_scored.append((best_fuzz, r))
+    _FUZZY_CUTOFF = 85; fuzzy_scored: list[tuple[int, dict]] = []; fuzzy_seen: set[str] = set()
+    if len(needle_compact) >= 3:
+        for (nname, nrid, nalt, r) in quads:
+            best_fuzz = max(
+                _fuzz.partial_ratio(needle_compact, _compact(nname)) if nname else 0,
+                _fuzz.partial_ratio(needle_compact, _compact(nalt)) if nalt else 0,
+                _fuzz.partial_ratio(needle_compact, _compact(nrid))  if nrid else 0,
+            )
+            if best_fuzz >= _FUZZY_CUTOFF:
+                key = r.get("Name", "") + "|" + r.get("Id", "")
+                if key not in fuzzy_seen: fuzzy_seen.add(key); fuzzy_scored.append((best_fuzz, r))
     if fuzzy_scored:
         fuzzy_scored.sort(key=lambda x: x[0], reverse=True)
         return [r for _, r in fuzzy_scored]
     return []
 
 
-def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.35) -> list[str]:
+def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.75) -> list[str]:
     from rapidfuzz import fuzz, process as rf_process
-    needle = _normalise(user_input)
-    if not needle: return []
-    norm_to_orig = {norm_name: r.get("Name", "") for (norm_name, _, _, r) in _normalised_returns()}
+    needle = _compact_normalise(user_input)
+    if not needle or len(needle) < 3: return []
+    norm_to_orig: dict[str, str] = {}
+    for (norm_name, _, _, r) in _normalised_returns():
+        compact_name = _compact_normalise(norm_name)
+        if compact_name:
+            norm_to_orig.setdefault(compact_name, r.get("Name", ""))
     matches = rf_process.extract(needle, list(norm_to_orig.keys()), scorer=fuzz.partial_ratio, limit=n, score_cutoff=cutoff * 100)
     return [norm_to_orig[m[0]] for m in matches if norm_to_orig.get(m[0])]
 
