@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -140,15 +141,26 @@ Rules:
 - Keep replies to 1-3 sentences. No bullet lists unless listing examples.
 """.strip()
 
+_CLASSIFY_CONVERSATIONAL_SYSTEM_PROMPT = """\
+You are a classifier for conversational user messages for a report assistant.
+Respond with exactly one word: greeting, acknowledgement, or unsupported.
+Only output the one word. Do not include any explanation, punctuation, or extra text.
+""".strip()
 
-async def _call_ollama(prompt: str, system: str, history: list[dict] | None = None) -> str:
+
+async def _call_ollama(
+    prompt: str,
+    system: str,
+    history: list[dict] | None = None,
+    model: str | None = None,
+) -> str:
     history_msgs = [
         {"role": item["role"], "content": item["text"]}
         for item in (history or [])
         if item.get("role") in ("user", "assistant") and item.get("text")
     ]
     payload = {
-        "model":      OLLAMA_MODEL,
+        "model":      model or OLLAMA_MODEL,
         "messages":   [
             {"role": "system", "content": system},
             *history_msgs,
@@ -182,6 +194,24 @@ async def _call_ollama(prompt: str, system: str, history: list[dict] | None = No
     )
     logger.debug("[LLM_RESPONSE] content_preview=%r", content[:200])
     return content
+
+
+async def classify_conversational_intent(user_message: str, history: list[dict] | None = None) -> str:
+    content = await _call_ollama(
+        prompt=user_message,
+        system=_CLASSIFY_CONVERSATIONAL_SYSTEM_PROMPT,
+        history=history,
+        model=OLLAMA_EXTRACT_MODEL,
+    )
+    normalized = re.sub(r'[^a-z]', '', content.strip().lower())
+    if normalized in {"greeting", "acknowledgement", "unsupported"}:
+        return normalized
+    logger.warning(
+        "[LLM_CLASSIFIER_UNEXPECTED] response=%r normalized=%r",
+        content,
+        normalized,
+    )
+    return "unsupported"
 
 
 async def extract_intent_entities_llm(user_query: str, history: list[dict] | None = None) -> dict:

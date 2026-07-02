@@ -16,6 +16,7 @@ import asyncio
 
 from rapidfuzz import process as _fuzz
 from backend.llm_extractor import (
+    _STOP_WORDS,
     extract_intent_and_entities,
     parse_and_format_date,
     extract_schedule_datetime,
@@ -24,7 +25,7 @@ from backend.llm_extractor import (
     _BROAD_DATE_RE as _DATE_STRIP_RE,
     preprocess_generate_query,
 )
-from backend.services.llm_service import chat_response
+from backend.services.llm_service import chat_response, classify_conversational_intent
 from backend.tools.instance_generator import (
     call_generate_api,
     resolve_return_exact,
@@ -339,6 +340,52 @@ def _fuzzy_has_compare(text: str) -> bool:
         if _fuzz.extractOne(w, _CMP_FUZZY_KWS, score_cutoff=_FUZZY_THRESHOLD):
             return True
     return False
+
+
+def _normalise_conversational(text: str) -> str:
+    normalized = re.sub(r'[^a-zA-Z0-9 ]+', '', text.lower()).strip()
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized
+
+
+def _get_conversational_response(text: str) -> str | None:
+    normalized = _normalise_conversational(text)
+    if not normalized:
+        return None
+
+    greetings = {
+        'hi', 'hello', 'hey', 'good morning', 'good afternoon',
+        'good evening', 'greetings',
+    }
+    acknowledgements = {
+        'ok', 'okay', 'thanks', 'thank you', 'bye', 'goodbye',
+        'good night', 'yes', 'no', 'sure', 'fine', 'cool', 'great',
+        'nice', 'awesome', 'perfect',
+    }
+
+    if normalized in greetings:
+        if normalized == 'good morning':
+            return 'Good morning! How can I assist you with your reports today?'
+        if normalized == 'good afternoon':
+            return 'Good afternoon! How can I assist you with your reports today?'
+        if normalized == 'good evening':
+            return 'Good evening! How can I assist you with your reports today?'
+        return (
+            'Hello! How can I help you today? '
+            'I can assist with report status, report generation, scheduling, '
+            'and data-related queries.'
+        )
+
+    if normalized in acknowledgements:
+        if normalized in {'thanks', 'thank you'}:
+            return 'You\'re welcome! Let me know if you need any help with reports or data queries.'
+        if normalized in {'bye', 'goodbye'}:
+            return 'Goodbye! Have a great day.'
+        if normalized == 'good night':
+            return 'Good night! If you need anything else, I\'m here to help.'
+        return 'Great! Let me know whenever you\'d like help with a report or data query.'
+
+    return None
 # Date pattern -- used to extract a date from free-text messages in STAGE_GEN_DATE
 _DATE_RE = re.compile(
     r'\b(\d{1,2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4})\b', re.I
@@ -521,8 +568,77 @@ def _looks_like_new_query(text: str) -> bool:
     # Fuzzy status keyword + at least one meaningful non-stop word
     if _fuzzy_has_status(text):
         words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
-        return any(w not in _QUERY_STOP for w in words)
+        return any(w not in _STOP_WORDS for w in words)
     return False
+
+
+def _normalise_conversational(text: str) -> str:
+    normalized = re.sub(r'[^a-zA-Z0-9 ]+', '', text.lower()).strip()
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized
+
+
+def _get_conversational_response(text: str) -> str | None:
+    normalized = _normalise_conversational(text)
+    if not normalized:
+        return None
+
+    greetings = {
+        'hi', 'hello', 'hey', 'good morning', 'good afternoon',
+        'good evening', 'greetings',
+    }
+    acknowledgements = {
+        'ok', 'okay', 'thanks', 'thank you', 'bye', 'goodbye',
+        'good night', 'yes', 'no', 'sure', 'fine', 'cool', 'great',
+        'nice', 'awesome', 'perfect',
+    }
+
+    if normalized in greetings:
+        if normalized == 'good morning':
+            return 'Good morning! How can I assist you with your reports today?'
+        if normalized == 'good afternoon':
+            return 'Good afternoon! How can I assist you with your reports today?'
+        if normalized == 'good evening':
+            return 'Good evening! How can I assist you with your reports today?'
+        return (
+            'Hello! How can I help you today? '
+            'I can assist with report status, report generation, scheduling, '
+            'and data-related queries.'
+        )
+
+    if normalized in acknowledgements:
+        if normalized in {'thanks', 'thank you'}:
+            return 'You\'re welcome! Let me know if you need any help with reports or data queries.'
+        if normalized in {'bye', 'goodbye'}:
+            return 'Goodbye! Have a great day.'
+        if normalized == 'good night':
+            return 'Good night! If you need anything else, I\'m here to help.'
+        return 'Great! Let me know whenever you\'d like help with a report or data query.'
+
+    return None
+
+
+def _get_conversational_response_for_category(category: str) -> str | None:
+    if category == 'greeting':
+        return (
+            'Hello! How can I help you today? '
+            'I can assist with report status, report generation, scheduling, '
+            'and data-related queries.'
+        )
+    if category == 'acknowledgement':
+        return 'Great! Let me know whenever you\'d like help with a report or data query.'
+    return None
+
+
+async def _classify_conversational(text: str, history: list[dict] | None = None) -> str | None:
+    try:
+        category = await classify_conversational_intent(text, history=history)
+    except Exception as exc:
+        logger.warning('[CONVERSATIONAL_CLASSIFIER_FAIL] %s', exc)
+        return None
+    if category in {'greeting', 'acknowledgement'}:
+        return category
+    return None
 
 
 def _resolve_report_name(
@@ -1203,6 +1319,7 @@ async def decide(
     # HIERARCHICAL INTENT FAST-PATHS
     #
     # Priority order (each tier blocks all lower tiers — no overlap):
+    #   STEP 0 — Conversational: greetings / quick acknowledgements
     #   STEP 1 — Workflow  : status / generate / schedule / compare
     #   STEP 2 — App Q&A   : XML metadata — users, depts, roles, logs … (before SQL)
     #   STEP 3 — SQL agent : Oracle analytics, banking metrics (only when QA misses)
@@ -1213,6 +1330,15 @@ async def decide(
     # not SQL, even though it contains the word "how many".
     # ─────────────────────────────────────────────────────────────────────────
     if not _is_staged_session(session) and not is_reset:
+        convo_reply = _get_conversational_response(user_query)
+        if convo_reply is not None:
+            logger.info('[INTENT:STEP0] conversational reply session=%s', session_id)
+            return _build(
+                intent='conversational', report_name=None,
+                response_text=convo_reply,
+                result_type='final',
+            )
+
         _has_workflow = (
             _fuzzy_has_status(user_query)
             or _fuzzy_has_generate(user_query)
@@ -1220,6 +1346,24 @@ async def decide(
             or bool(_CMP_KW_RE.search(user_query))
         )
         _has_sql = bool(_DB_QUERY_KW_RE.search(user_query))
+
+        if convo_reply is None and not _has_workflow and not _has_sql:
+            convo_category = await _classify_conversational(
+                user_query,
+                history=conversation_history,
+            )
+            if convo_category is not None:
+                convo_reply = _get_conversational_response_for_category(convo_category)
+                if convo_reply is not None:
+                    logger.info(
+                        '[INTENT:STEP0] conversational classifier reply category=%s session=%s',
+                        convo_category, session_id,
+                    )
+                    return _build(
+                        intent='conversational', report_name=None,
+                        response_text=convo_reply,
+                        result_type='final',
+                    )
 
         # ── STEP 1 : Workflow ─────────────────────────────────────────────────
         # Any workflow keyword blocks SQL and QA fast-paths entirely.
@@ -1755,7 +1899,7 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
             intent="compare_reports", report_name=None,
             response_text=(
                 f"I found {len(names)} matching reports. Which one to compare?\n\n"
-                f"{opts_text}\n\nReply with the number or part of the name."
+                f"{opts_text}\n\nReply with the name."
             ),
             result_type="disambiguation", options=names,
         )
@@ -1798,7 +1942,7 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
             intent="compare_reports", report_name=name,
             response_text=(
                 f"No instance files found for '{name}' (FormId: {form_id}). "
-                f"The folder Instance/{form_id}/ does not exist or contains no XML files."
+                # f"The folder Instance/{form_id}/ does not exist or contains no XML files."
             ),
             result_type="error",
         )

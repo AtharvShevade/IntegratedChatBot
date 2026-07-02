@@ -76,6 +76,74 @@ def test_unknown_status_query_with_no_report_match():
     assert "Please check the report name and try again." in result["response_text"]
 
 
+def test_conversational_greeting_reply():
+    async def _run_query():
+        with patch(
+            "backend.agent.extract_intent_and_entities",
+            AsyncMock(side_effect=AssertionError("LLM extraction should not be called for greetings")),
+        ):
+            return await decide(
+                "Hi",
+                session_id=None,
+                asp_session=None,
+                login_id=None,
+                user_id=None,
+                role_id=None,
+                conversation_history=[],
+            )
+
+    result = asyncio.run(_run_query())
+    assert result["intent"] == "conversational"
+    assert "Hello!" in result["response_text"]
+    assert "report status" in result["response_text"]
+
+
+def test_conversational_acknowledgement_reply():
+    async def _run_query():
+        with patch(
+            "backend.agent.extract_intent_and_entities",
+            AsyncMock(side_effect=AssertionError("LLM extraction should not be called for acknowledgements")),
+        ):
+            return await decide(
+                "Thanks",
+                session_id=None,
+                asp_session=None,
+                login_id=None,
+                user_id=None,
+                role_id=None,
+                conversation_history=[],
+            )
+
+    result = asyncio.run(_run_query())
+    assert result["intent"] == "conversational"
+    assert "You're welcome" in result["response_text"]
+
+
+def test_conversational_classifier_fallback_for_variation():
+    async def _run_query():
+        with patch(
+            "backend.agent.classify_conversational_intent",
+            AsyncMock(return_value="greeting"),
+        ):
+            with patch(
+                "backend.agent.extract_intent_and_entities",
+                AsyncMock(side_effect=AssertionError("LLM extraction should not be called for conversational fallback")),
+            ):
+                return await decide(
+                    "hi there",
+                    session_id=None,
+                    asp_session=None,
+                    login_id=None,
+                    user_id=None,
+                    role_id=None,
+                    conversation_history=[],
+                )
+
+    result = asyncio.run(_run_query())
+    assert result["intent"] == "conversational"
+    assert "Hello!" in result["response_text"]
+
+
 if __name__ == "__main__":
     failures = 0
     for fn in [
@@ -86,6 +154,9 @@ if __name__ == "__main__":
         test_single_char_query_no_match,
         test_cril_does_not_return_cims_lr,
         test_unknown_status_query_with_no_report_match,
+        test_conversational_greeting_reply,
+        test_conversational_acknowledgement_reply,
+        test_conversational_classifier_fallback_for_variation,
     ]:
         try:
             fn()

@@ -563,10 +563,11 @@ async def call_generate_api(
             return {
                 "success": False,
                 "message": (
-                    "Authentication failed — the .NET session may have expired. "
-                    "Please update DOTNET_SESSION_COOKIE in .env and restart the server."
+                    "Authentication failed — session may have expired. "
+                    "Please login again and try generating the instance once more."
                 ),
             }
+            
 
         if isinstance(data, list) and len(data) >= 1:
             first = data[0]

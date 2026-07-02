@@ -18,8 +18,8 @@ load_dotenv()
 
 # Initialise centralised logging before any other backend import so that
 # module-level loggers in agent, guided, tools, etc. are already wired up.
-from backend.utils.logger import setup_logging  # noqa: E402
-setup_logging()
+from backend.utils.logger import log_exception, setup_logging  # noqa: E402
+setup_logging(console_level=logging.INFO)
 
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
@@ -43,75 +43,78 @@ _warmup_done: bool = False
 async def lifespan(app: FastAPI):
     """Pre-warm Ollama models, SentenceTransformer, and FAISS indexes on startup."""
     global _warmup_done
+    logger.info("Application startup started")
     import asyncio
 
-    # ── Pre-load SentenceTransformer + FAISS indexes in a thread so the async
-    # event loop is not blocked.  This moves the cold-start penalty from the
-    # first user query to server startup (invisible to users).
-    def _warmup_embedding():
-        global _warmup_done
-        if _warmup_done:
-            logger.info("[WARMUP] Skipping — already completed in this process")
-            return
-        try:
-            import backend.sql_agent.vectorizer as _vec  # noqa: F401  triggers module-level load
-            logger.info("[WARMUP] SentenceTransformer model loaded")
-        except Exception as exc:
-            logger.warning("[WARMUP] SentenceTransformer load failed: %s", exc)
-
-        try:
-            from backend.sql_agent.retriever import search
-            from backend.sql_agent.config import (
-                TABLE_INDEX_PATH, TABLE_META_PATH,
-                COLUMN_INDEX_PATH, COLUMN_META_PATH,
-            )
-            import os as _os
-            if _os.path.exists(TABLE_INDEX_PATH):
-                search(TABLE_INDEX_PATH, TABLE_META_PATH, "warmup", k=1)
-                logger.info("[WARMUP] Table FAISS index loaded")
-            if _os.path.exists(COLUMN_INDEX_PATH):
-                search(COLUMN_INDEX_PATH, COLUMN_META_PATH, "warmup", k=1)
-                logger.info("[WARMUP] Column FAISS index loaded")
-        except Exception as exc:
-            logger.warning("[WARMUP] FAISS index load failed: %s", exc)
-
-        # ── Pre-warm Application Database Q&A XML store (if configured)
-        try:
-            from backend.config import APP_DB_BASE_PATH
-            if APP_DB_BASE_PATH:
-                from backend.db_qa.xml_store import XMLStore
-                store = XMLStore(APP_DB_BASE_PATH)
-                # Trigger lazy-load of all XML files
-                _ = store.users()
-                _ = store.departments()
-                _ = store.roles()
-                _ = store.periods()
-                logger.info("[WARMUP] Application Database XML store loaded")
-        except Exception as exc:
-            logger.warning("[WARMUP] DB Q&A XML store load failed (feature disabled): %s", exc)
-
-        _warmup_done = True
-
-    await asyncio.get_event_loop().run_in_executor(None, _warmup_embedding)
-
-    if not _warmup_done:
-        # Embedding warmup failed entirely — still attempt Ollama ping
-        pass
-
-    from backend.services.llm_service import (
-        OLLAMA_BASE_URL, OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL, _KEEP_ALIVE,
-    )
-    async with httpx.AsyncClient(timeout=120) as client:
-        for model in {OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL}:
+    try:
+        # ── Pre-load SentenceTransformer + FAISS indexes in a thread so the async
+        # event loop is not blocked.  This moves the cold-start penalty from the
+        # first user query to server startup (invisible to users).
+        def _warmup_embedding():
+            global _warmup_done
+            if _warmup_done:
+                logger.info("Warm-up skipped; already completed in this process")
+                return
             try:
-                await client.post(
-                    f"{OLLAMA_BASE_URL}/api/chat",
-                    json={"model": model, "messages": [], "stream": False, "keep_alive": _KEEP_ALIVE},
-                )
-                logger.info("[WARMUP] model=%s loaded into memory", model)
+                import backend.sql_agent.vectorizer as _vec  # noqa: F401  triggers module-level load
+                logger.info("SentenceTransformer model loaded")
             except Exception as exc:
-                logger.warning("[WARMUP] failed for model=%s: %s", model, exc)
-    yield
+                logger.warning("SentenceTransformer warm-up failed: %s", exc)
+
+            try:
+                from backend.sql_agent.retriever import search
+                from backend.sql_agent.config import (
+                    TABLE_INDEX_PATH, TABLE_META_PATH,
+                    COLUMN_INDEX_PATH, COLUMN_META_PATH,
+                )
+                import os as _os
+                if _os.path.exists(TABLE_INDEX_PATH):
+                    search(TABLE_INDEX_PATH, TABLE_META_PATH, "warmup", k=1)
+                    logger.info("Table FAISS index loaded")
+                if _os.path.exists(COLUMN_INDEX_PATH):
+                    search(COLUMN_INDEX_PATH, COLUMN_META_PATH, "warmup", k=1)
+                    logger.info("Column FAISS index loaded")
+            except Exception as exc:
+                logger.warning("FAISS warm-up failed: %s", exc)
+
+            try:
+                from backend.config import APP_DB_BASE_PATH
+                if APP_DB_BASE_PATH:
+                    from backend.db_qa.xml_store import XMLStore
+                    store = XMLStore(APP_DB_BASE_PATH)
+                    _ = store.users()
+                    _ = store.departments()
+                    _ = store.roles()
+                    _ = store.periods()
+                    logger.info("Application DB XML store loaded")
+            except Exception as exc:
+                logger.warning("Application DB XML warm-up skipped: %s", exc)
+
+            _warmup_done = True
+
+        await asyncio.get_event_loop().run_in_executor(None, _warmup_embedding)
+
+        from backend.services.llm_service import (
+            OLLAMA_BASE_URL, OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL, _KEEP_ALIVE,
+        )
+        async with httpx.AsyncClient(timeout=120) as client:
+            for model in {OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL}:
+                try:
+                    await client.post(
+                        f"{OLLAMA_BASE_URL}/api/chat",
+                        json={"model": model, "messages": [], "stream": False, "keep_alive": _KEEP_ALIVE},
+                    )
+                    logger.info("LLM model ready: %s", model)
+                except Exception as exc:
+                    logger.warning("LLM warm-up failed for model=%s: %s", model, exc)
+
+        logger.info("Application startup completed")
+        yield
+    except Exception as exc:
+        log_exception(logger, "Application startup failed", exc)
+        raise
+    finally:
+        logger.info("Application shutdown completed")
 
 
 app = FastAPI(title="Report Assistant", version="3.0.0", lifespan=lifespan)
@@ -128,9 +131,13 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.exception(
-        "[UNHANDLED_ERROR] method=%s path=%s error=%s",
-        request.method, request.url.path, type(exc).__name__,
+    log_exception(
+        logger,
+        "Unhandled exception",
+        exc,
+        method=request.method,
+        path=request.url.path,
+        request_id=request.headers.get("x-request-id"),
     )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -141,8 +148,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.post("/chat", response_model=ChatResponse, status_code=status.HTTP_200_OK)
 async def chat(request: ChatRequest) -> ChatResponse:
     logger.info(
-        "[REQUEST] mode=chat session=%s query=%r",
-        request.session_id, request.message,
+        "API request received: /chat session=%s",
+        request.session_id or "anonymous",
     )
     start = time.monotonic()
     # ── Debug trace: log every /chat request so missing identity is immediately visible ──
@@ -169,8 +176,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         elapsed = time.monotonic() - start
         intent_for_log = result.intent if isinstance(result, ChatResponse) else result.get("intent", "?")
         logger.info(
-            "[PERF] endpoint=/chat intent=%s duration=%.2fs session=%s",
-            intent_for_log, elapsed, request.session_id,
+            "Chat request completed: intent=%s duration=%.2fs session=%s",
+            intent_for_log, elapsed, request.session_id or "anonymous",
         )
         # ── Debug trace: log the response summary ──────────────────────────────
         debug_log(
@@ -189,8 +196,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
             return result
         return ChatResponse(**result)
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        logger.error(
-            "[LLM_UNAVAILABLE] Ollama unreachable for /chat — %s", exc,
+        log_exception(
+            logger,
+            "Chat request failed because the LLM service was unavailable",
+            exc,
+            endpoint="/chat",
+            session_id=request.session_id,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -208,8 +219,8 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
     """
     from backend.agent import execute_comparison
     logger.info(
-        "[REQUEST] mode=compare_execute session=%s instance_a=%d instance_b=%d",
-        request.session_id, request.instance_a, request.instance_b,
+        "API request received: /compare-execute session=%s",
+        request.session_id or "anonymous",
     )
     start = time.monotonic()
     try:
@@ -220,13 +231,17 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
         )
         elapsed = time.monotonic() - start
         logger.info(
-            "[PERF] endpoint=/compare-execute duration=%.2fs session=%s",
-            elapsed, request.session_id,
+            "Comparison completed: duration=%.2fs session=%s",
+            elapsed, request.session_id or "anonymous",
         )
         return ChatResponse(**result)
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        logger.error(
-            "[LLM_UNAVAILABLE] Ollama unreachable for /compare-execute — %s", exc,
+        log_exception(
+            logger,
+            "Comparison request failed because the LLM service was unavailable",
+            exc,
+            endpoint="/compare-execute",
+            session_id=request.session_id,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -241,8 +256,8 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
     "Explain ... Errors" button in the ErrorSummaryPanel.
     """
     logger.info(
-        "[REQUEST] mode=explain-category category=%s form_id=%s path=%s",
-        request.category, request.form_id, request.error_file_path,
+        "API request received: /explain-category category=%s form_id=%s",
+        request.category, request.form_id,
     )
     start = time.monotonic()
     try:
@@ -254,13 +269,17 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
         )
         elapsed = time.monotonic() - start
         logger.info(
-            "[PERF] endpoint=/explain-category category=%s duration=%.2fs",
+            "Error explanation completed: category=%s duration=%.2fs",
             request.category, elapsed,
         )
         return ChatResponse(**result)
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        logger.error(
-            "[LLM_UNAVAILABLE] Ollama unreachable for /explain-category — %s", exc,
+        log_exception(
+            logger,
+            "Error explanation request failed because the LLM service was unavailable",
+            exc,
+            endpoint="/explain-category",
+            category=request.category,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -284,7 +303,7 @@ async def speech_to_text(file: UploadFile = File(...)) -> dict:
             detail="Empty audio file received.",
         )
 
-    logger.info("POST /speech-to-text ï¿½ forwarding %d bytes to Sarvam AI", len(audio_bytes))
+    logger.info("Speech-to-text request received: %d bytes", len(audio_bytes))
 
     # Sarvam rejects MIME types with codec parameters (e.g. "audio/webm;codecs=opus").
     # Strip everything after the first semicolon to get the bare MIME type.
@@ -317,7 +336,7 @@ async def speech_to_text(file: UploadFile = File(...)) -> dict:
         ) from exc
 
     transcript: str = resp.json().get("transcript", "").strip()
-    logger.info("Sarvam AI transcript: %r", transcript)
+    logger.info("Speech-to-text completed successfully")
     return {"transcript": transcript}
 
 
