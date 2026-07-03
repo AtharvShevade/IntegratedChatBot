@@ -148,10 +148,18 @@ const _pushResult = (result) => {
     setTimeout(() => pollForErrors(jobId), 500)
   }
 
+  const shouldShowActionMenu = result.result_type === 'error' || isTerminal
+
   if (isTerminal && !jobId) {
     setTimeout(() => {
       setMessages((prev) => [...prev, { role: "feedback_prompt" }])
     }, 1000)
+  }
+
+  if (shouldShowActionMenu) {
+    setTimeout(() => {
+      setMessages((prev) => [...prev, { role: "action_menu" }])
+    }, 800)
   }
 }
 
@@ -377,9 +385,6 @@ const pollForErrors = (jobId) => {
     } else {
       setMessages((prev) => [...prev, { role: 'feedback_negative' }])
     }
-    setTimeout(() => {
-      setMessages((prev) => [...prev, { role: 'action_menu' }])
-    }, 800)
   }
 
   // ── Chip / option click ───────────────────────────────────────────────────
