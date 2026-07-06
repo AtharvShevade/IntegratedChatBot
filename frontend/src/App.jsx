@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
-import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory } from './services/api.js'
+import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
 // survives a page refresh (the .NET params are only in the URL on first load).
@@ -57,6 +57,9 @@ export default function App() {
   const inputRef       = useRef(null)
   const sessionId      = useRef(_uid || crypto.randomUUID())
   const pollIntervalRef = useRef(null)
+  // Tracks the in-flight request so the Stop button can abort it client-side
+  // and tell the backend to cancel the matching asyncio task.
+  const activeRequestRef = useRef(null)
 
   // ── Persist messages to localStorage on every change ─────────────────────
   useEffect(() => {
@@ -244,6 +247,36 @@ const pollForErrors = (jobId) => {
   pollIntervalRef.current = setInterval(tick, 3000)
 }
 
+  // ── Begin tracking a new cancellable request; returns {signal, requestId} ──
+  const _beginRequest = () => {
+    const controller = new AbortController()
+    const requestId = crypto.randomUUID()
+    activeRequestRef.current = { controller, requestId }
+    return { signal: controller.signal, requestId }
+  }
+
+  // Clears the active-request marker only if it still points at this request
+  // (guards against a stray call from an already-superseded request).
+  const _endRequest = (requestId) => {
+    if (activeRequestRef.current?.requestId === requestId) {
+      activeRequestRef.current = null
+    }
+  }
+
+  // ── Stop button — cancel whatever request is currently in flight ─────────
+  const handleStop = () => {
+    const active = activeRequestRef.current
+    if (!active) return
+    active.controller.abort()
+    stopRequest(active.requestId)
+    activeRequestRef.current = null
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+    setIsLoading(false)
+  }
+
   // ── Free-text chat ────────────────────────────────────────────────────────
   const submitChatMessage = async (text) => {
     const trimmed = text.trim()
@@ -259,6 +292,7 @@ const pollForErrors = (jobId) => {
 
     setMessages((prev) => [...prev, { role: 'user', text: trimmed }])
     setIsLoading(true)
+    const { signal, requestId } = _beginRequest()
 
     try {
       const result = await sendMessage(
@@ -269,15 +303,18 @@ const pollForErrors = (jobId) => {
         _uid || null,
         _roleId || null,
         recentHistory,
+        { signal, requestId },
       )
       _pushResult(result)
     } catch (err) {
+      if (err.name === 'AbortError') return
       setIsGuidedFlow(false)
       setMessages((prev) => [
         ...prev,
         { role: 'error', text: err.message || 'Something went wrong. Please try again.' },
       ])
     } finally {
+      _endRequest(requestId)
       setIsLoading(false)
     }
   }
@@ -294,6 +331,7 @@ const pollForErrors = (jobId) => {
 }
     setMessages((prev) => [...prev, { role: 'user', text: trimmed }])
     setIsLoading(true)
+    const { signal, requestId } = _beginRequest()
 
     try {
       const result = await sendGuidedMessage(
@@ -303,15 +341,18 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
+        { signal, requestId },
       )
       _pushResult(result)
     } catch (err) {
+      if (err.name === 'AbortError') return
       setIsGuidedFlow(false)
       setMessages((prev) => [
         ...prev,
         { role: 'error', text: err.message || 'Something went wrong. Please try again.' },
       ])
     } finally {
+      _endRequest(requestId)
       setIsLoading(false)
     }
   }
@@ -322,6 +363,7 @@ const pollForErrors = (jobId) => {
     setIsGuidedFlow(true)
     setMessages((prev) => [...prev, { role: 'user', text: action }])
     setIsLoading(true)
+    const { signal, requestId } = _beginRequest()
     try {
       const result = await sendGuidedMessage(
         action,
@@ -330,12 +372,15 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
+        { signal, requestId },
       )
       _pushResult(result)
     } catch (err) {
+      if (err.name === 'AbortError') return
       setIsGuidedFlow(false)
       setMessages((prev) => [...prev, { role: 'error', text: err.message }])
     } finally {
+      _endRequest(requestId)
       setIsLoading(false)
     }
   }
@@ -345,16 +390,19 @@ const pollForErrors = (jobId) => {
     if (isLoading) return
     setMessages((prev) => [...prev, { role: 'user', text: 'Compare Instances' }])
     setIsLoading(true)
+    const { signal, requestId } = _beginRequest()
     try {
-      const result = await compareInstances(sessionId.current, idxA, idxB)
+      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId })
       _pushResult(result)
     } catch (err) {
+      if (err.name === 'AbortError') return
       setIsGuidedFlow(false)
       setMessages((prev) => [
         ...prev,
         { role: 'error', text: err.message || 'Comparison failed. Please try again.' },
       ])
     } finally {
+      _endRequest(requestId)
       setIsLoading(false)
     }
   }
@@ -363,15 +411,18 @@ const pollForErrors = (jobId) => {
   const handleExplainCategory = async (category, errorFilePath, formId = null, reportName = null) => {
     if (isLoading) return
     setIsLoading(true)
+    const { signal, requestId } = _beginRequest()
     try {
-      const result = await explainErrorCategory(errorFilePath, category, formId, reportName)
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId })
       _pushResult(result)
     } catch (err) {
+      if (err.name === 'AbortError') return
       setMessages((prev) => [
         ...prev,
         { role: 'error', text: err.message || 'Failed to generate explanations. Please try again.' },
       ])
     } finally {
+      _endRequest(requestId)
       setIsLoading(false)
     }
   }
@@ -463,14 +514,26 @@ const pollForErrors = (jobId) => {
           >
             <TrashIcon />
           </button>
-          <button
-            type="submit"
-            className="send-btn"
-            disabled={!inputText.trim() || isLoading}
-            aria-label="Send message"
-          >
-            <SendIcon />
-          </button>
+          {isLoading ? (
+            <button
+              type="button"
+              className="send-btn stop-btn"
+              onClick={handleStop}
+              aria-label="Stop generating"
+              title="Stop generating"
+            >
+              <StopIcon />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="send-btn"
+              disabled={!inputText.trim()}
+              aria-label="Send message"
+            >
+              <SendIcon />
+            </button>
+          )}
         </form>
       </footer>
     </div>
@@ -482,6 +545,14 @@ function SendIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="22" y1="2" x2="11" y2="13" />
       <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  )
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
     </svg>
   )
 }

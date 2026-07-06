@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -119,6 +120,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Report Assistant", version="3.0.0", lifespan=lifespan)
 
+# ── In-flight request tracking (for Stop Generation) ──────────────────────────
+# Keyed by request_id (minted client-side per request). Lets /stop cancel the
+# asyncio.Task backing a /chat, /guided, /compare-execute, or /explain-category
+# call. Cancellation is cooperative: it takes effect at the next `await` inside
+# the task (e.g. the next Ollama/httpx call), which covers the dominant
+# long-pole in every request path.
+_inflight_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _run_cancellable(request_id: str | None, coro):
+    if not request_id:
+        return await coro
+    task = asyncio.ensure_future(coro)
+    _inflight_tasks[request_id] = task
+    try:
+        return await task
+    finally:
+        _inflight_tasks.pop(request_id, None)
+
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -164,7 +184,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         session_id=request.session_id or "none",
     )
     try:
-        result = await decide(
+        result = await _run_cancellable(request.request_id, decide(
             request.message,
             session_id=request.session_id,
             asp_session=request.asp_session,
@@ -172,7 +192,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             user_id=request.user_id,
             role_id=request.role_id,
             conversation_history=request.conversation_history[-7:] if request.conversation_history else None,
-        )
+        ))
         elapsed = time.monotonic() - start
         intent_for_log = result.intent if isinstance(result, ChatResponse) else result.get("intent", "?")
         logger.info(
@@ -195,6 +215,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         if isinstance(result, ChatResponse):
             return result
         return ChatResponse(**result)
+    except asyncio.CancelledError:
+        logger.info("Chat request stopped by user: session=%s", request.session_id or "anonymous")
+        raise
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         log_exception(
             logger,
@@ -224,17 +247,20 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
     )
     start = time.monotonic()
     try:
-        result = await execute_comparison(
+        result = await _run_cancellable(request.request_id, execute_comparison(
             session_id=request.session_id,
             idx_a=request.instance_a,
             idx_b=request.instance_b,
-        )
+        ))
         elapsed = time.monotonic() - start
         logger.info(
             "Comparison completed: duration=%.2fs session=%s",
             elapsed, request.session_id or "anonymous",
         )
         return ChatResponse(**result)
+    except asyncio.CancelledError:
+        logger.info("Comparison request stopped by user: session=%s", request.session_id or "anonymous")
+        raise
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         log_exception(
             logger,
@@ -261,18 +287,21 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
     )
     start = time.monotonic()
     try:
-        result = await explain_category_for_report(
+        result = await _run_cancellable(request.request_id, explain_category_for_report(
             error_file_path=request.error_file_path,
             category=request.category,
             form_id=request.form_id,
             report_name=request.report_name,
-        )
+        ))
         elapsed = time.monotonic() - start
         logger.info(
             "Error explanation completed: category=%s duration=%.2fs",
             request.category, elapsed,
         )
         return ChatResponse(**result)
+    except asyncio.CancelledError:
+        logger.info("Explain-category request stopped by user: category=%s", request.category)
+        raise
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         log_exception(
             logger,
@@ -338,6 +367,26 @@ async def speech_to_text(file: UploadFile = File(...)) -> dict:
     transcript: str = resp.json().get("transcript", "").strip()
     logger.info("Speech-to-text completed successfully")
     return {"transcript": transcript}
+
+
+@app.post("/stop", status_code=status.HTTP_200_OK)
+async def stop_request(request: Request) -> dict:
+    """Cancel an in-flight /chat, /guided, /compare-execute, or /explain-category
+    request identified by request_id (see Stop Generation feature).
+
+    Cancellation is cooperative: the backing asyncio.Task is cancelled, which
+    raises CancelledError at its next `await` (typically the next LLM/httpx
+    call). If the task has already finished, this is a harmless no-op.
+    """
+    body = await request.json()
+    request_id = body.get("request_id")
+    task = _inflight_tasks.get(request_id) if request_id else None
+    stopped = False
+    if task and not task.done():
+        task.cancel()
+        stopped = True
+    logger.info("Stop requested: request_id=%s stopped=%s", request_id, stopped)
+    return {"stopped": stopped}
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
@@ -453,18 +502,21 @@ async def guided(request: ChatRequest) -> ChatResponse:
     )
     start = time.monotonic()
     try:
-        result = await guided_step(
+        result = await _run_cancellable(request.request_id, guided_step(
             request.message,
             session_id=request.session_id,
             asp_session=request.asp_session,
             login_id=request.login_id,
-        )
+        ))
         elapsed = time.monotonic() - start
         logger.info(
             "[PERF] endpoint=/guided result_type=%s duration=%.2fs session=%s",
             result.get("result_type", "?"), elapsed, request.session_id,
         )
         return ChatResponse(**result)
+    except asyncio.CancelledError:
+        logger.info("Guided request stopped by user: session=%s", request.session_id)
+        raise
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         logger.error(
             "[API_FAILURE] Ollama unreachable for /guided — %s", exc,

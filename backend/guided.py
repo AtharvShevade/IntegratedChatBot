@@ -103,9 +103,17 @@ async def guided_step(
     # ── Auth: resolve allowed FormIds for this user ────────────────────────
     allowed_form_ids: set[str] | None = None  # None = no restriction
     if login_id:
-        from backend.services.auth_service import get_allowed_form_ids as _get_auth
+        from backend.services.auth_service import (
+            AUTHORIZATION_ENABLED as _AUTH_ENABLED,
+            get_allowed_form_ids as _get_auth,
+        )
         allowed_form_ids = _get_auth(login_id)
-        if allowed_form_ids is None:
+        if not _AUTH_ENABLED:
+            logger.info(
+                "[AUTH_BYPASS] Authorization disabled; allowing all forms for login_id=%r session=%s",
+                login_id, session_id,
+            )
+        elif allowed_form_ids is None:
             logger.warning("[AUTH_DENY] guided: user not found login_id=%r session=%s", login_id, session_id)
             return _build(
                 response_text="Your account was not recognised. Please contact your administrator.",

@@ -1,9 +1,10 @@
 """Centralized debug logger for the iDEAL db_qa pipeline.
 
-Provides a single ``debug_log()`` function that:
-  * prints a nicely-formatted block to stdout  (always visible in uvicorn terminal)
-  * emits the same block via Python logging at DEBUG level
-    (captured by uvicorn / gunicorn log handlers)
+Provides a single ``debug_log()`` function that emits a structured,
+human-readable block via Python logging at DEBUG level. Respects the
+configured log level/handlers instead of writing to stdout unconditionally,
+so it stays silent in production (console level INFO) and is available on
+demand by lowering the console/file level to DEBUG.
 
 Usage::
 
@@ -15,15 +16,6 @@ Usage::
         detected_intent="db_my_department",
         handler="handle_my_department",
     )
-
-Expected console output::
-
-    ============================================================
-      DB QA ROUTER
-      question              : What is my department?
-      detected_intent       : db_my_department
-      handler               : handle_my_department
-    ============================================================
 """
 from __future__ import annotations
 
@@ -34,7 +26,7 @@ _SEP = "=" * 60
 
 
 def debug_log(title: str, **kwargs) -> None:
-    """Print a structured, human-readable debug block to the console.
+    """Log a structured, human-readable debug block at DEBUG level.
 
     Parameters
     ----------
@@ -44,6 +36,8 @@ def debug_log(title: str, **kwargs) -> None:
         Key-value pairs printed as ``  key : value`` lines.
         Values longer than 300 characters are automatically truncated.
     """
+    if not _dbg.isEnabledFor(logging.DEBUG):
+        return
     lines: list[str] = [f"\n{_SEP}", f"  {title}"]
     for key, value in kwargs.items():
         v = str(value)
@@ -51,8 +45,4 @@ def debug_log(title: str, **kwargs) -> None:
             v = v[:297] + "..."
         lines.append(f"  {key:<22}: {v}")
     lines.append(f"{_SEP}\n")
-    block = "\n".join(lines)
-    # print() ensures output appears immediately in the uvicorn/cmd terminal
-    print(block, flush=True)
-    # also emit via logging so it can be captured by file handlers at DEBUG level
-    _dbg.debug("%s", block)
+    _dbg.debug("\n".join(lines))

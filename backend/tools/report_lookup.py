@@ -659,7 +659,7 @@ def explain_dimensional_errors(errors: list[dict]) -> list[dict]:
                 resp = client.post(f"{ollama_base}/api/chat", json=api_payload)
                 resp.raise_for_status()
             explanation = resp.json()["message"]["content"].strip()
-            logger.info(
+            logger.debug(
                 "[DIM_LLM] concept=%r explanation=%r",
                 err.get("concept", ""),
                 explanation[:80],
@@ -1519,7 +1519,7 @@ def _explain_single_error(
             resp = client.post(f"{ollama_base}/api/chat", json=payload)
             resp.raise_for_status()
         explanation = resp.json()["message"]["content"].strip()
-        logger.info(
+        logger.debug(
             "[LLM_RETRY] cell=%r  parsed=%r", cell or "(no cell)", explanation[:80]
         )
         return explanation
@@ -2300,7 +2300,7 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
                 resp = client.post(f"{ollama_base}/api/chat", json=api_payload)
                 resp.raise_for_status()
             explanation = resp.json()["message"]["content"].strip()
-            logger.info(
+            logger.debug(
                 "[FORMULA_LLM] rule=%r  explanation=%r", rule_name, explanation[:80]
             )
         except Exception as exc:
@@ -2540,7 +2540,7 @@ def count_errors_by_category(error_file_path: str) -> dict:
     except Exception as exc:
         logger.warning("[count_errors_by_category] backtrack parse failed: %s", exc)
 
-    logger.info("[count_errors_by_category] result=%r", result)
+    logger.debug("[count_errors_by_category] result=%r", result)
     return result
 
 
@@ -2878,7 +2878,6 @@ def file_exists(path: str) -> bool:
 def _get_return_id_for_form(form_id: str) -> str:
     fid = str(form_id).strip()
     for r in _parse_returns():
-        logger.info("Return attrs: %r", dict(r))
         if r.get("Id", "").strip() == fid: return r.get("ReturnId", "").strip()
     return ""
 
@@ -2968,8 +2967,6 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
     is_4000 = _is_4000_series(form_id)
-    logger.info("DEBUG form_id=%r is_4000=%r", form_id, is_4000)
-
 
     return {
         "type":                   "final",
@@ -3034,18 +3031,20 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
     dl          = _get_download_info(latest_row, form_id)
     current_dtc = latest_row.get("DTC", "").strip()
     rep_date    = latest_row.get("ReportingDate", "").strip()
-    logger.info("[_build_status_result] form_id=%r DTC=%r Date=%r Status=%r", form_id, current_dtc, rep_date, map_status(code))
     all_instances   = get_available_instances(form_id)
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
     _t = time.monotonic()
     error_category_counts = _get_error_counts(code, dl)
-    logger.info("[STATUS_FLOW] error count duration=%.3fs counts=%r", time.monotonic() - _t, error_category_counts)
+    logger.debug("[STATUS_FLOW] error count duration=%.3fs counts=%r", time.monotonic() - _t, error_category_counts)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id       = _get_return_id_for_form(form_id)
     is_4000         = _is_4000_series(form_id)
-    logger.info("[_build_status_result] form_id=%r return_id=%r is_4000_series=%r", form_id, return_id, is_4000)
+    logger.info(
+        "[STATUS] form_id=%r return_id=%r dtc=%r date=%r status=%r is_4000_series=%r",
+        form_id, return_id, current_dtc, rep_date, map_status(code), is_4000,
+    )
 
     base = {
         "report_name":           ret_name,
@@ -3081,9 +3080,11 @@ def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict]
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
-    logger.info("DEBUG form_id=%r return_id=%r is_4000=%r", form_id, return_id, _is_4000_series(return_id))
     is_4000   = _is_4000_series(form_id)
-    logger.info("[_build_status_result_fast] form_id=%r return_id=%r is_4000_series=%r", form_id, return_id, is_4000)
+    logger.info(
+        "[STATUS_FAST] form_id=%r return_id=%r dtc=%r date=%r status=%r is_4000_series=%r",
+        form_id, return_id, current_dtc, rep_date, map_status(code), is_4000,
+    )
 
     base = {
         "report_name":           ret_name,

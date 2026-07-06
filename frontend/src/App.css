@@ -263,6 +263,11 @@ html, body, #root {
 .send-btn:active:not(:disabled) { transform: scale(0.92); box-shadow: var(--shadow-sm); }
 .send-btn:disabled              { background: #A8C4E0; cursor: not-allowed; box-shadow: none; }
 
+/* ── Stop button (replaces Send while a request is in flight) ──────────────── */
+.stop-btn { background: #3A3A3A; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); }
+.stop-btn:hover  { background: #1E1E1E; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45); }
+.stop-btn svg { width: 14px; height: 14px; }
+
 /* ── Mic button ──────────────────────────────────────────────────────────── */
 .voice-input-wrapper { position: relative; display: flex; align-items: center; flex-shrink: 0; }
 

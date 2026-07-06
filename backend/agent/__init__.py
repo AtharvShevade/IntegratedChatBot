@@ -719,8 +719,14 @@ async def decide(
     allowed_form_ids: set[str] | None = None
     if login_id:
         from backend.services.auth_service import get_allowed_form_ids as _get_auth
+        from backend.services.auth_service import AUTHORIZATION_ENABLED as _AUTH_ENABLED
         allowed_form_ids = _get_auth(login_id)
-        if allowed_form_ids is None:
+        if not _AUTH_ENABLED:
+            logger.info(
+                "[AUTH_BYPASS] Authorization disabled; allowing all forms for login_id=%r session=%s",
+                login_id, session_id,
+            )
+        elif allowed_form_ids is None:
             logger.warning(
                 "[AUTH_DENY] User not found: login_id=%r session=%s", login_id, session_id
             )
@@ -730,12 +736,13 @@ async def decide(
                 response_text="Your account was not recognised. Please contact your administrator.",
                 result_type="error",
             )
-        logger.info(
-            "[AUTH] login_id=%r allowed_forms=%d session=%s",
-            login_id, len(allowed_form_ids), session_id,
-        )
+        else:
+            logger.info(
+                "[AUTH] login_id=%r allowed_forms=%d session=%s",
+                login_id, len(allowed_form_ids), session_id,
+            )
 
-    elif _REQUIRE_AUTH:
+    elif _REQUIRE_AUTH and os.getenv("AUTHORIZATION_ENABLED", "true").lower() == "true":
         logger.warning(
             "[AUTH_DENY] No login_id provided and REQUIRE_AUTH=true, session=%s", session_id
         )
@@ -1630,12 +1637,8 @@ async def decide(
                 _fallback_date = _extract_date_from_query(user_query)
                 if _fallback_date:
                     logger.info(
-                        "[REPORT_DATE_DETECTED] unknown-fallback path: date=%r in query=%r",
+                        "[REPORT_DATE_DETECTED] unknown-fallback path: date=%r in query=%r — skipping date prompt",
                         _fallback_date, user_query,
-                    )
-                    logger.info(
-                        "[SKIP_DATE_PROMPT] date=%r pre-extracted — skipping date prompt",
-                        _fallback_date,
                     )
                 return await _handle_generate(
                     _matched_query, _fallback_date, session_id, effective_asp, allowed_form_ids
@@ -1767,12 +1770,8 @@ async def decide(
 
         if reporting_date:
             logger.info(
-                "[REPORT_DATE_DETECTED] date=%r extracted from query=%r",
+                "[REPORT_DATE_DETECTED] date=%r extracted from query=%r — will skip date prompt if report resolves",
                 reporting_date, user_query,
-            )
-            logger.info(
-                "[SKIP_DATE_PROMPT] date=%r available — will skip date prompt if report resolves",
-                reporting_date,
             )
         else:
             logger.debug("[REPORT_DATE_DETECTED] no date found in query=%r", user_query)

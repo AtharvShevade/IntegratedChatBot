@@ -343,7 +343,7 @@ def _configure_arelle_taxonomy(cntlr, file_path: str) -> None:
                 stub_url = "file:///" + stub_path.replace("\\", "/").lstrip("/")
                 cntlr.webCache.urlrewrite[f"{inst_url}/{fname}"] = stub_url
                 cntlr.webCache.urlrewrite[f"{tax_url}/{fname}"]  = stub_url
-                logger.info("Replaced corrupt %s with minimal stub for partial DTS loading", fname)
+                logger.debug("Replaced corrupt %s with minimal stub for partial DTS loading", fname)
                 mapped += 1
             else:
                 skipped += 1
@@ -1319,7 +1319,7 @@ async def generate_llm_summary(
 
 
     base_url   = os.getenv("OLLAMA_BASE_URL",      "http://127.0.0.1:11434")
-    model      = os.getenv("OLLAMA_COMPARE_MODEL", "phi3:mini")   # dedicated compare/summary model
+    model      = os.getenv("OLLAMA_COMPARE_MODEL", "llama3.1:latest")   # dedicated compare/summary model
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE",    "30m")
     # Short timeout: summary is decorative - must not block the comparison result.
     # Override via OLLAMA_SUMMARY_TIMEOUT; default 8 s.

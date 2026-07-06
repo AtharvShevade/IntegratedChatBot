@@ -8,6 +8,26 @@
  */
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+
+/**
+ * Ask the backend to cancel an in-flight request by its request_id.
+ * Best-effort: safe to call even if the request has already finished.
+ *
+ * @param {string} requestId
+ */
+export async function stopRequest(requestId) {
+  if (!requestId) return
+  try {
+    await fetch(`${BASE_URL}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: requestId }),
+    })
+  } catch {
+    // Best-effort — the client-side abort() already stopped the UI wait.
+  }
+}
+
 /**
  * Directly execute a pre-staged instance comparison.
  *
@@ -18,9 +38,13 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
  * @param {string} sessionId - Session ID that holds the staged comparison state.
  * @param {number} instanceA - 0-based index of the first instance.
  * @param {number} instanceB - 0-based index of the second instance.
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal]
+ * @param {string} [opts.requestId]
  * @returns {Promise<object>} - ChatResponse (variance_table or error).
  */
-export async function compareInstances(sessionId, instanceA, instanceB) {
+export async function compareInstances(sessionId, instanceA, instanceB, opts = {}) {
+  const { signal, requestId } = opts
   const res = await fetch(`${BASE_URL}/compare-execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -28,7 +52,9 @@ export async function compareInstances(sessionId, instanceA, instanceB) {
       session_id: sessionId,
       instance_a: instanceA,
       instance_b: instanceB,
+      request_id: requestId ?? null,
     }),
+    signal,
   })
 
   if (!res.ok) {
@@ -44,6 +70,14 @@ export async function compareInstances(sessionId, instanceA, instanceB) {
  *
  * @param {string} message - User query text.
  * @param {string|null} sessionId - Optional session ID for context.
+ * @param {string|null} aspSession
+ * @param {string|null} loginId
+ * @param {string|null} userId
+ * @param {string|null} roleId
+ * @param {Array} conversationHistory
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal]
+ * @param {string} [opts.requestId]
  * @returns {Promise<{intent: string, report_name: string|null, response_text: string, need_clarification: boolean}>}
  * @throws {Error} - With a user-friendly message on failure.
  */
@@ -55,7 +89,9 @@ export async function sendMessage(
   userId = null,
   roleId = null,
   conversationHistory = [],
+  opts = {},
 ) {
+  const { signal, requestId } = opts
   const body = { message }
   if (sessionId)                    body.session_id           = sessionId
   if (aspSession)                   body.asp_session          = aspSession
@@ -63,11 +99,13 @@ export async function sendMessage(
   if (userId)                       body.user_id              = userId
   if (roleId)                       body.role_id              = roleId
   if (conversationHistory?.length)  body.conversation_history = conversationHistory
+  if (requestId)                    body.request_id           = requestId
 
   const res = await fetch(`${BASE_URL}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!res.ok) {
@@ -85,20 +123,29 @@ export async function sendMessage(
  * @param {string} message
  * @param {string|null} sessionId
  * @param {string|null} aspSession
+ * @param {string|null} loginId
+ * @param {string|null} userId
+ * @param {string|null} roleId
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal]
+ * @param {string} [opts.requestId]
  * @returns {Promise<object>}
  */
-export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null, userId = null, roleId = null) {
+export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null, userId = null, roleId = null, opts = {}) {
+  const { signal, requestId } = opts
   const body = { message }
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
   if (loginId)    body.login_id    = loginId
   if (userId)     body.user_id     = userId
   if (roleId)     body.role_id     = roleId
+  if (requestId)  body.request_id  = requestId
 
   const res = await fetch(`${BASE_URL}/guided`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!res.ok) {
@@ -114,10 +161,13 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
  * which proxies it to Sarvam AI.
  *
  * @param {Blob} audioBlob - Raw audio recorded by MediaRecorder.
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal]
  * @returns {Promise<string>} - Transcribed text.
  * @throws {Error} - With a user-friendly message on failure.
  */
-export async function transcribeAudio(audioBlob) {
+export async function transcribeAudio(audioBlob, opts = {}) {
+  const { signal } = opts
   const formData = new FormData()
   // Give the file a name with the correct extension based on MIME type
   const ext = audioBlob.type.includes('webm') ? 'webm'
@@ -130,6 +180,7 @@ export async function transcribeAudio(audioBlob) {
     method: 'POST',
     body: formData,
     // Do NOT set Content-Type manually — browser sets it with the boundary
+    signal,
   })
 
   if (!res.ok) {
@@ -151,12 +202,17 @@ export async function transcribeAudio(audioBlob) {
  * @param {string} category - One of "formula_error", "xbrl_schema", "dimensional".
  * @param {string|null} formId - Report form ID (needed for xbrl_schema 4000-series tagging).
  * @param {string|null} reportName - Report display name (for the response header).
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal]
+ * @param {string} [opts.requestId]
  * @returns {Promise<object>} - ChatResponse-shaped object with error_details populated.
  */
-export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null) {
+export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null, opts = {}) {
+  const { signal, requestId } = opts
   const body = { error_file_path: errorFilePath, category }
   if (formId)     body.form_id     = formId
   if (reportName) body.report_name = reportName
+  if (requestId)  body.request_id  = requestId
   // Use the same BASE_URL as sendMessage — relies on Vite proxy in dev,
   // VITE_API_BASE_URL in production. Do NOT use a hardcoded localhost fallback
   // here (unlike the polling fetch in App.jsx which correctly uses port 8001).
@@ -164,6 +220,7 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))

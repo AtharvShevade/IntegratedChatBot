@@ -170,12 +170,12 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
 
         # Step 3: validation
         is_valid, reason = validate_sql(sql, tables, columns)
-        logger.info("[SQL_AGENT] attempt=%d valid=%s reason=%s", attempt + 1, is_valid, reason)
+        logger.debug("[SQL_AGENT] attempt=%d valid=%s reason=%s", attempt + 1, is_valid, reason)
         if not is_valid:
             if attempt + 1 < MAX_SQL_RETRIES:
                 previous_sql   = sql
                 previous_error = f"Validation error: {reason}"
-                logger.info("[SQL_AGENT] retrying after validation failure")
+                logger.info("[SQL_AGENT] retrying after validation failure: %s", reason)
                 continue
             return _build_result(
                 response_text="Unable to process your query right now. Please try again.",

@@ -36,6 +36,9 @@ _USER_ROLE_ATTR:  str = os.getenv("XML_USER_ROLE_ATTR",  "RoleId")
 # TTL in seconds — override via AUTH_TTL_SEC env var (default 1 hour)
 _AUTH_TTL: float = float(os.getenv("AUTH_TTL_SEC", "3600"))
 
+# Enable or disable authorization checks entirely. Defaults to true.
+AUTHORIZATION_ENABLED: bool = os.getenv("AUTHORIZATION_ENABLED", "true").lower() == "true"
+
 # Per-login cache: { login_id: (result, monotonic_ts, xml_mtime) }
 _cache: dict[str, tuple[set[str] | None, float, float]] = {}
 
@@ -77,6 +80,13 @@ def get_allowed_form_ids(login_id: str) -> set[str] | None:
         Set of FormId strings the user's department is allowed to access.
         An empty set means the department exists but has no forms assigned.
     """
+    if not AUTHORIZATION_ENABLED:
+        logger.debug(
+            "[AUTH_BYPASS] Authorization disabled by AUTHORIZATION_ENABLED=false — allowing all forms for login_id=%r",
+            login_id,
+        )
+        return None
+
     clean = login_id.strip()
     if not clean:
         return None
@@ -166,14 +176,9 @@ def _lookup(login_id: str) -> set[str] | None:
             forms_raw = el.attrib.get("Forms", "")
             form_ids  = {f.strip() for f in forms_raw.split("|") if f.strip()}
             logger.info(
-                "[AUTH] Step 2 | DepartmentId: %r  →  Forms count: %d  |  "
-                "Sample (first 5): %s",
-                dept_id, len(form_ids), sorted(form_ids)[:5],
-            )
-            logger.info(
                 "[AUTH] SUMMARY | LoginId: %r | DepartmentId: %r | "
-                "Allowed FormIds: %d forms loaded",
-                login_id, dept_id, len(form_ids),
+                "Allowed FormIds: %d forms loaded | Sample (first 5): %s",
+                login_id, dept_id, len(form_ids), sorted(form_ids)[:5],
             )
             return form_ids
 
@@ -274,6 +279,13 @@ def can_generate_instance(login_id: str) -> bool:
     Results are TTL-cached per login_id (same TTL as department access).
     Returns False on any lookup failure (user not found, XML missing, no access row).
     """
+    if not AUTHORIZATION_ENABLED:
+        logger.debug(
+            "[AUTH_BYPASS] Authorization disabled by AUTHORIZATION_ENABLED=false — allowing report generation for login_id=%r",
+            login_id,
+        )
+        return True
+
     clean = login_id.strip()
     if not clean:
         return False

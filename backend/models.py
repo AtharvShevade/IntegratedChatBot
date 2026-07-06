@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     beautify:             bool           = Field(True)  # when True, use LLM to format DB Q&A results
     user_id:              Optional[str]  = Field(None, max_length=128)  # current user's ID (for DB Q&A role check)
     role_id:              Optional[str]  = Field(None, max_length=64)   # current user's role ID (for DB Q&A admin check)
+    request_id:           Optional[str]  = Field(None, max_length=64)   # client-generated ID; enables Stop Generation
 
 
 class ChatResponse(BaseModel):
@@ -62,6 +63,7 @@ class CompareRequest(BaseModel):
     session_id:  str = Field(..., max_length=128)
     instance_a:  int = Field(..., ge=0)   # 0-based index into session's cmp_instances
     instance_b:  int = Field(..., ge=0)
+    request_id:  Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
 
 class ExplainCategoryRequest(BaseModel):
     """Request body for /explain-category — on-demand error explanation."""
@@ -69,6 +71,7 @@ class ExplainCategoryRequest(BaseModel):
     category:        str = Field(..., max_length=64)   # formula_error | xbrl_schema | dimensional
     form_id:         Optional[str] = Field(None, max_length=64)
     report_name:     Optional[str] = Field(None, max_length=256)
+    request_id:      Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
 
 
 
