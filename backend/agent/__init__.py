@@ -2530,7 +2530,9 @@ def _finalize_schedule(
     # ── Date validation (reuse generate-instance logic when frequency is known) ──
     # require_future=True: scheduling needs a strictly future date (opposite of generate).
     if schedule_date and frequency:
-        validation = validate_reporting_date(schedule_date, frequency, require_future=True)
+        validation = validate_reporting_date(
+            schedule_date, frequency, require_future=True, time_str=schedule_time,
+        )
         if not validation["valid"]:
             if session_id:
                 _session_context[session_id] = {

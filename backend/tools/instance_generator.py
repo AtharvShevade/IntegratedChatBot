@@ -171,7 +171,9 @@ def _hint_dates(frequency: str, year: int, *, filter_future: bool = True, filter
     return valid
 
 
-def validate_reporting_date(date_str: str, frequency: str, *, require_future: bool = False) -> dict[str, Any]:
+def validate_reporting_date(
+    date_str: str, frequency: str, *, require_future: bool = False, time_str: str | None = None,
+) -> dict[str, Any]:
     """Validate a reporting date against frequency rules.
 
     Args:
@@ -180,6 +182,10 @@ def validate_reporting_date(date_str: str, frequency: str, *, require_future: bo
                         (default, generate-instance mode) only past/current dates
                         are accepted — future dates are rejected.
                         All frequency/period checks (Q/M/Y/H/…) are applied in both modes.
+        time_str:       Optional "HH:MM" schedule time. When the date resolves to
+                        today and a time is given, the current-day check compares
+                        the full datetime (so a later time today is accepted)
+                        instead of rejecting today's date outright.
 
     Returns: {"valid": bool, "error": str | None, "suggestions": list[str]}
     """
@@ -276,20 +282,38 @@ def validate_reporting_date(date_str: str, frequency: str, *, require_future: bo
     today_date = date.today()
 
     if require_future:
-        # Scheduling mode: require a strictly future date.
-        if parsed <= today_date:
-            logger.debug("[PAST_DATE_REJECTED_SCHEDULE] date=%s today=%s", ds, today_date)
+        # Scheduling mode: require a strictly future date — except when the date
+        # is today and a schedule time is given, in which case a later time
+        # today is allowed (e.g. Daily reports scheduled later the same day).
+        is_past = parsed < today_date
+        is_today_and_not_later = False
+        is_today_past_time = False
+        if parsed == today_date:
+            if time_str:
+                try:
+                    sched_time = datetime.strptime(time_str.strip(), "%H:%M").time()
+                    is_today_and_not_later = sched_time <= datetime.now().time()
+                    is_today_past_time = is_today_and_not_later
+                except ValueError:
+                    is_today_and_not_later = True  # unparsable time — fall back to rejecting "today"
+            else:
+                is_today_and_not_later = True  # no time yet — can't confirm it's later today
+
+        if is_past or is_today_and_not_later:
+            logger.debug("[PAST_DATE_REJECTED_SCHEDULE] date=%s time=%s today=%s", ds, time_str, today_date)
             # Suggest the next valid future dates for this frequency.
             future_hints = _hint_dates(frequency, today_date.year, filter_past=True)
             if not future_hints:
                 # All current-year dates have passed — pull from next year.
                 future_hints = _hint_dates(frequency, today_date.year + 1, filter_past=True)
+            error_msg = (
+                "The scheduled time must be in the future for today's date."
+                if is_today_past_time else
+                f"'{ds}' is not a future date. Scheduling requires a future reporting date."
+            )
             return {
                 "valid":       False,
-                "error":       (
-                    f"'{ds}' is not a future date. "
-                    "Scheduling requires a future reporting date."
-                ),
+                "error":       error_msg,
                 "suggestions": future_hints,
             }
     else:
