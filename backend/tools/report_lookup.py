@@ -1189,6 +1189,21 @@ def _build_root_cause_analysis(
     return result
 
 
+_XBRL_DATATYPE_EXAMPLES = {
+    "decimal": "34.23",
+    "integer": "1000",
+    "date":    "2025-05-15",
+    "boolean": "true",
+    "string":  "ABC123",
+}
+
+
+def _example_value_for_datatype(expected: str) -> str:
+    """Best-effort example value for a known XBRL datatype name, else ''."""
+    key = (expected or "").strip().lower()
+    return _XBRL_DATATYPE_EXAMPLES.get(key, "")
+
+
 def _build_fallback_business_explanation(err: dict) -> str:
     """
     Evidence-based fallback for XBRL schema errors.
@@ -1253,29 +1268,26 @@ def _build_fallback_business_explanation(err: dict) -> str:
  
     lines = []
  
-    if actual and expected:
-        lines.append(
-            f"{subject} contains the value '{actual}', "
-            f"which is not a valid {expected} value."
-        )
-    elif actual and clean_validator_msg:
-        lines.append(
-            f"{subject} contains the value '{actual}'. "
-            f"The validator reports: \"{clean_validator_msg}\"."
-        )
-    elif actual:
-        lines.append(f"{subject} contains the value '{actual}', which failed validation.")
-    elif clean_validator_msg:
-        lines.append(f"{subject} failed validation. The validator reports: \"{clean_validator_msg}\".")
+    if actual:
+        lines.append(f"The entered value \"{actual}\" is invalid.")
     else:
         lines.append(f"{subject} failed validation.")
- 
+
+    if expected:
+        lines.append(f"This field accepts only {expected} values.")
+    elif clean_validator_msg:
+        lines.append(clean_validator_msg.rstrip(".") + ".")
+
+    example_val = _example_value_for_datatype(expected)
+    if example_val:
+        lines.append(f"A valid {expected} looks like this: {example_val}.")
+
     # Downstream effects — include only if explicitly populated by root-cause analysis
     if err.get("downstream_effects"):
         for effect in err["downstream_effects"][:2]:
             lines.append(effect)
- 
-    lines.append("The report cannot be submitted until this is corrected.")
+
+    lines.append("Correct the value and revalidate the report.")
     return " ".join(lines)
 
 
@@ -1461,33 +1473,67 @@ def _explain_single_error(
             "this problem. Mention them briefly using only the text provided.\n"
         )
  
+    expected_type = (payload_item.get("expected_type") or "").strip()
+    example_instruction = ""
+    if expected_type:
+        example_instruction = (
+            "7. Include one short sentence giving ONLY a concrete example value "
+            f"for the '{expected_type}' type — format it exactly like "
+            f"\"A valid {expected_type} looks like this: 34.56\" (using a realistic "
+            f"example value for the '{expected_type}' type in place of 34.56). "
+            "Do NOT also describe the general shape/definition of the type "
+            "(e.g. do not additionally say it should have a whole number and a "
+            "fraction, or similar) — the concrete example alone is enough, do not "
+            "explain it further. Do not invent a required format unless "
+            "'validator_message' explicitly states one.\n"
+        )
+
     prompt = (
         "You are a regulatory reporting assistant helping a business user understand "
         "why their report submission was rejected.\n\n"
         "A validation error is provided as JSON. "
         "These fields are the ONLY source of truth you have.\n\n"
         f"{error_json}\n\n"
-        "Write ONE plain-English paragraph (maximum 80 words) explaining this error.\n\n"
+        "Write SHORT, SIMPLE, business-friendly sentences explaining this error, "
+        "as a series of short statements (one idea per sentence).\n\n"
         f"STRICT RULES:\n"
         f"{opening_rule}\n"
         "2. Quote 'entered_value' or 'all_invalid_values' exactly — do not alter them.\n"
         "3. Do not invent any field, value, element name, or cell code not in the JSON.\n"
-        "4. If 'validator_message' is present, use it as your primary factual basis. "
-        "   Do not add meaning beyond what it states.\n"
+        "4. State what failed in plain terms — e.g. the entered value is invalid, or "
+        "   what type of value the field expects — based only on 'validator_message' "
+        "   and 'expected_type'. Do not add meaning beyond what they state.\n"
         "5. If the validator_message says 'is not a valid value for date', say that. "
         "   Do NOT additionally claim the format should be YYYY-MM-DD unless "
         "   the validator_message explicitly states a required format.\n"
         "6. Do NOT state that a context is a duplicate unless the validator_message "
         "   explicitly uses the word 'duplicate'.\n"
-        "7. Do NOT suggest what the corrected value should be.\n"
-        "8. No bullet points, headers, or markdown.\n"
-        "9. Do NOT use: 'invalid value', 'validation failed', 'schema', 'XML', "
-        "   'XBRL', 'cvc-', 'it appears', 'seems', 'may be', 'possibly', 'likely'.\n"
-        "10. Do not repeat any element name more than once.\n"
+        "7. Never write two sentences that say the same thing in different words "
+        "   (e.g. do NOT write both 'Cell X contains Y' and 'The entered value is "
+        "   Y' — these are the same fact, keep only ONE of them). Before finishing, "
+        "   check every sentence against every other sentence and remove any that "
+        "   restate a fact already given.\n"
+        f"{example_instruction}"
+        "9. Write ONE single short closing sentence that tells the user to correct "
+        "   the value and revalidate the report — e.g. \"Correct the value and "
+        "   revalidate the report.\" Do NOT write separate sentences for "
+        "   'fix the value', 'revalidate', and 'cannot be submitted' — these must "
+        "   be ONE combined closing sentence, not three.\n"
+        "10. Write at most 5 short sentences total (fewer is fine), and only as "
+        "   many as are needed once duplicates are removed. Each sentence "
+        "   must be a complete, self-contained statement ending in a period, since "
+        "   each one will be shown as its own bullet point. No headers or markdown.\n"
+        "11. Do NOT use: 'invalid value', 'validation failed', 'schema', 'XML', "
+        "   'XBRL', 'cvc-', 'the validator states', 'does not satisfy', 'it appears', "
+        "   'seems', 'may be', 'possibly', 'likely'.\n"
+        "12. Do not repeat any element name more than once.\n"
         f"{cascade_instruction}"
         f"{downstream_instruction}"
-        "End with: 'The report cannot be submitted until this is corrected.'\n\n"
-        "Output the explanation paragraph only. No JSON. No markdown. No preamble."
+        "The closing sentence from rule 9 must be the LAST sentence and the ONLY "
+        "sentence about fixing/revalidating — do not add any other sentence about "
+        "resubmitting, revalidating, or the report being blocked.\n\n"
+        "Output the sentences only, one after another, no JSON, no markdown, no preamble, "
+        "no bullet characters — just plain sentences separated by spaces."
     )
  
     payload = {
@@ -1497,13 +1543,22 @@ def _explain_single_error(
                 "role": "system",
                 "content": (
                     "You are a regulatory reporting assistant. "
-                    "Explain validation errors in plain English using ONLY the information "
-                    "in the JSON. "
+                    "Explain validation errors to a business user in short, simple sentences "
+                    "using ONLY the information in the JSON. "
                     "NEVER state that a context is a duplicate, that a date format is wrong, "
                     "or that a member is incorrect unless the validator_message explicitly "
                     "states this. "
                     "NEVER invent a cell reference, element name, or value not in the JSON. "
-                    "Return exactly one plain-text paragraph. No JSON. No markdown."
+                    "Avoid technical wording like 'the validator states' or 'does not satisfy "
+                    "datatype constraints' — explain what failed and how to fix it in plain "
+                    "business language. Never write two sentences that restate the same fact "
+                    "in different words — each sentence must add new information. When giving "
+                    "an example value, state ONLY the concrete example (e.g. 'A valid decimal "
+                    "looks like this: 34.56') and do not also describe the type's general "
+                    "shape or definition. End with exactly ONE combined closing sentence about "
+                    "correcting the value and revalidating — never separate sentences for "
+                    "fixing, revalidating, and resubmitting. Return short sentences only. "
+                    "No JSON. No markdown."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -1597,12 +1652,16 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
 
 def _classify_formula_type(formula: str) -> str:
     f = formula.lower()
+    # A sum() call or a chain of "+" between $V variables means one side is a
+    # total and the other is its component values — this holds even when the
+    # whole comparison is wrapped in round()/div for tolerance purposes, so
+    # this check must run before the generic round() -> ratio_check check.
+    if re.search(r'sum\s*\(', f) or re.search(r'\$v\d+\s*\+\s*\$v\d+', f):
+        return "sum_check"
     if "if(" in f or "if (" in f:
         return "ratio_check"
     if "round(" in f:
         return "rounded_equality"
-    if re.search(r'\$v\d+\s*\+\s*\$v\d+', f):
-        return "sum_check"
     if re.search(r'not\s*\(\s*empty', f):
         return "presence_check"
     return "general"
@@ -1763,7 +1822,11 @@ def parse_formula_errors(html_path: str) -> list[dict]:
                         if self._cur_rule.get("rule_name") and (self._cur_rule["instances"] or self._cur_rule.get("error_count", 0) > 0):
                             self.rules.append(self._cur_rule)
                     self._cur_rule = {"rule_name": "", "formula_expression": "", "formula_type": "general", "error_count": 0, "instances": []}
-                    self._in_panel = True; return
+                    # Reset per-panel state — these flags previously leaked across
+                    # panel boundaries (never reset until end of accordion), which
+                    # caused every panel after the first to silently lose its badge
+                    # count once panel-body had been entered once.
+                    self._in_panel = True; self._in_panel_body = False; return
                 if self._has_class(attrs, "panel-collapse") or self._has_class(attrs, "panel-body"):
                     if self._in_panel: self._in_panel_body = True; return
                 if self._has_class(attrs, "assertionLabel") and self._in_panel:
@@ -1772,6 +1835,11 @@ def parse_formula_errors(html_path: str) -> list[dict]:
                     self._cap_formula = True; self._buf = ""; return
                 cls = self._attr(attrs, "class")
                 if "badge" in cls and self._in_panel and not self._in_panel_body:
+                    self._cap_badge = True; self._buf = ""
+            elif tag == "span" and self._in_accordion and self._in_panel and not self._in_panel_body:
+                # Badge count is sometimes marked up as <span class="badge">N</span>
+                # rather than <div class="badge">N</div> — capture both.
+                if "badge" in self._attr(attrs, "class"):
                     self._cap_badge = True; self._buf = ""
             elif tag == "table" and self._in_panel_body:
                 # KEY FIX: flush the PREVIOUS instance before starting a new table
@@ -1789,6 +1857,11 @@ def parse_formula_errors(html_path: str) -> list[dict]:
 
         def handle_endtag(self, tag):
             tag = tag.lower()
+            if tag == "span" and self._cap_badge:
+                if self._cur_rule is not None:
+                    try: self._cur_rule["error_count"] = int(self._buf.strip())
+                    except (ValueError, TypeError): pass
+                self._cap_badge = False; self._buf = ""; return
             if tag == "div":
                 if not self._in_accordion: return
                 if self._cap_label:
@@ -2048,15 +2121,81 @@ def _build_formula_llm_payload(rule: dict) -> dict:
     return payload
 
 
+
+# Generic second bullet per formula type — deterministic, not LLM-generated,
+# so it never drifts. Kept short and free of any specific rule's field names.
+_FORMULA_TYPE_REASON_HINT = {
+    "sum_check": (
+        "This happens when the reported total and the sum of its underlying "
+        "values are out of sync."
+    ),
+    "ratio_check": (
+        "This happens when the reported value and the value calculated from "
+        "its related fields are out of sync."
+    ),
+    "rounded_equality": (
+        "This happens when the reported value and the value calculated from "
+        "its related fields are out of sync."
+    ),
+}
+
+
+def _render_formula_explanation_template(
+    headline: str, reason: str, fix: str, ftype: str = "", rule_name: str = ""
+) -> str:
+    """
+    Fixed rendering template shared by the LLM path and the fallback path,
+    so the final format is guaranteed regardless of what the LLM returns.
+    The LLM (or the fallback builder) only ever supplies three short plain
+    text values — headline, reason, fix — never the symbols/spacing/layout.
+
+    Layout (one blank line between every part, not congested):
+        ⚙ Formula Error — {rule_name}
+        (blank)
+        ❌ **{headline}**
+        (blank)
+        {reason}
+        (blank)
+        {type hint, if any}
+        (blank)
+        **How to fix:** {fix}
+    """
+    def _as_sentence(text: str) -> str:
+        text = text.strip()
+        return text if (not text or text.endswith((".", "!", "?"))) else text + "."
+
+    headline = (headline or "Validation failed").strip().rstrip(".")
+    reason   = _as_sentence(reason or "")
+    fix      = _as_sentence(fix or "")
+
+    lines = []
+    if rule_name:
+        lines.append(f"⚙ Formula Error — {rule_name}")
+        lines.append("")
+    lines.append(f"❌ **{headline}**")
+    lines.append("")
+    if reason:
+        lines.append(reason)
+        lines.append("")
+    type_hint = _FORMULA_TYPE_REASON_HINT.get(ftype, "")
+    if type_hint:
+        lines.append(type_hint)
+        lines.append("")
+    if fix:
+        lines.append(f"**How to fix:** {fix}")
+    return "\n".join(lines)
+
+
 def _fallback_formula_explanation(rule: dict) -> str:
     """
     Evidence-based fallback for formula errors.
     Uses only the parsed payload — no invented field names or assumed values.
+    Returns the same fixed ❌/bullet template as the LLM path.
     """
     ftype     = rule.get("formula_type", "general")
     instances = rule.get("instances", [])
     rule_name = rule.get("rule_name", "")
- 
+
     # Extract business message from first instance that has one
     biz_msg = next(
         (
@@ -2069,68 +2208,44 @@ def _fallback_formula_explanation(rule: dict) -> str:
     biz_msg = re.sub(
         r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg, flags=re.IGNORECASE
     ).strip('"').strip("'").strip()
- 
+
     if ftype == "presence_check":
         commodities: list[str] = []
-        contexts: list[str] = []
         for inst in instances:
             for v in inst.get("variables", []):
                 if v.get("var") == "V1":
                     val = v.get("value", "")
                     if val and val not in commodities:
                         commodities.append(val)
-                    ctx_hint = v.get("context_hint", "") or v.get("context", "")
-                    if ctx_hint and ctx_hint not in contexts:
-                        contexts.append(ctx_hint)
- 
-        comm_str = (
-            ", ".join(f'"{c}"' for c in commodities)
-            if commodities
-            else "one or more items"
+
+        if commodities:
+            reason = f"A required value is missing for {', '.join(commodities[:3])}."
+        elif biz_msg:
+            reason = biz_msg
+        else:
+            reason = "A required value is missing."
+        fix = "Enter the missing value for each listed item, then revalidate the report."
+        return _render_formula_explanation_template(
+            "Required value missing", reason, fix, rule_name=rule_name
         )
-        parts = [f"The business validation failed for {comm_str}."]
-        if biz_msg:
-            parts.append(biz_msg)
-        if contexts:
-            ctx_sample = "; ".join(contexts[:3])
-            suffix = "..." if len(contexts) > 3 else ""
-            parts.append(
-                f"The failure was reported for {len(instances)} context(s): {ctx_sample}{suffix}."
-            )
-        parts.append(
-            "Please ensure all required fields are populated for each listed item "
-            "before resubmitting."
-        )
-        return " ".join(parts)
- 
+
     if ftype == "sum_check":
-        inst       = instances[0] if instances else {}
-        lhs        = inst.get("lhs_var") or {}
-        total_lbl  = lhs.get("concept_label") or lhs.get("concept", "the total field")
-        unit       = inst.get("unit", "")
-        reported   = inst.get("reported_total", "")
-        calculated = inst.get("calculated_sum", "")
-        diff       = inst.get("difference", "")
- 
-        parts = [
-            f"The reported {total_lbl} does not match the sum of its components."
-        ]
-        if reported and calculated:
-            unit_str = f" {unit}" if unit else ""
-            parts.append(
-                f"The submitted total is {reported}{unit_str} but the calculated "
-                f"sum of components is {calculated}{unit_str} (difference: {diff}{unit_str})."
-            )
-        if len(instances) > 1:
-            parts.append(
-                f"This mismatch was reported across {len(instances)} contexts."
-            )
-        parts.append(
-            "Please review each component and ensure they add up to the reported "
-            "total before resubmitting."
+        inst      = instances[0] if instances else {}
+        lhs       = inst.get("lhs_var") or {}
+        total_lbl = lhs.get("concept_label") or lhs.get("concept", "the reported total")
+
+        reason = (
+            f"The value entered for \"{total_lbl}\" does not match the total "
+            "calculated from its related values."
         )
-        return " ".join(parts)
- 
+        fix = (
+            f"Review the values that make up {total_lbl} and ensure the total "
+            "is calculated correctly, then revalidate the report."
+        )
+        return _render_formula_explanation_template(
+            "Total does not match", reason, fix, ftype=ftype, rule_name=rule_name
+        )
+
     if ftype in ("ratio_check", "rounded_equality"):
         inst   = instances[0] if instances else {}
         v1     = inst.get("lhs_var") or {}
@@ -2139,34 +2254,20 @@ def _fallback_formula_explanation(rule: dict) -> str:
         lbl_v1 = v1.get("concept_label") or v1.get("concept", "the reported value")
         lbl_v2 = v2.get("concept_label") or v2.get("concept", "the numerator")
         lbl_v3 = v3.get("concept_label") or v3.get("concept", "the denominator")
-        rep    = inst.get("reported_value", "")
-        calc   = inst.get("calculated_value", "")
- 
-        parts = [
+
+        reason = (
             f"The reported {lbl_v1} does not match the value calculated from "
-            f"the submitted data."
-        ]
-        if rep and calc:
-            parts.append(
-                f"The submitted value is {rep} but the calculated value based on "
-                f"{lbl_v2} and {lbl_v3} is {calc}."
-            )
-        parts.append(
-            f"Please verify {lbl_v1}, {lbl_v2}, and {lbl_v3} before resubmitting."
+            f"{lbl_v2} and {lbl_v3}."
         )
-        return " ".join(parts)
- 
+        fix = f"Verify {lbl_v1}, {lbl_v2}, and {lbl_v3}, then revalidate the report."
+        return _render_formula_explanation_template(
+            "Value does not match", reason, fix, ftype=ftype, rule_name=rule_name
+        )
+
     # General fallback
-    if biz_msg:
-        return (
-            f"A business validation check failed: {biz_msg} "
-            f"Please review and correct before resubmitting."
-        )
-    rule_ref = f" '{rule_name}'" if rule_name else ""
-    return (
-        f"The validation rule{rule_ref} failed. "
-        f"Please review the reported figures before resubmitting."
-    )
+    reason = biz_msg or (f"The validation rule '{rule_name}' failed." if rule_name else "A validation rule failed.")
+    fix = "Review the reported figures and correct any discrepancy, then revalidate the report."
+    return _render_formula_explanation_template("Validation failed", reason, fix, rule_name=rule_name)
  
  
 def explain_formula_errors(rules: list[dict]) -> list[dict]:
@@ -2201,51 +2302,82 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
  
         # ------------------------------------------------------------------
         # Type-specific instruction — describes what IS in the payload,
-        # not what the LLM should assume
+        # not what the LLM should assume. The LLM only ever produces the
+        # three short field values below — headline/reason/fix — never the
+        # final ❌/bullet layout, which is rendered deterministically in code
+        # by _render_formula_explanation_template so formatting can never drift.
         # ------------------------------------------------------------------
         if ftype == "sum_check":
             type_instruction = (
-                "This is a SUM CHECK error. The payload contains 'reported_total', "
-                "'calculated_sum', 'difference', and 'components'. "
-                "State that the reported total does not equal the sum of the components. "
-                "Quote 'reported_total' and 'calculated_sum' if they are present in the payload. "
-                "Do not invent component values that are not in the payload."
+                "This is a SUM CHECK error — the payload's 'total_field' is compared "
+                "against the sum of the values in 'components'. "
+                "'reason' must state that the reported total for 'total_field' does "
+                "not match the total calculated from its related/child values — "
+                "using the business field name from 'total_field', not V1/V2. "
+                "'fix' must tell the user to review the underlying values that make "
+                "up 'total_field' and correct the discrepancy before revalidating. "
+                "Do NOT mention the formula, the round()/div/sum() operators, or any "
+                "arithmetic. Do NOT quote 'reported_total', 'calculated_sum', "
+                "'difference', or individual component values — those already "
+                "appear in the table shown to the user. Stay high-level."
             )
         elif ftype in ("ratio_check", "rounded_equality"):
             type_instruction = (
                 "This is a RATIO or PERCENTAGE CHECK error. The payload contains "
-                "'result_field', 'numerator_field', 'denominator_field', "
-                "'reported_value', and 'calculated_value'. "
-                "State that the reported value does not match the calculated value. "
-                "Quote 'reported_value' and 'calculated_value' if present. "
-                "Do not claim the formula or arithmetic is wrong beyond what the payload states."
+                "'result_field', 'numerator_field', 'denominator_field'. "
+                "'reason' must state that the reported 'result_field' does not "
+                "match the value calculated from 'numerator_field' and "
+                "'denominator_field' — using those business field names, not V1/V2/V3. "
+                "'fix' must tell the user to verify those fields and revalidate. "
+                "Do NOT mention the formula or show any arithmetic — those values "
+                "already appear in the table shown to the user."
             )
         elif ftype == "presence_check":
+            has_failing_instances = bool(payload.get("all_failing_instances"))
+            if has_failing_instances:
+                presence_detail = (
+                    "The payload contains 'all_failing_instances' listing every "
+                    "commodity/context where the check failed — 'reason' must name "
+                    "the commodities from 'all_failing_instances'."
+                )
+            else:
+                presence_detail = (
+                    "The payload does NOT contain 'all_failing_instances' for this "
+                    "rule (there is no per-item breakdown available). 'reason' must "
+                    "instead describe the missing value using 'business_rule' or "
+                    "'rule_name' only — do NOT reference 'all_failing_instances', "
+                    "commodities, or an empty list; do not say '[]' or similar."
+                )
             type_instruction = (
-                "This is a MANDATORY FIELD CHECK error. The payload contains "
-                "'all_failing_instances' which lists every commodity and context "
-                "where the check failed, and 'business_rule' which is the exact "
-                "rule text from the validator. "
-                "YOU MUST mention EVERY commodity listed in 'all_failing_instances'. "
-                "Use the 'business_rule' text verbatim to explain what is required. "
+                "This is a MANDATORY FIELD CHECK error — a required value is "
+                "missing, not a total-vs-sum mismatch. 'business_rule' contains "
+                "the exact validator rule text. "
+                f"{presence_detail} "
+                "'reason' must state, in one sentence, that a required value is "
+                "missing. Do NOT frame this as a total or sum mismatch. "
+                "'fix' must tell the user to enter the missing value(s) and "
+                "revalidate. "
                 "Do NOT claim specific fields are empty unless the business_rule "
                 "explicitly states which fields are required."
             )
         else:
             type_instruction = (
-                "Explain the error using only the variable names, values, and "
-                "business message in the payload. "
-                "If 'all_instances' is present, address each one. "
-                "Do not infer causes beyond what the payload states."
+                "'reason' must explain what failed using only the variable names, "
+                "values, and business message in the payload, without inferring "
+                "causes beyond what the payload states. "
+                "'fix' must tell the user to review and correct the reported "
+                "figures, then revalidate."
             )
- 
+
         multi_instance_note = ""
         if instance_count > 1:
             multi_instance_note = (
                 f"\nThis rule failed for {instance_count} separate instances. "
-                "Address ALL of them — do not limit the explanation to the first instance."
+                "The 'reason' should reflect that this applies across all of them "
+                "rather than naming only the first, unless it is a presence check "
+                "(in which case name every failing item as instructed above)."
             )
- 
+
         prompt = (
             "You are a regulatory reporting assistant explaining a business validation "
             "failure to a business user.\n\n"
@@ -2254,23 +2386,29 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
             f"{_json.dumps(payload, indent=2, ensure_ascii=False)}\n\n"
             f"{type_instruction}\n"
             f"{multi_instance_note}\n\n"
-            "Write ONE plain-English paragraph (maximum 120 words).\n\n"
+            "Produce exactly three short plain-text values — do not add any others:\n"
+            "  headline — 3 to 5 words, e.g. \"Total does not match\". No punctuation "
+            "at the end.\n"
+            "  reason   — ONE short sentence: what is being compared and why it is "
+            "mismatched (or, for a mandatory field check, what is missing).\n"
+            "  fix      — ONE short sentence: the corrective action to take.\n\n"
             "STRICT RULES:\n"
             "1. Use ONLY values from the JSON. Never invent commodity names, "
             "   field names, or values not present.\n"
             "2. Use business field names — never V1, V2, V3, etc.\n"
-            "3. If 'total_failing_instances' > 1, name every failing item explicitly "
-            "   using the values in 'all_failing_instances'.\n"
-            "4. Do NOT claim a field is empty or missing unless 'business_rule' or "
+            "3. Do NOT claim a field is empty or missing unless 'business_rule' or "
             "   'business_message' explicitly states which field is required and absent.\n"
-            "5. Do not mention formulas, XBRL, taxonomy, schema, or technical details.\n"
-            "6. Do not perform arithmetic yourself.\n"
-            "7. Do not use: 'it appears', 'seems', 'may be', 'possibly', 'likely'.\n"
-            "8. No bullet points, markdown, or headings.\n"
-            "9. End with: 'The report cannot be submitted until this is corrected.'\n\n"
-            "Return only the explanation paragraph."
+            "4. Do not mention formulas, round(), div, sum(), XBRL, taxonomy, schema, "
+            "   or any other technical/arithmetic detail.\n"
+            "5. Do not perform or display arithmetic yourself.\n"
+            "6. Do not use: 'it appears', 'seems', 'may be', 'possibly', 'likely'.\n"
+            "7. Never include bullet characters, the ❌ symbol, markdown, or headings "
+            "   in any of the three values — those are added separately.\n\n"
+            "Return ONLY a single-line JSON object with exactly these three keys: "
+            '{"headline": "...", "reason": "...", "fix": "..."}\n'
+            "No other text, no markdown code fences, no explanation."
         )
- 
+
         api_payload = {
             "model": model,
             "messages": [
@@ -2278,36 +2416,48 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
                     "role": "system",
                     "content": (
                         "You are a regulatory reporting assistant. "
-                        "Explain business validation failures in plain English using "
-                        "ONLY the JSON provided. "
-                        "When multiple instances fail, address ALL of them. "
+                        "Explain business validation failures using ONLY the JSON "
+                        "provided. "
                         "NEVER claim a field is empty or missing unless the "
                         "business_rule or business_message explicitly states it. "
                         "Never use V1, V2, V3. Never invent values. "
-                        "One plain-text paragraph. No markdown."
+                        "Respond with ONLY a single-line JSON object containing "
+                        "exactly the keys headline, reason, fix — no other text, "
+                        "no markdown, no bullets, no symbols."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
             "keep_alive": keep_alive,
-            "options": {"temperature": 0.0, "num_predict": 300},
+            "options": {"temperature": 0.0, "num_predict": 200},
         }
- 
+
         explanation = ""
         try:
             with _httpx.Client(timeout=timeout) as client:
                 resp = client.post(f"{ollama_base}/api/chat", json=api_payload)
                 resp.raise_for_status()
-            explanation = resp.json()["message"]["content"].strip()
+            raw_content = resp.json()["message"]["content"].strip()
+            # Strip accidental markdown code fences before parsing as JSON.
+            raw_content = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw_content.strip(), flags=re.IGNORECASE)
+            fields = _json.loads(raw_content)
+            headline = str(fields.get("headline", "")).strip()
+            reason   = str(fields.get("reason", "")).strip()
+            fix      = str(fields.get("fix", "")).strip()
+            if reason and fix:
+                explanation = _render_formula_explanation_template(
+                    headline, reason, fix, ftype=ftype, rule_name=rule_name
+                )
             logger.debug(
-                "[FORMULA_LLM] rule=%r  explanation=%r", rule_name, explanation[:80]
+                "[FORMULA_LLM] rule=%r  fields=%r", rule_name, fields
             )
         except Exception as exc:
             logger.warning(
-                "[FORMULA_LLM] rule=%r  LLM failed: %s — using fallback", rule_name, exc
+                "[FORMULA_LLM] rule=%r  LLM failed or returned unparsable JSON: %s — using fallback",
+                rule_name, exc,
             )
- 
+
         if not explanation or len(explanation) < 15:
             explanation = _fallback_formula_explanation(rule)
  

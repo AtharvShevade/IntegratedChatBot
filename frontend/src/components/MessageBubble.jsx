@@ -275,7 +275,13 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
                 style={{ '--section-color': color, borderLeftColor: color }}
               >
                 {item.explanation && (
-                  <p className="error-explanation-text">{item.explanation}</p>
+                  group.cat === 'formula_error'
+                    ? (
+                        <div className="error-explanation-text error-explanation-markdown">
+                          <ReactMarkdown>{item.explanation}</ReactMarkdown>
+                        </div>
+                      )
+                    : <p className="error-explanation-text">{item.explanation}</p>
                 )}
                 {item.raw_message && item.raw_message !== item.explanation && (
                   <p className="error-explanation-raw" title={item.raw_message}>

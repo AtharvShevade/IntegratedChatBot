@@ -1655,6 +1655,12 @@ html, body, #root {
   color: #2c2c2c;
   margin: 0 0 4px 0;
 }
+.error-explanation-markdown p {
+  margin: 0 0 10px 0;
+}
+.error-explanation-markdown p:last-child {
+  margin-bottom: 0;
+}
 .error-explanation-raw {
   font-size: 0.78em;
   color: #888;
@@ -1720,6 +1726,12 @@ html, body, #root {
   line-height: 1.55;
   color: #2c2c2c;
   margin: 0 0 4px 0;
+}
+.error-explanation-markdown p {
+  margin: 0 0 10px 0;
+}
+.error-explanation-markdown p:last-child {
+  margin-bottom: 0;
 }
 .error-explanation-raw {
   font-size: 0.78em;
@@ -1863,6 +1875,12 @@ html, body, #root {
   line-height: 1.55;
   color: #2c2c2c;
   margin: 0 0 4px 0;
+}
+.error-explanation-markdown p {
+  margin: 0 0 10px 0;
+}
+.error-explanation-markdown p:last-child {
+  margin-bottom: 0;
 }
 .error-explanation-raw {
   font-size: 0.78em;
