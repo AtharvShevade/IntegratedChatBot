@@ -20,6 +20,7 @@ from backend.llm_extractor import (
     extract_intent_and_entities,
     parse_and_format_date,
     extract_schedule_datetime,
+    extract_reporting_and_schedule_datetime,
     _extract_search_terms as extract_search_terms,
     _extract_date_from_query,
     _BROAD_DATE_RE as _DATE_STRIP_RE,
@@ -1403,10 +1404,15 @@ async def decide(
             # always routes to schedule_report, never generate_instance.
             if _fuzzy_has_schedule(user_query) and not _fuzzy_has_status(user_query):
                 _sched_terms = _extract_schedule_search_terms(user_query)
-                _sched_dt    = extract_schedule_datetime(user_query)
+                # Handles messages that state BOTH dates explicitly, e.g.
+                # "...reporting date 31-Mar-2026...schedule it to execute on
+                # 31-Dec-2026 at 16:00" — falls back to single-date behaviour
+                # (schedule_date/time only) when no reporting-date phrasing
+                # is present, so ordinary "schedule X for 31-Dec-2026" is unaffected.
+                _sched_dt    = extract_reporting_and_schedule_datetime(user_query)
                 logger.info(
-                    "[INTENT:STEP1] schedule fast-path report=%r date=%r time=%r session=%s",
-                    _sched_terms, _sched_dt.get("schedule_date"),
+                    "[INTENT:STEP1] schedule fast-path report=%r reporting_date=%r date=%r time=%r session=%s",
+                    _sched_terms, _sched_dt.get("reporting_date"), _sched_dt.get("schedule_date"),
                     _sched_dt.get("schedule_time"), session_id,
                 )
                 return _handle_schedule(
@@ -1418,6 +1424,7 @@ async def decide(
                     allowed_form_ids=allowed_form_ids,
                     tenant_id=tenant_id,
                     login_id=login_id,
+                    reporting_date=_sched_dt.get("reporting_date"),
                 )
 
             if _fuzzy_has_status(user_query):
@@ -1810,16 +1817,22 @@ async def decide(
         # ── Deterministic preprocessing: extract datetime + clean report name ──
         # Mirrors generate_instance preprocessing — strips schedule/generate/time
         # tokens before report name lookup so LLM-polluted search_terms are corrected.
+        # Uses the two-date-aware extractor so a message that states BOTH a
+        # reporting date and a schedule date/time ("...reporting date
+        # 31-Mar-2026...execute on 31-Dec-2026 at 16:00") doesn't misattribute
+        # the reporting date as the schedule date; it falls back to the plain
+        # single-date behaviour when no reporting-date phrasing is present.
         _sched_pre    = _extract_schedule_search_terms(user_query)
-        _sched_pre_dt = extract_schedule_datetime(user_query)
+        _sched_pre_dt = extract_reporting_and_schedule_datetime(user_query)
         if _sched_pre and not search_terms:
             search_terms = _sched_pre
-        _sched_date = extracted.get("schedule_date") or _sched_pre_dt.get("schedule_date")
-        _sched_time = extracted.get("schedule_time") or _sched_pre_dt.get("schedule_time")
-        _sched_cdt  = extracted.get("scheduled_datetime") or _sched_pre_dt.get("scheduled_datetime")
+        _rpt_date   = _sched_pre_dt.get("reporting_date")
+        _sched_date = _sched_pre_dt.get("schedule_date") or extracted.get("schedule_date")
+        _sched_time = _sched_pre_dt.get("schedule_time") or extracted.get("schedule_time")
+        _sched_cdt  = _sched_pre_dt.get("scheduled_datetime") or extracted.get("scheduled_datetime")
         logger.info(
-            "[SCHEDULE_START] report=%r date=%r time=%r session=%s",
-            search_terms, _sched_date, _sched_time, session_id,
+            "[SCHEDULE_START] report=%r reporting_date=%r date=%r time=%r session=%s",
+            search_terms, _rpt_date, _sched_date, _sched_time, session_id,
         )
         return _handle_schedule(
             report_ident=search_terms,
@@ -1830,6 +1843,7 @@ async def decide(
             allowed_form_ids=allowed_form_ids,
             tenant_id=tenant_id,
             login_id=login_id,
+            reporting_date=_rpt_date,
         )
 
     if intent == "compare_reports":

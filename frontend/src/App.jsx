@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
-import VoiceInput from './components/VoiceInput.jsx'
 import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
@@ -546,7 +545,6 @@ const pollForErrors = (jobId) => {
           <div className="guided-mode-indicator">🧭 Guided mode — answer the question above</div>
         )}
         <form className="input-form" onSubmit={handleSubmit}>
-          <VoiceInput onTranscript={handleTranscript} disabled={isLoading} />
           <textarea
             ref={inputRef}
             className="text-input"

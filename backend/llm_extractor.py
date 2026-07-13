@@ -824,6 +824,149 @@ def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
     }
 
 
+# Anchors used to disambiguate which of two dates in one scheduling message is
+# the reporting date vs. the schedule date.  "reporting date"/"reporting
+# period"/"for the period" mark the reporting date; "schedule"/"execute"/
+# "run"/"generate it on" mark the schedule date.  Longer/more specific phrases
+# first so the search prefers the most explicit anchor when both could match.
+_REPORTING_DATE_ANCHOR_RE = re.compile(
+    r"reporting\s+(?:date|period)|for\s+the\s+period|report(?:ing)?\s+period\s+ending",
+    re.I,
+)
+_SCHEDULE_DATE_ANCHOR_RE = re.compile(
+    r"schedule(?:d)?\s+(?:it\s+)?(?:to\s+)?(?:execute|run|generate)|execute\s+(?:it\s+)?on"
+    r"|run\s+(?:it\s+)?on|generate\s+it\s+on|schedule\s+it\s+for|schedule\s+date",
+    re.I,
+)
+
+
+def extract_reporting_and_schedule_datetime(query: str) -> dict[str, Optional[str]]:
+    """Extract a DISTINCT reporting date and schedule date/time from one message.
+
+    Scheduling requires two different dates that describe different things:
+      - Reporting Date : the business/period date the instance is FOR
+        (validated against the report's frequency elsewhere).
+      - Schedule Date/Time : when the .NET job should actually run.
+
+    A single free-text message can legitimately contain both, e.g.:
+      "Use the reporting date 31-Mar-2026, and schedule it to execute on
+       31-Dec-2026 at 16:00."
+    ``extract_schedule_datetime`` only ever finds ONE date (the first one in
+    the text) and would misattribute the reporting date as the schedule date.
+    This function instead:
+      1. Finds ALL date-like substrings in the query with their positions.
+      2. Finds "reporting date"/"schedule ... execute" anchor phrases with
+         their positions.
+      3. Assigns each date to whichever anchor precedes it most closely.
+      4. Falls back to ``extract_schedule_datetime``'s single-date behaviour
+         when there's no explicit reporting-date anchor (the common case of
+         "schedule CIMS_RAQ for 31-Dec-2026 at 4pm" — no ambiguity, no need
+         for the two-anchor logic).
+
+    Returns::
+
+        {
+            "reporting_date":     str | None,  # DD-MMM-YYYY
+            "schedule_date":      str | None,  # DD-MMM-YYYY
+            "schedule_time":      str | None,  # HH:MM (24-hour)
+            "scheduled_datetime": str | None,  # YYYY-MM-DDTHH:MM:00
+        }
+    """
+    rpt_anchor = _REPORTING_DATE_ANCHOR_RE.search(query)
+
+    if not rpt_anchor:
+        # No explicit reporting-date phrasing — behave exactly like before.
+        sched = extract_schedule_datetime(query)
+        return {"reporting_date": None, **sched}
+
+    date_matches = list(_BROAD_DATE_RE.finditer(query)) + list(_DATE_RE.finditer(query))
+    # De-duplicate overlapping matches (both regexes can match DD-MMM-YYYY).
+    seen_spans: set[tuple[int, int]] = set()
+    unique_matches = []
+    for m in sorted(date_matches, key=lambda m: m.start()):
+        span = (m.start(), m.end())
+        if span in seen_spans:
+            continue
+        seen_spans.add(span)
+        unique_matches.append(m)
+
+    if len(unique_matches) < 2:
+        # Only one date found despite a reporting-date anchor — nothing to
+        # disambiguate; treat it as the reporting date and let the caller ask
+        # for the schedule date/time separately.
+        reporting_date = parse_and_format_date(unique_matches[0].group(0)) if unique_matches else None
+        return {
+            "reporting_date": reporting_date,
+            "schedule_date": None, "schedule_time": None, "scheduled_datetime": None,
+        }
+
+    sched_anchor = _SCHEDULE_DATE_ANCHOR_RE.search(query)
+
+    def _nearest_preceding_anchor_distance(pos: int, anchor_pos: int | None) -> int:
+        if anchor_pos is None or anchor_pos > pos:
+            return 10**9
+        return pos - anchor_pos
+
+    rpt_pos   = rpt_anchor.start()
+    sched_pos = sched_anchor.start() if sched_anchor else None
+
+    reporting_date: Optional[str] = None
+    schedule_date:  Optional[str] = None
+    best_rpt_dist   = 10**9
+    best_sched_dist = 10**9
+    for m in unique_matches:
+        d_rpt   = _nearest_preceding_anchor_distance(m.start(), rpt_pos)
+        d_sched = _nearest_preceding_anchor_distance(m.start(), sched_pos)
+        if d_rpt < best_rpt_dist and d_rpt <= d_sched:
+            best_rpt_dist = d_rpt
+            reporting_date = parse_and_format_date(m.group(0))
+        elif d_sched < best_sched_dist:
+            best_sched_dist = d_sched
+            schedule_date = parse_and_format_date(m.group(0))
+
+    # Fallback: if the anchor-distance assignment above didn't confidently
+    # resolve both dates (e.g. only one anchor present), assign in reading
+    # order — first date is the reporting date, second is the schedule date
+    # — which matches how users naturally phrase these messages.
+    if reporting_date is None and schedule_date is None and len(unique_matches) >= 2:
+        reporting_date = parse_and_format_date(unique_matches[0].group(0))
+        schedule_date  = parse_and_format_date(unique_matches[1].group(0))
+    elif reporting_date is None:
+        remaining = [m for m in unique_matches if parse_and_format_date(m.group(0)) != schedule_date]
+        if remaining:
+            reporting_date = parse_and_format_date(remaining[0].group(0))
+    elif schedule_date is None:
+        remaining = [m for m in unique_matches if parse_and_format_date(m.group(0)) != reporting_date]
+        if remaining:
+            schedule_date = parse_and_format_date(remaining[-1].group(0))
+
+    # Time: strip all date tokens first so parse_schedule_time doesn't pick up
+    # stray digits from a date as an hour.
+    time_query = _BROAD_DATE_RE.sub(" ", query)
+    time_query = _DATE_RE.sub(" ", time_query)
+    schedule_time = parse_schedule_time(time_query)
+
+    scheduled_datetime: Optional[str] = None
+    if schedule_date and schedule_time:
+        try:
+            dt = datetime.strptime(f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M")
+            scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
+        except ValueError:
+            pass
+
+    logger.info(
+        "[EXTRACT] two-date schedule message: reporting_date=%r schedule_date=%r "
+        "schedule_time=%r",
+        reporting_date, schedule_date, schedule_time,
+    )
+    return {
+        "reporting_date":     reporting_date,
+        "schedule_date":      schedule_date,
+        "schedule_time":      schedule_time,
+        "scheduled_datetime": scheduled_datetime,
+    }
+
+
 async def extract_intent_and_entities(user_query: str, history: list[dict] | None = None) -> dict[str, Any]:
     """Classify intent via LLM; extract all entities deterministically from the query.
 

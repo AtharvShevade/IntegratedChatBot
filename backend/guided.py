@@ -256,7 +256,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_STATUS_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R091, RAQ):",
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_ROR, R149, RAQ):",
             result_type="guided_input",
             options=[],
         )
@@ -265,7 +265,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_GEN_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R091):",
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_FormGPB, R009):",
             result_type="guided_input",
             options=[],
         )
@@ -274,7 +274,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_SCHED_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R091):",
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R162):",
             result_type="guided_input",
             options=[],
         )
@@ -283,7 +283,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_CMP_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name to compare (e.g. CIMS_RAQ, R091, HDFC):",
+            response_text="Enter the report name, ReturnId, or short name to compare (e.g. CIMS_RAQ, R009, RAQ):",
             result_type="guided_input",
             options=[],
         )
