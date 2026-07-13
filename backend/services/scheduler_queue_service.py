@@ -17,7 +17,7 @@ import os
 import xml.etree.ElementTree as ET
 from typing import Tuple
 
-from backend.config import SCHEDULER_QUEUE_XML_PATH
+from backend.config import SCHEDULER_QUEUE_XML_PATH, get_scheduler_queue_xml_path
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,7 @@ def append_schedule_entry(
     reporting_date: str,
     schedule_dt: str,
     user_id: str,
+    tenant_id: str | None = None,
 ) -> Tuple[bool, str]:
     """Append a new PENDING schedule entry to SchedulerQueue.xml.
 
@@ -113,13 +114,21 @@ def append_schedule_entry(
         ISO-format scheduled datetime string (e.g. ``"2027-12-31T12:00:00"``).
     user_id:
         Login ID of the user who confirmed the schedule.
+    tenant_id:
+        6.0 only. Resolves to <tenant_repo>\\DataBase\\SchedulerQueue.xml via the
+        existing tenant-aware path resolution (get_scheduler_queue_xml_path).
+        Auto-created for tenants that don't have one yet, same as 5.5.
 
     Returns
     -------
     Tuple of ``(success: bool, schedule_id: str)``.
     On failure *success* is ``False`` and *schedule_id* is an empty string.
     """
-    path = SCHEDULER_QUEUE_XML_PATH
+    try:
+        path = get_scheduler_queue_xml_path(tenant_id) if tenant_id else SCHEDULER_QUEUE_XML_PATH
+    except NotImplementedError as exc:
+        logger.error("[scheduler_queue] %s", exc)
+        return False, ""
 
     try:
         # ── Initialise the file if it does not exist ──────────────────────────

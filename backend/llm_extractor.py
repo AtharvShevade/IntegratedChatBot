@@ -75,10 +75,22 @@ def _next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+def _this_or_coming_weekday(weekday: int) -> date:
+    """Return the next occurrence of *weekday*, including today if it matches
+    (unlike _next_weekday, which always skips to the following week)."""
+    today = date.today()
+    days_ahead = weekday - today.weekday()
+    if days_ahead < 0:
+        days_ahead += 7
+    return today + timedelta(days=days_ahead)
+
+
 # Relative-date tokens → resolve at call time.
-# Longer tokens ("next monday") must precede shorter overlapping ones so the
-# in-string search finds the most-specific match first.
+# Longer/more-specific tokens ("day after tomorrow", "next monday") must
+# precede shorter overlapping ones ("tomorrow") so the in-string search finds
+# the most-specific match first.
 _RELATIVE_DATES: dict[str, Any] = {
+    "day after tomorrow": lambda: date.today() + timedelta(days=2),
     "next monday":    lambda: _next_weekday(0),
     "next tuesday":   lambda: _next_weekday(1),
     "next wednesday": lambda: _next_weekday(2),
@@ -86,6 +98,26 @@ _RELATIVE_DATES: dict[str, Any] = {
     "next friday":    lambda: _next_weekday(4),
     "next saturday":  lambda: _next_weekday(5),
     "next sunday":    lambda: _next_weekday(6),
+    "this monday":    lambda: _this_or_coming_weekday(0),
+    "this tuesday":   lambda: _this_or_coming_weekday(1),
+    "this wednesday": lambda: _this_or_coming_weekday(2),
+    "this thursday":  lambda: _this_or_coming_weekday(3),
+    "this friday":    lambda: _this_or_coming_weekday(4),
+    "this saturday":  lambda: _this_or_coming_weekday(5),
+    "this sunday":    lambda: _this_or_coming_weekday(6),
+    "coming monday":    lambda: _this_or_coming_weekday(0),
+    "coming tuesday":   lambda: _this_or_coming_weekday(1),
+    "coming wednesday": lambda: _this_or_coming_weekday(2),
+    "coming thursday":  lambda: _this_or_coming_weekday(3),
+    "coming friday":    lambda: _this_or_coming_weekday(4),
+    "coming saturday":  lambda: _this_or_coming_weekday(5),
+    "coming sunday":    lambda: _this_or_coming_weekday(6),
+    "next week":      lambda: date.today() + timedelta(days=7),
+    "next month":     lambda: (
+        date.today().replace(day=1).replace(year=date.today().year + 1, month=1)
+        if date.today().month == 12
+        else date.today().replace(day=1, month=date.today().month + 1)
+    ),
     "tomorrow":       lambda: date.today() + timedelta(days=1),
     "today":          lambda: date.today(),
     "yesterday":      lambda: date.today() - timedelta(days=1),
@@ -101,8 +133,174 @@ _RELATIVE_DATES: dict[str, Any] = {
 # Used by parse_schedule_time() and extract_schedule_datetime().
 # ---------------------------------------------------------------------------
 _TIME_RE = re.compile(
-    r'\b(\d{1,2}:\d{2}\s*[AP]M|\d{1,2}:\d{2}|\d{1,2}\s*[AP]M)\b', re.I
+    r'\b(\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M|\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\s*[AP]M)\b', re.I
 )
+
+# ---------------------------------------------------------------------------
+# Natural-language time expressions — word numbers, "half past", "quarter to",
+# "noon"/"midnight", "o'clock", morning/evening/night qualifiers, and the
+# filler words "around"/"about". Tried ONLY when _TIME_RE (numeric/AM-PM,
+# the existing working fast path) finds nothing, so existing behaviour for
+# already-supported formats is completely unchanged.
+# ---------------------------------------------------------------------------
+_WORD_NUMBERS: dict[str, int] = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+_WORD_MINUTES: dict[str, int] = {
+    "half": 30, "quarter": 15,
+}
+_NUM_WORD_RE = "(?:" + "|".join(_WORD_NUMBERS) + ")"
+
+# "8 in the morning", "6 tomorrow evening", "9 tonight", "10 this evening",
+# "seven in the evening" — captures the hour (digit or word) + period qualifier.
+_QUALIFIED_HOUR_RE = re.compile(
+    rf"\b(?:around|about)?\s*(\d{{1,2}}|{_NUM_WORD_RE})(?::(\d{{2}}))?\s*"
+    r"(?:o'?\s?clock\s*)?"
+    r"(?:in\s+the\s+|at\s+|(?:tomorrow|this|today)\s+)?"
+    r"(morning|afternoon|evening|night|tonight)\b",
+    re.I,
+)
+
+# "half past five", "quarter past five", "quarter to six"
+_RELATIVE_MINUTE_RE = re.compile(
+    rf"\b(half|quarter)\s+(past|to)\s+({_NUM_WORD_RE}|\d{{1,2}})\b", re.I,
+)
+
+# "five thirty pm", "eleven thirty at night", "five thirty in the evening"
+_WORD_HOUR_MINUTE_RE = re.compile(
+    rf"\b({_NUM_WORD_RE})\s+thirty\b"
+    r"(?:\s*([AP]M)"
+    r"|\s+(?:at\s+|in\s+the\s+)?(morning|afternoon|evening|night|tonight))?",
+    re.I,
+)
+
+# "five pm", "seven in the evening" (bare word-number + meridiem, no digits)
+_WORD_HOUR_RE = re.compile(
+    rf"\b({_NUM_WORD_RE})\s*([AP]M)\b", re.I,
+)
+
+# "7 o'clock", "about 4 o'clock" — bare hour, no explicit AM/PM.
+_OCLOCK_RE = re.compile(
+    rf"\b(?:around|about)?\s*(\d{{1,2}}|{_NUM_WORD_RE})\s*o'?\s?clock\b", re.I,
+)
+
+_NOON_RE     = re.compile(r"\bnoon\b", re.I)
+_MIDNIGHT_RE = re.compile(r"\bmidnight\b", re.I)
+
+# Union of all natural-language time patterns, used only to strip a matched
+# time phrase out of a query before date extraction runs (mirrors the existing
+# _TIME_RE-based stripping for the numeric/AM-PM fast path).
+_NATURAL_TIME_STRIP_RE = re.compile(
+    "|".join(
+        p.pattern for p in (
+            _NOON_RE, _MIDNIGHT_RE, _RELATIVE_MINUTE_RE,
+            _WORD_HOUR_MINUTE_RE, _QUALIFIED_HOUR_RE, _WORD_HOUR_RE, _OCLOCK_RE,
+        )
+    ),
+    re.I,
+)
+
+
+def _period_to_24h(hour_12: int, period: str) -> int:
+    """Map an hour (1-12) + a loose period word to a 24-hour hour value.
+
+    'morning' -> AM; 'afternoon'/'evening'/'night'/'tonight' -> PM, except a
+    small hour written as "12 ..." is left to normal 12h wraparound rules.
+    """
+    period = period.lower()
+    if period == "morning":
+        return hour_12 % 12
+    # afternoon / evening / night / tonight all imply PM
+    if hour_12 == 12:
+        return 12
+    return (hour_12 % 12) + 12
+
+
+def _parse_natural_time(text: str) -> Optional[str]:
+    """Best-effort parse of natural-language time phrases not covered by
+    the numeric/AM-PM fast path (_TIME_RE). Returns "HH:MM" or None.
+
+    Supports: noon, midnight, "5 o'clock", word numbers ("five pm"),
+    "half past five", "quarter past five", "quarter to six", "five thirty pm",
+    qualified hours ("8 in the morning", "9 tonight", "6 tomorrow evening"),
+    and the filler words "around"/"about".
+    """
+    if _NOON_RE.search(text):
+        return "12:00"
+    if _MIDNIGHT_RE.search(text):
+        return "00:00"
+
+    def _to_num(tok: str) -> Optional[int]:
+        tok = tok.lower()
+        if tok.isdigit():
+            return int(tok)
+        return _WORD_NUMBERS.get(tok)
+
+    # "half past five" / "quarter past five" / "quarter to six"
+    m = _RELATIVE_MINUTE_RE.search(text)
+    if m:
+        unit, direction, hour_tok = m.group(1).lower(), m.group(2).lower(), m.group(3)
+        hour = _to_num(hour_tok)
+        minutes = _WORD_MINUTES[unit]
+        if hour is not None:
+            if direction == "to":
+                hour = hour - 1 if hour > 1 else 12
+                minutes = 60 - minutes
+            # Ambiguous AM/PM with no other context — assume PM for a bare
+            # relative-minute phrase (typical scheduling context), matching
+            # the "5 PM" default rather than failing outright.
+            hour24 = _period_to_24h(hour, "evening") if hour != 12 else 12
+            return f"{hour24:02d}:{minutes:02d}"
+
+    # "five thirty pm" / "eleven thirty at night" / "five thirty in the evening"
+    m = _WORD_HOUR_MINUTE_RE.search(text)
+    if m:
+        hour = _to_num(m.group(1))
+        meridiem = m.group(2)
+        qualifier = m.group(3)
+        if hour is not None:
+            if meridiem:
+                hour24 = hour % 12 if meridiem.upper() == "AM" else (hour % 12) + 12
+                return f"{hour24:02d}:30"
+            if qualifier:
+                hour24 = _period_to_24h(hour, qualifier)
+                return f"{hour24:02d}:30"
+            # No explicit AM/PM — look for a trailing qualifier word elsewhere.
+            qm = _QUALIFIED_HOUR_RE.search(text)
+            if qm:
+                hour24 = _period_to_24h(hour, qm.group(3))
+                return f"{hour24:02d}:30"
+
+    # "8 in the morning", "6 tomorrow evening", "9 tonight", "seven in the evening"
+    m = _QUALIFIED_HOUR_RE.search(text)
+    if m:
+        hour = _to_num(m.group(1))
+        minute = int(m.group(2)) if m.group(2) else 0
+        period = m.group(3)
+        if hour is not None:
+            hour24 = _period_to_24h(hour, period)
+            return f"{hour24:02d}:{minute:02d}"
+
+    # "five pm" (bare word-number + meridiem)
+    m = _WORD_HOUR_RE.search(text)
+    if m:
+        hour = _to_num(m.group(1))
+        meridiem = m.group(2)
+        if hour is not None:
+            hour24 = hour % 12 if meridiem.upper() == "AM" else (hour % 12) + 12
+            return f"{hour24:02d}:00"
+
+    # "7 o'clock", "about 4 o'clock" — bare hour, default to PM (business-hours
+    # scheduling convention), consistent with the relative-minute default above.
+    m = _OCLOCK_RE.search(text)
+    if m:
+        hour = _to_num(m.group(1))
+        if hour is not None:
+            hour24 = _period_to_24h(hour, "evening") if hour != 12 else 12
+            return f"{hour24:02d}:00"
+
+    return None
 
 
 def parse_and_format_date(user_input: str) -> Optional[str]:
@@ -279,6 +477,9 @@ _DATE_SIGNAL_RE = re.compile(
     r"|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?"
     r"|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}"
     r"|today|yesterday|last\s+month"
+    r"|tomorrow|day\s+after\s+tomorrow"
+    r"|(?:next|this|coming)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+    r"|next\s+week|next\s+month"
     r")",
     re.I,
 )
@@ -533,15 +734,30 @@ def parse_schedule_time(text: str) -> Optional[str]:
       "10 AM"   → "10:00"
       "6:30PM"  → "06:30"  (no space before AM/PM)
 
-    Returns None if no time expression is found.
+    Also supports natural-language expressions ("noon", "half past five",
+    "quarter to six", "8 in the morning", "seven o'clock", "around 4 pm", …)
+    via ``_parse_natural_time`` — tried only when the numeric/AM-PM fast
+    path below finds nothing, so existing behaviour is unchanged.
+
+    Returns None if no time expression can be confidently resolved.
     """
     m = _TIME_RE.search(text)
     if not m:
-        return None
+        return _parse_natural_time(text)
     raw = m.group(1).strip()
     # Normalise: collapse extra spaces, ensure single space before AM/PM
     raw = re.sub(r'\s+', ' ', re.sub(r'(?<=[0-9])([AP]M)', r' \1', raw, flags=re.I)).strip()
     upper = raw.upper()
+
+    # Try HH:MM:SS AM/PM or 24-hour  (e.g. "17:30:00")
+    try:
+        return datetime.strptime(upper, '%H:%M:%S').strftime('%H:%M')
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(upper, '%I:%M:%S %p').strftime('%H:%M')
+    except ValueError:
+        pass
 
     # Try HH:MM AM/PM  (e.g. "4:30 PM", "10:00 AM")
     try:
@@ -561,7 +777,7 @@ def parse_schedule_time(text: str) -> Optional[str]:
     except ValueError:
         pass
 
-    return None
+    return _parse_natural_time(text)
 
 
 def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
@@ -586,7 +802,10 @@ def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
     schedule_time = parse_schedule_time(query)
 
     # Remove time tokens before date parsing to prevent ambiguity
-    date_query = _TIME_RE.sub(" ", query).strip() if schedule_time else query
+    date_query = query
+    if schedule_time:
+        date_query = _TIME_RE.sub(" ", date_query)
+        date_query = _NATURAL_TIME_STRIP_RE.sub(" ", date_query).strip()
 
     schedule_date = _extract_date_from_query(date_query)
 

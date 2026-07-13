@@ -31,8 +31,40 @@ GUIDED_ACTIONS: list[str] = [
     "Retrieve data from database",
 ]
 
+# ── Central action → permission mapping ────────────────────────────────────────
+# Actions not listed here require no permission beyond return access (Status,
+# Compare, DB Q&A) — only actions that need a role-level check (backed by
+# RoleAccess.xml, resolved via auth_service.can_generate_instance, which
+# already handles the 5.5/6.0 schema differences) are listed. Scheduling
+# performs instance generation internally, so it reuses the same permission.
+# To gate a future action, add its label here — no other code changes needed
+# for the menu-filtering side (backend enforcement still belongs in that
+# action's own handler, same pattern as _finalize_generation/_finalize_schedule).
+_ACTIONS_REQUIRING_INSTANCE_GENERATION: frozenset[str] = frozenset({
+    "Generate instance for a report",
+    "Schedule a report",
+})
+
 # ── Per-session guided state ───────────────────────────────────────────────────
 _guided_sessions: dict[str, dict[str, Any]] = {}
+
+
+def _allowed_actions(login_id: str | None, tenant_id: str | None) -> list[str]:
+    """Return the subset of GUIDED_ACTIONS this user may see/perform.
+
+    No login_id (dev / backward-compat) -> all actions shown, matching the
+    existing "no identity, no restriction" convention used elsewhere
+    (get_allowed_form_ids, can_generate_instance).
+    """
+    if not login_id:
+        return list(GUIDED_ACTIONS)
+
+    from backend.services.auth_service import can_generate_instance
+    can_generate = can_generate_instance(login_id, tenant_id)
+
+    if can_generate:
+        return list(GUIDED_ACTIONS)
+    return [a for a in GUIDED_ACTIONS if a not in _ACTIONS_REQUIRING_INSTANCE_GENERATION]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -57,11 +89,11 @@ def _build(
     }
 
 
-def _menu() -> dict[str, Any]:
+def _menu(login_id: str | None = None, tenant_id: str | None = None) -> dict[str, Any]:
     return _build(
         response_text="What would you like to do? Select an action to get started:",
         result_type="guided_menu",
-        options=GUIDED_ACTIONS,
+        options=_allowed_actions(login_id, tenant_id),
     )
 
 
@@ -71,6 +103,8 @@ async def guided_step(
     session_id:  str | None,
     asp_session: str | None,
     login_id:    str | None = None,
+    tenant_id:   str | None = None,
+    jwt:         str | None = None,
 ) -> dict[str, Any]:
     """Handle one step of the guided workflow.
 
@@ -107,7 +141,7 @@ async def guided_step(
             AUTHORIZATION_ENABLED as _AUTH_ENABLED,
             get_allowed_form_ids as _get_auth,
         )
-        allowed_form_ids = _get_auth(login_id)
+        allowed_form_ids = _get_auth(login_id, tenant_id)
         if not _AUTH_ENABLED:
             logger.info(
                 "[AUTH_BYPASS] Authorization disabled; allowing all forms for login_id=%r session=%s",
@@ -124,10 +158,10 @@ async def guided_step(
     if stage == STAGE_MENU or msg in GUIDED_ACTIONS:
         if msg in GUIDED_ACTIONS:
             logger.info("[GUIDED_ACTION] action=%r session=%s", msg, session_id)
-            return _handle_action_selected(msg, session_id)
+            return _handle_action_selected(msg, session_id, login_id, tenant_id)
         if session_id:
             _guided_sessions.pop(session_id, None)
-        return _menu()
+        return _menu(login_id, tenant_id)
 
     # ── Step 2: report name received — deterministic routing, no LLM ──────────
     # Clear guided state now; downstream handlers own all subsequent
@@ -143,14 +177,16 @@ async def guided_step(
     if stage == STAGE_STATUS_REPORT:
         # Fuzzy-match the input directly against returns.xml — no LLM needed.
         logger.info("[GUIDED_STATUS_LOOKUP] input=%r session=%s", msg, session_id)
-        result = get_report_status(msg)
+        result = get_report_status(msg, tenant_id)
         if allowed_form_ids is not None:
             from backend.agent import _apply_auth_to_status_result
-            result = _apply_auth_to_status_result(result, allowed_form_ids)
+            result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
         return _from_result(result, intent="get_status", session_id=session_id)
 
     if stage == STAGE_GEN_REPORT:
         # _handle_generate runs find_matching_reports + fuzzy suggestions — no LLM.
+        # Instance Generation permission is enforced inside _finalize_generation
+        # (single enforcement point, shared with the free-text /chat path).
         logger.info("[GUIDED_GENERATE_LOOKUP] input=%r session=%s", msg, session_id)
         return await _handle_generate(
             report_name=msg,
@@ -158,10 +194,15 @@ async def guided_step(
             session_id=session_id,
             asp_session=asp_session,
             allowed_form_ids=allowed_form_ids,
+            tenant_id=tenant_id,
+            jwt=jwt,
+            login_id=login_id,
         )
 
     if stage == STAGE_SCHED_REPORT:
         # _handle_schedule runs find_matching_reports + fuzzy suggestions — no LLM.
+        # Scheduling performs instance generation internally, so it requires the
+        # same permission — enforced inside _finalize_schedule.
         logger.info("[GUIDED_SCHEDULE_LOOKUP] input=%r session=%s", msg, session_id)
         return _handle_schedule(
             report_ident=msg,
@@ -170,23 +211,47 @@ async def guided_step(
             scheduled_datetime=None,
             session_id=session_id,
             allowed_form_ids=allowed_form_ids,
+            tenant_id=tenant_id,
+            login_id=login_id,
         )
 
     if stage == STAGE_CMP_REPORT:
         # _handle_compare runs find_matching_reports + fuzzy suggestions — no LLM.
         logger.info("[GUIDED_COMPARE_LOOKUP] input=%r session=%s", msg, session_id)
-        return await _handle_compare(report_ident=msg, session_id=session_id, allowed_form_ids=allowed_form_ids)
+        return await _handle_compare(report_ident=msg, session_id=session_id, allowed_form_ids=allowed_form_ids, tenant_id=tenant_id)
 
     if stage == STAGE_DB_QUERY:
         logger.info("[GUIDED_DB_QUERY] input=%r session=%s", msg, session_id)
         from backend.sql_agent import handle_db_query
         return await handle_db_query(msg, session_id=session_id)
 
-    return _menu()
+    return _menu(login_id, tenant_id)
 
 
-def _handle_action_selected(action: str, session_id: str | None) -> dict[str, Any]:
-    """Set the first guided stage and return the report-name prompt."""
+def _handle_action_selected(
+    action: str,
+    session_id: str | None,
+    login_id: str | None = None,
+    tenant_id: str | None = None,
+) -> dict[str, Any]:
+    """Set the first guided stage and return the report-name prompt.
+
+    Defense in depth: even though the frontend only shows buttons for
+    _allowed_actions(), a client could still POST a hidden action's label
+    directly. Re-check permission here so the guided flow never even starts
+    for an action the user can't perform — the actual API-call enforcement
+    still lives in _finalize_generation/_finalize_schedule regardless.
+    """
+    if action in _ACTIONS_REQUIRING_INSTANCE_GENERATION and action not in _allowed_actions(login_id, tenant_id):
+        logger.warning(
+            "[GUIDED_ACTION_DENY] action=%r login_id=%r tenant_id=%r session=%s — lacks Instance Generation permission",
+            action, login_id, tenant_id, session_id,
+        )
+        return _build(
+            response_text="Sorry, you do not have access to this action.",
+            result_type="error",
+        )
+
     if action == "Check report status":
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_STATUS_REPORT}
@@ -239,4 +304,4 @@ def _handle_action_selected(action: str, session_id: str | None) -> dict[str, An
             options=[],
         )
 
-    return _menu()
+    return _menu(login_id, tenant_id)

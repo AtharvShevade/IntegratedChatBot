@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
-import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest } from './services/api.js'
+import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
 // survives a page refresh (the .NET params are only in the URL on first load).
@@ -20,6 +20,9 @@ const _loginId    = _readParam('loginId',    'chat_loginId')
 const _uid        = _readParam('uid',         'chat_uid')
 const _roleId     = _readParam('roleId',      'chat_roleId') || _readParam('rid', 'chat_rid') || ''
 const _aspSession = _params.get('aspSession') || ''  // never persisted — cookie-like, must be fresh
+// 6.0 only — tenant_id resolved client-side by the host app from its JWT claim.
+// Absent for 5.5 traffic; persisted like loginId/uid so it survives a refresh.
+const _tenantId   = _readParam('tenant_id',  'chat_tenant_id') || _readParam('tenantId', 'chat_tenant_id') || ''
 
 // ── Persistent storage key (isolated per uid) ─────────────────────────────
 const STORAGE_KEY = `chat_history_${_uid}`
@@ -60,6 +63,54 @@ export default function App() {
   // Tracks the in-flight request so the Stop button can abort it client-side
   // and tell the backend to cancel the matching asyncio task.
   const activeRequestRef = useRef(null)
+
+  // ── 6.0 JWT — received via postMessage from the host app (ChatbotIframe.jsx),
+  // never via URL param (would leak into logs/history/Referer headers) and
+  // never persisted to storage (live bearer credential, must stay in memory
+  // only). Absent entirely for 5.5 traffic.
+  const [jwt, setJwt] = useState(null)
+  useEffect(() => {
+    function _onAuthMessage(event) {
+      if (!event.data || event.data.type !== 'CHATBOT_AUTH') return
+      if (typeof event.data.jwt === 'string' && event.data.jwt) {
+        setJwt(event.data.jwt)
+      }
+    }
+    window.addEventListener('message', _onAuthMessage)
+    return () => window.removeEventListener('message', _onAuthMessage)
+  }, [])
+
+  // ── Role-permission-filtered action list (which of the 5 guided actions
+  // this user may see/perform — e.g. a Checker never sees Generate/Schedule).
+  // Fetched once identity is known so even the very first WelcomeCard render
+  // is correctly filtered (not just the in-conversation guided menu, which
+  // is filtered server-side on every /guided call regardless of this).
+  // Defaults to the full list so nothing is hidden if the fetch hasn't
+  // resolved yet or fails — the backend still enforces the real permission
+  // on every actual action, so this is a display-only convenience.
+  const [allowedActions, setAllowedActions] = useState(null)
+  useEffect(() => {
+    // 6.0 requires tenant_id on every request; wait for the JWT to arrive
+    // (it carries/enables tenant_id resolution) before fetching so the
+    // very first call isn't rejected for missing identity.
+    if (_tenantId && !jwt) return
+    if (!_loginId && !_tenantId) return  // no identity at all — nothing to resolve
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const actions = await getAllowedActions(_loginId || null, _tenantId || null)
+        if (!cancelled && actions.length > 0) {
+          setAllowedActions(actions)
+        }
+      } catch {
+        // Best-effort — keep showing the unfiltered default list on failure;
+        // backend enforcement is unaffected either way.
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jwt])
 
   // ── Persist messages to localStorage on every change ─────────────────────
   useEffect(() => {
@@ -303,7 +354,7 @@ const pollForErrors = (jobId) => {
         _uid || null,
         _roleId || null,
         recentHistory,
-        { signal, requestId },
+        { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null },
       )
       _pushResult(result)
     } catch (err) {
@@ -341,7 +392,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId },
+        { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null },
       )
       _pushResult(result)
     } catch (err) {
@@ -372,7 +423,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId },
+        { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null },
       )
       _pushResult(result)
     } catch (err) {
@@ -392,7 +443,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId })
+      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null })
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return
@@ -413,7 +464,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId })
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null })
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return
@@ -486,6 +537,7 @@ const pollForErrors = (jobId) => {
           onCompare={handleCompareInstances}
           onFeedback={handleFeedback}
           onExplainCategory={handleExplainCategory}
+          allowedActions={allowedActions}
         />
       </main>
 

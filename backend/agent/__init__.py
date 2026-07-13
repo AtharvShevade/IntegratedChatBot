@@ -28,10 +28,10 @@ from backend.llm_extractor import (
 from backend.services.llm_service import chat_response, classify_conversational_intent
 from backend.tools.instance_generator import (
     call_generate_api,
+    call_generate_api_6_0,
     resolve_return_exact,
     validate_reporting_date,
 )
-# existing import block — add the two new names:
 from backend.tools.report_lookup import (
     _parse_returns,
     find_matching_reports,
@@ -80,11 +80,11 @@ async def _run_error_enrichment(job_id: str, form_id: str, ret_name: str, instan
 
 
 def _get_instance_by_dtc_fast_with_bg_job(
-    form_id: str, dtc: str, return_name: str
+    form_id: str, dtc: str, return_name: str, tenant_id: str | None = None
 ) -> dict:
     """Call get_instance_by_dtc_fast and kick off background LLM enrichment
     for failed statuses."""
-    result = get_instance_by_dtc_fast(form_id, dtc, return_name)
+    result = get_instance_by_dtc_fast(form_id, dtc, return_name, tenant_id)
 
     if (
         result.get("type") == "final"
@@ -94,14 +94,14 @@ def _get_instance_by_dtc_fast_with_bg_job(
         job_id = str(_uuid_mod.uuid4())
         _error_jobs[job_id] = {"status": "pending", "payload": None}
 
-        instances   = get_instances_by_form_id(form_id)
+        instances   = get_instances_by_form_id(form_id, tenant_id)
         target_dtc  = result["dtc"]
         row         = next(
             (r for r in instances if r.get("DTC", "").strip() == target_dtc), None
         )
         if row:
             code = _safe_status(row)
-            dl   = _get_download_info(row, form_id)
+            dl   = _get_download_info(row, form_id, tenant_id)
             thread = threading.Thread(
                 target=_run_error_enrichment_async,
                 args=(job_id, form_id, row, dl, code),
@@ -114,10 +114,10 @@ def _get_instance_by_dtc_fast_with_bg_job(
 
 
 def _get_instance_by_date_fast_with_bg_job(
-    form_id: str, date_query: str, return_name: str
+    form_id: str, date_query: str, return_name: str, tenant_id: str | None = None
 ) -> dict:
     """Find instance by reporting date, then apply the fast+bg-job pattern."""
-    rows = get_instances_by_form_id(form_id)
+    rows = get_instances_by_form_id(form_id, tenant_id)
     date_clean = date_query.strip()
     row = next(
         (r for r in rows if r.get("ReportingDate", "").strip() == date_clean), None
@@ -130,10 +130,10 @@ def _get_instance_by_date_fast_with_bg_job(
             "message":             f"No instance found for '{date_clean}'.",
             "form_id":             form_id,
             "return_name":         return_name,
-            "available_instances": get_available_instances(form_id),
+            "available_instances": get_available_instances(form_id, tenant_id),
         }
     dtc = row.get("DTC", "").strip()
-    return _get_instance_by_dtc_fast_with_bg_job(form_id, dtc, return_name)
+    return _get_instance_by_dtc_fast_with_bg_job(form_id, dtc, return_name, tenant_id)
 
 
 def _run_error_enrichment_async(job_id: str, form_id: str, latest_row: dict, dl: dict, code: int) -> None:
@@ -157,13 +157,13 @@ def _run_error_enrichment_async(job_id: str, form_id: str, latest_row: dict, dl:
         }
 
 
-def _get_status_fast_with_bg_job(query: str) -> dict:
+def _get_status_fast_with_bg_job(query: str, tenant_id: str | None = None) -> dict:
     """Call get_report_status_fast and, for failed statuses with errors, kick off
     background LLM enrichment.  Returns the result dict with job_id attached when
     a background job was started.
     """
-    result = get_report_status_fast(query)
-    
+    result = get_report_status_fast(query, tenant_id)
+
 
     if (
         result.get("type") in ("final", "latest_with_ask")
@@ -174,11 +174,11 @@ def _get_status_fast_with_bg_job(query: str) -> dict:
         _error_jobs[job_id] = {"status": "pending", "payload": None}
 
         form_id     = result["form_id"]
-        instances   = get_instances_by_form_id(form_id)
+        instances   = get_instances_by_form_id(form_id, tenant_id)
         sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
         latest_row  = sorted_rows[0]
         code        = _safe_status(latest_row)
-        dl          = _get_download_info(latest_row, form_id)
+        dl          = _get_download_info(latest_row, form_id, tenant_id)
 
         thread = threading.Thread(
             target=_run_error_enrichment_async,
@@ -202,6 +202,7 @@ STAGE_GEN_REPORT   = "AWAITING_GEN_REPORT"        # generate: picking from disam
 STAGE_GEN_DATE     = "AWAITING_GEN_DATE"          # generate: providing reporting date
 STAGE_RUN          = "AWAITING_RUN_SELECTION"      # status: picking a run by timestamp
 STAGE_SCHED_REPORT = "AWAITING_SCHED_REPORT"      # schedule: picking from disambiguation
+STAGE_SCHED_RPT_DATE = "AWAITING_SCHED_REPORTING_DATE"  # schedule: providing reporting (period) date
 STAGE_SCHED_DT      = "AWAITING_SCHED_DATETIME"    # schedule: providing date and time
 STAGE_SCHED_CONFIRM = "AWAITING_SCHED_CONFIRM"      # schedule: awaiting user confirmation
 STAGE_SCHED_NAME    = "AWAITING_SCHED_NAME"          # schedule: re-entering report name after Change Data
@@ -496,7 +497,7 @@ def _is_staged_session(session: dict[str, Any] | None) -> bool:
     awaiting_state = session.get("awaiting")
     staged_states = {
         STAGE_DATE, STAGE_REPORT, STAGE_GEN_REPORT, STAGE_GEN_DATE,
-        STAGE_RUN, STAGE_SCHED_REPORT, STAGE_SCHED_DT, STAGE_SCHED_CONFIRM,
+        STAGE_RUN, STAGE_SCHED_REPORT, STAGE_SCHED_RPT_DATE, STAGE_SCHED_DT, STAGE_SCHED_CONFIRM,
         STAGE_SCHED_NAME, STAGE_CMP_REPORT, STAGE_CMP_FILE, STAGE_PREV_DATES,
     }
     return awaiting_state in staged_states
@@ -644,6 +645,7 @@ async def _classify_conversational(text: str, history: list[dict] | None = None)
 def _resolve_report_name(
     user_query: str,
     llm_hint: str | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Shared multi-candidate report name resolver used by ALL intents.
 
@@ -673,7 +675,7 @@ def _resolve_report_name(
         candidates.append(raw)
 
     for candidate in candidates:
-        matches = find_matching_reports(candidate)
+        matches = find_matching_reports(candidate, tenant_id)
         if matches:
             logger.debug(
                 "[RESOLVE_REPORT] winner=%r matches=%d (llm_hint=%r)",
@@ -693,6 +695,8 @@ async def decide(
     user_id: str | None = None,
     role_id: str | None = None,
     conversation_history: list[dict] | None = None,
+    tenant_id: str | None = None,
+    jwt: str | None = None,
 ) -> dict[str, Any]:
     _decide_start = time.monotonic()
     session = _session_context.get(session_id, {}) if session_id else {}
@@ -720,7 +724,7 @@ async def decide(
     if login_id:
         from backend.services.auth_service import get_allowed_form_ids as _get_auth
         from backend.services.auth_service import AUTHORIZATION_ENABLED as _AUTH_ENABLED
-        allowed_form_ids = _get_auth(login_id)
+        allowed_form_ids = _get_auth(login_id, tenant_id)
         if not _AUTH_ENABLED:
             logger.info(
                 "[AUTH_BYPASS] Authorization disabled; allowing all forms for login_id=%r session=%s",
@@ -752,25 +756,13 @@ async def decide(
             response_text="Authentication required. Please access this application through the authorised portal.",
             result_type="error",
         )
-    # ── Auth: resolve CreateInstance role-based access ────────────────────────
-    # True when no login_id is present (dev / backward compat — allow all).
-    # False when the user's role does not have HasNew=true for CreateInstance.
-    _create_access: bool = True
-    if login_id:
-        from backend.services.auth_service import can_generate_instance as _chk_create
-        _create_access = _chk_create(login_id)
-        logger.info(
-            "[AUTH_ROLE] login_id=%r can_generate_instance=%s session=%s",
-            login_id, _create_access, session_id,
-        )
-
     # ── Auth: resolve role_id from XML_User.xml when caller didn't supply it ──
     # The .NET app only passes loginId/uid — it never sends roleId.
     # Use auth_service.get_user_role_id() (same XML read already cached) so
     # every downstream handler (DB Q&A, SQL agent, etc.) sees the correct role.
     if login_id and (not role_id or role_id == "0"):
         from backend.services.auth_service import get_user_role_id as _get_role
-        _resolved_role = _get_role(login_id)
+        _resolved_role = _get_role(login_id, tenant_id)
         if _resolved_role:
             role_id = _resolved_role
             logger.info(
@@ -792,8 +784,14 @@ async def decide(
         session["asp_session"] = asp_session
         _session_context[session_id] = session
 
+    # Persist tenant_id (6.0) so staged flows keep it even if a later turn omits it
+    if tenant_id and session_id:
+        session["tenant_id"] = tenant_id
+        _session_context[session_id] = session
+
     # Prefer the freshly-forwarded cookie; fall back to one stored earlier in session
     effective_asp = asp_session or session.get("asp_session")
+    tenant_id = tenant_id or session.get("tenant_id")
     logger.info("decide: asp_session=%s effective=%s",
                 "provided" if asp_session else "MISSING",
                 "yes" if effective_asp else "NONE — will use .env fallback")
@@ -814,9 +812,9 @@ async def decide(
         if dtc_from_label:
             form_id     = session["pending_form_id"]
             return_name = session["pending_return_name"]
-            result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc_from_label, return_name)
+            result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc_from_label, return_name, tenant_id)
             if result["type"] == "date_not_found":
-                available = get_available_instances(form_id)
+                available = get_available_instances(form_id, tenant_id)
                 return _build(
                     intent="get_status",
                     report_name=return_name,
@@ -864,10 +862,10 @@ async def decide(
                 return_name = session["pending_return_name"]
 
                 # Fallback: user typed a raw date string
-                result = _get_instance_by_date_fast_with_bg_job(form_id,user_query.strip(),return_name)
+                result = _get_instance_by_date_fast_with_bg_job(form_id, user_query.strip(), return_name, tenant_id)
 
                 if result["type"] == "date_not_found":
-                    available = get_available_instances(form_id)
+                    available = get_available_instances(form_id, tenant_id)
                     return _build(
                         intent="get_status",
                         report_name=return_name,
@@ -1010,12 +1008,12 @@ async def decide(
 
             if session_id:
                 _session_context.pop(session_id, None)
-            auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status")
+            auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status", tenant_id)
             if auth_err:
                 return auth_err
-            result = _get_status_exact_fast_with_bg_job(resolved_name)
+            result = _get_status_exact_fast_with_bg_job(resolved_name, tenant_id)
             if allowed_form_ids is not None:
-                result = _apply_auth_to_status_result(result, allowed_form_ids)
+                result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
             return _from_result(result, intent="get_status", session_id=session_id)
 
     # -- Generate: disambiguation (user picks a report) -----------------------
@@ -1053,7 +1051,7 @@ async def decide(
                 )
                 resolved_gen_name = keyword_match if keyword_match else raw_gen_input
 
-            ret = resolve_return_exact(resolved_gen_name)
+            ret = resolve_return_exact(resolved_gen_name, tenant_id)
             if session_id:
                 _session_context.pop(session_id, None)
             if not ret:
@@ -1062,15 +1060,9 @@ async def decide(
                     response_text=f"Report '{resolved_gen_name}' not found. Please try again.",
                     result_type="error",
                 )
-            auth_err = _check_name_auth(resolved_gen_name, allowed_form_ids, "generate_instance")
+            auth_err = _check_name_auth(resolved_gen_name, allowed_form_ids, "generate_instance", tenant_id)
             if auth_err:
                 return auth_err
-            if not _create_access:
-                return _build(
-                    intent="generate_instance", report_name=None,
-                    response_text="Sorry, you do not have access to generate report instances.",
-                    result_type="error",
-                )
             # If a reporting_date was pre-extracted and stored in session,
             # skip the date prompt and go directly to generation.
             stored_date = session.get("pending_reporting_date")
@@ -1079,7 +1071,7 @@ async def decide(
                     "[AUTO_CONTINUE_GENERATION] report=%r date=%r session=%s — skipping date prompt",
                     ret["name"], stored_date, session_id,
                 )
-                return await _finalize_generation(ret, stored_date, session_id, effective_asp)
+                return await _finalize_generation(ret, stored_date, session_id, effective_asp, tenant_id, jwt, login_id)
             # No pre-extracted date — ask the user for it.
             if session_id:
                 _session_context[session_id] = {
@@ -1088,6 +1080,7 @@ async def decide(
                     "gen_return_name": ret["name"],
                     "gen_frequency":   ret["frequency"],
                     "gen_period_name": ret["period_name"],
+                    "tenant_id":       tenant_id,
                 }
             return _build(
                 intent="generate_instance", report_name=ret["name"],
@@ -1114,19 +1107,13 @@ async def decide(
                     # which will produce a meaningful error message
                     date_str = user_query.strip()
             logger.debug("[DATE_NORMALIZED] raw=%r → normalized=%r", user_query.strip(), date_str)
-            if not _create_access:
-                return _build(
-                    intent="generate_instance", report_name=None,
-                    response_text="Sorry, you do not have access to generate report instances.",
-                    result_type="error",
-                )
-            return await _handle_gen_date(date_str, session, session_id, effective_asp)
+            return await _handle_gen_date(date_str, session, session_id, effective_asp, tenant_id, jwt, login_id)
 
     # -- Schedule: re-enter report name after "Change Data" --------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_NAME:
         if session_id:
             _session_context.pop(session_id, None)
-        return _handle_schedule(user_query.strip(), None, None, None, session_id, allowed_form_ids)
+        return _handle_schedule(user_query.strip(), None, None, None, session_id, allowed_form_ids, tenant_id, login_id, None)
 
     # -- Schedule: disambiguation (user picks a report) -----------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_REPORT:
@@ -1163,11 +1150,12 @@ async def decide(
                 )
                 resolved_sched_name = keyword_match if keyword_match else raw_sched_input
 
+            saved_reporting_date = session.get("sched_reporting_date")
             saved_sched_date = session.get("sched_schedule_date")
             saved_sched_time = session.get("sched_schedule_time")
             saved_sched_dt   = session.get("sched_scheduled_dt")
 
-            ret = resolve_return_exact(resolved_sched_name)
+            ret = resolve_return_exact(resolved_sched_name, tenant_id)
             if session_id:
                 _session_context.pop(session_id, None)
             if not ret:
@@ -1176,10 +1164,37 @@ async def decide(
                     response_text=f"Report '{resolved_sched_name}' not found. Please try again.",
                     result_type="error",
                 )
-            auth_err = _check_name_auth(resolved_sched_name, allowed_form_ids, "schedule_report")
+            auth_err = _check_name_auth(resolved_sched_name, allowed_form_ids, "schedule_report", tenant_id)
             if auth_err:
                 return auth_err
-            return _finalize_schedule(ret, saved_sched_date, saved_sched_time, saved_sched_dt, session_id)
+            return _finalize_schedule(ret, saved_reporting_date, saved_sched_date, saved_sched_time, saved_sched_dt, session_id, tenant_id, login_id)
+
+    # -- Schedule: reporting-date entry ----------------------------------------
+    if not is_reset and session.get("awaiting") == STAGE_SCHED_RPT_DATE:
+        if _looks_like_new_query(user_query):
+            if session_id:
+                _session_context.pop(session_id, None)
+            session = {}
+        else:
+            date_str = parse_and_format_date(user_query.strip())
+            if not date_str:
+                # parse_and_format_date failed — pass raw input to the validator
+                # so it can produce a specific "cannot parse" error message.
+                date_str = user_query.strip()
+            sched_ret = {
+                "form_id":     session["sched_form_id"],
+                "name":        session["sched_return_name"],
+                "frequency":   session.get("sched_frequency", ""),
+                "period_name": session.get("sched_period_name", ""),
+            }
+            saved_sched_date = session.get("sched_schedule_date")
+            saved_sched_time = session.get("sched_schedule_time")
+            if session_id:
+                _session_context.pop(session_id, None)
+            return _finalize_schedule(
+                sched_ret, date_str, saved_sched_date, saved_sched_time, None,
+                session_id, tenant_id, login_id,
+            )
 
     # -- Schedule: date+time entry --------------------------------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_DT:
@@ -1192,6 +1207,7 @@ async def decide(
             # Merge freshly extracted values with any partially-saved ones
             schedule_date = sched_info["schedule_date"] or session.get("sched_schedule_date")
             schedule_time = sched_info["schedule_time"] or session.get("sched_schedule_time")
+            reporting_date = session.get("sched_reporting_date")
             scheduled_dt: str | None = None
             if schedule_date and schedule_time:
                 try:
@@ -1209,12 +1225,13 @@ async def decide(
             }
             if session_id:
                 _session_context.pop(session_id, None)
-            return _finalize_schedule(sched_ret, schedule_date, schedule_time, scheduled_dt, session_id)
+            return _finalize_schedule(sched_ret, reporting_date, schedule_date, schedule_time, scheduled_dt, session_id, tenant_id, login_id)
 
     # -- Schedule: user confirmation (Schedule / Change Data) ------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_CONFIRM:
         raw = user_query.strip().lower()
         sched_name = session.get("sched_return_name", "")
+        sched_reporting_date = session.get("sched_reporting_date")
         sched_date = session.get("sched_schedule_date")
         sched_time = session.get("sched_schedule_time")
         sched_dt   = session.get("sched_scheduled_dt")
@@ -1238,15 +1255,15 @@ async def decide(
         if session_id:
             _session_context.pop(session_id, None)
         logger.info(
-            "[SCHEDULE_CONFIRMED] report=%r date=%s time=%s session=%s",
-            sched_name, sched_date, sched_time, session_id,
+            "[SCHEDULE_CONFIRMED] report=%r reporting_date=%s date=%s time=%s session=%s",
+            sched_name, sched_reporting_date, sched_date, sched_time, session_id,
         )
         # Append confirmed schedule entry to SchedulerQueue.xml
         from backend.services.scheduler_queue_service import append_schedule_entry
         _sq_ok, _sq_id = append_schedule_entry(
             report_name=sched_name,
             form_id=sched_form_id,
-            reporting_date=sched_date or "",
+            reporting_date=sched_reporting_date or "",
             schedule_dt=sched_dt or f"{sched_date} {sched_time}",
             user_id=login_id or "",
         )
@@ -1265,15 +1282,17 @@ async def decide(
             report_name=sched_name,
             response_text=(
                 f"Schedule confirmed:\n"
-                f"Report     : {sched_name}\n"
-                f"Date       : {sched_date}\n"
-                f"Time       : {sched_time}\n"
-                f"Scheduled  : {sched_dt or f'{sched_date} {sched_time}'}"
+                f"Report          : {sched_name}\n"
+                f"Reporting Date  : {sched_reporting_date}\n"
+                f"Schedule Date   : {sched_date}\n"
+                f"Schedule Time   : {sched_time}\n"
+                f"Scheduled       : {sched_dt or f'{sched_date} {sched_time}'}"
             ),
             result_type="schedule_parsed",
             scheduled_datetime=sched_dt,
             schedule_date=sched_date,
             schedule_time=sched_time,
+            reporting_date_out=sched_reporting_date,
         )
 
     # -- Compare: report disambiguation ----------------------------------------
@@ -1397,23 +1416,25 @@ async def decide(
                     scheduled_datetime=_sched_dt.get("scheduled_datetime"),
                     session_id=session_id,
                     allowed_form_ids=allowed_form_ids,
+                    tenant_id=tenant_id,
+                    login_id=login_id,
                 )
 
             if _fuzzy_has_status(user_query):
                 raw_query = user_query.strip()
                 extracted_query = _extract_status_search_terms(raw_query)
                 if extracted_query:
-                    matches = find_matching_reports(extracted_query)
+                    matches = find_matching_reports(extracted_query, tenant_id)
                     if matches:
                         logger.info(
                             "[INTENT:STEP1] status fast-path matched %d report(s) session=%s",
                             len(matches), session_id,
                         )
                         if session_id:
-                            _session_context[session_id] = {"last_search_terms": extracted_query}
-                        result = _get_status_fast_with_bg_job(extracted_query)
+                            _session_context[session_id] = {"last_search_terms": extracted_query, "tenant_id": tenant_id}
+                        result = _get_status_fast_with_bg_job(extracted_query, tenant_id)
                         if allowed_form_ids is not None:
-                            result = _apply_auth_to_status_result(result, allowed_form_ids)
+                            result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
                         return _from_result(result, intent="get_status", session_id=session_id)
                     logger.debug(
                         "[INTENT:STEP1] status fast-path: extracted_query=%r had no matches, skipping raw query lookup",
@@ -1584,7 +1605,7 @@ async def decide(
 
         _matched_query: str | None = None
         for _candidate in filter(None, [search_terms, _stripped_q]):
-            if _is_meaningful_report_terms(_candidate) and find_matching_reports(_candidate):
+            if _is_meaningful_report_terms(_candidate) and find_matching_reports(_candidate, tenant_id):
                 _matched_query = _candidate
                 logger.info(
                     "[UNKNOWN_FALLBACK] query=%r matched report(s) — re-classifying intent",
@@ -1611,26 +1632,20 @@ async def decide(
                     "[UNKNOWN_RECLASSIFY] → compare_reports for %r session=%s",
                     _matched_query, session_id,
                 )
-                return await _handle_compare(_matched_query, session_id, allowed_form_ids)
+                return await _handle_compare(_matched_query, session_id, allowed_form_ids, tenant_id)
             if _fuzzy_has_schedule(user_query):
                 logger.info(
                     "[UNKNOWN_RECLASSIFY] → schedule_report for %r session=%s",
                     _matched_query, session_id,
                 )
                 return _handle_schedule(
-                    _matched_query, None, None, None, session_id, allowed_form_ids,
+                    _matched_query, None, None, None, session_id, allowed_form_ids, tenant_id, login_id,
                 )
             if _fuzzy_has_generate(user_query):
                 logger.info(
                     "[UNKNOWN_RECLASSIFY] → generate_instance for %r session=%s",
                     _matched_query, session_id,
                 )
-                if not _create_access:
-                    return _build(
-                        intent="generate_instance", report_name=None,
-                        response_text="Sorry, you do not have access to generate report instances.",
-                        result_type="error",
-                    )
                 # Extract reporting date from the original query so users who
                 # include a date ("generate CIMS RAQ for 31 march 2025") are not
                 # asked for the date again even when the LLM returned unknown.
@@ -1641,14 +1656,14 @@ async def decide(
                         _fallback_date, user_query,
                     )
                 return await _handle_generate(
-                    _matched_query, _fallback_date, session_id, effective_asp, allowed_form_ids
+                    _matched_query, _fallback_date, session_id, effective_asp, allowed_form_ids, tenant_id, jwt, login_id
                 )
             # Default: treat as a status query
             if session_id:
-                _session_context[session_id] = {"last_search_terms": _matched_query}
-            result = _get_status_fast_with_bg_job(_matched_query)
+                _session_context[session_id] = {"last_search_terms": _matched_query, "tenant_id": tenant_id}
+            result = _get_status_fast_with_bg_job(_matched_query, tenant_id)
             if allowed_form_ids is not None:
-                result = _apply_auth_to_status_result(result, allowed_form_ids)
+                result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
             return _from_result(result, intent="get_status", session_id=session_id)
 
         # No backend match found. If the query looks report-related (status /
@@ -1725,7 +1740,7 @@ async def decide(
             # filler words like "generate", "instance", "for" are stripped before
             # matching.  Without this, "generate instance for cims" normalises to
             # the single token "generateinstanceforcims" and finds nothing.
-            search_terms, _direct_matches = _resolve_report_name(user_query)
+            search_terms, _direct_matches = _resolve_report_name(user_query, tenant_id=tenant_id)
             if not _direct_matches:
                 search_terms = ""
                 hint = (
@@ -1782,20 +1797,14 @@ async def decide(
             "[GEN_CLEAN_QUERY] original=%r cleaned=%r search_terms=%r",
             user_query, _clean_gen_query, search_terms,
         )
-        _gen_terms, _gen_matches = _resolve_report_name(_clean_gen_query, search_terms or None)
+        _gen_terms, _gen_matches = _resolve_report_name(_clean_gen_query, search_terms or None, tenant_id)
         if _gen_matches:
             search_terms = _gen_terms
         logger.info(
             "[GENERATE_START] report=%r date=%r (resolved) session=%s",
             search_terms, reporting_date, session_id,
         )
-        if not _create_access:
-            return _build(
-                intent="generate_instance", report_name=None,
-                response_text="Sorry, you do not have access to generate report instances.",
-                result_type="error",
-            )
-        return await _handle_generate(search_terms, reporting_date, session_id, effective_asp, allowed_form_ids)
+        return await _handle_generate(search_terms, reporting_date, session_id, effective_asp, allowed_form_ids, tenant_id, jwt, login_id)
 
     if intent == "schedule_report":
         # ── Deterministic preprocessing: extract datetime + clean report name ──
@@ -1819,15 +1828,17 @@ async def decide(
             scheduled_datetime=_sched_cdt,
             session_id=session_id,
             allowed_form_ids=allowed_form_ids,
+            tenant_id=tenant_id,
+            login_id=login_id,
         )
 
     if intent == "compare_reports":
         logger.info("[COMPARE_START] report=%r session=%s", search_terms, session_id)
-        return await _handle_compare(search_terms, session_id, allowed_form_ids)
+        return await _handle_compare(search_terms, session_id, allowed_form_ids, tenant_id)
 
     # get_status: cache search terms so follow-up turns work without a name
     if session_id:
-        _session_context[session_id] = {"last_search_terms": search_terms}
+        _session_context[session_id] = {"last_search_terms": search_terms, "tenant_id": tenant_id}
 
     # Always pass the raw search_terms (the user's partial/keyword input) to
     # get_report_status so that find_matching_reports can detect multiple hits
@@ -1835,9 +1846,9 @@ async def decide(
     # name here bypasses that check and jumps directly to instance lookup,
     # which gives a misleading "No instances found" when the user typed only
     # a partial name like "raq".
-    result = _get_status_fast_with_bg_job(search_terms or user_query)
+    result = _get_status_fast_with_bg_job(search_terms or user_query, tenant_id)
     if allowed_form_ids is not None:
-        result = _apply_auth_to_status_result(result, allowed_form_ids)
+        result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
     _decide_elapsed = time.monotonic() - _decide_start
     logger.info(
         "[PERF] operation=decide intent=%s duration=%.2fs session=%s",
@@ -1850,22 +1861,22 @@ async def decide(
 # Compare helpers
 # ---------------------------------------------------------------------------
 
-async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None) -> dict[str, Any]:
+async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None, tenant_id: str | None = None) -> dict[str, Any]:
     """Entry point for compare_reports intent — handles disambiguation."""
-    matches = find_matching_reports(report_ident)
+    matches = find_matching_reports(report_ident, tenant_id)
     all_matches = matches
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        suggestions = fuzzy_report_suggestions(report_ident)
+        suggestions = fuzzy_report_suggestions(report_ident, tenant_id=tenant_id)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             if session_id:
                 _session_context[session_id] = {
-                    "awaiting": STAGE_CMP_REPORT, "pending_options": suggestions,
+                    "awaiting": STAGE_CMP_REPORT, "pending_options": suggestions, "tenant_id": tenant_id,
                 }
             return _build(
                 intent="compare_reports", report_name=None,
@@ -1892,7 +1903,7 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
         opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
         if session_id:
             _session_context[session_id] = {
-                "awaiting": STAGE_CMP_REPORT, "pending_options": names,
+                "awaiting": STAGE_CMP_REPORT, "pending_options": names, "tenant_id": tenant_id,
             }
         return _build(
             intent="compare_reports", report_name=None,
@@ -1903,10 +1914,10 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
             result_type="disambiguation", options=names,
         )
 
-    return await _compare_with_name(matches[0].get("Name", report_ident), session_id)
+    return await _compare_with_name(matches[0].get("Name", report_ident), session_id, tenant_id)
 
 
-async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any]:
+async def _compare_with_name(name: str, session_id: str | None, tenant_id: str | None = None) -> dict[str, Any]:
     """Resolve Report ID → scan instance folder → present selection.
 
     Only path: Returns.xml → Report ID → {INSTANCE_BASE_DIR}/{id}/ → *.xml
@@ -1915,7 +1926,7 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
     from backend.services.instance_service import get_instances_for_report
 
     # ── Step 1: resolve report name to FormId via Returns.xml ─────────────────
-    form_id = get_form_id_by_name(name)
+    form_id = get_form_id_by_name(name, tenant_id)
     if not form_id:
         if session_id:
             _session_context.pop(session_id, None)
@@ -1929,7 +1940,7 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
         )
 
     # ── Step 2: scan Instance/{FormId}/ — no fallbacks ────────────────────────
-    instances = get_instances_for_report(form_id)
+    instances = get_instances_for_report(form_id, tenant_id)
 
     # ── Error guards ──────────────────────────────────────────────────────────
     # Always clear session on error so stale STAGE_CMP_REPORT / STAGE_CMP_FILE
@@ -1982,6 +1993,7 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
             "cmp_return_name": name,
             "auto_a":          0,
             "auto_b":          1,
+            "tenant_id":       tenant_id,
         }
     return _build(
         intent="compare_reports", report_name=name,
@@ -2167,6 +2179,7 @@ async def execute_comparison(
     session_id: str,
     idx_a: int,
     idx_b: int,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute XBRL variance analysis for the two selected instances.
 
@@ -2210,9 +2223,14 @@ async def execute_comparison(
 
     # Delegate to _run_comparison; pass a synthetic "X vs Y" string so the
     # existing regex parser selects the correct indices cleanly.
+    # instances[*]["full_path"] was already resolved tenant-aware by
+    # _compare_with_name when the session was created — no further path
+    # resolution is needed here. tenant_id is accepted for API consistency
+    # with the other endpoints and kept in the session copy.
     session_copy = dict(session)
     session_copy["auto_a"] = idx_a
     session_copy["auto_b"] = idx_b
+    session_copy["tenant_id"] = tenant_id or session.get("tenant_id")
     return await _run_comparison(
         session_copy,
         f"{idx_a + 1} vs {idx_b + 1}",
@@ -2508,46 +2526,111 @@ def _ask_another_date(
 # Generate instance helpers
 # ---------------------------------------------------------------------------
 
+def _validate_future_schedule_date(schedule_date: str, schedule_time: str | None) -> tuple[bool, str]:
+    """Validate that ``schedule_date`` (+ optional ``schedule_time``) is strictly
+    in the future. Unlike reporting_date, the schedule date has no frequency/
+    period-boundary restriction — it only needs to be a real, future calendar date.
+
+    Returns ``(is_valid, error_message)``.
+    """
+    from datetime import date as _date, datetime as _dt
+
+    try:
+        parsed = _dt.strptime(schedule_date.strip(), "%d-%b-%Y").date()
+    except ValueError:
+        return False, (
+            f"Cannot parse '{schedule_date}'. Please enter a date like 31-Mar-2026, "
+            "31/03/2026, or 31 March 2026."
+        )
+
+    today = _date.today()
+    if parsed < today:
+        return False, f"'{schedule_date}' is not a future date. Scheduling requires a future date."
+
+    if parsed == today:
+        if schedule_time:
+            try:
+                sched_time = _dt.strptime(schedule_time.strip(), "%H:%M").time()
+                if sched_time <= _dt.now().time():
+                    return False, "The scheduled time must be in the future for today's date."
+            except ValueError:
+                return False, "The scheduled time must be in the future for today's date."
+        else:
+            return False, "The scheduled time must be in the future for today's date."
+
+    return True, ""
+
+
 def _finalize_schedule(
     ret: dict[str, Any],
+    reporting_date: str | None,
     schedule_date: str | None,
     schedule_time: str | None,
     scheduled_datetime: str | None,
     session_id: str | None,
+    tenant_id: str | None = None,
+    login_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build a confirmed schedule response, or ask for the missing date/time.
+    """Build a confirmed schedule response, or ask for whatever is still missing.
 
-    * Validates the schedule date against the report's frequency (reuses the
-      same ``validate_reporting_date`` logic as generate-instance).
-    * Handles partial input gracefully: if only date is provided, saves it and
-      asks for time; if only time is provided, saves it and asks for date.
-    * Saves ``frequency`` and ``period_name`` in the STAGE_SCHED_DT session so
-      the next turn can re-validate and display richer prompts.
+    Four mandatory inputs are collected, in order:
+      1. Report name (resolved by the caller before this function is reached)
+      2. Reporting Date — the business/period end-date the instance is FOR
+         (e.g. 31-Mar-2026 for a Yearly return). Validated against the report's
+         frequency via the same ``validate_reporting_date`` logic used by
+         generate-instance, with ``require_future=False`` (past/current dates
+         only) since a reporting period can never be in the future.
+      3. Schedule Date + Schedule Time — the future date/time the .NET job
+         should actually run and generate the instance. These are NOT
+         frequency-validated (any future date/time is acceptable) since they
+         describe *when to run*, not *which period*.
+      4. Confirmation (Schedule / Change Data).
+
+    Handles partial input gracefully at every stage and re-prompts for
+    whatever is still missing without discarding what's already been given.
     """
+    # ── Auth: scheduling performs instance generation internally, so it
+    # requires the same Instance Generation permission — single enforcement
+    # point, covers guided menu, free-text, and staged date/confirm turns.
+    if login_id:
+        from backend.services.auth_service import can_generate_instance as _chk_create
+        if not _chk_create(login_id, tenant_id):
+            logger.warning(
+                "[AUTH_DENY] schedule_report: login_id=%r tenant_id=%r lacks Instance Generation permission",
+                login_id, tenant_id,
+            )
+            return _build(
+                intent="schedule_report", report_name=ret.get("name"),
+                response_text="Sorry, you do not have access to schedule report generation.",
+                result_type="error",
+            )
+
     frequency   = ret.get("frequency", "")
     period_name = ret.get("period_name", "")
 
-    # ── Date validation (reuse generate-instance logic when frequency is known) ──
-    # require_future=True: scheduling needs a strictly future date (opposite of generate).
-    if schedule_date and frequency:
-        validation = validate_reporting_date(
-            schedule_date, frequency, require_future=True, time_str=schedule_time,
-        )
-        if not validation["valid"]:
+    # ── Reporting Date — mandatory, collected and validated before schedule
+    # date/time. Reuses generate-instance's validation (require_future=False:
+    # a reporting period can be the current period or any past period, never
+    # a future one).
+    if reporting_date and frequency:
+        rpt_validation = validate_reporting_date(reporting_date, frequency)
+        if not rpt_validation["valid"]:
             if session_id:
                 _session_context[session_id] = {
-                    "awaiting":            STAGE_SCHED_DT,
-                    "sched_form_id":       ret["form_id"],
-                    "sched_return_name":   ret["name"],
-                    "sched_frequency":     frequency,
-                    "sched_period_name":   period_name,
-                    "sched_schedule_date": None,           # reject the invalid date
-                    "sched_schedule_time": schedule_time,  # keep time if already given
+                    "awaiting":              STAGE_SCHED_RPT_DATE,
+                    "sched_form_id":         ret["form_id"],
+                    "sched_return_name":     ret["name"],
+                    "sched_frequency":       frequency,
+                    "sched_period_name":     period_name,
+                    "sched_reporting_date":  None,  # reject the invalid date
+                    "sched_schedule_date":   schedule_date,
+                    "sched_schedule_time":   schedule_time,
+                    "tenant_id":             tenant_id,
                 }
-            error_msg   = validation["error"]
+            error_msg   = rpt_validation["error"]
             suggestions = [
-                s for s in (validation.get("suggestions") or [])
-                if s.lower() != schedule_date.lower()
+                s for s in (rpt_validation.get("suggestions") or [])
+                if s.lower() != reporting_date.lower()
             ]
             if len(suggestions) == 1:
                 error_msg = f"Did you mean **{suggestions[0]}**?\n\n{error_msg}"
@@ -2555,8 +2638,53 @@ def _finalize_schedule(
                 intent="schedule_report",
                 report_name=ret["name"],
                 response_text=error_msg,
-                result_type="sched_awaiting_dt",
+                result_type="sched_awaiting_rpt_date",
                 options=suggestions if suggestions else None,
+            )
+
+    if not reporting_date:
+        if session_id:
+            _session_context[session_id] = {
+                "awaiting":              STAGE_SCHED_RPT_DATE,
+                "sched_form_id":         ret["form_id"],
+                "sched_return_name":     ret["name"],
+                "sched_frequency":       frequency,
+                "sched_period_name":     period_name,
+                "sched_schedule_date":   schedule_date,
+                "sched_schedule_time":   schedule_time,
+                "tenant_id":             tenant_id,
+            }
+        return _build(
+            intent="schedule_report",
+            report_name=ret["name"],
+            response_text=_date_ask_prompt(ret["name"], frequency, period_name),
+            result_type="sched_awaiting_rpt_date",
+        )
+
+    # ── Schedule-date validation — must be strictly future, but is NOT
+    # frequency-restricted (unlike reporting_date above). Schedule date/time
+    # describe *when the job should run*, not which reporting period it's
+    # for, so any future date/time is acceptable.
+    if schedule_date:
+        _sched_valid, _sched_err = _validate_future_schedule_date(schedule_date, schedule_time)
+        if not _sched_valid:
+            if session_id:
+                _session_context[session_id] = {
+                    "awaiting":            STAGE_SCHED_DT,
+                    "sched_form_id":       ret["form_id"],
+                    "sched_return_name":   ret["name"],
+                    "sched_frequency":     frequency,
+                    "sched_period_name":   period_name,
+                    "sched_reporting_date": reporting_date,
+                    "sched_schedule_date": None,           # reject the invalid date
+                    "sched_schedule_time": schedule_time,  # keep time if already given
+                    "tenant_id":           tenant_id,
+                }
+            return _build(
+                intent="schedule_report",
+                report_name=ret["name"],
+                response_text=_sched_err,
+                result_type="sched_awaiting_dt",
             )
 
     # ── Missing date or time — save what we have and ask for the rest ──────
@@ -2568,12 +2696,14 @@ def _finalize_schedule(
                 "sched_return_name":   ret["name"],
                 "sched_frequency":     frequency,
                 "sched_period_name":   period_name,
+                "sched_reporting_date": reporting_date,
                 "sched_schedule_date": schedule_date,
                 "sched_schedule_time": schedule_time,
+                "tenant_id":           tenant_id,
             }
         if not schedule_date and not schedule_time:
             prompt_text = (
-                f"Report confirmed: '{ret['name']}'.\n"
+                f"Reporting date confirmed: **{reporting_date}**.\n"
                 "Please provide the schedule date and time.\n"
                 'For example: "15-Apr-2026 at 4 PM".'
             )
@@ -2602,18 +2732,21 @@ def _finalize_schedule(
             "awaiting":            STAGE_SCHED_CONFIRM,
             "sched_form_id":       ret["form_id"],
             "sched_return_name":   ret["name"],
+            "sched_reporting_date": reporting_date,
             "sched_schedule_date": schedule_date,
             "sched_schedule_time": schedule_time,
             "sched_scheduled_dt":  scheduled_datetime,
+            "tenant_id":           tenant_id,
         }
     return _build(
         intent="schedule_report",
         report_name=ret["name"],
         response_text=(
             f"We are going to generate the report instance with the following schedule details:\n\n"
-            f"Report Name   : {ret['name']}\n"
-            f"Schedule Date : {schedule_date}\n"
-            f"Schedule Time : {schedule_time}"
+            f"Report Name    : {ret['name']}\n"
+            f"Reporting Date : {reporting_date}\n"
+            f"Schedule Date  : {schedule_date}\n"
+            f"Schedule Time  : {schedule_time}"
         ),
         result_type="sched_confirm",
         options=["Schedule", "Change Data"],
@@ -2627,11 +2760,19 @@ def _handle_schedule(
     scheduled_datetime: str | None,
     session_id: str | None,
     allowed_form_ids: set[str] | None = None,
+    tenant_id: str | None = None,
+    login_id: str | None = None,
+    reporting_date: str | None = None,
 ) -> dict[str, Any]:
     """Validate report name against known definitions, then confirm the schedule.
 
     Mirrors _handle_generate:
       find_matching_reports → disambiguation → resolve_return_exact → _finalize_schedule
+
+    ``reporting_date`` (the business/period date the instance is FOR) is
+    distinct from ``schedule_date``/``schedule_time`` (when the .NET job
+    should run). It is optional here — free-text/guided callers rarely supply
+    it up front — and _finalize_schedule will ask for it if missing.
     """
     if not report_ident:
         return _build(
@@ -2644,22 +2785,24 @@ def _handle_schedule(
             need_clarification=True,
         )
 
-    matches = find_matching_reports(report_ident)
+    matches = find_matching_reports(report_ident, tenant_id)
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        suggestions = fuzzy_report_suggestions(report_ident)
+        suggestions = fuzzy_report_suggestions(report_ident, tenant_id=tenant_id)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
             if session_id:
                 _session_context[session_id] = {
                     "awaiting":            STAGE_SCHED_REPORT,
+                    "sched_reporting_date": reporting_date,
                     "sched_schedule_date": schedule_date,
                     "sched_schedule_time": schedule_time,
                     "sched_scheduled_dt":  scheduled_datetime,
                     "pending_options":     suggestions,
+                    "tenant_id":           tenant_id,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             return _build(
@@ -2688,10 +2831,12 @@ def _handle_schedule(
         if session_id:
             _session_context[session_id] = {
                 "awaiting":            STAGE_SCHED_REPORT,
+                "sched_reporting_date": reporting_date,
                 "sched_schedule_date": schedule_date,
                 "sched_schedule_time": schedule_time,
                 "sched_scheduled_dt":  scheduled_datetime,
                 "pending_options":     names,
+                "tenant_id":           tenant_id,
             }
         return _build(
             intent="schedule_report", report_name=None,
@@ -2703,7 +2848,7 @@ def _handle_schedule(
         )
 
     # Single match — resolve full metadata and proceed
-    ret = resolve_return_exact(matches[0].get("Name", report_ident))
+    ret = resolve_return_exact(matches[0].get("Name", report_ident), tenant_id)
     if not ret:
         return _build(
             intent="schedule_report", report_name=None,
@@ -2711,7 +2856,7 @@ def _handle_schedule(
             result_type="error",
         )
 
-    return _finalize_schedule(ret, schedule_date, schedule_time, scheduled_datetime, session_id)
+    return _finalize_schedule(ret, reporting_date, schedule_date, schedule_time, scheduled_datetime, session_id, tenant_id, login_id)
 
 
 async def _finalize_generation(
@@ -2719,8 +2864,27 @@ async def _finalize_generation(
     reporting_date: str,
     session_id: str | None,
     asp_session: str | None = None,
+    tenant_id: str | None = None,
+    jwt: str | None = None,
+    login_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate date and call the .NET API for a fully-resolved (report, date) pair."""
+    # ── Auth: role-based Instance Generation permission ───────────────────────
+    # Single enforcement point for generate_instance — every path (guided menu,
+    # free-text, staged date-entry) converges here before the .NET API call.
+    if login_id:
+        from backend.services.auth_service import can_generate_instance as _chk_create
+        if not _chk_create(login_id, tenant_id):
+            logger.warning(
+                "[AUTH_DENY] generate_instance: login_id=%r tenant_id=%r lacks Instance Generation permission",
+                login_id, tenant_id,
+            )
+            return _build(
+                intent="generate_instance", report_name=ret.get("name"),
+                response_text="Sorry, you do not have access to generate report instances.",
+                result_type="error",
+            )
+
     validation = validate_reporting_date(reporting_date, ret["frequency"])
     if not validation["valid"]:
         logger.debug(
@@ -2735,6 +2899,7 @@ async def _finalize_generation(
                 "gen_return_name": ret["name"],
                 "gen_frequency":   ret["frequency"],
                 "gen_period_name": ret.get("period_name", ""),
+                "tenant_id":       tenant_id,
             }
         error_msg   = validation["error"]
         suggestions = validation.get("suggestions") or []
@@ -2754,7 +2919,10 @@ async def _finalize_generation(
             options=suggestions if suggestions else None,
         )
 
-    api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
+    if tenant_id:
+        api_result = await call_generate_api_6_0(ret["form_id"], reporting_date, tenant_id, jwt)
+    else:
+        api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
     if session_id:
         _session_context.pop(session_id, None)
 
@@ -2791,6 +2959,9 @@ async def _handle_gen_date(
     session: dict[str, Any],
     session_id: str | None,
     asp_session: str | None = None,
+    tenant_id: str | None = None,
+    jwt: str | None = None,
+    login_id: str | None = None,
 ) -> dict[str, Any]:
     """Thin wrapper: assemble ret dict from session and delegate to _finalize_generation."""
     ret = {
@@ -2799,7 +2970,8 @@ async def _handle_gen_date(
         "frequency":   session["gen_frequency"],
         "period_name": session.get("gen_period_name", ""),
     }
-    return await _finalize_generation(ret, date_str, session_id, asp_session)
+    tenant_id = tenant_id or session.get("tenant_id")
+    return await _finalize_generation(ret, date_str, session_id, asp_session, tenant_id, jwt, login_id)
 
 
 def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
@@ -2890,15 +3062,18 @@ async def _handle_generate(
     session_id: str | None,
     asp_session: str | None = None,
     allowed_form_ids: set[str] | None = None,
+    tenant_id: str | None = None,
+    jwt: str | None = None,
+    login_id: str | None = None,
 ) -> dict[str, Any]:
     """Entry point for generate_instance intent from the normal (non-staged) flow."""
-    matches = find_matching_reports(report_name)
+    matches = find_matching_reports(report_name, tenant_id)
     original_matches = matches
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        suggestions = fuzzy_report_suggestions(report_name)
+        suggestions = fuzzy_report_suggestions(report_name, tenant_id=tenant_id)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
@@ -2907,6 +3082,7 @@ async def _handle_generate(
                     "awaiting":               STAGE_GEN_REPORT,
                     "pending_reporting_date": reporting_date,
                     "pending_options":        suggestions,
+                    "tenant_id":              tenant_id,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             return _build(
@@ -2943,6 +3119,7 @@ async def _handle_generate(
                 "awaiting":               STAGE_GEN_REPORT,
                 "pending_reporting_date": reporting_date,
                 "pending_options":        names,
+                "tenant_id":              tenant_id,
             }
         return _build(
             intent="generate_instance", report_name=None,
@@ -2954,7 +3131,7 @@ async def _handle_generate(
         )
 
     # Single match -- resolve full metadata
-    ret = resolve_return_exact(matches[0].get("Name", report_name))
+    ret = resolve_return_exact(matches[0].get("Name", report_name), tenant_id)
     if not ret:
         return _build(
             intent="generate_instance", report_name=None,
@@ -2975,6 +3152,7 @@ async def _handle_generate(
                 "gen_return_name": ret["name"],
                 "gen_frequency":   ret["frequency"],
                 "gen_period_name": ret["period_name"],
+                "tenant_id":       tenant_id,
             }
         return _build(
             intent="generate_instance", report_name=ret["name"],
@@ -2987,7 +3165,7 @@ async def _handle_generate(
         "[SKIP_DATE_PROMPT] date=%r already known for report=%r — proceeding to generation",
         reporting_date, ret["name"],
     )
-    return await _finalize_generation(ret, reporting_date, session_id, asp_session)
+    return await _finalize_generation(ret, reporting_date, session_id, asp_session, tenant_id, jwt, login_id)
 
 
 def _build(
@@ -3000,6 +3178,7 @@ def _build(
     scheduled_datetime: str | None = None,
     schedule_date: str | None = None,
     schedule_time: str | None = None,
+    reporting_date_out: str | None = None,
     variance_data:    list[dict] | None = None,
     variance_label_a: str | None = None,
     variance_label_b: str | None = None,
@@ -3029,6 +3208,8 @@ def _build(
         out["schedule_date"] = schedule_date
     if schedule_time is not None:
         out["schedule_time"] = schedule_time
+    if reporting_date_out is not None:
+        out["reporting_date"] = reporting_date_out
     if variance_data is not None:
         out["variance_data"]    = variance_data
         out["variance_label_a"] = variance_label_a or ""
@@ -3049,7 +3230,7 @@ def _build(
 # Authorisation helpers
 # ---------------------------------------------------------------------------
 
-def _filter_names_by_auth(names: list[str], allowed: set[str] | None) -> list[str]:
+def _filter_names_by_auth(names: list[str], allowed: set[str] | None, tenant_id: str | None = None) -> list[str]:
     """Return only the report names whose FormId is in *allowed*.
 
     If *allowed* is ``None`` (no auth configured) all names pass through.
@@ -3058,13 +3239,13 @@ def _filter_names_by_auth(names: list[str], allowed: set[str] | None) -> list[st
         return names
     result = []
     for name in names:
-        fid = get_form_id_by_name(name) or ""
+        fid = get_form_id_by_name(name, tenant_id) or ""
         if fid in allowed:
             result.append(name)
     return result
 
 
-def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) -> dict[str, Any] | None:
+def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str, tenant_id: str | None = None) -> dict[str, Any] | None:
     """Return an auth-error response dict if *report_name*'s FormId is not in *allowed*.
 
     Returns ``None`` when access is granted (either no auth configured, or
@@ -3072,7 +3253,7 @@ def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) ->
     """
     if allowed is None:
         return None
-    fid = get_form_id_by_name(report_name)
+    fid = get_form_id_by_name(report_name, tenant_id)
     if not fid:
         logger.warning(
             "[AUTH_MISS] report=%r could not be resolved to a FormId before auth", report_name,
@@ -3107,7 +3288,7 @@ def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) ->
     return None
 
 
-def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str], tenant_id: str | None = None) -> dict[str, Any]:
     """Post-filter a ``get_report_status`` result dict through the auth set.
 
     Handles all result types returned by ``get_report_status``:
@@ -3120,7 +3301,7 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> d
     rtype = result.get("type", "")
 
     if rtype == "disambiguation":
-        filtered = _filter_names_by_auth(result.get("options", []), allowed)
+        filtered = _filter_names_by_auth(result.get("options", []), allowed, tenant_id)
         if not filtered:
             return {
                 "type":    "error",
@@ -3146,7 +3327,7 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> d
         return result
 
     if rtype == "final":
-        fid = get_form_id_by_name(result.get("report_name", "")) or ""
+        fid = get_form_id_by_name(result.get("report_name", ""), tenant_id) or ""
         if fid not in allowed:
             logger.warning(
                 "[AUTH_DENY] report=%r form_id=%r not in allowed set (final result)",
@@ -3176,10 +3357,10 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> d
         return {"type": "error", "message": "You are not authorised to access this report."}
     return result  # generic error / unknown — pass through
 
-def _get_status_exact_fast_with_bg_job(report_name: str) -> dict:
+def _get_status_exact_fast_with_bg_job(report_name: str, tenant_id: str | None = None) -> dict:
     """Call get_report_status_exact_fast and kick off background LLM enrichment
     for failed statuses, exactly like _get_status_fast_with_bg_job."""
-    result = get_report_status_exact_fast(report_name)
+    result = get_report_status_exact_fast(report_name, tenant_id)
 
     if (
         result.get("type") in ("final", "latest_with_ask")
@@ -3190,11 +3371,11 @@ def _get_status_exact_fast_with_bg_job(report_name: str) -> dict:
         _error_jobs[job_id] = {"status": "pending", "payload": None}
 
         form_id     = result["form_id"]
-        instances   = get_instances_by_form_id(form_id)
+        instances   = get_instances_by_form_id(form_id, tenant_id)
         sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
         latest_row  = sorted_rows[0]
         code        = _safe_status(latest_row)
-        dl          = _get_download_info(latest_row, form_id)
+        dl          = _get_download_info(latest_row, form_id, tenant_id)
 
         thread = threading.Thread(
             target=_run_error_enrichment_async,
@@ -3224,6 +3405,7 @@ async def explain_category_for_report(
     category: str,
     form_id: str | None = None,
     report_name: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Explain up to 5 errors for the given category from error_file_path.
 
@@ -3260,6 +3442,7 @@ async def explain_category_for_report(
             error_file_path,
             category,
             form_id or "",
+            tenant_id,
         )
     except Exception as exc:
         logger.error(

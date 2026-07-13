@@ -567,14 +567,15 @@ export default function MessageBubble({
   errorMessages,
   onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback,
   onExplainCategory,
+  allowedActions,
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
   const isWelcome = role === 'welcome'
 
-  if (isWelcome)              return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} />
-  if (role === 'action_menu') return <ActionMenu onGuidedAction={onGuidedAction} />
+  if (isWelcome)              return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} allowedActions={allowedActions} />
+  if (role === 'action_menu') return <ActionMenu onGuidedAction={onGuidedAction} allowedActions={allowedActions} />
   if (role === 'sql_welcome') return <SqlWelcomeCard />
   if (role === 'feedback_prompt')   return <FeedbackPrompt onFeedback={onFeedback} />
   if (role === 'feedback_positive') {
@@ -920,7 +921,18 @@ const SUGGESTION_GROUPS = [
   { label: '🗄️ Retrieve data from database', action: 'Retrieve data from database' },
 ]
 
-function WelcomeCard({ onSuggestion, onGuidedAction }) {
+// Filter SUGGESTION_GROUPS by the backend-resolved allowed-actions list
+// (from guided.py's _allowed_actions, reused via App.jsx's prefetch). A null/
+// undefined list means "not resolved yet" — show everything rather than hide
+// buttons the user may actually be permitted to use; the backend still
+// enforces the real permission on every action regardless.
+function _visibleGroups(allowedActions) {
+  if (!allowedActions) return SUGGESTION_GROUPS
+  return SUGGESTION_GROUPS.filter((g) => allowedActions.includes(g.action))
+}
+
+function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions }) {
+  const groups = _visibleGroups(allowedActions)
   return (
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
@@ -936,7 +948,7 @@ function WelcomeCard({ onSuggestion, onGuidedAction }) {
         </ul>
         <p className="welcome-subtext">Click a category to use guided mode, or type freely:</p>
         <div className="welcome-suggestion-groups">
-          {SUGGESTION_GROUPS.map((group) => (
+          {groups.map((group) => (
             <div key={group.label} className="welcome-suggestion-group">
               <button
                 className="welcome-group-label-btn"
@@ -996,14 +1008,15 @@ function SupportContact() {
 }
 
 // ── Action Menu ───────────────────────────────────────────────────────────────
-function ActionMenu({ onGuidedAction }) {
+function ActionMenu({ onGuidedAction, allowedActions }) {
+  const groups = _visibleGroups(allowedActions)
   return (
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
       <div className="bubble assistant-bubble action-menu-bubble">
         <p className="action-menu-prompt">What would you like to do next?</p>
         <div className="welcome-suggestion-groups">
-          {SUGGESTION_GROUPS.map((group) => (
+          {groups.map((group) => (
             <div key={group.label} className="welcome-suggestion-group">
               <button
                 className="welcome-group-label-btn"
