@@ -76,6 +76,20 @@ export default function App() {
       }
     }
     window.addEventListener('message', _onAuthMessage)
+
+    // Tell the host we're ready to receive CHATBOT_AUTH. The host's postAuth()
+    // fires on the iframe's `load` event, which can race this listener's
+    // registration (React mount finishes after the raw HTML/asset load,
+    // especially with the iframe's `loading="lazy"` attribute) — if that
+    // happens the message is silently dropped with no retry, leaving jwt
+    // null for the rest of the session. Announcing readiness lets the host
+    // respond to OUR signal instead of guessing when we're listening.
+    // window.parent === window when not embedded in an iframe (5.5 or direct
+    // access) — guard so this never throws/no-ops harmlessly there.
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'CHATBOT_READY' }, '*')
+    }
+
     return () => window.removeEventListener('message', _onAuthMessage)
   }, [])
 
@@ -89,10 +103,12 @@ export default function App() {
   // on every actual action, so this is a display-only convenience.
   const [allowedActions, setAllowedActions] = useState(null)
   useEffect(() => {
-    // 6.0 requires tenant_id on every request; wait for the JWT to arrive
-    // (it carries/enables tenant_id resolution) before fetching so the
-    // very first call isn't rejected for missing identity.
-    if (_tenantId && !jwt) return
+    // /allowed-actions only needs login_id/tenant_id (both available
+    // synchronously from URL params for 6.0) — it does NOT need the JWT.
+    // Previously this waited for `jwt` to arrive via postMessage before
+    // fetching; if that message was ever delayed or dropped, allowedActions
+    // stayed null forever and the menu silently fell back to showing every
+    // action (including ones the user isn't authorized for) until reload.
     if (!_loginId && !_tenantId) return  // no identity at all — nothing to resolve
 
     let cancelled = false
@@ -109,7 +125,7 @@ export default function App() {
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jwt])
+  }, [])
 
   // ── Persist messages to localStorage on every change ─────────────────────
   useEffect(() => {

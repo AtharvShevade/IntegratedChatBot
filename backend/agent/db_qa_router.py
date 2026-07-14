@@ -16,8 +16,8 @@ import logging
 from typing import Generator
 
 import backend.config as config
+from backend.db_qa import access_control, query_handlers, templates, xml_store
 from backend.db_qa.intent_classifier import classify
-from backend.db_qa import query_handlers, xml_store
 from backend.db_qa.beautifier import beautify_stream
 from backend.models import ChatResponse
 from backend.utils.debug import debug_log
@@ -89,6 +89,21 @@ _CLASSIFIER_TO_DB_INTENT = {
     "CROSS_VAL_LOG":        "db_cross_val_log",
     "UPLOAD_LOG":           "db_upload_log",
 }
+
+
+def check_new_taxonomy_intent(message: str) -> tuple[str | None, dict]:
+    """Detect a new-taxonomy (backend.db_qa.intents.taxonomy.Intent) match.
+
+    Tried BEFORE the legacy check_db_qa_intent() by decide()'s call sites.
+    Returns (intent_value, params) with params already containing
+    "target_type", or (None, {}) if nothing in the new rule set matched —
+    callers should fall back to check_db_qa_intent() in that case.
+    """
+    from backend.db_qa.new_intent_classifier import classify_new
+    intent, params, _target_type = classify_new(message)
+    if intent is None:
+        return None, {}
+    return intent.value, params
 
 
 def check_db_qa_intent(message: str) -> tuple[str | None, dict]:
@@ -341,25 +356,38 @@ def handle_db_qa_query(
     role_id: str,
     beautify: bool = False,
     model: str = "phi3:mini",
+    tenant_id: str | None = None,
+    login_id: str | None = None,
 ) -> dict:
     """Execute DB Q&A intent using LLM-extracted parameters.
-    
+
     This handler is called when the LLM detects an intent starting with "db_"
-    (e.g., db_my_profile, db_list_users, db_list_departments).
-    
+    (e.g., db_my_profile, db_list_users, db_list_departments), OR when a
+    query has been classified onto one of the new backend.db_qa.intents.
+    taxonomy.Intent names (e.g. "user_profile", "department_returns").
+
     Args:
         message: Original user question
-        intent: LLM-detected intent (e.g., "db_list_users", "db_my_department")
+        intent: LLM-detected legacy db_* intent, OR a new Intent.value string
         params: LLM-extracted entities dict containing:
                 - target_user: username/user ID if asking about specific user
                 - target_department: department name if mentioned
                 - target_role: role name if mentioned
                 - query_type: filter type ("active", "inactive", "all", "details", "count")
+                - target_type: for new-taxonomy intents — self/other_user/
+                  department/role/return/system_wide (see access_control.py)
         user_id: Current user's ID (for self-service checks)
         role_id: Current user's role ID (for admin access checks)
         beautify: Whether to use LLM for formatting results
         model: Ollama model to use for beautification
-        
+        tenant_id: 6.0 tenant id, sourced from the authenticated request only
+                   (never from `params`/LLM-extracted entities) — required
+                   under 6.0 mode, ignored under 5.5.
+        login_id: Caller's LoginId string, when known independently of
+                  user_id (some call sites only have a numeric UserId or a
+                  session GUID in user_id — see agent/__init__.py's
+                  final_user_id resolution). Falls back to user_id if omitted.
+
     Returns:
         Response dict compatible with ChatResponse model with db_* fields populated
     """
@@ -373,8 +401,10 @@ def handle_db_qa_query(
                 "result_type": "db_disabled",
             }
         
-        # Instantiate XML data store
-        store = xml_store.XMLStore(config.APP_DB_BASE_PATH)
+        # Instantiate XML data store — tenant-scoped when tenant_id is given
+        # (6.0); tenant_id must come only from the authenticated request,
+        # never from `params` (LLM-extracted chat entities).
+        store = xml_store.XMLStore(config.APP_DB_BASE_PATH, tenant_id=tenant_id)
         # ── Debug trace: log function entry with full identity context ───────────────
         debug_log(
             "DB QA ROUTER — handle_db_qa_query",
@@ -439,7 +469,72 @@ def handle_db_qa_query(
                 "db_summary": "Authentication required.",
                 "db_beautified": "",
             }
-        
+
+        # ── New-taxonomy path (Phase 6) ──────────────────────────────────
+        # Try the new Intent/scope_query/dispatch2 path first — only fires
+        # for intents that are valid backend.db_qa.intents.taxonomy.Intent
+        # values (legacy "db_*" names are not, so they fall straight
+        # through to the untouched legacy dispatch below).
+        from backend.db_qa.intents.taxonomy import Intent as _Intent
+        try:
+            _new_intent = _Intent(intent)
+        except ValueError:
+            _new_intent = None
+
+        if _new_intent is not None:
+            _effective_login_id = login_id or (resolved_user.get("LoginId") if resolved_user else user_id)
+            session_user = {
+                "login_id": _effective_login_id,
+                "user_id": effective_user_id,
+                "tenant_id": tenant_id,
+            }
+            try:
+                scope = access_control.scope_query(session_user, intent, params or {})
+            except PermissionError as exc:
+                logger.info("[DB_QA] new-taxonomy intent=%s denied: %s", intent, exc)
+                return {
+                    "intent": intent,
+                    "response_text": str(exc),
+                    "result_type": "db_qa_result",
+                    "db_intent": intent,
+                    "db_found": False,
+                    "db_records": [],
+                    "db_summary": str(exc),
+                    "db_beautified": "",
+                }
+
+            new_result = query_handlers.dispatch2(_new_intent, scope, params or {}, store)
+            if new_result is not None:
+                debug_log(
+                    "DB QA DISPATCH2 (new taxonomy)",
+                    intent=intent, target_type=scope.get("target_type"),
+                    is_admin=scope.get("is_admin"), tenant_id=tenant_id,
+                )
+                rendered = templates.render(intent, new_result)
+                response_dict = {
+                    "intent": intent,
+                    "response_text": rendered,
+                    "result_type": "db_qa_result",
+                    "db_intent": intent,
+                    "db_found": new_result.get("found", False),
+                    "db_records": new_result.get("records", []),
+                    "db_summary": new_result.get("summary", ""),
+                    "db_beautified": "",
+                    "db_qa_data": _build_db_qa_data(new_result),
+                }
+                if beautify and config.APP_DB_ENABLE_BEAUTIFY:
+                    try:
+                        full_response = ""
+                        for token in beautify_stream(message, new_result, model=model, ollama_url=None):
+                            full_response += token
+                        response_dict["db_beautified"] = full_response
+                        response_dict["response_text"] = full_response
+                    except Exception as exc:
+                        logger.warning("[DB_QA] Beautifier failed on new-taxonomy result, using template: %s", exc)
+                return response_dict
+            # new_result is None -> intent isn't migrated to a handler yet;
+            # fall through to legacy dispatch exactly as before.
+
         # Execute the query handler (routes intent to appropriate handler)
         # ── Debug trace: log which handler is about to be dispatched ──────────────
         _handler_fn = query_handlers.INTENT_TO_HANDLER.get(intent, query_handlers.handle_unknown)

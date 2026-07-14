@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from backend.db_qa.versions import loader
 
 logger = logging.getLogger("xml_store")
 
@@ -39,6 +40,7 @@ def get_attr(row: dict, *possible_names: str, default: str = "") -> str:
 _SENSITIVE_FIELDS = {
     "Password", "SecondPassword", "ThirdPassword", "FourthPassword", "FifthPassword",
     "Answer",   # security question answer
+    "RefreshToken", "RefreshTokenExpiryTime",
 }
 
 # Human-readable status labels for XML_InstanceLog Status codes
@@ -51,39 +53,6 @@ SUBMISSION_STATUS_LABELS: dict[str, str] = {
     "9": "Approved",
     "11": "Audited",
 }
-
-
-def _parse_xml(path: Path) -> list[dict[str, str]]:
-    """Parse an XML file and return all row elements as attribute dicts.
-
-    Tries ``Row`` tag first; if none found, falls back to the most common
-    child tag so the store works with any iDEAL XML layout.
-    Comments are silently ignored by ElementTree.
-    """
-    if not path.exists():
-        logger.warning("XML file not found: %s", path)
-        return []
-    try:
-        # 'recover' mode is not available in stdlib ET, but encoding='unicode'
-        # avoids the BOM problem on Windows XML files.
-        with path.open("rb") as fh:
-            raw = fh.read()
-        try:
-            root = ET.fromstring(raw)
-        except ET.ParseError:
-            # Some files use Windows-1252; strip BOM and retry as UTF-8
-            raw = raw.lstrip(b"\xef\xbb\xbf")
-            root = ET.fromstring(raw)
-
-        rows = root.findall("Row")
-        if not rows and len(root):
-            # Use whatever tag the first child has
-            tag = root[0].tag
-            rows = root.findall(tag)
-        return [dict(r.attrib) for r in rows]
-    except ET.ParseError as exc:
-        logger.error("Failed to parse %s: %s", path, exc)
-        return []
 
 
 def _safe(record: dict) -> dict:
@@ -105,28 +74,93 @@ class XMLStore:
         active = [u for u in store.users() if u["Status"] == "true"]
     """
 
-    # Maps each raw XML filename → derived index sentinel keys that must be
-    # evicted from _cache whenever that file is reloaded.
+    # Maps each logical entity name → derived index sentinel keys that must
+    # be evicted from _cache whenever that entity is reloaded.
     _INDEX_DEPS: dict[str, list[str]] = {
-        "XML_User.xml":       ["__user_index__"],
-        "XML_Dept.xml":       ["__dept_index__"],
-        "XML_Role.xml":       ["__role_index__"],
-        "Returns.xml":        ["__return_index__"],
-        "NonXBRLReturns.xml": ["__return_index__"],
+        "users":            ["__user_index__"],
+        "departments":      ["__dept_index__"],
+        "roles":            ["__role_index__"],
+        "returns":          ["__return_index__"],
+        "nonxbrl_returns":  ["__return_index__"],
     }
 
-    def __init__(self, db_path: str | Path):
-        self._db = Path(db_path)
-        # Raw-data cache: filename → list[row_dict]
+    # Entities not present in the schema (e.g. XML_UserLevels.xml doesn't
+    # exist on disk; segments/error_log/uploaded_file_log/cross_validation_log
+    # have no 6.0 equivalent) still resolve here as best-effort filenames so
+    # 5.5's file-not-found path (empty list, not an error) keeps working
+    # exactly as before for any entity a version's schema doesn't define.
+    _LEGACY_FALLBACK_FILENAMES: dict[str, str] = {
+        "user_levels":            "XML_UserLevels.xml",
+        "notifications":          "Notifications.xml",
+        "notification_details":   "NotificationReturnDetails.xml",
+        "segments":                "XML_Segment.xml",
+        "error_log":               "XML_ErrorLog.xml",
+        "uploaded_file_log":       "XML_UploadedFileLog.xml",
+        "cross_validation_log":    "XML_CrossValidationLog.xml",
+    }
+
+    def __init__(self, db_path: str | Path | None = None, tenant_id: str | None = None):
+        if db_path is not None:
+            self._db = Path(db_path)
+        else:
+            from backend import config as _config
+            self._db = Path(_config.get_app_db_base_path(tenant_id))
+        self._tenant_id = tenant_id
+
+        # Read APP_VERSION live (not backend.version_mode's cached
+        # module-level constant) so tests can monkeypatch the env var
+        # per-instance without relying on import order. Production
+        # behavior is unchanged — a real process still only ever sets
+        # this once at startup — this just removes an import-time cache
+        # that made the deployment-level switch impossible to unit test
+        # in-process.
+        import os as _os
+        self._is_6_0 = _os.getenv("APP_VERSION", "5.5").strip() == "6.0"
+
+        from backend.db_qa import versions as _versions
+        self._schema = (
+            _versions.v6_0_schema.SCHEMA if self._is_6_0 else _versions.v5_5_schema.SCHEMA
+        )
+
+        # Raw-data cache: entity_name → list[row_dict]
         self._cache: dict[str, list[dict[str, str]]] = {}
-        # Last-known mtime for each cached file
+        # Last-known mtime for each cached entity's source file
         self._mtime: dict[str, float] = {}
         # One lock per store instance; guards both _cache and _mtime
         self._lock = threading.Lock()
 
-    def _load(self, filename: str) -> list[dict[str, str]]:
-        """Return cached rows for *filename*, reloading from disk if the file
-        has been modified since the last load.
+    def _resolve_source_path(self, entity_name: str) -> Path:
+        """Return the on-disk path _load() should mtime-check for *entity_name*.
+
+        Entities defined in the active schema use their schema filename —
+        unless that .xml is missing AND the entity has a configured JSON
+        fallback under 6.0, in which case the JSON path is used instead so
+        the mtime check (and cache invalidation) tracks the file that will
+        actually be read, not the absent .xml.
+
+        Entities NOT in the schema at all (legacy-only lookups like
+        user_levels/notifications, or 6.0-absent entities) fall back to
+        their 5.5-style filename so a missing file still resolves to a real
+        (non-existent) path and degrades to [] via the existing OSError
+        branch below, rather than raising or silently misbehaving.
+        """
+        spec = self._schema.get(entity_name)
+        if spec is not None:
+            xml_path = self._db / spec.filename
+            if (
+                not xml_path.exists()
+                and spec.json_fallback
+                and self._is_6_0
+                and spec.json_filename
+            ):
+                return self._db / spec.json_filename
+            return xml_path
+        filename = self._LEGACY_FALLBACK_FILENAMES.get(entity_name, entity_name)
+        return self._db / filename
+
+    def _load(self, entity_name: str) -> list[dict[str, str]]:
+        """Return cached rows for *entity_name*, reloading from disk if the
+        source file has been modified since the last load.
 
         Thread-safe: concurrent callers block on the per-store lock only for
         the brief mtime check (cache hit) or the full re-parse (cache miss /
@@ -140,8 +174,12 @@ class XMLStore:
         - Concurrent reload: the lock serialises all loaders; only the first
           thread does the actual disk I/O; subsequent threads see the freshly
           updated cache.
+        - Entity not in the active version's schema at all (e.g. user_levels
+          on 5.5, or segments/error_log/uploaded_file_log/cross_validation_log
+          on 6.0): resolves to a non-existent path, degrades to [] the same
+          way a genuinely-missing file always has.
         """
-        path = self._db / filename
+        path = self._resolve_source_path(entity_name)
 
         # ── 1. Read current mtime outside the lock (fast syscall, no I/O)
         try:
@@ -149,125 +187,141 @@ class XMLStore:
         except OSError:
             # File is missing or inaccessible.
             with self._lock:
-                if filename in self._cache:
+                if entity_name in self._cache:
                     logger.warning(
                         "[XMLStore] File inaccessible: %s — serving stale cache (%d rows)",
-                        filename, len(self._cache[filename]),
+                        path, len(self._cache[entity_name]),
                     )
-                    return self._cache[filename]
+                    return self._cache[entity_name]
             logger.warning(
-                "[XMLStore] File inaccessible and no prior cache for %s — returning []",
-                filename,
+                "[XMLStore] File inaccessible and no prior cache for %s (entity=%s) — returning []",
+                path, entity_name,
             )
             return []
 
         # ── 2. Fast-path cache hit: no lock needed for a pure read check
         #    (safe because Python dict reads are GIL-protected and we only
         #    confirm validity under the lock below when a reload is needed)
-        if self._mtime.get(filename) == current_mtime and filename in self._cache:
-            logger.debug("[XMLStore] Cache HIT: %s", filename)
-            return self._cache[filename]
+        if self._mtime.get(entity_name) == current_mtime and entity_name in self._cache:
+            logger.debug("[XMLStore] Cache HIT: %s", entity_name)
+            return self._cache[entity_name]
 
         # ── 3. Cache miss or file changed — acquire lock and re-check
         with self._lock:
             # Re-check inside the lock in case another thread already reloaded
-            if self._mtime.get(filename) == current_mtime and filename in self._cache:
-                logger.debug("[XMLStore] Cache HIT (post-lock): %s", filename)
-                return self._cache[filename]
+            if self._mtime.get(entity_name) == current_mtime and entity_name in self._cache:
+                logger.debug("[XMLStore] Cache HIT (post-lock): %s", entity_name)
+                return self._cache[entity_name]
 
-            prev_mtime = self._mtime.get(filename)
+            prev_mtime = self._mtime.get(entity_name)
             if prev_mtime is None:
-                logger.info("[XMLStore] Cache LOAD: %s", filename)
+                logger.info("[XMLStore] Cache LOAD: %s", entity_name)
             else:
                 logger.info(
                     "[XMLStore] File changed (mtime %.3f → %.3f), reloading: %s",
-                    prev_mtime, current_mtime, filename,
+                    prev_mtime, current_mtime, entity_name,
                 )
 
-            data = _parse_xml(path)
+            spec = self._schema.get(entity_name)
+            if spec is not None:
+                data = loader.load_entity(
+                    entity_name, self._db, schema=self._schema, is_6_0=self._is_6_0,
+                )
+            else:
+                # Not in this version's schema — same degrade-to-[] behavior
+                # as a missing file (e.g. user_levels on 5.5).
+                data = []
 
-            if not data and filename in self._cache:
+            if not data and entity_name in self._cache:
                 # Parse returned nothing (error or genuinely empty file).
                 # Keep the previous good cache rather than silently wiping data.
                 # Do NOT update _mtime so the next request will retry.
                 logger.warning(
                     "[XMLStore] Reload of %s returned 0 rows — keeping stale cache",
-                    filename,
+                    entity_name,
                 )
-                return self._cache[filename]
+                return self._cache[entity_name]
 
-            self._cache[filename] = data
-            self._mtime[filename] = current_mtime
+            self._cache[entity_name] = data
+            self._mtime[entity_name] = current_mtime
 
             # Evict derived indexes whose source data just changed
-            for idx_key in self._INDEX_DEPS.get(filename, []):
+            for idx_key in self._INDEX_DEPS.get(entity_name, []):
                 if self._cache.pop(idx_key, None) is not None:
                     logger.debug(
                         "[XMLStore] Evicted derived index %s (source: %s)",
-                        idx_key, filename,
+                        idx_key, entity_name,
                     )
 
             logger.info(
-                "[XMLStore] Loaded %d rows from %s", len(data), filename
+                "[XMLStore] Loaded %d rows from %s", len(data), entity_name
             )
             return data
 
     # ── raw data accessors ───────────────────────────────────────────────────
 
     def users(self) -> list[dict]:
-        return self._load("XML_User.xml")
+        return self._load("users")
 
     def departments(self) -> list[dict]:
-        return self._load("XML_Dept.xml")
+        return self._load("departments")
 
     def roles(self) -> list[dict]:
-        return self._load("XML_Role.xml")
+        return self._load("roles")
 
     def role_access(self) -> list[dict]:
-        return self._load("XML_RoleAccess.xml")
+        return self._load("role_access")
 
     def user_levels(self) -> list[dict]:
-        return self._load("XML_UserLevels.xml")
+        return self._load("user_levels")
 
     def periods(self) -> list[dict]:
-        return self._load("XML_Period.xml")
+        return self._load("periods")
 
     def returns(self) -> list[dict]:
-        return self._load("Returns.xml")
+        return self._load("returns")
 
     def non_xbrl_returns(self) -> list[dict]:
-        return self._load("NonXBRLReturns.xml")
+        return self._load("nonxbrl_returns")
 
     def options(self) -> list[dict]:
-        return self._load("XML_Option.xml")
+        return self._load("options")
 
     def instance_log(self) -> list[dict]:
-        return self._load("XML_InstanceLog.xml")
+        return self._load("instance_log")
 
     def segments(self) -> list[dict]:
-        return self._load("XML_Segment.xml")
+        return self._load("segments")
 
     def bank_details(self) -> list[dict]:
-        return self._load("XML_BankDetail.xml")
+        return self._load("bank_details")
 
     def notifications(self) -> list[dict]:
-        return self._load("Notifications.xml")
+        return self._load("notifications")
 
     def notification_details(self) -> list[dict]:
-        return self._load("NotificationReturnDetails.xml")
+        return self._load("notification_details")
 
     def audit_log(self) -> list[dict]:
-        """XML_Audit.xml — attrs: OptionId, AuditDateTime, AuditType, UserId (LoginId), Remark, VersionSelected"""
-        return self._load("XML_Audit.xml")
+        """5.5: XML_Audit.xml — OptionId, AuditDateTime, AuditType, UserId (LoginId), Remark, VersionSelected.
+        6.0: AuditLog.xml — different schema (ModuleName/ActionType/ActionDetails); mapped onto the
+        same logical keys where a reasonable equivalent exists (see versions/v6_0_schema.py)."""
+        return self._load("audit")
 
     def upload_file_log(self) -> list[dict]:
-        """XML_UploadedFileLog.xml — attrs: Id, FileName, DateTime, UserId (LoginId)"""
-        return self._load("XML_UploadedFileLog.xml")
+        """XML_UploadedFileLog.xml — attrs: Id, FileName, DateTime, UserId (LoginId).
+        No 6.0 equivalent exists — returns [] under 6.0."""
+        return self._load("uploaded_file_log")
 
     def cross_validation_log(self) -> list[dict]:
         """XML_CrossValidationLog.xml — attrs: Id, FirstInstanceName, SecondInstanceName,
-        FirstReportName, SecondReportName, FileName, DTC, ReportingDate, Status, GeneratedBy (LoginId)"""
-        return self._load("XML_CrossValidationLog.xml")
+        FirstReportName, SecondReportName, FileName, DTC, ReportingDate, Status, GeneratedBy (LoginId).
+        No 6.0 equivalent exists — returns [] under 6.0."""
+        return self._load("cross_validation_log")
+
+    def nonxbrl_instance_log(self) -> list[dict]:
+        """5.5: XML_NonXBRLInstanceLog.xml. 6.0: NxInstanceLog.xml."""
+        return self._load("nonxbrl_instance_log")
 
     # ── convenience lookups ──────────────────────────────────────────────────
 

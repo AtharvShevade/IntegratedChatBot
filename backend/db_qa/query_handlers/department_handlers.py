@@ -1,0 +1,173 @@
+"""New-taxonomy handlers — DEPARTMENT category."""
+from __future__ import annotations
+
+from collections import Counter
+
+from backend.db_qa.xml_store import XMLStore, get_attr
+
+
+def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
+    return {"intent": intent, "label": label, "found": bool(records), "records": records, "summary": summary, "meta": meta}
+
+
+def _not_found(intent: str, label: str, msg: str) -> dict:
+    return _result(intent, label, [], msg)
+
+
+def _return_counts_for_dept(store: XMLStore, dept: dict) -> tuple[int, int]:
+    form_ids = {f.strip() for f in dept.get("Forms", "").split("|") if f.strip()}
+    nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
+    xbrl_count = sum(1 for r in store.returns() if r.get("Id") in form_ids or r.get("ReturnId") in form_ids)
+    non_xbrl_count = sum(1 for r in store.non_xbrl_returns() if r.get("Id") in nx_ids or r.get("ReturnId") in nx_ids)
+    return xbrl_count, non_xbrl_count
+
+
+def _resolve_target_department(store: XMLStore, scope: dict, entities: dict) -> dict | None:
+    if scope["target_type"] == "self":
+        u = store.user_by_id(scope.get("user_id") or scope["login_id"]) or store.user_by_name(scope["login_id"])
+        if not u:
+            return None
+        dept_id = get_attr(u, "DepartmentId", "DeptId", default="")
+        return store.dept_by_id(dept_id) if dept_id else None
+    target = entities.get("target_department", "")
+    return store.resolve_dept(target) if target else None
+
+
+def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict:
+    query_type = (entities.get("query_type") or "all").lower()
+    depts = store.departments()
+
+    if query_type == "count":
+        active = sum(1 for d in depts if d.get("Status", "").lower() == "true")
+        return _result("department_list", "Department Count",
+                       [{"total": len(depts), "active": active, "inactive": len(depts) - active}],
+                       f"Total departments: {len(depts)} ({active} active, {len(depts) - active} inactive).",
+                       total=len(depts), active=active)
+    elif query_type == "active_count":
+        n = sum(1 for d in depts if d.get("Status", "").lower() == "true")
+        return _result("department_list", "Active Department Count", [{"active": n}],
+                       f"Active departments: {n}.", active=n)
+    elif query_type == "inactive_count":
+        n = sum(1 for d in depts if d.get("Status", "").lower() != "true")
+        return _result("department_list", "Inactive Department Count", [{"inactive": n}],
+                       f"Inactive departments: {n}.", inactive=n)
+    elif query_type == "active":
+        rows = [d for d in depts if d.get("Status", "").lower() == "true"]
+        label, summary = "Active Departments", f"There are {len(rows)} active departments."
+    elif query_type == "inactive":
+        rows = [d for d in depts if d.get("Status", "").lower() != "true"]
+        label, summary = "Inactive Departments", f"There are {len(rows)} inactive departments."
+    elif query_type in ("most", "fewest", "no_returns", "with_counts"):
+        enriched = []
+        for d in depts:
+            xbrl, nx = _return_counts_for_dept(store, d)
+            row = dict(d)
+            row["TotalReturnCount"] = xbrl + nx
+            enriched.append(row)
+        if query_type == "no_returns":
+            rows = [d for d in enriched if d["TotalReturnCount"] == 0]
+            label, summary = "Departments With No Returns Assigned", f"Found {len(rows)} department(s) with no returns."
+        elif query_type == "most":
+            enriched.sort(key=lambda d: d["TotalReturnCount"], reverse=True)
+            rows = enriched[:1]
+            label = "Department With Most Returns"
+            summary = (f"'{rows[0].get('Name')}' has the most returns assigned ({rows[0]['TotalReturnCount']})."
+                       if rows else "No departments found.")
+        elif query_type == "fewest":
+            enriched.sort(key=lambda d: d["TotalReturnCount"])
+            rows = enriched[:1]
+            label = "Department With Fewest Returns"
+            summary = (f"'{rows[0].get('Name')}' has the fewest returns assigned ({rows[0]['TotalReturnCount']})."
+                       if rows else "No departments found.")
+        else:  # with_counts
+            rows = enriched
+            label, summary = "All Departments (With Return Counts)", f"There are {len(rows)} departments."
+    else:
+        rows = depts
+        label, summary = "All Departments", f"There are {len(rows)} departments in the system."
+
+    return _result("department_list", label, rows, summary, count=len(rows))
+
+
+def handle_department_profile(scope: dict, entities: dict, store: XMLStore) -> dict:
+    dept = _resolve_target_department(store, scope, entities)
+    if not dept:
+        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
+        return _not_found("department_profile", "Department Profile", f"{who} department could not be found.")
+    dept_id = get_attr(dept, "DeptId", "Id", default="")
+    user_count = sum(1 for u in store.users() if get_attr(u, "DepartmentId", "DeptId") == dept_id)
+    enriched = dict(dept)
+    enriched["UserCount"] = user_count
+    label = "My Department" if scope["target_type"] == "self" else f"Department: {dept.get('Name')}"
+    return _result("department_profile", label, [enriched],
+                   f"Department '{dept.get('Name')}' (id {dept_id}) has {user_count} user(s).")
+
+
+def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> dict:
+    dept = _resolve_target_department(store, scope, entities)
+    if not dept:
+        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
+        return _not_found("department_returns", "Department Returns", f"{who} department could not be found.")
+
+    form_ids = [f.strip() for f in dept.get("Forms", "").split("|") if f.strip()]
+    nx_ids = [f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()]
+    xbrl_type = entities.get("xbrl_type")
+
+    xbrl = [store.enrich_return(r) for r in store.returns() if r.get("ReturnId") in form_ids or r.get("Id") in form_ids]
+    non_xbrl = [dict(r) for r in store.non_xbrl_returns() if r.get("ReturnId") in nx_ids or r.get("Id") in nx_ids]
+
+    if xbrl_type == "non_xbrl":
+        records = [{"type": "Non-XBRL", **r} for r in non_xbrl]
+    elif xbrl_type == "xbrl":
+        records = [{"type": "XBRL", **r} for r in xbrl]
+    else:
+        records = [{"type": "XBRL", **r} for r in xbrl] + [{"type": "Non-XBRL", **r} for r in non_xbrl]
+
+    dept_name = dept.get("Name", "")
+    who_phrase = "Your department" if scope["target_type"] == "self" else f"Department '{dept_name}'"
+    label = "My Department's Returns" if scope["target_type"] == "self" else f"Returns of {dept_name}"
+    return _result("department_returns", label, records,
+                   f"{who_phrase} has {len(xbrl)} XBRL and {len(non_xbrl)} non-XBRL returns.",
+                   dept_name=dept_name, xbrl_count=len(xbrl), non_xbrl_count=len(non_xbrl))
+
+
+def handle_departments_with_return_access(scope: dict, entities: dict, store: XMLStore) -> dict:
+    target = entities.get("target_return", "")
+    ret = store.resolve_return(target) if target else None
+    if not ret:
+        return _not_found("departments_with_return_access", "Departments With Return Access",
+                          f"Return '{target}' not found." if target else "Please specify a return name.")
+    ret_id = ret.get("Id", "")
+    ret_code = ret.get("ReturnId", "")
+    matches = []
+    for d in store.departments():
+        form_ids = {f.strip() for f in d.get("Forms", "").split("|") if f.strip()}
+        nx_ids = {f.strip() for f in d.get("NXForms", "").split("|") if f.strip()}
+        if ret_id in form_ids or ret_code in form_ids or ret_id in nx_ids or ret_code in nx_ids:
+            matches.append(d)
+    return _result("departments_with_return_access", f"Departments With Access to {ret.get('Name')}",
+                   matches, f"{len(matches)} department(s) have access to return '{ret.get('Name')}'.",
+                   return_name=ret.get("Name"), count=len(matches))
+
+
+def handle_department_has_return(scope: dict, entities: dict, store: XMLStore) -> dict:
+    dept = _resolve_target_department(store, scope, entities)
+    if not dept:
+        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
+        return _not_found("department_has_return", "Department Return Access", f"{who} department could not be found.")
+    target = entities.get("target_return", "")
+    ret = store.resolve_return(target) if target else None
+    if not ret:
+        return _not_found("department_has_return", "Department Return Access",
+                          f"Return '{target}' not found." if target else "Please specify a return name.")
+    form_ids = {f.strip() for f in dept.get("Forms", "").split("|") if f.strip()}
+    nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
+    has_access = ret.get("Id", "") in form_ids or ret.get("ReturnId", "") in form_ids \
+        or ret.get("Id", "") in nx_ids or ret.get("ReturnId", "") in nx_ids
+    dept_name = dept.get("Name", "")
+    who_phrase = "Your department" if scope["target_type"] == "self" else f"Department '{dept_name}'"
+    verb = "does" if has_access else "does not"
+    return _result("department_has_return", f"{dept_name} <-> {ret.get('Name')}",
+                   [{"DeptName": dept_name, "ReturnName": ret.get("Name"), "HasAccess": has_access}],
+                   f"{who_phrase} {verb} have access to return '{ret.get('Name')}'.",
+                   has_access=has_access)

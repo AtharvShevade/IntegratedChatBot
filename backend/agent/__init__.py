@@ -1472,8 +1472,12 @@ async def decide(
         # XML domain check runs BEFORE SQL — entity domain wins over action verb.
         # "How many departments" → XML-QA even if it contains "how many".
         else:
-            from backend.agent.db_qa_router import check_db_qa_intent, handle_db_qa_query
-            db_intent, db_params = check_db_qa_intent(user_query)
+            from backend.agent.db_qa_router import (
+                check_db_qa_intent, check_new_taxonomy_intent, handle_db_qa_query,
+            )
+            db_intent, db_params = check_new_taxonomy_intent(user_query)
+            if not db_intent:
+                db_intent, db_params = check_db_qa_intent(user_query)
             debug_log(
                 "DECIDE — STEP2 QA ROUTING" if db_intent else "DECIDE — STEP2 NO QA MATCH",
                 question=user_query,
@@ -1496,6 +1500,8 @@ async def decide(
                     role_id=final_role_id,
                     beautify=True,
                     model="phi3:mini",
+                    tenant_id=tenant_id,
+                    login_id=login_id,
                 )
 
             # ── STEP 3 : SQL / Oracle analytics ──────────────────────────────
@@ -1549,6 +1555,8 @@ async def decide(
                 user_id=final_user_id,
                 role_id=final_role_id,
                 beautify=False,  # Disabled for speed
+                tenant_id=tenant_id,
+                login_id=login_id,
             )
         except Exception as exc:
             logger.exception("[DB_QA_ERROR] intent=%s error=%s", intent, exc)

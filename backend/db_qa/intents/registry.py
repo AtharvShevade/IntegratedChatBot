@@ -36,8 +36,23 @@ class IntentPattern:
         handler:        ``handler(store, params, user_id, is_admin) → dict``
         priority:       Lower = higher priority.  Default 50.
         requires_admin: Non-admin callers get an access-denied result.
+                        Deprecated in favor of target_types + access_control.
+                        scope_query(), kept for any caller that still reads
+                        it directly (e.g. generate_help()'s admin-only note).
         description:    Human-readable label (used in /help output).
         examples:       Sample queries shown in /help.
+        target_types:   Accepted target_type entity values for this intent —
+                         subset of {"self","other_user","department","role",
+                         "return","system_wide"}. Empty tuple means the
+                         intent has no access-tiering concept at all (e.g.
+                         bank_info/segment_info, always-allowed reference
+                         data).
+        required_entities:  Entity names that MUST be resolved (from the
+                         query or from the session/self context) before the
+                         handler can run; missing ones trigger multi-turn
+                         slot-filling via _session_context (see Phase 6).
+        optional_entities:  Entity names the handler may use if present but
+                         doesn't require.
     """
 
     name: str
@@ -47,6 +62,9 @@ class IntentPattern:
     requires_admin: bool = False
     description: str = ""
     examples: list[str] = field(default_factory=list)
+    target_types: tuple[str, ...] = ()
+    required_entities: tuple[str, ...] = ()
+    optional_entities: tuple[str, ...] = ()
 
 
 class IntentRegistry:
@@ -67,6 +85,9 @@ class IntentRegistry:
         requires_admin: bool = False,
         description: str = "",
         examples: list[str] | None = None,
+        target_types: tuple[str, ...] = (),
+        required_entities: tuple[str, ...] = (),
+        optional_entities: tuple[str, ...] = (),
     ) -> None:
         """Register an intent.  Compiles *patterns* once at registration time."""
         compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
@@ -78,6 +99,9 @@ class IntentRegistry:
             requires_admin=requires_admin,
             description=description,
             examples=examples or [],
+            target_types=target_types,
+            required_entities=required_entities,
+            optional_entities=optional_entities,
         )
         self._intents.append(intent)
         # Re-sort after each registration so the list is always correct
