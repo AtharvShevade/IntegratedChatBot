@@ -37,24 +37,9 @@ def test_render_unknown_intent_string_falls_back_to_summary():
     assert out == "some summary"
 
 
-def test_display_value_masks_ciphertext_like_field():
-    masked = templates._display_value("Name", "ThisLooksLikeABase64Blob123==")
-    assert masked == templates._ENCRYPTED_PLACEHOLDER
-
-
-def test_display_value_does_not_mask_normal_email():
-    val = templates._display_value("EmailId", "someone@example.com")
-    assert val == "someone@example.com"
-
-
-def test_display_value_does_not_mask_unrelated_field():
-    val = templates._display_value("Status", "true")
-    assert val == "true"
-
-
 @_need_5_5
 def test_render_real_user_profile_result():
-    store = XMLStore(str(PATH_5_5), tenant_id=None)
+    store = XMLStore(str(PATH_5_5))
     scope = access_control.scope_query({"login_id": "iris810"}, "user_profile", {"target_type": "self"})
     result = dispatch2("user_profile", scope, {"target_type": "self"}, store)
     text = templates.render("user_profile", result)

@@ -1,11 +1,11 @@
 """iDEAL 5.5 entity schema — identity attribute_map.
 
-Every logical field name here IS the raw 5.5 XML attribute name already
-read throughout query_handlers.py and extractors.py. This file exists so
-the loader has a uniform interface across versions, but for 5.5 it changes
-nothing: `dict(row.attrib)` and `_project_row(row, SCHEMA[e].attribute_map)`
-produce identical dicts (same keys, same values), because attribute_map is
-an identity mapping everywhere it isn't None (schema quirk) or 6.0-only.
+Every logical field name here IS the raw XML attribute name already read
+throughout query_handlers.py and extractors.py. This file exists so the
+loader has a uniform interface: `dict(row.attrib)` and
+`_project_row(row, SCHEMA[e].attribute_map)` produce identical dicts (same
+keys, same values), because attribute_map is an identity mapping everywhere
+it isn't None (schema quirk).
 
 Credential fields are never listed in any attribute_map below — this is
 what keeps them out of every loaded row (see loader.load_entity).

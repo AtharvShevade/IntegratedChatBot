@@ -18,14 +18,7 @@ logger = logging.getLogger("xml_store")
 
 
 def is_active_status(value: str | None) -> bool:
-    """True when a User/Department/Role `Status` value means active/enabled.
-
-    5.5 stores this as the literal string "true"/"false". 6.0 stores a
-    numeric code instead (confirmed: 1 = active, 0 = inactive, 2 = a
-    disabled/deleted-like state) — neither convention matches the other,
-    so callers must go through this helper rather than compare to a
-    hardcoded literal.
-    """
+    """True when a User/Department/Role `Status` value means active/enabled."""
     v = (value or "").strip().lower()
     return v == "true" or v == "1"
 
@@ -97,11 +90,9 @@ class XMLStore:
         "nonxbrl_returns":  ["__return_index__"],
     }
 
-    # Entities not present in the schema (e.g. XML_UserLevels.xml doesn't
-    # exist on disk; segments/error_log/uploaded_file_log/cross_validation_log
-    # have no 6.0 equivalent) still resolve here as best-effort filenames so
-    # 5.5's file-not-found path (empty list, not an error) keeps working
-    # exactly as before for any entity a version's schema doesn't define.
+    # Entities not present in the schema still resolve here as best-effort
+    # filenames so the file-not-found path (empty list, not an error) keeps
+    # working exactly as before for any entity the schema doesn't define.
     _LEGACY_FALLBACK_FILENAMES: dict[str, str] = {
         "user_levels":            "XML_UserLevels.xml",
         "notifications":          "Notifications.xml",
@@ -112,28 +103,15 @@ class XMLStore:
         "cross_validation_log":    "XML_CrossValidationLog.xml",
     }
 
-    def __init__(self, db_path: str | Path | None = None, tenant_id: str | None = None):
+    def __init__(self, db_path: str | Path | None = None):
         if db_path is not None:
             self._db = Path(db_path)
         else:
             from backend import config as _config
-            self._db = Path(_config.get_app_db_base_path(tenant_id))
-        self._tenant_id = tenant_id
-
-        # Read APP_VERSION live (not backend.version_mode's cached
-        # module-level constant) so tests can monkeypatch the env var
-        # per-instance without relying on import order. Production
-        # behavior is unchanged — a real process still only ever sets
-        # this once at startup — this just removes an import-time cache
-        # that made the deployment-level switch impossible to unit test
-        # in-process.
-        import os as _os
-        self._is_6_0 = _os.getenv("APP_VERSION", "5.5").strip() == "6.0"
+            self._db = Path(_config.APP_DB_BASE_PATH)
 
         from backend.db_qa import versions as _versions
-        self._schema = (
-            _versions.v6_0_schema.SCHEMA if self._is_6_0 else _versions.v5_5_schema.SCHEMA
-        )
+        self._schema = _versions.v5_5_schema.SCHEMA
 
         # Raw-data cache: entity_name → list[row_dict]
         self._cache: dict[str, list[dict[str, str]]] = {}
@@ -145,29 +123,16 @@ class XMLStore:
     def _resolve_source_path(self, entity_name: str) -> Path:
         """Return the on-disk path _load() should mtime-check for *entity_name*.
 
-        Entities defined in the active schema use their schema filename —
-        unless that .xml is missing AND the entity has a configured JSON
-        fallback under 6.0, in which case the JSON path is used instead so
-        the mtime check (and cache invalidation) tracks the file that will
-        actually be read, not the absent .xml.
-
-        Entities NOT in the schema at all (legacy-only lookups like
-        user_levels/notifications, or 6.0-absent entities) fall back to
-        their 5.5-style filename so a missing file still resolves to a real
-        (non-existent) path and degrades to [] via the existing OSError
-        branch below, rather than raising or silently misbehaving.
+        Entities defined in the schema use their schema filename. Entities
+        NOT in the schema at all (legacy-only lookups like
+        user_levels/notifications) fall back to their 5.5-style filename so
+        a missing file still resolves to a real (non-existent) path and
+        degrades to [] via the existing OSError branch below, rather than
+        raising or silently misbehaving.
         """
         spec = self._schema.get(entity_name)
         if spec is not None:
-            xml_path = self._db / spec.filename
-            if (
-                not xml_path.exists()
-                and spec.json_fallback
-                and self._is_6_0
-                and spec.json_filename
-            ):
-                return self._db / spec.json_filename
-            return xml_path
+            return self._db / spec.filename
         filename = self._LEGACY_FALLBACK_FILENAMES.get(entity_name, entity_name)
         return self._db / filename
 
@@ -187,10 +152,9 @@ class XMLStore:
         - Concurrent reload: the lock serialises all loaders; only the first
           thread does the actual disk I/O; subsequent threads see the freshly
           updated cache.
-        - Entity not in the active version's schema at all (e.g. user_levels
-          on 5.5, or segments/error_log/uploaded_file_log/cross_validation_log
-          on 6.0): resolves to a non-existent path, degrades to [] the same
-          way a genuinely-missing file always has.
+        - Entity not in the schema at all (e.g. user_levels): resolves to a
+          non-existent path, degrades to [] the same way a genuinely-missing
+          file always has.
         """
         path = self._resolve_source_path(entity_name)
 
@@ -238,11 +202,11 @@ class XMLStore:
             spec = self._schema.get(entity_name)
             if spec is not None:
                 data = loader.load_entity(
-                    entity_name, self._db, schema=self._schema, is_6_0=self._is_6_0,
+                    entity_name, self._db, schema=self._schema,
                 )
             else:
-                # Not in this version's schema — same degrade-to-[] behavior
-                # as a missing file (e.g. user_levels on 5.5).
+                # Not in the schema — same degrade-to-[] behavior as a
+                # missing file (e.g. user_levels).
                 data = []
 
             if not data and entity_name in self._cache:
@@ -316,24 +280,20 @@ class XMLStore:
         return self._load("notification_details")
 
     def audit_log(self) -> list[dict]:
-        """5.5: XML_Audit.xml — OptionId, AuditDateTime, AuditType, UserId (LoginId), Remark, VersionSelected.
-        6.0: AuditLog.xml — different schema (ModuleName/ActionType/ActionDetails); mapped onto the
-        same logical keys where a reasonable equivalent exists (see versions/v6_0_schema.py)."""
+        """XML_Audit.xml — OptionId, AuditDateTime, AuditType, UserId (LoginId), Remark, VersionSelected."""
         return self._load("audit")
 
     def upload_file_log(self) -> list[dict]:
-        """XML_UploadedFileLog.xml — attrs: Id, FileName, DateTime, UserId (LoginId).
-        No 6.0 equivalent exists — returns [] under 6.0."""
+        """XML_UploadedFileLog.xml — attrs: Id, FileName, DateTime, UserId (LoginId)."""
         return self._load("uploaded_file_log")
 
     def cross_validation_log(self) -> list[dict]:
         """XML_CrossValidationLog.xml — attrs: Id, FirstInstanceName, SecondInstanceName,
-        FirstReportName, SecondReportName, FileName, DTC, ReportingDate, Status, GeneratedBy (LoginId).
-        No 6.0 equivalent exists — returns [] under 6.0."""
+        FirstReportName, SecondReportName, FileName, DTC, ReportingDate, Status, GeneratedBy (LoginId)."""
         return self._load("cross_validation_log")
 
     def nonxbrl_instance_log(self) -> list[dict]:
-        """5.5: XML_NonXBRLInstanceLog.xml. 6.0: NxInstanceLog.xml."""
+        """XML_NonXBRLInstanceLog.xml."""
         return self._load("nonxbrl_instance_log")
 
     # ── convenience lookups ──────────────────────────────────────────────────

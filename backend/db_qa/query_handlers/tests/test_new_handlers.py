@@ -20,7 +20,7 @@ NON_ADMIN_LOGIN = "test810"
 
 @pytest.fixture
 def store():
-    return XMLStore(str(PATH_5_5), tenant_id=None)
+    return XMLStore(str(PATH_5_5))
 
 
 def _scoped(login_id: str, intent: str, entities: dict) -> dict:

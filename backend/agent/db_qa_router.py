@@ -201,20 +201,7 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
     "FormId", "PeriodId", "Password", "PasswordHash",
 })
 
-# 6.0's User.xml stores these fields encrypted (ciphertext, not decryptable
-# here) — never worth displaying in that mode. 5.5 stores them as plain
-# text, so they stay visible there. Department/Role records also have a
-# Name/EmailId column but store them as plain text in BOTH versions, so
-# this only applies to user records specifically (detected via the
-# presence of a LoginId field, which only user rows have).
-_SKIP_FIELDS_6_0_USER_ONLY: frozenset[str] = frozenset({"Name", "EmailId", "MobileNumber"})
-
-
 def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
-    import os
-    is_user_record = bool(sample_record and "LoginId" in sample_record)
-    if is_user_record and os.getenv("APP_VERSION", "5.5").strip() == "6.0":
-        return _SKIP_FIELDS | _SKIP_FIELDS_6_0_USER_ONLY
     return _SKIP_FIELDS
 
 _PRIORITY_COLS: list[str] = [
@@ -398,7 +385,6 @@ def handle_db_qa_query(
     role_id: str,
     beautify: bool = False,
     model: str = "phi3:mini",
-    tenant_id: str | None = None,
     login_id: str | None = None,
 ) -> dict:
     """Execute DB Q&A intent using LLM-extracted parameters.
@@ -422,9 +408,6 @@ def handle_db_qa_query(
         role_id: Current user's role ID (for admin access checks)
         beautify: Whether to use LLM for formatting results
         model: Ollama model to use for beautification
-        tenant_id: 6.0 tenant id, sourced from the authenticated request only
-                   (never from `params`/LLM-extracted entities) — required
-                   under 6.0 mode, ignored under 5.5.
         login_id: Caller's LoginId string, when known independently of
                   user_id (some call sites only have a numeric UserId or a
                   session GUID in user_id — see agent/__init__.py's
@@ -443,10 +426,8 @@ def handle_db_qa_query(
                 "result_type": "db_disabled",
             }
         
-        # Instantiate XML data store — tenant-scoped when tenant_id is given
-        # (6.0); tenant_id must come only from the authenticated request,
-        # never from `params` (LLM-extracted chat entities).
-        store = xml_store.XMLStore(config.get_app_db_base_path(tenant_id), tenant_id=tenant_id)
+        # Instantiate XML data store.
+        store = xml_store.XMLStore(config.APP_DB_BASE_PATH)
         # ── Debug trace: log function entry with full identity context ───────────────
         debug_log(
             "DB QA ROUTER — handle_db_qa_query",
@@ -528,7 +509,6 @@ def handle_db_qa_query(
             session_user = {
                 "login_id": _effective_login_id,
                 "user_id": effective_user_id,
-                "tenant_id": tenant_id,
             }
             try:
                 scope = access_control.scope_query(session_user, intent, params or {})
@@ -550,7 +530,7 @@ def handle_db_qa_query(
                 debug_log(
                     "DB QA DISPATCH2 (new taxonomy)",
                     intent=intent, target_type=scope.get("target_type"),
-                    is_admin=scope.get("is_admin"), tenant_id=tenant_id,
+                    is_admin=scope.get("is_admin"),
                 )
                 _meta = new_result.get("meta", {})
                 _is_disambiguation = bool(_meta.get("disambiguation"))

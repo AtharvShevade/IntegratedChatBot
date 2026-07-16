@@ -1,7 +1,7 @@
 """New-taxonomy handlers — USER category.
 
 Signature: handle_X(scope: dict, entities: dict, store: XMLStore) -> dict.
-`scope` comes from access_control.scope_query() — target_type/tenant_id/
+`scope` comes from access_control.scope_query() — target_type/
 login_id/is_admin/allowed_form_ids are all already resolved and authorized
 by the time a handler runs; handlers never re-check admin status themselves.
 

@@ -68,6 +68,15 @@ def _kw(*alternatives: str) -> re.Pattern:
     return re.compile(r"\b(?:" + "|".join(alternatives) + r")\b", re.IGNORECASE)
 
 
+# "non-xbrl" / "non xbrl" / "nonxbrl" — users type this with a hyphen, a
+# space, or nothing at all, and case varies too (_kw/_XBRL_TYPE_RE already
+# apply IGNORECASE). Every pattern that needs to recognise the non-XBRL
+# variant should embed this fragment rather than hardcoding "non-xbrl", so
+# a fix to the separator tolerance here doesn't need to be repeated at
+# each call site.
+_NON_XBRL = r"non[\s-]?xbrl"
+
+
 class _KeywordRule:
     """Matches when every group in `all_of` has >=1 hit, AND (if `any_of` is
     non-empty) at least one group in `any_of` also has a hit. Group order in
@@ -245,8 +254,8 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         Intent.DEPARTMENT_RETURNS, ("self", "department"),
         all_of=(_G_DEPT_NOUN, _kw(r"returns?", r"forms?", r"reports?")),
         any_of=(_kw(r"department.{0,30}access", r"access.{0,30}(return|form|report)",
-                     r"which\s+(xbrl|non-xbrl)?\s*returns?", r"does\s+.{0,20}department",
-                     r"xbrl\s+returns?", r"non-xbrl\s+returns?"),),
+                     rf"which\s+(xbrl|{_NON_XBRL})?\s*returns?", r"does\s+.{0,20}department",
+                     r"xbrl\s+returns?", rf"{_NON_XBRL}\s+returns?"),),
         excludes=(_kw(r"summary\s+of\s+my\s+access", r"full\s+summary", r"full\s+profile"),),
     ),
 
@@ -318,7 +327,7 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         Intent.ROLE_MODULE_ACCESS, ("role", "system_wide"),
         all_of=(_kw(r"module\w*", r"sdmx", r"cross-?validation", r"nxquerybuilder",
                      r"balance\s+sheet", r"data\s+preparation", r"audit\s+log",
-                     r"provider\w*", r"non-?xbrl\s+upload", r"maker-?checker"),),
+                     r"provider\w*", rf"{_NON_XBRL}\s+upload", r"maker-?checker"),),
         any_of=(_kw(r"access\w*", r"role\w*"),),
         excludes=(_kw(r"\bmy\b", r"\bcan\s+i\b"),),
     ),
@@ -423,9 +432,13 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     # NEXT_REPORTING_DATE: both mention "due"/"reporting date" too, but a
     # "between X and Y" date-range span is the more specific signal and
     # must win over NEXT_REPORTING_DATE's broader "when is X due" patterns.
+    #
+    # "file[ds]?"/"submit(ted|s)?" tolerates common verb-form slips
+    # ("files"/"file" instead of "filed") without loosening the match
+    # enough to catch unrelated words.
     _mk(Intent.REPORTS_FILED_IN_RANGE, ("self",),
-        r"\b(filed|submitted)\s+between\b", r"\breports?\s+filed\s+between\b",
-        r"\breturns?\s+filed\s+between\b", r"\bshow\s+me\s+all\b.{0,40}\bfiled\s+between\b"),
+        r"\b(file[ds]?|submit(?:ted|s)?)\s+between\b", r"\breports?\s+file[ds]?\s+between\b",
+        r"\breturns?\s+file[ds]?\s+between\b", r"\bshow\s+me\s+all\b.{0,40}\bfile[ds]?\s+between\b"),
     _mk(Intent.REPORTS_UPCOMING_IN_RANGE, ("self",),
         r"\b(coming\s+up|upcoming|due)\s+between\b", r"\bwhich\s+.{0,40}\bare\s+due\s+between\b",
         r"\bwhat\s+.{0,40}\b(coming\s+up|are\s+due)\s+between\b",
@@ -442,9 +455,9 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\ball\s+(the\s+)?xbrl\s+returns?\b", r"\bhow\s+many\s+xbrl\s+returns?\b",
         r"\bwhich\s+xbrl\s+returns?\s+(are|is)\b", r"\bcims-enabled\s+returns?\b"),
     _mk(Intent.NONXBRL_RETURN_PROFILE, ("self", "return"),
-        r"\bbase\s+(file\s+)?template\s+for\s+non-xbrl\b", r"\bjob\s+processing\s+id\b"),
+        rf"\bbase\s+(file\s+)?template\s+for\s+{_NON_XBRL}\b", r"\bjob\s+processing\s+id\b"),
     _mk(Intent.NONXBRL_RETURN_LIST, ("self", "department", "system_wide"),
-        r"\bnon-xbrl\s+returns?\b", r"\bhow\s+many\s+non-xbrl\b"),
+        rf"\b{_NON_XBRL}\s+returns?\b", rf"\bhow\s+many\s+{_NON_XBRL}\b"),
     _mk(Intent.DEPT_FULL_RETURN_LIST, ("department",),
         r"\bcomplete\s+list\s+of\s+returns?\s+for\s+department\b"),
     _mk(Intent.MY_RETURN_ACCESS, ("self",),
@@ -794,12 +807,13 @@ def _extract_return_field(q: str) -> str | None:
 
 
 # Recognises "DD-Mon-YYYY", "DD/MM/YYYY", "DD-MM-YYYY", "YYYY-MM-DD",
-# "DD.MM.YYYY", or a bare month-year like "June 2025"/"Jun 2025" — the
-# same date vocabulary instance_generator.py's _DATE_FMT/_EXTRA_FMTS
-# already accept for a single date, extended here to find TWO dates in
-# one "between X and Y" question.
+# "DD.MM.YYYY", "DD Mon YYYY" (space-separated), or a bare month-year like
+# "June 2025"/"Jun 2025" — the same date vocabulary instance_generator.py's
+# _DATE_FMT/_EXTRA_FMTS already accept for a single date, extended here to
+# find TWO dates in one "between X and Y" question.
 _DATE_TOKEN = (
     r"\d{1,2}[-/.](?:[A-Za-z]{3,9}|\d{1,2})[-/.]\d{2,4}"
+    r"|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}"
     r"|\d{4}-\d{1,2}-\d{1,2}"
     r"|[A-Za-z]{3,9}\s+\d{4}"
 )
@@ -834,7 +848,7 @@ def _extract_date_range(q: str) -> tuple[str | None, str | None]:
     return f"01-{_date(year, month, 1).strftime('%b')}-{year}", f"{last_day:02d}-{_date(year, month, 1).strftime('%b')}-{year}"
 
 
-_XBRL_TYPE_RE = _kw(r"non-?xbrl", r"nx\b")
+_XBRL_TYPE_RE = _kw(_NON_XBRL, r"nx\b")
 
 
 def _extract_xbrl_type(q: str) -> str | None:
@@ -917,8 +931,8 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
 
     if intent in (Intent.PERMISSION_CHECK, Intent.ROLE_MODULE_ACCESS, Intent.ROLES_WITH_PERMISSION):
         m = re.search(
-            r"\b(sdmx|cross-?validation|nxquerybuilder|balance\s+sheet|data\s+preparation|"
-            r"audit\s+log|non-?xbrl\s+upload(?:s)?|maker-?checker|provider\w*|department\s+settings?)\b",
+            rf"\b(sdmx|cross-?validation|nxquerybuilder|balance\s+sheet|data\s+preparation|"
+            rf"audit\s+log|{_NON_XBRL}\s+upload(?:s)?|maker-?checker|provider\w*|department\s+settings?)\b",
             q, re.IGNORECASE,
         )
         if m:

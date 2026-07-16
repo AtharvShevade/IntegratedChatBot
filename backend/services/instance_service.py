@@ -10,13 +10,13 @@ from __future__ import annotations
 import logging
 import os
 
-from backend.config import INSTANCE_BASE_DIR, get_instance_base_dir
+from backend.config import INSTANCE_BASE_DIR
 from backend.utils.instance_label_parser import parse_instance_filename
 
 logger = logging.getLogger(__name__)
 
 
-def get_instances_for_report(report_id: str, tenant_id: str | None = None) -> list[dict]:
+def get_instances_for_report(report_id: str) -> list[dict]:
     """Return a sorted list of instance file records for the given Report ID.
 
     Scans ``{INSTANCE_BASE_DIR}/{report_id}/`` for ``.xml`` files and parses
@@ -40,14 +40,14 @@ def get_instances_for_report(report_id: str, tenant_id: str | None = None) -> li
     Empty list on any error (folder missing, no XML files, all filenames
     unparseable).  Errors are logged so callers can surface them.
     """
-    base_dir = get_instance_base_dir(tenant_id) if tenant_id else INSTANCE_BASE_DIR
+    base_dir = INSTANCE_BASE_DIR
     folder = os.path.join(base_dir, str(report_id).strip())
 
     if not os.path.isdir(folder):
         logger.warning(
-            "[instance_service] Folder not found for report_id=%s tenant_id=%r: %s  "
+            "[instance_service] Folder not found for report_id=%s: %s  "
             "(check INSTANCE_BASE_DIR in config.py)",
-            report_id, tenant_id, folder,
+            report_id, folder,
         )
         return []
 

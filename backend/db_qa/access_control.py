@@ -34,7 +34,7 @@ _SELF_SUGGESTION: dict[str, str] = {
 }
 
 
-def is_admin(login_id: str, tenant_id: str | None = None) -> bool:
+def is_admin(login_id: str) -> bool:
     """Return True if *login_id*'s role is the configured admin role.
 
     Reuses auth_service.get_user_role_id() for role resolution (the same
@@ -45,7 +45,7 @@ def is_admin(login_id: str, tenant_id: str | None = None) -> bool:
     """
     if not login_id:
         return False
-    role_id = auth_service.get_user_role_id(login_id, tenant_id)
+    role_id = auth_service.get_user_role_id(login_id)
     if role_id is None:
         return False
     return role_id == config.APP_DB_ADMIN_ROLE_ID
@@ -59,7 +59,7 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
     session_user:
         Identity resolved from the authenticated session/request — NEVER
         from LLM-extracted chat entities. Expected keys: "login_id",
-        "user_id" (optional), "tenant_id" (optional, 6.0 only).
+        "user_id" (optional).
     intent:
         The resolved Intent name (string value).
     entities:
@@ -72,7 +72,6 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
     dict
         {
           "target_type": str,
-          "tenant_id": str | None,      # sourced ONLY from session_user
           "login_id": str,
           "user_id": str | None,
           "is_admin": bool,
@@ -82,29 +81,13 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
     Raises
     ------
     PermissionError
-        If *session_user* is not authorized for the requested target_type,
-        or if 6.0 mode is active and tenant_id is missing from the session.
+        If *session_user* is not authorized for the requested target_type.
     """
     login_id = session_user.get("login_id") or ""
-    tenant_id = session_user.get("tenant_id")  # session only — never entities
     target_type = entities.get("target_type", "self")
-
-    # Read APP_VERSION live rather than backend.version_mode's cached
-    # module-level constant (frozen at whatever value existed the first
-    # time that module was imported in this process) — production only
-    # ever has one value per process anyway, so this changes nothing
-    # there, but makes the check correct regardless of import order in
-    # tests or any future in-process multi-version tooling.
-    import os as _os
-    is_6_0 = _os.getenv("APP_VERSION", "5.5").strip() == "6.0"
-    if is_6_0 and not tenant_id:
-        raise PermissionError(
-            "A tenant context is required to answer this question in 6.0 mode."
-        )
 
     scope: dict = {
         "target_type": target_type,
-        "tenant_id": tenant_id,
         "login_id": login_id,
         "user_id": session_user.get("user_id"),
         "is_admin": False,
@@ -113,11 +96,11 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
 
     if target_type == "self":
         # Always allowed — no admin check needed.
-        scope["is_admin"] = is_admin(login_id, tenant_id)
+        scope["is_admin"] = is_admin(login_id)
         return scope
 
     if target_type in TARGET_TYPES_REQUIRING_ADMIN:
-        admin = is_admin(login_id, tenant_id)
+        admin = is_admin(login_id)
         scope["is_admin"] = admin
         if not admin:
             suggestion = _SELF_SUGGESTION.get(target_type, "Try asking about your own account instead.")
@@ -129,8 +112,8 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
         # ACCESS to a specific return is scoped via the same allowed-FormIds
         # set used everywhere else in the app (auth_service), not a
         # separate reimplementation.
-        scope["is_admin"] = is_admin(login_id, tenant_id)
-        scope["allowed_form_ids"] = auth_service.get_allowed_form_ids(login_id, tenant_id)
+        scope["is_admin"] = is_admin(login_id)
+        scope["allowed_form_ids"] = auth_service.get_allowed_form_ids(login_id)
         return scope
 
     # Unknown/unrecognized target_type — deny by default rather than

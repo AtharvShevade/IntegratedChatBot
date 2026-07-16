@@ -29,7 +29,6 @@ from backend.llm_extractor import (
 from backend.services.llm_service import chat_response, classify_conversational_intent
 from backend.tools.instance_generator import (
     call_generate_api,
-    call_generate_api_6_0,
     resolve_return_exact,
     validate_reporting_date,
 )
@@ -81,11 +80,11 @@ async def _run_error_enrichment(job_id: str, form_id: str, ret_name: str, instan
 
 
 def _get_instance_by_dtc_fast_with_bg_job(
-    form_id: str, dtc: str, return_name: str, tenant_id: str | None = None
+    form_id: str, dtc: str, return_name: str
 ) -> dict:
     """Call get_instance_by_dtc_fast and kick off background LLM enrichment
     for failed statuses."""
-    result = get_instance_by_dtc_fast(form_id, dtc, return_name, tenant_id)
+    result = get_instance_by_dtc_fast(form_id, dtc, return_name)
 
     if (
         result.get("type") == "final"
@@ -95,14 +94,14 @@ def _get_instance_by_dtc_fast_with_bg_job(
         job_id = str(_uuid_mod.uuid4())
         _error_jobs[job_id] = {"status": "pending", "payload": None}
 
-        instances   = get_instances_by_form_id(form_id, tenant_id)
+        instances   = get_instances_by_form_id(form_id)
         target_dtc  = result["dtc"]
         row         = next(
             (r for r in instances if r.get("DTC", "").strip() == target_dtc), None
         )
         if row:
             code = _safe_status(row)
-            dl   = _get_download_info(row, form_id, tenant_id)
+            dl   = _get_download_info(row, form_id)
             thread = threading.Thread(
                 target=_run_error_enrichment_async,
                 args=(job_id, form_id, row, dl, code),
@@ -115,10 +114,10 @@ def _get_instance_by_dtc_fast_with_bg_job(
 
 
 def _get_instance_by_date_fast_with_bg_job(
-    form_id: str, date_query: str, return_name: str, tenant_id: str | None = None
+    form_id: str, date_query: str, return_name: str
 ) -> dict:
     """Find instance by reporting date, then apply the fast+bg-job pattern."""
-    rows = get_instances_by_form_id(form_id, tenant_id)
+    rows = get_instances_by_form_id(form_id)
     date_clean = date_query.strip()
     row = next(
         (r for r in rows if r.get("ReportingDate", "").strip() == date_clean), None
@@ -131,10 +130,10 @@ def _get_instance_by_date_fast_with_bg_job(
             "message":             f"No instance found for '{date_clean}'.",
             "form_id":             form_id,
             "return_name":         return_name,
-            "available_instances": get_available_instances(form_id, tenant_id),
+            "available_instances": get_available_instances(form_id),
         }
     dtc = row.get("DTC", "").strip()
-    return _get_instance_by_dtc_fast_with_bg_job(form_id, dtc, return_name, tenant_id)
+    return _get_instance_by_dtc_fast_with_bg_job(form_id, dtc, return_name)
 
 
 def _run_error_enrichment_async(job_id: str, form_id: str, latest_row: dict, dl: dict, code: int) -> None:
@@ -158,12 +157,12 @@ def _run_error_enrichment_async(job_id: str, form_id: str, latest_row: dict, dl:
         }
 
 
-def _get_status_fast_with_bg_job(query: str, tenant_id: str | None = None) -> dict:
+def _get_status_fast_with_bg_job(query: str) -> dict:
     """Call get_report_status_fast and, for failed statuses with errors, kick off
     background LLM enrichment.  Returns the result dict with job_id attached when
     a background job was started.
     """
-    result = get_report_status_fast(query, tenant_id)
+    result = get_report_status_fast(query)
 
 
     if (
@@ -175,11 +174,11 @@ def _get_status_fast_with_bg_job(query: str, tenant_id: str | None = None) -> di
         _error_jobs[job_id] = {"status": "pending", "payload": None}
 
         form_id     = result["form_id"]
-        instances   = get_instances_by_form_id(form_id, tenant_id)
+        instances   = get_instances_by_form_id(form_id)
         sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
         latest_row  = sorted_rows[0]
         code        = _safe_status(latest_row)
-        dl          = _get_download_info(latest_row, form_id, tenant_id)
+        dl          = _get_download_info(latest_row, form_id)
 
         thread = threading.Thread(
             target=_run_error_enrichment_async,
@@ -659,7 +658,6 @@ async def _classify_conversational(text: str, history: list[dict] | None = None)
 def _resolve_report_name(
     user_query: str,
     llm_hint: str | None = None,
-    tenant_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Shared multi-candidate report name resolver used by ALL intents.
 
@@ -689,7 +687,7 @@ def _resolve_report_name(
         candidates.append(raw)
 
     for candidate in candidates:
-        matches = find_matching_reports(candidate, tenant_id)
+        matches = find_matching_reports(candidate)
         if matches:
             logger.debug(
                 "[RESOLVE_REPORT] winner=%r matches=%d (llm_hint=%r)",
@@ -709,8 +707,6 @@ async def decide(
     user_id: str | None = None,
     role_id: str | None = None,
     conversation_history: list[dict] | None = None,
-    tenant_id: str | None = None,
-    jwt: str | None = None,
 ) -> dict[str, Any]:
     _decide_start = time.monotonic()
     session = _session_context.get(session_id, {}) if session_id else {}
@@ -738,7 +734,7 @@ async def decide(
     if login_id:
         from backend.services.auth_service import get_allowed_form_ids as _get_auth
         from backend.services.auth_service import AUTHORIZATION_ENABLED as _AUTH_ENABLED
-        allowed_form_ids = _get_auth(login_id, tenant_id)
+        allowed_form_ids = _get_auth(login_id)
         if not _AUTH_ENABLED:
             logger.info(
                 "[AUTH_BYPASS] Authorization disabled; allowing all forms for login_id=%r session=%s",
@@ -776,7 +772,7 @@ async def decide(
     # every downstream handler (DB Q&A, SQL agent, etc.) sees the correct role.
     if login_id and (not role_id or role_id == "0"):
         from backend.services.auth_service import get_user_role_id as _get_role
-        _resolved_role = _get_role(login_id, tenant_id)
+        _resolved_role = _get_role(login_id)
         if _resolved_role:
             role_id = _resolved_role
             logger.info(
@@ -798,14 +794,8 @@ async def decide(
         session["asp_session"] = asp_session
         _session_context[session_id] = session
 
-    # Persist tenant_id (6.0) so staged flows keep it even if a later turn omits it
-    if tenant_id and session_id:
-        session["tenant_id"] = tenant_id
-        _session_context[session_id] = session
-
     # Prefer the freshly-forwarded cookie; fall back to one stored earlier in session
     effective_asp = asp_session or session.get("asp_session")
-    tenant_id = tenant_id or session.get("tenant_id")
     logger.info("decide: asp_session=%s effective=%s",
                 "provided" if asp_session else "MISSING",
                 "yes" if effective_asp else "NONE — will use .env fallback")
@@ -826,9 +816,9 @@ async def decide(
         if dtc_from_label:
             form_id     = session["pending_form_id"]
             return_name = session["pending_return_name"]
-            result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc_from_label, return_name, tenant_id)
+            result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc_from_label, return_name)
             if result["type"] == "date_not_found":
-                available = get_available_instances(form_id, tenant_id)
+                available = get_available_instances(form_id)
                 return _build(
                     intent="get_status",
                     report_name=return_name,
@@ -876,10 +866,10 @@ async def decide(
                 return_name = session["pending_return_name"]
 
                 # Fallback: user typed a raw date string
-                result = _get_instance_by_date_fast_with_bg_job(form_id, user_query.strip(), return_name, tenant_id)
+                result = _get_instance_by_date_fast_with_bg_job(form_id, user_query.strip(), return_name)
 
                 if result["type"] == "date_not_found":
-                    available = get_available_instances(form_id, tenant_id)
+                    available = get_available_instances(form_id)
                     return _build(
                         intent="get_status",
                         report_name=return_name,
@@ -1022,12 +1012,12 @@ async def decide(
 
             if session_id:
                 _session_context.pop(session_id, None)
-            auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status", tenant_id)
+            auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status")
             if auth_err:
                 return auth_err
-            result = _get_status_exact_fast_with_bg_job(resolved_name, tenant_id)
+            result = _get_status_exact_fast_with_bg_job(resolved_name)
             if allowed_form_ids is not None:
-                result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
+                result = _apply_auth_to_status_result(result, allowed_form_ids)
             return _from_result(result, intent="get_status", session_id=session_id)
 
     # -- DB Q&A (e.g. next reporting date): disambiguation (user picks a return) --
@@ -1060,7 +1050,7 @@ async def decide(
                 return await decide(
                     user_query, session_id=session_id, asp_session=asp_session,
                     login_id=login_id, user_id=user_id, role_id=role_id,
-                    conversation_history=conversation_history, tenant_id=tenant_id, jwt=jwt,
+                    conversation_history=conversation_history,
                 )
         else:
             pending_qa_options: list[str] = session.get("pending_options", [])
@@ -1108,7 +1098,6 @@ async def decide(
                 role_id=final_role_id,
                 beautify=True,
                 model="phi3:mini",
-                tenant_id=tenant_id,
                 login_id=login_id,
             )
 
@@ -1147,7 +1136,7 @@ async def decide(
                 )
                 resolved_gen_name = keyword_match if keyword_match else raw_gen_input
 
-            ret = resolve_return_exact(resolved_gen_name, tenant_id)
+            ret = resolve_return_exact(resolved_gen_name)
             if session_id:
                 _session_context.pop(session_id, None)
             if not ret:
@@ -1156,7 +1145,7 @@ async def decide(
                     response_text=f"Report '{resolved_gen_name}' not found. Please try again.",
                     result_type="error",
                 )
-            auth_err = _check_name_auth(resolved_gen_name, allowed_form_ids, "generate_instance", tenant_id)
+            auth_err = _check_name_auth(resolved_gen_name, allowed_form_ids, "generate_instance")
             if auth_err:
                 return auth_err
             # If a reporting_date was pre-extracted and stored in session,
@@ -1167,7 +1156,7 @@ async def decide(
                     "[AUTO_CONTINUE_GENERATION] report=%r date=%r session=%s — skipping date prompt",
                     ret["name"], stored_date, session_id,
                 )
-                return await _finalize_generation(ret, stored_date, session_id, effective_asp, tenant_id, jwt, login_id)
+                return await _finalize_generation(ret, stored_date, session_id, effective_asp, login_id)
             # No pre-extracted date — ask the user for it.
             if session_id:
                 _session_context[session_id] = {
@@ -1176,7 +1165,6 @@ async def decide(
                     "gen_return_name": ret["name"],
                     "gen_frequency":   ret["frequency"],
                     "gen_period_name": ret["period_name"],
-                    "tenant_id":       tenant_id,
                 }
             return _build(
                 intent="generate_instance", report_name=ret["name"],
@@ -1203,13 +1191,13 @@ async def decide(
                     # which will produce a meaningful error message
                     date_str = user_query.strip()
             logger.debug("[DATE_NORMALIZED] raw=%r → normalized=%r", user_query.strip(), date_str)
-            return await _handle_gen_date(date_str, session, session_id, effective_asp, tenant_id, jwt, login_id)
+            return await _handle_gen_date(date_str, session, session_id, effective_asp, login_id)
 
     # -- Schedule: re-enter report name after "Change Data" --------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_NAME:
         if session_id:
             _session_context.pop(session_id, None)
-        return _handle_schedule(user_query.strip(), None, None, None, session_id, allowed_form_ids, tenant_id, login_id, None)
+        return _handle_schedule(user_query.strip(), None, None, None, session_id, allowed_form_ids, login_id, None)
 
     # -- Schedule: disambiguation (user picks a report) -----------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_REPORT:
@@ -1251,7 +1239,7 @@ async def decide(
             saved_sched_time = session.get("sched_schedule_time")
             saved_sched_dt   = session.get("sched_scheduled_dt")
 
-            ret = resolve_return_exact(resolved_sched_name, tenant_id)
+            ret = resolve_return_exact(resolved_sched_name)
             if session_id:
                 _session_context.pop(session_id, None)
             if not ret:
@@ -1260,10 +1248,10 @@ async def decide(
                     response_text=f"Report '{resolved_sched_name}' not found. Please try again.",
                     result_type="error",
                 )
-            auth_err = _check_name_auth(resolved_sched_name, allowed_form_ids, "schedule_report", tenant_id)
+            auth_err = _check_name_auth(resolved_sched_name, allowed_form_ids, "schedule_report")
             if auth_err:
                 return auth_err
-            return _finalize_schedule(ret, saved_reporting_date, saved_sched_date, saved_sched_time, saved_sched_dt, session_id, tenant_id, login_id)
+            return _finalize_schedule(ret, saved_reporting_date, saved_sched_date, saved_sched_time, saved_sched_dt, session_id, login_id)
 
     # -- Schedule: reporting-date entry ----------------------------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_RPT_DATE:
@@ -1289,7 +1277,7 @@ async def decide(
                 _session_context.pop(session_id, None)
             return _finalize_schedule(
                 sched_ret, date_str, saved_sched_date, saved_sched_time, None,
-                session_id, tenant_id, login_id,
+                session_id, login_id,
             )
 
     # -- Schedule: date+time entry --------------------------------------------
@@ -1321,7 +1309,7 @@ async def decide(
             }
             if session_id:
                 _session_context.pop(session_id, None)
-            return _finalize_schedule(sched_ret, reporting_date, schedule_date, schedule_time, scheduled_dt, session_id, tenant_id, login_id)
+            return _finalize_schedule(sched_ret, reporting_date, schedule_date, schedule_time, scheduled_dt, session_id, login_id)
 
     # -- Schedule: user confirmation (Schedule / Change Data) ------------------
     if not is_reset and session.get("awaiting") == STAGE_SCHED_CONFIRM:
@@ -1420,10 +1408,10 @@ async def decide(
                     ),
                     result_type="disambiguation", options=pending,
                 )
-            auth_err = _check_name_auth(selected, allowed_form_ids, "compare_reports", tenant_id)
+            auth_err = _check_name_auth(selected, allowed_form_ids, "compare_reports")
             if auth_err:
                 return auth_err
-            return await _compare_with_name(selected, session_id, tenant_id)
+            return await _compare_with_name(selected, session_id)
 
     # -- Compare: instance file selection --------------------------------------
     # NOTE: use is_reset (not _looks_like_new_query) here — option labels contain
@@ -1529,7 +1517,6 @@ async def decide(
                     scheduled_datetime=_sched_dt.get("scheduled_datetime"),
                     session_id=session_id,
                     allowed_form_ids=allowed_form_ids,
-                    tenant_id=tenant_id,
                     login_id=login_id,
                     reporting_date=_sched_dt.get("reporting_date"),
                 )
@@ -1538,17 +1525,17 @@ async def decide(
                 raw_query = user_query.strip()
                 extracted_query = _extract_status_search_terms(raw_query)
                 if extracted_query:
-                    matches = find_matching_reports(extracted_query, tenant_id)
+                    matches = find_matching_reports(extracted_query)
                     if matches:
                         logger.info(
                             "[INTENT:STEP1] status fast-path matched %d report(s) session=%s",
                             len(matches), session_id,
                         )
                         if session_id:
-                            _session_context[session_id] = {"last_search_terms": extracted_query, "tenant_id": tenant_id}
-                        result = _get_status_fast_with_bg_job(extracted_query, tenant_id)
+                            _session_context[session_id] = {"last_search_terms": extracted_query}
+                        result = _get_status_fast_with_bg_job(extracted_query)
                         if allowed_form_ids is not None:
-                            result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
+                            result = _apply_auth_to_status_result(result, allowed_form_ids)
                         return _from_result(result, intent="get_status", session_id=session_id)
                     logger.debug(
                         "[INTENT:STEP1] status fast-path: extracted_query=%r had no matches, skipping raw query lookup",
@@ -1607,7 +1594,6 @@ async def decide(
                     role_id=final_role_id,
                     beautify=True,
                     model="phi3:mini",
-                    tenant_id=tenant_id,
                     login_id=login_id,
                 )
                 # A partial return name (e.g. "cims") can match many returns —
@@ -1674,7 +1660,6 @@ async def decide(
                 user_id=final_user_id,
                 role_id=final_role_id,
                 beautify=False,  # Disabled for speed
-                tenant_id=tenant_id,
                 login_id=login_id,
             )
         except Exception as exc:
@@ -1739,7 +1724,7 @@ async def decide(
 
         _matched_query: str | None = None
         for _candidate in filter(None, [search_terms, _stripped_q]):
-            if _is_meaningful_report_terms(_candidate) and find_matching_reports(_candidate, tenant_id):
+            if _is_meaningful_report_terms(_candidate) and find_matching_reports(_candidate):
                 _matched_query = _candidate
                 logger.info(
                     "[UNKNOWN_FALLBACK] query=%r matched report(s) — re-classifying intent",
@@ -1766,14 +1751,14 @@ async def decide(
                     "[UNKNOWN_RECLASSIFY] → compare_reports for %r session=%s",
                     _matched_query, session_id,
                 )
-                return await _handle_compare(_matched_query, session_id, allowed_form_ids, tenant_id)
+                return await _handle_compare(_matched_query, session_id, allowed_form_ids)
             if _fuzzy_has_schedule(user_query):
                 logger.info(
                     "[UNKNOWN_RECLASSIFY] → schedule_report for %r session=%s",
                     _matched_query, session_id,
                 )
                 return _handle_schedule(
-                    _matched_query, None, None, None, session_id, allowed_form_ids, tenant_id, login_id,
+                    _matched_query, None, None, None, session_id, allowed_form_ids, login_id,
                 )
             if _fuzzy_has_generate(user_query):
                 logger.info(
@@ -1790,14 +1775,14 @@ async def decide(
                         _fallback_date, user_query,
                     )
                 return await _handle_generate(
-                    _matched_query, _fallback_date, session_id, effective_asp, allowed_form_ids, tenant_id, jwt, login_id
+                    _matched_query, _fallback_date, session_id, effective_asp, allowed_form_ids, login_id
                 )
             # Default: treat as a status query
             if session_id:
-                _session_context[session_id] = {"last_search_terms": _matched_query, "tenant_id": tenant_id}
-            result = _get_status_fast_with_bg_job(_matched_query, tenant_id)
+                _session_context[session_id] = {"last_search_terms": _matched_query}
+            result = _get_status_fast_with_bg_job(_matched_query)
             if allowed_form_ids is not None:
-                result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
+                result = _apply_auth_to_status_result(result, allowed_form_ids)
             return _from_result(result, intent="get_status", session_id=session_id)
 
         # No backend match found. If the query looks report-related (status /
@@ -1874,7 +1859,7 @@ async def decide(
             # filler words like "generate", "instance", "for" are stripped before
             # matching.  Without this, "generate instance for cims" normalises to
             # the single token "generateinstanceforcims" and finds nothing.
-            search_terms, _direct_matches = _resolve_report_name(user_query, tenant_id=tenant_id)
+            search_terms, _direct_matches = _resolve_report_name(user_query)
             if not _direct_matches:
                 search_terms = ""
                 hint = (
@@ -1931,14 +1916,14 @@ async def decide(
             "[GEN_CLEAN_QUERY] original=%r cleaned=%r search_terms=%r",
             user_query, _clean_gen_query, search_terms,
         )
-        _gen_terms, _gen_matches = _resolve_report_name(_clean_gen_query, search_terms or None, tenant_id)
+        _gen_terms, _gen_matches = _resolve_report_name(_clean_gen_query, search_terms or None)
         if _gen_matches:
             search_terms = _gen_terms
         logger.info(
             "[GENERATE_START] report=%r date=%r (resolved) session=%s",
             search_terms, reporting_date, session_id,
         )
-        return await _handle_generate(search_terms, reporting_date, session_id, effective_asp, allowed_form_ids, tenant_id, jwt, login_id)
+        return await _handle_generate(search_terms, reporting_date, session_id, effective_asp, allowed_form_ids, login_id)
 
     if intent == "schedule_report":
         # ── Deterministic preprocessing: extract datetime + clean report name ──
@@ -1968,18 +1953,17 @@ async def decide(
             scheduled_datetime=_sched_cdt,
             session_id=session_id,
             allowed_form_ids=allowed_form_ids,
-            tenant_id=tenant_id,
             login_id=login_id,
             reporting_date=_rpt_date,
         )
 
     if intent == "compare_reports":
         logger.info("[COMPARE_START] report=%r session=%s", search_terms, session_id)
-        return await _handle_compare(search_terms, session_id, allowed_form_ids, tenant_id)
+        return await _handle_compare(search_terms, session_id, allowed_form_ids)
 
     # get_status: cache search terms so follow-up turns work without a name
     if session_id:
-        _session_context[session_id] = {"last_search_terms": search_terms, "tenant_id": tenant_id}
+        _session_context[session_id] = {"last_search_terms": search_terms}
 
     # Always pass the raw search_terms (the user's partial/keyword input) to
     # get_report_status so that find_matching_reports can detect multiple hits
@@ -1987,9 +1971,9 @@ async def decide(
     # name here bypasses that check and jumps directly to instance lookup,
     # which gives a misleading "No instances found" when the user typed only
     # a partial name like "raq".
-    result = _get_status_fast_with_bg_job(search_terms or user_query, tenant_id)
+    result = _get_status_fast_with_bg_job(search_terms or user_query)
     if allowed_form_ids is not None:
-        result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
+        result = _apply_auth_to_status_result(result, allowed_form_ids)
     _decide_elapsed = time.monotonic() - _decide_start
     logger.info(
         "[PERF] operation=decide intent=%s duration=%.2fs session=%s",
@@ -2002,22 +1986,22 @@ async def decide(
 # Compare helpers
 # ---------------------------------------------------------------------------
 
-async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None, tenant_id: str | None = None) -> dict[str, Any]:
+async def _handle_compare(report_ident: str, session_id: str | None, allowed_form_ids: set[str] | None = None) -> dict[str, Any]:
     """Entry point for compare_reports intent — handles disambiguation."""
-    matches = find_matching_reports(report_ident, tenant_id)
+    matches = find_matching_reports(report_ident)
     all_matches = matches
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        suggestions = fuzzy_report_suggestions(report_ident, tenant_id=tenant_id)
+        suggestions = fuzzy_report_suggestions(report_ident)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             if session_id:
                 _session_context[session_id] = {
-                    "awaiting": STAGE_CMP_REPORT, "pending_options": suggestions, "tenant_id": tenant_id,
+                    "awaiting": STAGE_CMP_REPORT, "pending_options": suggestions,
                 }
             return _build(
                 intent="compare_reports", report_name=None,
@@ -2044,7 +2028,7 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
         opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
         if session_id:
             _session_context[session_id] = {
-                "awaiting": STAGE_CMP_REPORT, "pending_options": names, "tenant_id": tenant_id,
+                "awaiting": STAGE_CMP_REPORT, "pending_options": names,
             }
         return _build(
             intent="compare_reports", report_name=None,
@@ -2055,10 +2039,10 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
             result_type="disambiguation", options=names,
         )
 
-    return await _compare_with_name(matches[0].get("Name", report_ident), session_id, tenant_id)
+    return await _compare_with_name(matches[0].get("Name", report_ident), session_id)
 
 
-async def _compare_with_name(name: str, session_id: str | None, tenant_id: str | None = None) -> dict[str, Any]:
+async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any]:
     """Resolve Report ID → scan instance folder → present selection.
 
     Only path: Returns.xml → Report ID → {INSTANCE_BASE_DIR}/{id}/ → *.xml
@@ -2067,7 +2051,7 @@ async def _compare_with_name(name: str, session_id: str | None, tenant_id: str |
     from backend.services.instance_service import get_instances_for_report
 
     # ── Step 1: resolve report name to FormId via Returns.xml ─────────────────
-    form_id = get_form_id_by_name(name, tenant_id)
+    form_id = get_form_id_by_name(name)
     if not form_id:
         if session_id:
             _session_context.pop(session_id, None)
@@ -2081,7 +2065,7 @@ async def _compare_with_name(name: str, session_id: str | None, tenant_id: str |
         )
 
     # ── Step 2: scan Instance/{FormId}/ — no fallbacks ────────────────────────
-    instances = get_instances_for_report(form_id, tenant_id)
+    instances = get_instances_for_report(form_id)
 
     # ── Error guards ──────────────────────────────────────────────────────────
     # Always clear session on error so stale STAGE_CMP_REPORT / STAGE_CMP_FILE
@@ -2134,7 +2118,6 @@ async def _compare_with_name(name: str, session_id: str | None, tenant_id: str |
             "cmp_return_name": name,
             "auto_a":          0,
             "auto_b":          1,
-            "tenant_id":       tenant_id,
         }
     return _build(
         intent="compare_reports", report_name=name,
@@ -2320,7 +2303,6 @@ async def execute_comparison(
     session_id: str,
     idx_a: int,
     idx_b: int,
-    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute XBRL variance analysis for the two selected instances.
 
@@ -2364,14 +2346,9 @@ async def execute_comparison(
 
     # Delegate to _run_comparison; pass a synthetic "X vs Y" string so the
     # existing regex parser selects the correct indices cleanly.
-    # instances[*]["full_path"] was already resolved tenant-aware by
-    # _compare_with_name when the session was created — no further path
-    # resolution is needed here. tenant_id is accepted for API consistency
-    # with the other endpoints and kept in the session copy.
     session_copy = dict(session)
     session_copy["auto_a"] = idx_a
     session_copy["auto_b"] = idx_b
-    session_copy["tenant_id"] = tenant_id or session.get("tenant_id")
     return await _run_comparison(
         session_copy,
         f"{idx_a + 1} vs {idx_b + 1}",
@@ -2696,7 +2673,6 @@ def _finalize_schedule(
     schedule_time: str | None,
     scheduled_datetime: str | None,
     session_id: str | None,
-    tenant_id: str | None = None,
     login_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a confirmed schedule response, or ask for whatever is still missing.
@@ -2726,10 +2702,10 @@ def _finalize_schedule(
     # point, covers guided menu, free-text, and staged date/confirm turns.
     if login_id:
         from backend.services.auth_service import can_generate_instance as _chk_create
-        if not _chk_create(login_id, tenant_id):
+        if not _chk_create(login_id):
             logger.warning(
-                "[AUTH_DENY] schedule_report: login_id=%r tenant_id=%r lacks Instance Generation permission",
-                login_id, tenant_id,
+                "[AUTH_DENY] schedule_report: login_id=%r lacks Instance Generation permission",
+                login_id,
             )
             return _build(
                 intent="schedule_report", report_name=ret.get("name"),
@@ -2757,7 +2733,6 @@ def _finalize_schedule(
                     "sched_reporting_date":  None,  # reject the invalid date
                     "sched_schedule_date":   schedule_date,
                     "sched_schedule_time":   schedule_time,
-                    "tenant_id":             tenant_id,
                 }
             error_msg   = rpt_validation["error"]
             suggestions = [
@@ -2784,7 +2759,6 @@ def _finalize_schedule(
                 "sched_period_name":     period_name,
                 "sched_schedule_date":   schedule_date,
                 "sched_schedule_time":   schedule_time,
-                "tenant_id":             tenant_id,
             }
         return _build(
             intent="schedule_report",
@@ -2809,7 +2783,6 @@ def _finalize_schedule(
                     "sched_reporting_date": reporting_date,
                     "sched_schedule_date": None,           # reject the invalid date
                     "sched_schedule_time": schedule_time,  # keep time if already given
-                    "tenant_id":           tenant_id,
                 }
             return _build(
                 intent="schedule_report",
@@ -2830,7 +2803,6 @@ def _finalize_schedule(
                 "sched_reporting_date": reporting_date,
                 "sched_schedule_date": schedule_date,
                 "sched_schedule_time": schedule_time,
-                "tenant_id":           tenant_id,
             }
         if not schedule_date and not schedule_time:
             prompt_text = (
@@ -2867,7 +2839,6 @@ def _finalize_schedule(
             "sched_schedule_date": schedule_date,
             "sched_schedule_time": schedule_time,
             "sched_scheduled_dt":  scheduled_datetime,
-            "tenant_id":           tenant_id,
         }
     return _build(
         intent="schedule_report",
@@ -2891,7 +2862,6 @@ def _handle_schedule(
     scheduled_datetime: str | None,
     session_id: str | None,
     allowed_form_ids: set[str] | None = None,
-    tenant_id: str | None = None,
     login_id: str | None = None,
     reporting_date: str | None = None,
 ) -> dict[str, Any]:
@@ -2916,12 +2886,12 @@ def _handle_schedule(
             need_clarification=True,
         )
 
-    matches = find_matching_reports(report_ident, tenant_id)
+    matches = find_matching_reports(report_ident)
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        suggestions = fuzzy_report_suggestions(report_ident, tenant_id=tenant_id)
+        suggestions = fuzzy_report_suggestions(report_ident)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
@@ -2933,7 +2903,6 @@ def _handle_schedule(
                     "sched_schedule_time": schedule_time,
                     "sched_scheduled_dt":  scheduled_datetime,
                     "pending_options":     suggestions,
-                    "tenant_id":           tenant_id,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             return _build(
@@ -2967,7 +2936,6 @@ def _handle_schedule(
                 "sched_schedule_time": schedule_time,
                 "sched_scheduled_dt":  scheduled_datetime,
                 "pending_options":     names,
-                "tenant_id":           tenant_id,
             }
         return _build(
             intent="schedule_report", report_name=None,
@@ -2979,7 +2947,7 @@ def _handle_schedule(
         )
 
     # Single match — resolve full metadata and proceed
-    ret = resolve_return_exact(matches[0].get("Name", report_ident), tenant_id)
+    ret = resolve_return_exact(matches[0].get("Name", report_ident))
     if not ret:
         return _build(
             intent="schedule_report", report_name=None,
@@ -2987,7 +2955,7 @@ def _handle_schedule(
             result_type="error",
         )
 
-    return _finalize_schedule(ret, reporting_date, schedule_date, schedule_time, scheduled_datetime, session_id, tenant_id, login_id)
+    return _finalize_schedule(ret, reporting_date, schedule_date, schedule_time, scheduled_datetime, session_id, login_id)
 
 
 async def _finalize_generation(
@@ -2995,8 +2963,6 @@ async def _finalize_generation(
     reporting_date: str,
     session_id: str | None,
     asp_session: str | None = None,
-    tenant_id: str | None = None,
-    jwt: str | None = None,
     login_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate date and call the .NET API for a fully-resolved (report, date) pair."""
@@ -3005,10 +2971,10 @@ async def _finalize_generation(
     # free-text, staged date-entry) converges here before the .NET API call.
     if login_id:
         from backend.services.auth_service import can_generate_instance as _chk_create
-        if not _chk_create(login_id, tenant_id):
+        if not _chk_create(login_id):
             logger.warning(
-                "[AUTH_DENY] generate_instance: login_id=%r tenant_id=%r lacks Instance Generation permission",
-                login_id, tenant_id,
+                "[AUTH_DENY] generate_instance: login_id=%r lacks Instance Generation permission",
+                login_id,
             )
             return _build(
                 intent="generate_instance", report_name=ret.get("name"),
@@ -3030,7 +2996,6 @@ async def _finalize_generation(
                 "gen_return_name": ret["name"],
                 "gen_frequency":   ret["frequency"],
                 "gen_period_name": ret.get("period_name", ""),
-                "tenant_id":       tenant_id,
             }
         error_msg   = validation["error"]
         suggestions = validation.get("suggestions") or []
@@ -3050,10 +3015,7 @@ async def _finalize_generation(
             options=suggestions if suggestions else None,
         )
 
-    if tenant_id:
-        api_result = await call_generate_api_6_0(ret["form_id"], reporting_date, tenant_id, jwt)
-    else:
-        api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
+    api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
     if session_id:
         _session_context.pop(session_id, None)
 
@@ -3090,8 +3052,6 @@ async def _handle_gen_date(
     session: dict[str, Any],
     session_id: str | None,
     asp_session: str | None = None,
-    tenant_id: str | None = None,
-    jwt: str | None = None,
     login_id: str | None = None,
 ) -> dict[str, Any]:
     """Thin wrapper: assemble ret dict from session and delegate to _finalize_generation."""
@@ -3101,8 +3061,7 @@ async def _handle_gen_date(
         "frequency":   session["gen_frequency"],
         "period_name": session.get("gen_period_name", ""),
     }
-    tenant_id = tenant_id or session.get("tenant_id")
-    return await _finalize_generation(ret, date_str, session_id, asp_session, tenant_id, jwt, login_id)
+    return await _finalize_generation(ret, date_str, session_id, asp_session, login_id)
 
 
 def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
@@ -3193,18 +3152,16 @@ async def _handle_generate(
     session_id: str | None,
     asp_session: str | None = None,
     allowed_form_ids: set[str] | None = None,
-    tenant_id: str | None = None,
-    jwt: str | None = None,
     login_id: str | None = None,
 ) -> dict[str, Any]:
     """Entry point for generate_instance intent from the normal (non-staged) flow."""
-    matches = find_matching_reports(report_name, tenant_id)
+    matches = find_matching_reports(report_name)
     original_matches = matches
     if allowed_form_ids is not None:
         matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
 
     if not matches:
-        suggestions = fuzzy_report_suggestions(report_name, tenant_id=tenant_id)
+        suggestions = fuzzy_report_suggestions(report_name)
         if allowed_form_ids is not None:
             suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
         if suggestions:
@@ -3213,7 +3170,6 @@ async def _handle_generate(
                     "awaiting":               STAGE_GEN_REPORT,
                     "pending_reporting_date": reporting_date,
                     "pending_options":        suggestions,
-                    "tenant_id":              tenant_id,
                 }
             opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
             return _build(
@@ -3250,7 +3206,6 @@ async def _handle_generate(
                 "awaiting":               STAGE_GEN_REPORT,
                 "pending_reporting_date": reporting_date,
                 "pending_options":        names,
-                "tenant_id":              tenant_id,
             }
         return _build(
             intent="generate_instance", report_name=None,
@@ -3262,7 +3217,7 @@ async def _handle_generate(
         )
 
     # Single match -- resolve full metadata
-    ret = resolve_return_exact(matches[0].get("Name", report_name), tenant_id)
+    ret = resolve_return_exact(matches[0].get("Name", report_name))
     if not ret:
         return _build(
             intent="generate_instance", report_name=None,
@@ -3283,7 +3238,6 @@ async def _handle_generate(
                 "gen_return_name": ret["name"],
                 "gen_frequency":   ret["frequency"],
                 "gen_period_name": ret["period_name"],
-                "tenant_id":       tenant_id,
             }
         return _build(
             intent="generate_instance", report_name=ret["name"],
@@ -3296,7 +3250,7 @@ async def _handle_generate(
         "[SKIP_DATE_PROMPT] date=%r already known for report=%r — proceeding to generation",
         reporting_date, ret["name"],
     )
-    return await _finalize_generation(ret, reporting_date, session_id, asp_session, tenant_id, jwt, login_id)
+    return await _finalize_generation(ret, reporting_date, session_id, asp_session, login_id)
 
 
 def _build(
@@ -3361,7 +3315,7 @@ def _build(
 # Authorisation helpers
 # ---------------------------------------------------------------------------
 
-def _filter_names_by_auth(names: list[str], allowed: set[str] | None, tenant_id: str | None = None) -> list[str]:
+def _filter_names_by_auth(names: list[str], allowed: set[str] | None) -> list[str]:
     """Return only the report names whose FormId is in *allowed*.
 
     If *allowed* is ``None`` (no auth configured) all names pass through.
@@ -3370,13 +3324,13 @@ def _filter_names_by_auth(names: list[str], allowed: set[str] | None, tenant_id:
         return names
     result = []
     for name in names:
-        fid = get_form_id_by_name(name, tenant_id) or ""
+        fid = get_form_id_by_name(name) or ""
         if fid in allowed:
             result.append(name)
     return result
 
 
-def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str, tenant_id: str | None = None) -> dict[str, Any] | None:
+def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str) -> dict[str, Any] | None:
     """Return an auth-error response dict if *report_name*'s FormId is not in *allowed*.
 
     Returns ``None`` when access is granted (either no auth configured, or
@@ -3384,7 +3338,7 @@ def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str, te
     """
     if allowed is None:
         return None
-    fid = get_form_id_by_name(report_name, tenant_id)
+    fid = get_form_id_by_name(report_name)
     if not fid:
         logger.warning(
             "[AUTH_MISS] report=%r could not be resolved to a FormId before auth", report_name,
@@ -3419,7 +3373,7 @@ def _check_name_auth(report_name: str, allowed: set[str] | None, intent: str, te
     return None
 
 
-def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str], tenant_id: str | None = None) -> dict[str, Any]:
+def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
     """Post-filter a ``get_report_status`` result dict through the auth set.
 
     Handles all result types returned by ``get_report_status``:
@@ -3432,7 +3386,7 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str], tena
     rtype = result.get("type", "")
 
     if rtype == "disambiguation":
-        filtered = _filter_names_by_auth(result.get("options", []), allowed, tenant_id)
+        filtered = _filter_names_by_auth(result.get("options", []), allowed)
         if not filtered:
             return {
                 "type":    "error",
@@ -3458,7 +3412,7 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str], tena
         return result
 
     if rtype == "final":
-        fid = get_form_id_by_name(result.get("report_name", ""), tenant_id) or ""
+        fid = get_form_id_by_name(result.get("report_name", "")) or ""
         if fid not in allowed:
             logger.warning(
                 "[AUTH_DENY] report=%r form_id=%r not in allowed set (final result)",
@@ -3488,10 +3442,10 @@ def _apply_auth_to_status_result(result: dict[str, Any], allowed: set[str], tena
         return {"type": "error", "message": "You are not authorised to access this report."}
     return result  # generic error / unknown — pass through
 
-def _get_status_exact_fast_with_bg_job(report_name: str, tenant_id: str | None = None) -> dict:
+def _get_status_exact_fast_with_bg_job(report_name: str) -> dict:
     """Call get_report_status_exact_fast and kick off background LLM enrichment
     for failed statuses, exactly like _get_status_fast_with_bg_job."""
-    result = get_report_status_exact_fast(report_name, tenant_id)
+    result = get_report_status_exact_fast(report_name)
 
     if (
         result.get("type") in ("final", "latest_with_ask")
@@ -3502,11 +3456,11 @@ def _get_status_exact_fast_with_bg_job(report_name: str, tenant_id: str | None =
         _error_jobs[job_id] = {"status": "pending", "payload": None}
 
         form_id     = result["form_id"]
-        instances   = get_instances_by_form_id(form_id, tenant_id)
+        instances   = get_instances_by_form_id(form_id)
         sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
         latest_row  = sorted_rows[0]
         code        = _safe_status(latest_row)
-        dl          = _get_download_info(latest_row, form_id, tenant_id)
+        dl          = _get_download_info(latest_row, form_id)
 
         thread = threading.Thread(
             target=_run_error_enrichment_async,
@@ -3536,7 +3490,6 @@ async def explain_category_for_report(
     category: str,
     form_id: str | None = None,
     report_name: str | None = None,
-    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Explain up to 5 errors for the given category from error_file_path.
 
@@ -3573,7 +3526,6 @@ async def explain_category_for_report(
             error_file_path,
             category,
             form_id or "",
-            tenant_id,
         )
     except Exception as exc:
         logger.error(

@@ -19,9 +19,6 @@ const _loginId    = _readParam('loginId',    'chat_loginId')
 const _uid        = _readParam('uid',         'chat_uid')
 const _roleId     = _readParam('roleId',      'chat_roleId') || _readParam('rid', 'chat_rid') || ''
 const _aspSession = _params.get('aspSession') || ''  // never persisted — cookie-like, must be fresh
-// 6.0 only — tenant_id resolved client-side by the host app from its JWT claim.
-// Absent for 5.5 traffic; persisted like loginId/uid so it survives a refresh.
-const _tenantId   = _readParam('tenant_id',  'chat_tenant_id') || _readParam('tenantId', 'chat_tenant_id') || ''
 
 // ── Persistent storage key (isolated per uid) ─────────────────────────────
 const STORAGE_KEY = `chat_history_${_uid}`
@@ -63,36 +60,6 @@ export default function App() {
   // and tell the backend to cancel the matching asyncio task.
   const activeRequestRef = useRef(null)
 
-  // ── 6.0 JWT — received via postMessage from the host app (ChatbotIframe.jsx),
-  // never via URL param (would leak into logs/history/Referer headers) and
-  // never persisted to storage (live bearer credential, must stay in memory
-  // only). Absent entirely for 5.5 traffic.
-  const [jwt, setJwt] = useState(null)
-  useEffect(() => {
-    function _onAuthMessage(event) {
-      if (!event.data || event.data.type !== 'CHATBOT_AUTH') return
-      if (typeof event.data.jwt === 'string' && event.data.jwt) {
-        setJwt(event.data.jwt)
-      }
-    }
-    window.addEventListener('message', _onAuthMessage)
-
-    // Tell the host we're ready to receive CHATBOT_AUTH. The host's postAuth()
-    // fires on the iframe's `load` event, which can race this listener's
-    // registration (React mount finishes after the raw HTML/asset load,
-    // especially with the iframe's `loading="lazy"` attribute) — if that
-    // happens the message is silently dropped with no retry, leaving jwt
-    // null for the rest of the session. Announcing readiness lets the host
-    // respond to OUR signal instead of guessing when we're listening.
-    // window.parent === window when not embedded in an iframe (5.5 or direct
-    // access) — guard so this never throws/no-ops harmlessly there.
-    if (window.parent !== window) {
-      window.parent.postMessage({ type: 'CHATBOT_READY' }, '*')
-    }
-
-    return () => window.removeEventListener('message', _onAuthMessage)
-  }, [])
-
   // ── Role-permission-filtered action list (which of the 5 guided actions
   // this user may see/perform — e.g. a Checker never sees Generate/Schedule).
   // Fetched once identity is known so even the very first WelcomeCard render
@@ -103,18 +70,12 @@ export default function App() {
   // on every actual action, so this is a display-only convenience.
   const [allowedActions, setAllowedActions] = useState(null)
   useEffect(() => {
-    // /allowed-actions only needs login_id/tenant_id (both available
-    // synchronously from URL params for 6.0) — it does NOT need the JWT.
-    // Previously this waited for `jwt` to arrive via postMessage before
-    // fetching; if that message was ever delayed or dropped, allowedActions
-    // stayed null forever and the menu silently fell back to showing every
-    // action (including ones the user isn't authorized for) until reload.
-    if (!_loginId && !_tenantId) return  // no identity at all — nothing to resolve
+    if (!_loginId) return  // no identity at all — nothing to resolve
 
     let cancelled = false
     ;(async () => {
       try {
-        const actions = await getAllowedActions(_loginId || null, _tenantId || null)
+        const actions = await getAllowedActions(_loginId || null)
         if (!cancelled && actions.length > 0) {
           setAllowedActions(actions)
         }
@@ -369,7 +330,7 @@ const pollForErrors = (jobId) => {
         _uid || null,
         _roleId || null,
         recentHistory,
-        { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null },
+        { signal, requestId },
       )
       _pushResult(result)
     } catch (err) {
@@ -407,7 +368,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null },
+        { signal, requestId },
       )
       _pushResult(result)
     } catch (err) {
@@ -438,7 +399,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null },
+        { signal, requestId },
       )
       _pushResult(result)
     } catch (err) {
@@ -458,7 +419,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null })
+      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId })
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return
@@ -479,7 +440,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, tenantId: _tenantId || null, jwt: jwt || null })
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId })
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return

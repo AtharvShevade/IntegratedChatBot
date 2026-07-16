@@ -104,34 +104,9 @@ from backend.config import (
     INSTANCE_LOG_XML_PATH as _INSTANCE_FILE,
     INSTANCE_BASE_DIR     as _INSTANCE_BASE_DIR,
     RENDER_BASE_DIR       as _RENDER_BASE_DIR,
-    get_returns_xml_path,
-    get_instance_log_xml_path,
-    get_instance_base_dir,
-    get_render_base_dir,
 )
 
 from backend.tools.xml_loader import load_xml_tree
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6.0 schema differences (confirmed against real tenant data, D:\Repo6\Repo6\1001):
-#
-#   Returns.xml (5.5) vs Return.xml (6.0): SAME attribute names (Id, Name,
-#   ReturnId, AltName) — only the root/child element differs (<Returns><Return>
-#   vs <Document><Row>). No attribute remapping needed for return-lookup code.
-#
-#   XML_InstanceLog.xml (5.5) vs InstanceLog.xml (6.0): DIFFERENT attribute
-#   names for the same concepts:
-#     5.5 FormId              -> 6.0 ReturnId (misleadingly named — holds FormId)
-#     5.5 UserId               -> 6.0 CreatedBy (email string, not login id)
-#     5.5 InstanceDocPath       -> 6.0 InstanceDoc
-#     5.5 RenderedExcelDocPath  -> 6.0 RenderDoc
-#     5.5 ErrorDocPath          -> 6.0 ErrorDoc
-#     5.5 Status (enum: 3/5/8/10/13=Failed, 9/11=Success, ...) -> 6.0 Status is
-#       a DIFFERENT, unconfirmed numeric enum (seen: 30, 70). Do NOT map 6.0
-#       status codes through _STATUS_LABELS/_FAILED_STATUSES/_SUCCESS_STATUSES —
-#       until the real 6.0 enum is confirmed, 6.0 rows show the raw numeric
-#       status instead of a Success/Failed/etc. label (see map_status()).
-# ─────────────────────────────────────────────────────────────────────────────
 
 _INSTANCE_LOG_ATTR_5_5 = {
     "form_id":     "FormId",
@@ -140,17 +115,10 @@ _INSTANCE_LOG_ATTR_5_5 = {
     "render_doc":  "RenderedExcelDocPath",
     "error_doc":   "ErrorDocPath",
 }
-_INSTANCE_LOG_ATTR_6_0 = {
-    "form_id":     "ReturnId",
-    "user_id":     "CreatedBy",
-    "instance_doc": "InstanceDoc",
-    "render_doc":  "RenderDoc",
-    "error_doc":   "ErrorDoc",
-}
 
 
-def _instance_log_attrs(tenant_id: str | None) -> dict[str, str]:
-    return _INSTANCE_LOG_ATTR_6_0 if tenant_id else _INSTANCE_LOG_ATTR_5_5
+def _instance_log_attrs() -> dict[str, str]:
+    return _INSTANCE_LOG_ATTR_5_5
 
 _STATUS_LABELS: dict[int, str] = {
     11: "Success",
@@ -223,83 +191,63 @@ class _TTLCache:
         return data
 
 
-# Per-tenant cache registries. 5.5 traffic (tenant_id=None) uses key "" —
-# identical behaviour to the single global cache that existed before tenant
-# support: same file, same TTL, same instance for the whole process lifetime.
-# 6.0 tenants each get their own _TTLCache keyed by tenant_id so tenant A's
-# Returns.xml/InstanceLog.xml never shadows tenant B's.
-_returns_caches:   dict[str, "_TTLCache"] = {}
-_instances_caches: dict[str, "_TTLCache"] = {}
-_norm_caches:      dict[str, "_TTLCache"] = {}
+_returns_cache:   "_TTLCache | None" = None
+_instances_cache: "_TTLCache | None" = None
+_norm_cache:      "_TTLCache | None" = None
 
 
-def _cache_key(tenant_id: str | None) -> str:
-    return tenant_id or ""
+def _returns_cache_for() -> "_TTLCache":
+    global _returns_cache
+    if _returns_cache is None:
+        _returns_cache = _TTLCache(ttl=_returns_ttl, file_path=_RETURNS_FILE)
+    return _returns_cache
 
 
-def _returns_cache_for(tenant_id: str | None) -> "_TTLCache":
-    key = _cache_key(tenant_id)
-    cache = _returns_caches.get(key)
-    if cache is None:
-        path = get_returns_xml_path(tenant_id)
-        cache = _TTLCache(ttl=_returns_ttl, file_path=path)
-        _returns_caches[key] = cache
-    return cache
+def _instances_cache_for() -> "_TTLCache":
+    global _instances_cache
+    if _instances_cache is None:
+        _instances_cache = _TTLCache(ttl=_instances_ttl, file_path=_INSTANCE_FILE)
+    return _instances_cache
 
 
-def _instances_cache_for(tenant_id: str | None) -> "_TTLCache":
-    key = _cache_key(tenant_id)
-    cache = _instances_caches.get(key)
-    if cache is None:
-        path = get_instance_log_xml_path(tenant_id)
-        cache = _TTLCache(ttl=_instances_ttl, file_path=path)
-        _instances_caches[key] = cache
-    return cache
+def _norm_cache_for() -> "_TTLCache":
+    global _norm_cache
+    if _norm_cache is None:
+        _norm_cache = _TTLCache(ttl=_returns_ttl, file_path=_RETURNS_FILE)
+    return _norm_cache
 
 
-def _norm_cache_for(tenant_id: str | None) -> "_TTLCache":
-    key = _cache_key(tenant_id)
-    cache = _norm_caches.get(key)
-    if cache is None:
-        path = get_returns_xml_path(tenant_id)
-        cache = _TTLCache(ttl=_returns_ttl, file_path=path)
-        _norm_caches[key] = cache
-    return cache
-
-
-def _parse_returns(tenant_id: str | None = None) -> tuple[dict, ...]:
-    cache = _returns_cache_for(tenant_id)
+def _parse_returns() -> tuple[dict, ...]:
+    cache = _returns_cache_for()
     cached = cache.get()
     if cached is not None:
         return cached
-    path = get_returns_xml_path(tenant_id)
-    root = load_xml_tree(path, "Returns.xml" if not tenant_id else "Return.xml")
+    path = _RETURNS_FILE
+    root = load_xml_tree(path, "Returns.xml")
     if root is None:
         return ()
-    # 5.5: <Returns><Return .../></Returns>  |  6.0: <Document><Row .../></Document>
-    child_tag = "Row" if tenant_id else "Return"
     seen_names: set[str] = set()
     rows: list[dict] = []
-    for el in root.findall(child_tag):
+    for el in root.findall("Return"):
         name = el.attrib.get("Name", "").strip()
         if name and name not in seen_names:
             seen_names.add(name)
             rows.append(el.attrib)
     result = tuple(rows)
     logger.info(
-        "Loaded %d unique return(s) from %s (tenant_id=%r, cache refreshed)",
-        len(rows), os.path.basename(path), tenant_id,
+        "Loaded %d unique return(s) from %s (cache refreshed)",
+        len(rows), os.path.basename(path),
     )
     return cache.set(result)
 
 
-def _parse_instances(tenant_id: str | None = None) -> tuple[dict, ...]:
-    cache = _instances_cache_for(tenant_id)
+def _parse_instances() -> tuple[dict, ...]:
+    cache = _instances_cache_for()
     cached = cache.get()
     if cached is not None:
         return cached
-    path = get_instance_log_xml_path(tenant_id)
-    label = "InstanceLog.xml" if tenant_id else "XML_InstanceLog.xml"
+    path = _INSTANCE_FILE
+    label = "XML_InstanceLog.xml"
     logger.debug("[report_lookup] _parse_instances: loading from %s", path)
     root = load_xml_tree(path, label)
     if root is None:
@@ -315,8 +263,8 @@ def _parse_instances(tenant_id: str | None = None) -> tuple[dict, ...]:
         )
         return cache.set(result, cache_empty=False)
     logger.info(
-        "[report_lookup] _parse_instances: loaded %d instance(s) (tenant_id=%r, cache refreshed)",
-        len(rows), tenant_id,
+        "[report_lookup] _parse_instances: loaded %d instance(s) (cache refreshed)",
+        len(rows),
     )
     return cache.set(result)
 
@@ -2883,13 +2831,13 @@ def explain_errors_by_category(error_file_path: str, category: str) -> list[dict
 
 
 def explain_errors_by_category_for_form(
-    error_file_path: str, category: str, form_id: str = "", tenant_id: str | None = None
+    error_file_path: str, category: str, form_id: str = ""
 ) -> list[dict]:
     """Like explain_errors_by_category but applies 4000-series tag for xbrl_schema."""
     results = explain_errors_by_category(error_file_path, category)
 
     if category == "xbrl_schema" and form_id:
-        return_id    = _get_return_id_for_form(form_id, tenant_id)
+        return_id    = _get_return_id_for_form(form_id)
         category_tag = "xbrl_schema_4000" if _is_4000_series(form_id) else "xbrl_schema_other"
         for err in results:
             err["_error_category"] = category_tag
@@ -2937,9 +2885,9 @@ def _compact_normalise(s: str) -> str:
     return s.strip()
 
 
-def _normalised_returns(tenant_id: str | None = None) -> tuple[tuple[str, str, str, dict], ...]:
-    norm_cache = _norm_cache_for(tenant_id)
-    returns_cache = _returns_cache_for(tenant_id)
+def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
+    norm_cache = _norm_cache_for()
+    returns_cache = _returns_cache_for()
     if norm_cache.loaded_at < returns_cache.loaded_at:
         norm_cache._data = None
     cached = norm_cache.get()
@@ -2947,16 +2895,16 @@ def _normalised_returns(tenant_id: str | None = None) -> tuple[tuple[str, str, s
         return cached
     result = tuple(
         (_normalise(r.get("Name", "")), _normalise(r.get("ReturnId", "")), _normalise(r.get("AltName", "")), r)
-        for r in _parse_returns(tenant_id) if r.get("Name", "")
+        for r in _parse_returns() if r.get("Name", "")
     )
     return norm_cache.set(result)
 
 
-def find_matching_reports(user_input: str, tenant_id: str | None = None) -> list[dict]:
+def find_matching_reports(user_input: str) -> list[dict]:
     needle = _normalise(user_input)
     if not needle: return []
     needle_compact = _compact_normalise(user_input)
-    quads = _normalised_returns(tenant_id)
+    quads = _normalised_returns()
     from rapidfuzz import fuzz as _fuzz
 
     def _dedup(lst):
@@ -3054,12 +3002,12 @@ def find_matching_reports(user_input: str, tenant_id: str | None = None) -> list
     return []
 
 
-def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.75, tenant_id: str | None = None) -> list[str]:
+def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.75) -> list[str]:
     from rapidfuzz import fuzz, process as rf_process
     needle = _compact_normalise(user_input)
     if not needle or len(needle) < 3: return []
     norm_to_orig: dict[str, str] = {}
-    for (norm_name, _, _, r) in _normalised_returns(tenant_id):
+    for (norm_name, _, _, r) in _normalised_returns():
         compact_name = _compact_normalise(norm_name)
         if compact_name:
             norm_to_orig.setdefault(compact_name, r.get("Name", ""))
@@ -3067,18 +3015,18 @@ def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.75, 
     return [norm_to_orig[m[0]] for m in matches if norm_to_orig.get(m[0])]
 
 
-def get_instances_by_form_id(form_id: str, tenant_id: str | None = None) -> list[dict]:
+def get_instances_by_form_id(form_id: str) -> list[dict]:
     fid = str(form_id).strip()
-    all_rows = _parse_instances(tenant_id)
-    form_id_attr = _instance_log_attrs(tenant_id)["form_id"]
+    all_rows = _parse_instances()
+    form_id_attr = _instance_log_attrs()["form_id"]
     matches  = [r for r in all_rows if r.get(form_id_attr, "").strip() == fid]
-    logger.debug("[report_lookup] get_instances_by_form_id(form_id=%r, tenant_id=%r): total=%d matched=%d", fid, tenant_id, len(all_rows), len(matches))
+    logger.debug("[report_lookup] get_instances_by_form_id(form_id=%r): total=%d matched=%d", fid, len(all_rows), len(matches))
     return matches
 
 
-def get_available_dates(form_id: str, tenant_id: str | None = None) -> list[str]:
+def get_available_dates(form_id: str) -> list[str]:
     seen: set[str] = set(); unique: list[str] = []
-    for r in get_instances_by_form_id(form_id, tenant_id):
+    for r in get_instances_by_form_id(form_id):
         d = r.get("ReportingDate", "").strip()
         if d and d not in seen: seen.add(d); unique.append(d)
     def _key(d):
@@ -3090,17 +3038,13 @@ def get_available_dates(form_id: str, tenant_id: str | None = None) -> list[str]
     return unique
 
 
-def _get_runs_for_date(form_id: str, reporting_date: str, tenant_id: str | None = None) -> list[dict]:
-    rows = [r for r in get_instances_by_form_id(form_id, tenant_id) if r.get("ReportingDate", "").strip() == reporting_date]
+def _get_runs_for_date(form_id: str, reporting_date: str) -> list[dict]:
+    rows = [r for r in get_instances_by_form_id(form_id) if r.get("ReportingDate", "").strip() == reporting_date]
     rows.sort(key=_dtc_sort_key)
     return rows
 
 
-def map_status(code: int, tenant_id: str | None = None) -> str:
-    if tenant_id:
-        # 6.0's Status enum is a different, unconfirmed numeric scheme —
-        # show the raw code rather than guess a Success/Failed label.
-        return str(code)
+def map_status(code: int) -> str:
     return _STATUS_LABELS.get(code, "Unknown")
 
 
@@ -3118,20 +3062,20 @@ def _safe_status(row: dict) -> int:
 # SECTION 10: FILE DOWNLOAD HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_render_file_path(form_id: str, filename: str, tenant_id: str | None = None) -> str:
-    base = get_render_base_dir(tenant_id) if tenant_id else _RENDER_BASE_DIR
+def build_render_file_path(form_id: str, filename: str) -> str:
+    base = _RENDER_BASE_DIR
     return os.path.join(base, os.path.basename(form_id), os.path.basename(filename))
 
-def build_error_file_path(form_id: str, filename: str, tenant_id: str | None = None) -> str:
-    base = get_instance_base_dir(tenant_id) if tenant_id else _INSTANCE_BASE_DIR
+def build_error_file_path(form_id: str, filename: str) -> str:
+    base = _INSTANCE_BASE_DIR
     return os.path.join(base, os.path.basename(form_id), os.path.basename(filename))
 
 def file_exists(path: str) -> bool:
     return os.path.isfile(path)
 
-def _get_return_id_for_form(form_id: str, tenant_id: str | None = None) -> str:
+def _get_return_id_for_form(form_id: str) -> str:
     fid = str(form_id).strip()
-    for r in _parse_returns(tenant_id):
+    for r in _parse_returns():
         if r.get("Id", "").strip() == fid: return r.get("ReturnId", "").strip()
     return ""
 
@@ -3146,23 +3090,18 @@ def _is_4000_series(return_id: str) -> bool:
         return False
 
 
-def _get_download_info(row: dict, form_id: str, tenant_id: str | None = None) -> dict:
+def _get_download_info(row: dict, form_id: str) -> dict:
     code = _safe_status(row)
-    attrs = _instance_log_attrs(tenant_id)
-
-    # tenant_id (6.0) is embedded into the URL here so the frontend never
-    # needs to know or forward it separately — /download-file just reads it
-    # back off the query string. Omitted entirely for 5.5 (tenant_id=None).
-    _tenant_qs = f"&tenant_id={tenant_id}" if tenant_id else ""
+    attrs = _instance_log_attrs()
 
     def _try_render():
         path_str = row.get(attrs["render_doc"], "").strip()
         if not path_str: return None
         filename = os.path.basename(path_str)
         if not filename: return None
-        full_path = build_render_file_path(form_id, filename, tenant_id)
+        full_path = build_render_file_path(form_id, filename)
         if file_exists(full_path):
-            return {"download_url": f"/download-file?form_id={form_id}&type=render&filename={filename}{_tenant_qs}", "download_label": "Download Render File", "status_note": ""}
+            return {"download_url": f"/download-file?form_id={form_id}&type=render&filename={filename}", "download_label": "Download Render File", "status_note": ""}
         return {"download_url": "", "download_label": "", "status_note": "Render file not found."}
 
     def _try_error():
@@ -3170,18 +3109,15 @@ def _get_download_info(row: dict, form_id: str, tenant_id: str | None = None) ->
         if not path_str: return None
         filename = os.path.basename(path_str)
         if not filename: return None
-        full_path = build_error_file_path(form_id, filename, tenant_id)
+        full_path = build_error_file_path(form_id, filename)
         if file_exists(full_path):
-            return {"download_url": f"/download-file?form_id={form_id}&type=error&filename={filename}{_tenant_qs}", "download_label": "Download Error File", "status_note": "", "error_file_path": full_path}
+            return {"download_url": f"/download-file?form_id={form_id}&type=error&filename={filename}", "download_label": "Download Error File", "status_note": "", "error_file_path": full_path}
         return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
 
-    # 6.0's Status enum is unconfirmed (see map_status) — _FAILED_STATUSES/
-    # _SUCCESS_STATUSES are 5.5-specific and won't match 6.0 codes, so 6.0
-    # rows fall through to the "try render, then error" default below.
-    if not tenant_id and code in _FAILED_STATUSES:
+    if code in _FAILED_STATUSES:
         result = _try_error()
         return result if result is not None else {"download_url": "", "download_label": "", "status_note": ""}
-    if not tenant_id and code in _SUCCESS_STATUSES:
+    if code in _SUCCESS_STATUSES:
         result = _try_render()
         return result if result is not None else {"download_url": "", "download_label": "", "status_note": ""}
     result = _try_render()
@@ -3198,8 +3134,8 @@ def _fmt_instance_label(dtc: str, reporting_date: str) -> str:
     return f"Generated On: {dtc} | Reporting Date: {reporting_date}"
 
 
-def get_available_instances(form_id: str, tenant_id: str | None = None) -> list[dict]:
-    rows = list(get_instances_by_form_id(form_id, tenant_id))
+def get_available_instances(form_id: str) -> list[dict]:
+    rows = list(get_instances_by_form_id(form_id))
     rows.sort(key=_dtc_sort_key, reverse=True)
     return [
         {
@@ -3212,8 +3148,8 @@ def get_available_instances(form_id: str, tenant_id: str | None = None) -> list[
     ]
 
 
-def get_instance_by_dtc(form_id: str, dtc: str, return_name: str, tenant_id: str | None = None) -> dict:
-    rows = get_instances_by_form_id(form_id, tenant_id); dtc_clean = dtc.strip()
+def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
+    rows = get_instances_by_form_id(form_id); dtc_clean = dtc.strip()
     row  = next((r for r in rows if r.get("DTC", "").strip() == dtc_clean), None)
     if not row:
         return {
@@ -3221,14 +3157,14 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str, tenant_id: str
             "message": f"No instance found for DTC '{dtc_clean}'.",
             "form_id": form_id,
             "return_name": return_name,
-            "available_instances": get_available_instances(form_id, tenant_id),
+            "available_instances": get_available_instances(form_id),
         }
     code = _safe_status(row)
-    dl   = _get_download_info(row, form_id, tenant_id)
+    dl   = _get_download_info(row, form_id)
     error_category_counts = _get_error_counts(code, dl)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
-    return_id = _get_return_id_for_form(form_id, tenant_id)
+    return_id = _get_return_id_for_form(form_id)
     is_4000 = _is_4000_series(form_id)
 
     return {
@@ -3236,7 +3172,7 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str, tenant_id: str
         "report_name":            return_name,
         "reporting_date":         row.get("ReportingDate", "").strip(),
         "dtc":                    row.get("DTC", "").strip(),
-        "status":                 map_status(code, tenant_id),
+        "status":                 map_status(code),
         "status_code":            code,
         "download_url":           dl["download_url"],
         "download_label":         dl["download_label"],
@@ -3248,8 +3184,8 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str, tenant_id: str
     }
 
 
-def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str, tenant_id: str | None = None) -> dict:
-    rows = get_instances_by_form_id(form_id, tenant_id); dtc_clean = dtc.strip()
+def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str) -> dict:
+    rows = get_instances_by_form_id(form_id); dtc_clean = dtc.strip()
     row  = next((r for r in rows if r.get("DTC", "").strip() == dtc_clean), None)
     if not row:
         return {
@@ -3257,10 +3193,10 @@ def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str, tenant_id
             "message": f"No instance found for DTC '{dtc_clean}'.",
             "form_id": form_id,
             "return_name": return_name,
-            "available_instances": get_available_instances(form_id, tenant_id),
+            "available_instances": get_available_instances(form_id),
         }
     code = _safe_status(row)
-    dl   = _get_download_info(row, form_id, tenant_id)
+    dl   = _get_download_info(row, form_id)
     error_category_counts = _get_error_counts(code, dl)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
@@ -3271,7 +3207,7 @@ def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str, tenant_id
         "report_name":           return_name,
         "reporting_date":        row.get("ReportingDate", "").strip(),
         "dtc":                   row.get("DTC", "").strip(),
-        "status":                map_status(code, tenant_id),
+        "status":                map_status(code),
         "status_code":           code,
         "error_category_counts": error_category_counts,
         "is_4000_series":        is_4000,          # ← NEW
@@ -3287,14 +3223,14 @@ def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str, tenant_id
 # SECTION 12: STATUS RESULT BUILDERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_status_result(form_id: str, ret_name: str, instances: list[dict], tenant_id: str | None = None) -> dict:
+def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> dict:
     sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
     latest_row  = sorted_rows[0]
     code        = _safe_status(latest_row)
-    dl          = _get_download_info(latest_row, form_id, tenant_id)
+    dl          = _get_download_info(latest_row, form_id)
     current_dtc = latest_row.get("DTC", "").strip()
     rep_date    = latest_row.get("ReportingDate", "").strip()
-    all_instances   = get_available_instances(form_id, tenant_id)
+    all_instances   = get_available_instances(form_id)
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
     _t = time.monotonic()
@@ -3302,17 +3238,17 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict], ten
     logger.debug("[STATUS_FLOW] error count duration=%.3fs counts=%r", time.monotonic() - _t, error_category_counts)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
-    return_id       = _get_return_id_for_form(form_id, tenant_id)
+    return_id       = _get_return_id_for_form(form_id)
     is_4000         = _is_4000_series(form_id)
     logger.info(
-        "[STATUS] form_id=%r return_id=%r dtc=%r date=%r status=%r is_4000_series=%r tenant_id=%r",
-        form_id, return_id, current_dtc, rep_date, map_status(code, tenant_id), is_4000, tenant_id,
+        "[STATUS] form_id=%r return_id=%r dtc=%r date=%r status=%r is_4000_series=%r",
+        form_id, return_id, current_dtc, rep_date, map_status(code), is_4000,
     )
 
     base = {
         "report_name":           ret_name,
         "reporting_date":        rep_date,
-        "status":                map_status(code, tenant_id),
+        "status":                map_status(code),
         "status_code":           code,
         "form_id":               form_id,
         "download_url":          dl["download_url"],
@@ -3329,31 +3265,31 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict], ten
     return {**base, "type": "final", "dtc": current_dtc}
 
 
-def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict], tenant_id: str | None = None) -> dict:
+def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict]) -> dict:
     sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
     latest_row  = sorted_rows[0]
     code        = _safe_status(latest_row)
-    dl          = _get_download_info(latest_row, form_id, tenant_id)
+    dl          = _get_download_info(latest_row, form_id)
     current_dtc = latest_row.get("DTC", "").strip()
     rep_date    = latest_row.get("ReportingDate", "").strip()
-    all_instances   = get_available_instances(form_id, tenant_id)
+    all_instances   = get_available_instances(form_id)
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
     error_category_counts = _get_error_counts(code, dl)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
-    return_id = _get_return_id_for_form(form_id, tenant_id)
+    return_id = _get_return_id_for_form(form_id)
     is_4000   = _is_4000_series(form_id)
     logger.info(
-        "[STATUS_FAST] form_id=%r return_id=%r dtc=%r date=%r status=%r is_4000_series=%r tenant_id=%r",
-        form_id, return_id, current_dtc, rep_date, map_status(code, tenant_id), is_4000, tenant_id,
+        "[STATUS_FAST] form_id=%r return_id=%r dtc=%r date=%r status=%r is_4000_series=%r",
+        form_id, return_id, current_dtc, rep_date, map_status(code), is_4000,
     )
 
     base = {
         "report_name":           ret_name,
         "form_id":               form_id,
         "reporting_date":        rep_date,
-        "status":                map_status(code, tenant_id),
+        "status":                map_status(code),
         "status_code":           code,
         "form_id":               form_id,
         "run_time":              current_dtc,
@@ -3374,25 +3310,25 @@ def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict]
 # SECTION 13: PUBLIC ENTRY POINTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_report_status_exact_fast(report_name: str, tenant_id: str | None = None) -> dict:
-    returns = _parse_returns(tenant_id)
+def get_report_status_exact_fast(report_name: str) -> dict:
+    returns = _parse_returns()
     match = next((r for r in returns if r.get("Name", "").strip() == report_name.strip()), None)
     if not match:
         match = next((r for r in returns if r.get("Name", "").strip().lower() == report_name.strip().lower()), None)
     if not match:
         return {"type": "error", "message": f"Report '{report_name}' not found."}
     form_id = match.get("Id", "").strip(); ret_name = match.get("Name", report_name)
-    instances = get_instances_by_form_id(form_id, tenant_id)
+    instances = get_instances_by_form_id(form_id)
     if not instances:
         return {"type": "error", "message": f"Report '{ret_name}' exists but no instances generated.", "_form_id": form_id}
-    return _build_status_result_fast(form_id, ret_name, instances, tenant_id)
+    return _build_status_result_fast(form_id, ret_name, instances)
 
 
-def get_report_status_fast(report_name: str, tenant_id: str | None = None) -> dict:
+def get_report_status_fast(report_name: str) -> dict:
     clean_input = report_name.strip()
-    matches = find_matching_reports(clean_input, tenant_id)
+    matches = find_matching_reports(clean_input)
     if not matches:
-        suggestions = fuzzy_report_suggestions(clean_input, tenant_id=tenant_id)
+        suggestions = fuzzy_report_suggestions(clean_input)
         if suggestions:
             opts_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(suggestions))
             return {"type": "disambiguation", "message": f"No exact match found for '{clean_input}'. Did you mean one of these?\n\n{opts_text}", "options": suggestions}
@@ -3405,17 +3341,17 @@ def get_report_status_fast(report_name: str, tenant_id: str | None = None) -> di
         opts = list(seen_opts.keys())
         return {"type": "disambiguation", "message": "Found multiple matching reports. Which one do you mean?\n\n" + "\n".join(f"{i+1}. {name}" for i, name in enumerate(opts)), "options": opts}
     match = matches[0]; form_id = match.get("Id", "").strip(); ret_name = match.get("Name", report_name)
-    instances = get_instances_by_form_id(form_id, tenant_id)
+    instances = get_instances_by_form_id(form_id)
     if not instances:
         return {"type": "error", "message": f"Report '{ret_name}' exists but no instances generated.", "_form_id": form_id}
-    return _build_status_result_fast(form_id, ret_name, instances, tenant_id)
+    return _build_status_result_fast(form_id, ret_name, instances)
 
 
-def get_report_status(report_name: str, tenant_id: str | None = None) -> dict:
+def get_report_status(report_name: str) -> dict:
     clean_input = report_name.strip()
-    matches = find_matching_reports(clean_input, tenant_id)
+    matches = find_matching_reports(clean_input)
     if not matches:
-        suggestions = fuzzy_report_suggestions(clean_input, tenant_id=tenant_id)
+        suggestions = fuzzy_report_suggestions(clean_input)
         if suggestions:
             opts_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(suggestions))
             return {"type": "disambiguation", "message": f"No exact match found for '{clean_input}'. Did you mean one of these?\n\n{opts_text}", "options": suggestions}
@@ -3428,16 +3364,16 @@ def get_report_status(report_name: str, tenant_id: str | None = None) -> dict:
         opts = list(seen_opts.keys())
         return {"type": "disambiguation", "message": "Found multiple matching reports. Which one do you mean?\n\n" + "\n".join(f"{i+1}. {name}" for i, name in enumerate(opts)), "options": opts}
     match = matches[0]; form_id = match.get("Id", "").strip(); ret_name = match.get("Name", report_name)
-    logger.info("[get_report_status] matched: name=%r form_id=%r tenant_id=%r", ret_name, form_id, tenant_id)
-    instances = get_instances_by_form_id(form_id, tenant_id)
+    logger.info("[get_report_status] matched: name=%r form_id=%r", ret_name, form_id)
+    instances = get_instances_by_form_id(form_id)
     if not instances:
-        logger.warning("[get_report_status] NO instances for form_id=%r tenant_id=%r", form_id, tenant_id)
+        logger.warning("[get_report_status] NO instances for form_id=%r", form_id)
         return {"type": "error", "message": f"Report '{ret_name}' exists but no instances generated.", "_form_id": form_id}
-    return _build_status_result(form_id, ret_name, instances, tenant_id)
+    return _build_status_result(form_id, ret_name, instances)
 
 
-def get_instance_by_date(form_id: str, date_query: str, return_name: str, tenant_id: str | None = None) -> dict:
-    rows       = get_instances_by_form_id(form_id, tenant_id); date_query = date_query.strip()
+def get_instance_by_date(form_id: str, date_query: str, return_name: str) -> dict:
+    rows       = get_instances_by_form_id(form_id); date_query = date_query.strip()
     row = next(
         (r for r in rows if r.get("ReportingDate", "").strip() == date_query), None
     ) or next(
@@ -3449,14 +3385,14 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str, tenant
             "message":         f"No instance found for '{date_query}'.",
             "form_id":         form_id,
             "return_name":     return_name,
-            "available_dates": get_available_dates(form_id, tenant_id),
+            "available_dates": get_available_dates(form_id),
         }
     code = _safe_status(row)
-    dl   = _get_download_info(row, form_id, tenant_id)
+    dl   = _get_download_info(row, form_id)
     error_category_counts = _get_error_counts(code, dl)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
-    return_id = _get_return_id_for_form(form_id, tenant_id)
+    return_id = _get_return_id_for_form(form_id)
     is_4000   = _is_4000_series(form_id)
 
     return {
@@ -3464,7 +3400,7 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str, tenant
         "report_name":           return_name,
         "reporting_date":        row.get("ReportingDate", "").strip(),
         "dtc":                   row.get("DTC", "").strip(),
-        "status":                map_status(code, tenant_id),
+        "status":                map_status(code),
         "status_code":           code,
         "download_url":          dl["download_url"],
         "download_label":        dl["download_label"],
@@ -3476,23 +3412,23 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str, tenant
     }
 
 
-def get_report_status_exact(report_name: str, tenant_id: str | None = None) -> dict:
-    returns = _parse_returns(tenant_id)
+def get_report_status_exact(report_name: str) -> dict:
+    returns = _parse_returns()
     match = next((r for r in returns if r.get("Name", "").strip() == report_name.strip()), None)
     if not match:
         match = next((r for r in returns if r.get("Name", "").strip().lower() == report_name.strip().lower()), None)
     if not match:
         return {"type": "error", "message": f"Report '{report_name}' not found."}
     form_id = match.get("Id", "").strip(); ret_name = match.get("Name", report_name)
-    instances = get_instances_by_form_id(form_id, tenant_id)
+    instances = get_instances_by_form_id(form_id)
     if not instances:
         return {"type": "error", "message": f"Report '{ret_name}' exists but no instances generated.", "_form_id": form_id}
-    return _build_status_result(form_id, ret_name, instances, tenant_id)
+    return _build_status_result(form_id, ret_name, instances)
 
 
-def get_form_id_by_name(report_name: str, tenant_id: str | None = None) -> str | None:
+def get_form_id_by_name(report_name: str) -> str | None:
     name_clean = report_name.strip().lower()
-    returns = _parse_returns(tenant_id)
+    returns = _parse_returns()
     match = (
         next((r for r in returns if r.get("Name", "").strip().lower()     == name_clean), None) or
         next((r for r in returns if r.get("AltName", "").strip().lower()  == name_clean), None) or

@@ -15,13 +15,11 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
  * a sentinel message through /guided.
  *
  * @param {string|null} loginId
- * @param {string|null} tenantId
  * @returns {Promise<string[]>} allowed action labels, or [] on failure.
  */
-export async function getAllowedActions(loginId, tenantId) {
+export async function getAllowedActions(loginId) {
   const params = new URLSearchParams()
   if (loginId)  params.set('login_id', loginId)
-  if (tenantId) params.set('tenant_id', tenantId)
   const qs = params.toString()
   const res = await fetch(`${BASE_URL}/allowed-actions${qs ? `?${qs}` : ''}`)
   if (!res.ok) throw new Error('Failed to fetch allowed actions')
@@ -61,20 +59,16 @@ export async function stopRequest(requestId) {
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
- * @param {string|null} [opts.tenantId] - 6.0 only; resolved client-side from JWT claim.
- * @param {string|null} [opts.jwt] - 6.0 only; raw JWT for server-side Bearer auth.
  * @returns {Promise<object>} - ChatResponse (variance_table or error).
  */
 export async function compareInstances(sessionId, instanceA, instanceB, opts = {}) {
-  const { signal, requestId, tenantId, jwt } = opts
+  const { signal, requestId } = opts
   const body = {
     session_id: sessionId,
     instance_a: instanceA,
     instance_b: instanceB,
     request_id: requestId ?? null,
   }
-  if (tenantId) body.tenant_id = tenantId
-  if (jwt)      body.jwt       = jwt
   const res = await fetch(`${BASE_URL}/compare-execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -103,8 +97,6 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
- * @param {string|null} [opts.tenantId] - 6.0 only; resolved client-side from JWT claim.
- * @param {string|null} [opts.jwt] - 6.0 only; raw JWT for server-side Bearer auth.
  * @returns {Promise<{intent: string, report_name: string|null, response_text: string, need_clarification: boolean}>}
  * @throws {Error} - With a user-friendly message on failure.
  */
@@ -118,7 +110,7 @@ export async function sendMessage(
   conversationHistory = [],
   opts = {},
 ) {
-  const { signal, requestId, tenantId, jwt } = opts
+  const { signal, requestId } = opts
   const body = { message }
   if (sessionId)                    body.session_id           = sessionId
   if (aspSession)                   body.asp_session          = aspSession
@@ -127,8 +119,6 @@ export async function sendMessage(
   if (roleId)                       body.role_id              = roleId
   if (conversationHistory?.length)  body.conversation_history = conversationHistory
   if (requestId)                    body.request_id           = requestId
-  if (tenantId)                     body.tenant_id            = tenantId
-  if (jwt)                          body.jwt                  = jwt
 
   const res = await fetch(`${BASE_URL}/chat`, {
     method: 'POST',
@@ -158,12 +148,10 @@ export async function sendMessage(
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
- * @param {string|null} [opts.tenantId] - 6.0 only; resolved client-side from JWT claim.
- * @param {string|null} [opts.jwt] - 6.0 only; raw JWT for server-side Bearer auth.
  * @returns {Promise<object>}
  */
 export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null, userId = null, roleId = null, opts = {}) {
-  const { signal, requestId, tenantId, jwt } = opts
+  const { signal, requestId } = opts
   const body = { message }
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
@@ -171,8 +159,6 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
   if (userId)     body.user_id     = userId
   if (roleId)     body.role_id     = roleId
   if (requestId)  body.request_id  = requestId
-  if (tenantId)   body.tenant_id   = tenantId
-  if (jwt)        body.jwt         = jwt
 
   const res = await fetch(`${BASE_URL}/guided`, {
     method: 'POST',
@@ -238,16 +224,14 @@ export async function transcribeAudio(audioBlob, opts = {}) {
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
- * @param {string|null} [opts.tenantId] - 6.0 only; resolved client-side from JWT claim.
  * @returns {Promise<object>} - ChatResponse-shaped object with error_details populated.
  */
 export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null, opts = {}) {
-  const { signal, requestId, tenantId } = opts
+  const { signal, requestId } = opts
   const body = { error_file_path: errorFilePath, category }
   if (formId)     body.form_id     = formId
   if (reportName) body.report_name = reportName
   if (requestId)  body.request_id  = requestId
-  if (tenantId)   body.tenant_id   = tenantId
   // Use the same BASE_URL as sendMessage — relies on Vite proxy in dev,
   // VITE_API_BASE_URL in production. Do NOT use a hardcoded localhost fallback
   // here (unlike the polling fetch in App.jsx which correctly uses port 8001).

@@ -14,31 +14,6 @@ from __future__ import annotations
 
 from backend.db_qa.intents.taxonomy import Intent
 
-# Fields that hold ciphertext under 6.0 (see versions/v6_0_schema.py —
-# users.Name/EmailId/MobileNumber map onto 6.0's encrypted FirstName/
-# EmailId/PhoneNumber attributes). Masked at render time so a template
-# never surfaces an undecryptable blob to the end user.
-_POSSIBLY_ENCRYPTED_USER_FIELDS = frozenset({"Name", "EmailId", "MobileNumber"})
-_ENCRYPTED_PLACEHOLDER = "(stored encrypted — not displayable)"
-
-
-def _looks_like_ciphertext(value: str) -> bool:
-    """Heuristic only — 6.0's encrypted fields are base64-ish blobs with no
-    spaces and often padding characters; this is intentionally conservative
-    (better to occasionally under-mask than to mask a legitimate short value
-    like an email address, which templates handle via the field allowlist
-    below instead of this heuristic alone)."""
-    if not value or " " in value or "@" in value:
-        return False
-    return len(value) >= 16 and (value.endswith("=") or value.endswith("=="))
-
-
-def _display_value(field: str, value) -> str:
-    if isinstance(value, str) and field in _POSSIBLY_ENCRYPTED_USER_FIELDS and _looks_like_ciphertext(value):
-        return _ENCRYPTED_PLACEHOLDER
-    return value
-
-
 TEMPLATES: dict[Intent, str] = {
     Intent.USER_PROFILE: "{summary}",
     Intent.USER_FIELD: "{summary}",
@@ -135,14 +110,6 @@ def render(intent: Intent | str, result: dict) -> str:
     ctx["summary"] = result.get("summary", "")
     ctx["label"] = result.get("label", "")
     ctx["found"] = result.get("found", False)
-
-    # Mask any ciphertext-looking values before they can reach a template's
-    # {field} substitution (only relevant to intents whose meta echoes back
-    # raw user fields directly — most templates above only use {summary},
-    # which handlers already build with plain-language phrasing, not raw
-    # attribute dumps).
-    for key, value in list(ctx.items()):
-        ctx[key] = _display_value(key, value)
 
     try:
         return template.format(**ctx)

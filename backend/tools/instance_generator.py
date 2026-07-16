@@ -23,20 +23,6 @@ _DOTNET_SESSION_COOKIE = os.getenv("DOTNET_SESSION_COOKIE", "")
 _DATE_FMT    = "%d-%b-%Y"
 _EXTRA_FMTS  = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
 
-# 6.0 — separate endpoint, separate auth model (JWT Bearer via claims, not an
-# ASP.NET session cookie). Confirmed via the real 6.0 controller: 5.5's
-# FunPubInsertInstanceLog route (session-based) is NOT reachable in 6.0 —
-# it 404s there. The real 6.0 action is GenerateReportDB, POST
-# /api/CreateInstance/GenerateReportDB, form fields {ReturnId, RptDate, AuditType}
-# (iDeal.Api.Common.DTO.ReportDto), auth via [FromHeader] JWT claims (LoginId,
-# TenantId) rather than session state.
-_DOTNET_6_0_CONTROLLER = os.getenv("XML_6_0_DOTNET_CONTROLLER", "api/CreateInstance")
-_DOTNET_6_0_ACTION     = os.getenv("XML_6_0_DOTNET_GENERATE_ACTION", "GenerateReportDB")
-# AuditType's meaning is NOT confirmed against the .NET source — this default
-# mirrors 5.5's "-1 = not applicable" convention for AuditDataFilterValue.
-# Override via env var once the correct value/logic is confirmed.
-_DOTNET_6_0_DEFAULT_AUDIT_TYPE = os.getenv("XML_6_0_DEFAULT_AUDIT_TYPE", "-1")
-
 logger.info(
     "[GENERATE_CONFIG] DOTNET_API_URL=%s  DOTNET_CONTROLLER=%s  "
     "DOTNET_SESSION_COOKIE=%s",
@@ -54,36 +40,20 @@ _H_CY_ENDS = {(30, 6), (31, 12)}                       # Half-Yearly Calendar Ye
 # -- Period master XML parser (TTL-cached, refreshes every 24 hours) ------------
 
 _period_ttl   = float(os.getenv("PERIOD_TTL_SEC", "86400"))  # 24 hours
-# Per-tenant period cache. 5.5 traffic (tenant_id=None) uses key "" and reads
-# the project-relative logs/period.xml (unchanged from before tenant support).
-# 6.0 tenants each get their own cache entry, reading <tenant>/DataBase/Period.xml.
-_period_caches: dict[str, dict] = {}
+_period_cache: dict = {"data": None, "ts": 0.0}
 
 
-def _period_cache_key(tenant_id: str | None) -> str:
-    return tenant_id or ""
-
-
-def _parse_period_master(tenant_id: str | None = None) -> dict[str, dict]:
-    """Parse period.xml/Period.xml and return {period_id: attrib_dict}.
-    Cached per-tenant for PERIOD_TTL_SEC seconds (default 24 hours).
+def _parse_period_master() -> dict[str, dict]:
+    """Parse period.xml and return {period_id: attrib_dict}.
+    Cached for PERIOD_TTL_SEC seconds (default 24 hours).
     """
-    key = _period_cache_key(tenant_id)
-    cache = _period_caches.setdefault(key, {"data": None, "ts": 0.0})
     now = time.monotonic()
-    if cache["data"] is not None and (now - cache["ts"]) < _period_ttl:
-        return cache["data"]
+    if _period_cache["data"] is not None and (now - _period_cache["ts"]) < _period_ttl:
+        return _period_cache["data"]
 
-    if tenant_id:
-        from backend.config import get_period_xml_path
-        from backend import config_6_0
-        path = get_period_xml_path(tenant_id)
-        id_attr = config_6_0.PERIOD_ID_ATTR
-        label = "Period.xml"
-    else:
-        path = _PERIOD_FILE
-        id_attr = "Period_Id"
-        label = "period.xml"
+    path = _PERIOD_FILE
+    id_attr = "Period_Id"
+    label = "period.xml"
 
     if not os.path.exists(path):
         logger.warning("%s not found: %s", label, path)
@@ -95,35 +65,28 @@ def _parse_period_master(tenant_id: str | None = None) -> dict[str, dict]:
             pid = el.attrib.get(id_attr, "").strip()
             if pid:
                 out[pid] = el.attrib
-        logger.info("Loaded %d period(s) from %s (tenant_id=%r, cache refreshed)", len(out), label, tenant_id)
-        cache["data"] = out
-        cache["ts"]   = now
+        logger.info("Loaded %d period(s) from %s (cache refreshed)", len(out), label)
+        _period_cache["data"] = out
+        _period_cache["ts"]   = now
         return out
     except ET.ParseError as exc:
         logger.error("XML parse error in %s: %s", label, exc)
         return {}
 
 
-def get_period_info(period_id: str | int, tenant_id: str | None = None) -> dict | None:
+def get_period_info(period_id: str | int) -> dict | None:
     """Return period info dict for a given period id, or None."""
-    return _parse_period_master(tenant_id).get(str(period_id).strip())
+    return _parse_period_master().get(str(period_id).strip())
 
 
 # PeriodId -> Frequency fallback, sourced from 5.5's Period.xml (which has a
-# real Frequency attribute per period). 6.0's Period.xml carries no Frequency
-# attribute at all, so without this, frequency resolution falls back straight
-# to each Return's own RepFreq — and RepFreq is inconsistent across returns
-# sharing the same period (e.g. PeriodId 107 "Yearly" appears with RepFreq
-# 'Y' on most returns but 'A' on others, such as CIMS_RAQ(Annually)/
-# RAQ(Annually) — the same returns exist under the same PeriodId in BOTH
-# 5.5 and 6.0 data). PeriodId is the one canonical, version-stable key, so
-# resolving frequency from it (when Period.xml's own Frequency is absent)
-# fixes the exact regression: a 6.0 Yearly return with RepFreq='A' silently
-# accepted any date because 'A' isn't a code the validator recognises.
-#
-# Only IDs whose PeriodName is confirmed identical between 5.5 and 6.0 are
-# included — PeriodId 110 is deliberately excluded because 5.5 uses it for
-# "Yearly(Calendar Year)" while 6.0's period master defines it as "NA".
+# real Frequency attribute per period). Used when Period.xml's own Frequency
+# attribute is absent, since a Return's own RepFreq can be inconsistent across
+# returns sharing the same period (e.g. PeriodId 107 "Yearly" appears with
+# RepFreq 'Y' on most returns but 'A' on others, such as CIMS_RAQ(Annually)/
+# RAQ(Annually)). PeriodId is the canonical key, so resolving frequency from
+# it (when Period.xml's own Frequency is absent) avoids silently accepting
+# any date because 'A' isn't a code the validator recognises.
 _PERIOD_ID_TO_FREQUENCY: dict[str, str] = {
     "101": "D",   # Daily
     "102": "W",   # Weekly
@@ -141,7 +104,7 @@ _PERIOD_ID_TO_FREQUENCY: dict[str, str] = {
 
 # -- Return resolver (exact match, used post-disambiguation) --------------------
 
-def resolve_return_exact(report_name: str, tenant_id: str | None = None) -> dict | None:
+def resolve_return_exact(report_name: str) -> dict | None:
     """Exact-name lookup returning generation metadata for a return.
 
     Tries: exact Name match, case-insensitive Name, AltName.
@@ -150,7 +113,7 @@ def resolve_return_exact(report_name: str, tenant_id: str | None = None) -> dict
     from backend.tools.report_lookup import _parse_returns  # cached; no re-parse
 
     name_str = report_name.strip()
-    returns  = _parse_returns(tenant_id)
+    returns  = _parse_returns()
 
     match = (
         next((r for r in returns if r.get("Name",     "").strip()           == name_str),         None)
@@ -162,11 +125,10 @@ def resolve_return_exact(report_name: str, tenant_id: str | None = None) -> dict
         return None
 
     period_id   = match.get("PeriodId", "").strip()
-    period_info = get_period_info(period_id, tenant_id) or {}
+    period_info = get_period_info(period_id) or {}
     # Frequency resolution, in priority order:
-    #   1. Period.xml's own Frequency attribute (5.5 always has this; canonical).
-    #   2. _PERIOD_ID_TO_FREQUENCY[period_id] — the version-stable fallback for
-    #      6.0, whose Period.xml has no Frequency attribute at all.
+    #   1. Period.xml's own Frequency attribute (canonical).
+    #   2. _PERIOD_ID_TO_FREQUENCY[period_id] — fallback when absent.
     #   3. The Return's own RepFreq — last resort only, since it can be
     #      inconsistent across returns sharing the same PeriodId (e.g. 'A'
     #      vs 'Y' both appearing under PeriodId 107 "Yearly").
@@ -781,140 +743,4 @@ async def call_generate_api(
         return {"success": False, "message": "Generation service timed out. Please try again."}
     except Exception as exc:
         logger.exception("[API_FAILURE] Unexpected error calling generate API: %s", exc)
-        return {"success": False, "message": "Instance generation failed. Please try again."}
-
-
-# -- .NET API call (6.0 only) ----------------------------------------------------
-
-async def call_generate_api_6_0(
-    form_id: str,
-    reporting_date: str,
-    tenant_id: str,
-    jwt: str | None = None,
-) -> dict[str, Any]:
-    """POST to the 6.0 .NET GenerateReportDB action.
-
-    6.0 is NOT a drop-in replacement for 5.5's FunPubInsertInstanceLog — it's a
-    separate endpoint with a separate auth model:
-      - Route:  POST {DOTNET_API_URL}/{XML_6_0_DOTNET_CONTROLLER}/{XML_6_0_DOTNET_GENERATE_ACTION}
-                (default: /api/CreateInstance/GenerateReportDB)
-      - Auth:   Authorization: Bearer <jwt> — the .NET action reads LoginId/TenantId
-                from JWT claims (HttpContext.User), not a session cookie. There is
-                no 6.0 equivalent of 5.5's .AspNetCore.Session forwarding.
-      - Body (multipart/form-data, iDeal.Api.Common.DTO.ReportDto):
-            ReturnId  (int)    — form_id
-            RptDate   (string) — reporting_date
-            AuditType (int)    — NOT CONFIRMED against .NET source; defaults to
-                                  XML_6_0_DEFAULT_AUDIT_TYPE ("-1", mirroring 5.5's
-                                  "not applicable" convention). Override once confirmed.
-      - Response: StatusCode(result.StatusCode, result.Success ? result.Data : result.Error)
-                  i.e. plain HTTP status + a bare JSON body — NOT the 5.5-style
-                  [bool, date, message, ...] array. Confirmed success case returns
-                  result.Data as a plain string (the new instance log id). Failure
-                  shape (result.Error) is not confirmed — logged in full so it can
-                  be refined once seen.
-
-    Returns the same {"success": bool, "message": str} shape as call_generate_api()
-    so callers (_finalize_generation) don't need version-specific handling.
-    """
-    if not jwt:
-        logger.error(
-            "[GENERATE_API_6_0] No JWT provided — GenerateReportDB requires a Bearer "
-            "token (tenant_id=%s form_id=%s). Request will likely be rejected.",
-            tenant_id, form_id,
-        )
-
-    url = f"{_DOTNET_URL}/{_DOTNET_6_0_CONTROLLER}/{_DOTNET_6_0_ACTION}"
-
-    form_data = {
-        "ReturnId":  str(form_id),
-        "RptDate":   reporting_date,
-        "AuditType": _DOTNET_6_0_DEFAULT_AUDIT_TYPE,
-    }
-
-    headers = {"X-Requested-With": "XMLHttpRequest"}
-    if jwt:
-        headers["Authorization"] = f"Bearer {jwt}"
-
-    logger.info(
-        "[GENERATE_API_6_0_CALL] url=%s form_id=%s date=%s tenant_id=%s jwt=%s",
-        url, form_id, reporting_date, tenant_id, "provided" if jwt else "MISSING",
-    )
-    _t0 = time.time()
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0),
-            follow_redirects=False,
-            verify=False,  # self-signed dev cert on localhost, same as 5.5's client
-        ) as client:
-            resp = await client.post(url, data=form_data, headers=headers)
-
-        _elapsed = time.time() - _t0
-        logger.info(
-            "[PERF] operation=generate_api_6_0 http_status=%s duration=%.2fs form_id=%s tenant_id=%s",
-            resp.status_code, _elapsed, form_id, tenant_id,
-        )
-
-        if resp.status_code in (401, 403):
-            logger.error(
-                "[API_FAILURE_6_0] Generate API returned HTTP %s (auth failure): %s",
-                resp.status_code, resp.text[:200],
-            )
-            return {
-                "success": False,
-                "message": "Authentication failed. Your session may have expired. Please try again.",
-            }
-
-        if resp.status_code == 404:
-            logger.error(
-                "[API_FAILURE_6_0] Generate API returned HTTP 404 at %s — route not found. "
-                "Check XML_6_0_DOTNET_CONTROLLER/XML_6_0_DOTNET_GENERATE_ACTION env vars.",
-                url,
-            )
-            return {"success": False, "message": "Instance generation failed. Please try again."}
-
-        if resp.status_code not in (200, 201, 202):
-            logger.error(
-                "[API_FAILURE_6_0] Generate API returned HTTP %s: %s",
-                resp.status_code, resp.text[:300],
-            )
-            return {"success": False, "message": "Instance generation failed. Please try again."}
-
-        try:
-            data = resp.json()
-        except Exception:
-            snippet = resp.text[:200].strip()
-            logger.error("[API_FAILURE_6_0] Generate API returned non-JSON: %s", snippet)
-            return {"success": False, "message": "Instance generation failed. Please try again."}
-
-        # Confirmed success shape: result.Data is a plain string (new InstanceLog id).
-        # Any other 2xx body is logged in full and treated as success — failure
-        # shapes (result.Error) are not yet confirmed against real error responses.
-        if isinstance(data, str):
-            logger.info(
-                "[GENERATE_SUBMITTED_6_0] form_id=%s date=%s tenant_id=%s instance_log_id=%s",
-                form_id, reporting_date, tenant_id, data,
-            )
-            return {"success": True, "message": "Instance generation submitted successfully."}
-
-        logger.warning(
-            "[GENERATE_API_6_0] Unrecognised 2xx response shape, treating as success: %r", data,
-        )
-        return {"success": True, "message": "Instance generation submitted successfully."}
-
-    except httpx.ConnectError:
-        logger.error(
-            "[API_FAILURE_6_0] Cannot connect to .NET API at %s — check DOTNET_API_URL in .env "
-            "(current value: %s)",
-            url, _DOTNET_URL,
-        )
-        return {
-            "success": False,
-            "message": "Unable to process the request right now. Please try again.",
-        }
-    except httpx.TimeoutException:
-        logger.error("[API_FAILURE_6_0] Timeout calling .NET API at %s", url)
-        return {"success": False, "message": "Generation service timed out. Please try again."}
-    except Exception as exc:
-        logger.exception("[API_FAILURE_6_0] Unexpected error calling generate API: %s", exc)
         return {"success": False, "message": "Instance generation failed. Please try again."}

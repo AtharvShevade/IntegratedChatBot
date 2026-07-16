@@ -12,8 +12,12 @@ from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 # Same date vocabulary as instance_generator.py's _DATE_FMT/_EXTRA_FMTS,
 # plus a bare "Month YYYY" form (e.g. "June 2025") since date-range
-# questions commonly name a month rather than a specific day.
-_DATE_FMTS = ["%d-%b-%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
+# questions commonly name a month rather than a specific day, and
+# space-separated "1 Jan 2026"/"01 January 2026" forms.
+_DATE_FMTS = [
+    "%d-%b-%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y",
+    "%d %b %Y", "%d %B %Y",
+]
 _MONTH_YEAR_FMTS = ["%B %Y", "%b %Y"]
 
 
@@ -71,12 +75,11 @@ def resolve_date_range(date_from: str | None, date_to: str | None, question: str
 
     return None
 
-# 6.0's Period.xml has no Frequency attribute at all (5.5's does) and many
-# 6.0 Return records also leave RepFreq empty — so the "resolve frequency"
-# chain (Frequency -> RepFreq) that works for 5.5 can come up completely
-# empty for 6.0. PeriodName is always present in both versions, so it's
-# the last-resort fallback: same canonical PeriodName -> Frequency-code
-# mapping as 5.5's logs/period.xml (Daily->D, Weekly->W, ... Yearly->Y).
+# Some Return records leave both Frequency and RepFreq empty — so the
+# "resolve frequency" chain (Frequency -> RepFreq) can come up empty.
+# PeriodName is always present, so it's the last-resort fallback: same
+# canonical PeriodName -> Frequency-code mapping as logs/period.xml
+# (Daily->D, Weekly->W, ... Yearly->Y).
 _PERIOD_NAME_TO_FREQUENCY: dict[str, str] = {
     "daily": "D",
     "weekly": "W",
@@ -211,7 +214,7 @@ def _resolve_return_frequency_label(store: XMLStore, ret: dict) -> str:
     not the code itself."""
     period_id = get_attr(ret, "PeriodId", "Period_Id", default="")
     from backend.tools.instance_generator import get_period_info
-    period_info = get_period_info(period_id, store._tenant_id) or {}
+    period_info = get_period_info(period_id) or {}
     period_name = (period_info.get("PeriodName") or "").strip()
     if period_name:
         return period_name
@@ -326,21 +329,21 @@ def handle_returns_submittable_by_dept(scope: dict, entities: dict, store: XMLSt
 def _resolve_return_frequency_code(store: XMLStore, ret: dict) -> tuple[str, str]:
     """Return (frequency_code, period_name) for *ret*, using the same
     resolution order as handle_next_reporting_date: PeriodMaster's own
-    Frequency code (5.5, authoritative) -> PeriodName mapped through the
+    Frequency code (authoritative) -> PeriodName mapped through the
     canonical table -> the return's own RepFreq as a last resort. RepFreq
     is checked LAST, not second, because it isn't guaranteed to use the
-    same code alphabet next_reporting_date() understands (e.g. 6.0 data
-    has been seen with RepFreq="A" on a return whose actual period is
-    Yearly/"Y" — "A" isn't one of next_reporting_date()'s recognised
-    codes, so trusting RepFreq over the unambiguous PeriodName->code
-    mapping silently produced "no fixed period-end" for a return that
-    plainly has one). Shared by handle_next_reporting_date and
-    handle_reports_upcoming_in_range so the two can never disagree.
+    same code alphabet next_reporting_date() understands (RepFreq="A" has
+    been seen on a return whose actual period is Yearly/"Y" — "A" isn't
+    one of next_reporting_date()'s recognised codes, so trusting RepFreq
+    over the unambiguous PeriodName->code mapping silently produced "no
+    fixed period-end" for a return that plainly has one). Shared by
+    handle_next_reporting_date and handle_reports_upcoming_in_range so the
+    two can never disagree.
     """
     from backend.tools.instance_generator import get_period_info
 
     period_id = get_attr(ret, "PeriodId", "Period_Id", default="")
-    period_info = get_period_info(period_id, store._tenant_id) or {}
+    period_info = get_period_info(period_id) or {}
     period_name = (period_info.get("PeriodName") or "").strip()
 
     frequency = (period_info.get("Frequency") or "").strip().upper()
@@ -354,8 +357,8 @@ def _resolve_return_frequency_code(store: XMLStore, ret: dict) -> tuple[str, str
 def handle_next_reporting_date(scope: dict, entities: dict, store: XMLStore) -> dict:
     """Next period-end / due date for a named return, e.g. 'what is the
     next reporting date for the CIMS RoR return'. Frequency comes from the
-    return's PeriodId, resolved against period.xml (5.5) / Period.xml (6.0)
-    via instance_generator.get_period_info() — the same source used to
+    return's PeriodId, resolved against period.xml via
+    instance_generator.get_period_info() — the same source used to
     validate reporting dates during instance generation, so the two paths
     can never disagree on what a period's frequency means."""
     from backend.tools.instance_generator import next_reporting_date

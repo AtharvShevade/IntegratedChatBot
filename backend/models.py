@@ -9,10 +9,8 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message:              str            = Field(..., min_length=1, max_length=2000)
     session_id:           Optional[str]  = Field(None, max_length=128)
-    asp_session:          Optional[str]  = Field(None, max_length=1024)  # forwarded .AspNetCore.Session cookie (5.5 only)
+    asp_session:          Optional[str]  = Field(None, max_length=1024)  # forwarded .AspNetCore.Session cookie
     login_id:             Optional[str]  = Field(None, max_length=256)   # user login ID for report authorisation
-    tenant_id:            Optional[str]  = Field(None, max_length=64)    # 6.0 only — resolved client-side from JWT claim
-    jwt:                  Optional[str]  = Field(None, max_length=4096)  # 6.0 only — raw JWT, forwarded as Bearer token to .NET APIs that need it (e.g. instance generation)
     conversation_history: list[dict]     = Field(default_factory=list)   # last 6-7 msgs: [{"role":"user"|"assistant","text":"..."}]
     beautify:             bool           = Field(True)  # when True, use LLM to format DB Q&A results
     user_id:              Optional[str]  = Field(None, max_length=128)  # current user's ID (for DB Q&A role check)
@@ -66,7 +64,6 @@ class CompareRequest(BaseModel):
     instance_a:  int = Field(..., ge=0)   # 0-based index into session's cmp_instances
     instance_b:  int = Field(..., ge=0)
     request_id:  Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
-    tenant_id:   Optional[str] = Field(None, max_length=64)   # 6.0 only
 
 class ExplainCategoryRequest(BaseModel):
     """Request body for /explain-category — on-demand error explanation."""
@@ -75,7 +72,6 @@ class ExplainCategoryRequest(BaseModel):
     form_id:         Optional[str] = Field(None, max_length=64)
     report_name:     Optional[str] = Field(None, max_length=256)
     request_id:      Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
-    tenant_id:       Optional[str] = Field(None, max_length=64)   # 6.0 only
 
 
 

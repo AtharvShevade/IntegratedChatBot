@@ -1,18 +1,16 @@
-"""Version-agnostic entity loader — the parsing engine behind XMLStore.
+"""Entity loader — the parsing engine behind XMLStore.
 
-Given an EntitySpec (filename, row tag, attribute_map, list_fields, JSON
-fallback info) and a base directory, load_entity() returns a list of plain
-dicts keyed by *logical* field names, regardless of which raw XML/JSON
-attribute names the underlying file actually uses.
+Given an EntitySpec (filename, row tag, attribute_map, list_fields) and a
+base directory, load_entity() returns a list of plain dicts keyed by
+*logical* field names, regardless of which raw XML attribute names the
+underlying file actually uses.
 
-Kept independent of XMLStore and version_mode so it can be unit-tested
-directly against real data directories without constructing a store.
+Kept independent of XMLStore so it can be unit-tested directly against
+real data directories without constructing a store.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,24 +23,18 @@ logger = logging.getLogger("db_qa.versions.loader")
 class EntitySpec:
     """Declarative mapping from one logical entity to its on-disk representation.
 
-    attribute_map:  logical_name -> raw XML/JSON attribute name. Only keys
+    attribute_map:  logical_name -> raw XML attribute name. Only keys
                     listed here are ever read from the source file — this is
                     what guarantees credential attributes (Password, etc.)
                     can never leak into a loaded row: simply never list them.
     list_fields:    logical names whose raw value is a pipe-delimited string
                     that should become an actual Python list (empty string
                     becomes an empty list, not [""]).
-    json_fallback:  if True and the .xml file is missing on disk, fall back
-                    to reading json_filename (same attribute_map applies —
-                    6.0 JSON twins use the same raw attribute names as the
-                    6.0 XML).
     """
 
     filename: str
     row_tag: str
     attribute_map: dict[str, str | None]
-    json_fallback: bool = False
-    json_filename: str | None = None
     list_fields: tuple[str, ...] = ()
 
 
@@ -59,8 +51,7 @@ def _project_row(raw_attrs: dict[str, str], attribute_map: dict[str, str | None]
     Every logical key in attribute_map is present in the output, even when
     the raw attribute is absent from this particular row, or when the
     schema explicitly maps a logical field to `None` (no equivalent raw
-    attribute exists in this version at all) — either way the value is
-    None, which is what gives column parity across 5.5/6.0 loads.
+    attribute exists at all) — either way the value is None.
     """
     row: dict = {}
     for logical_name, raw_name in attribute_map.items():
@@ -93,47 +84,16 @@ def _parse_xml_rows(path: Path, row_tag: str) -> list[dict[str, str]] | None:
         return []
 
 
-def _parse_json_rows(path: Path) -> list[dict[str, str]] | None:
-    """Return raw attribute-like dicts from a JSON array file, or None if
-    the file doesn't exist.
-
-    JSON twins are expected to be a list of flat objects using the same
-    raw attribute names as the corresponding 6.0 XML file, so the same
-    attribute_map can project them. Values are coerced to str to match the
-    XML-derived dict shape (ElementTree attributes are always strings).
-    """
-    if not path.exists():
-        return None
-    try:
-        with path.open("r", encoding="utf-8-sig") as fh:
-            data = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.error("Failed to parse %s: %s", path, exc)
-        return []
-    if not isinstance(data, list):
-        logger.error("Expected a JSON array in %s, got %s", path, type(data).__name__)
-        return []
-    rows: list[dict[str, str]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        rows.append({k: ("" if v is None else str(v)) for k, v in item.items()})
-    return rows
-
-
 def load_entity(
     entity_name: str,
     base_dir: str | Path,
     *,
     schema: dict[str, EntitySpec],
-    is_6_0: bool = False,
     normalize: Callable[[list[dict]], list[dict]] | None = None,
 ) -> list[dict]:
     """Load one entity's rows as logical-keyed dicts.
 
-    Resolution order: parse <filename> as XML; if missing on disk and
-    spec.json_fallback and is_6_0, parse spec.json_filename as JSON instead.
-    Returns [] if the entity isn't in *schema* or neither file is present.
+    Returns [] if the entity isn't in *schema* or the file isn't present.
     """
     spec = schema.get(entity_name)
     if spec is None:
@@ -145,20 +105,11 @@ def load_entity(
     raw_rows = _parse_xml_rows(xml_path, spec.row_tag)
 
     if raw_rows is None:
-        if spec.json_fallback and is_6_0 and spec.json_filename:
-            json_path = base / spec.json_filename
-            raw_rows = _parse_json_rows(json_path)
-            if raw_rows is not None:
-                logger.info(
-                    "[loader] %s: .xml missing, used JSON fallback %s (%d rows)",
-                    entity_name, json_path, len(raw_rows),
-                )
-        if raw_rows is None:
-            logger.warning(
-                "[loader] %s: neither %s nor a JSON fallback found under %s",
-                entity_name, spec.filename, base,
-            )
-            return []
+        logger.warning(
+            "[loader] %s: %s not found under %s",
+            entity_name, spec.filename, base,
+        )
+        return []
 
     rows = [_project_row(r, spec.attribute_map, spec.list_fields) for r in raw_rows]
 

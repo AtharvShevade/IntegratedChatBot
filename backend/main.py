@@ -25,8 +25,6 @@ setup_logging(console_level=logging.INFO)
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
 from backend.models import ChatRequest, ChatResponse, CompareRequest, ExplainCategoryRequest  # noqa: E402
-from backend.version_mode import IS_6_0  # noqa: E402
-from backend.services.tenant_repo_service import UnknownTenantError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -151,18 +149,6 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(UnknownTenantError)
-async def unknown_tenant_exception_handler(request: Request, exc: UnknownTenantError) -> JSONResponse:
-    logger.error(
-        "[VERSION_MODE] Unknown/inactive tenant_id on %s %s: %s",
-        request.method, request.url.path, exc,
-    )
-    return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={"detail": "Unknown or inactive tenant_id."},
-    )
-
-
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     log_exception(
@@ -185,16 +171,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
         "API request received: /chat session=%s",
         request.session_id or "anonymous",
     )
-    if IS_6_0 and not request.tenant_id:
-        logger.error(
-            "[VERSION_MODE] APP_VERSION=6.0 but request has no tenant_id — "
-            "rejecting session=%s (check chatbot iframe URL wiring)",
-            request.session_id or "anonymous",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
     start = time.monotonic()
     # ── Debug trace: log every /chat request so missing identity is immediately visible ──
     from backend.utils.debug import debug_log
@@ -216,8 +192,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
             user_id=request.user_id,
             role_id=request.role_id,
             conversation_history=request.conversation_history[-7:] if request.conversation_history else None,
-            tenant_id=request.tenant_id,
-            jwt=request.jwt,
         ))
         elapsed = time.monotonic() - start
         intent_for_log = result.intent if isinstance(result, ChatResponse) else result.get("intent", "?")
@@ -271,23 +245,12 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
         "API request received: /compare-execute session=%s",
         request.session_id or "anonymous",
     )
-    if IS_6_0 and not request.tenant_id:
-        logger.error(
-            "[VERSION_MODE] APP_VERSION=6.0 but request has no tenant_id — "
-            "rejecting session=%s (check chatbot iframe URL wiring)",
-            request.session_id or "anonymous",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
     start = time.monotonic()
     try:
         result = await _run_cancellable(request.request_id, execute_comparison(
             session_id=request.session_id,
             idx_a=request.instance_a,
             idx_b=request.instance_b,
-            tenant_id=request.tenant_id,
         ))
         elapsed = time.monotonic() - start
         logger.info(
@@ -322,16 +285,6 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
         "API request received: /explain-category category=%s form_id=%s",
         request.category, request.form_id,
     )
-    if IS_6_0 and not request.tenant_id:
-        logger.error(
-            "[VERSION_MODE] APP_VERSION=6.0 but request has no tenant_id — "
-            "rejecting category=%s (check chatbot iframe URL wiring)",
-            request.category,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
     start = time.monotonic()
     try:
         result = await _run_cancellable(request.request_id, explain_category_for_report(
@@ -339,7 +292,6 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             category=request.category,
             form_id=request.form_id,
             report_name=request.report_name,
-            tenant_id=request.tenant_id,
         ))
         elapsed = time.monotonic() - start
         logger.info(
@@ -443,15 +395,13 @@ async def health() -> dict:
 
 
 @app.get("/download-file", status_code=status.HTTP_200_OK)
-async def download_file(form_id: str, type: str, filename: str, tenant_id: str | None = None):
+async def download_file(form_id: str, type: str, filename: str):
     """Serve a render or error file for download.
 
     Query params:
         form_id   — numeric report ID (non-numeric chars stripped server-side)
         type      — "render" | "error"
         filename  — bare filename, no directory component allowed
-        tenant_id — 6.0 only; resolves the tenant-scoped repo path instead of
-                    the global 5.5 one. Absent/None for 5.5 traffic (unchanged).
 
     Security: form_id is sanitised to digits only; filename is reduced to its
     basename so path-traversal attempts ('../../../etc/passwd') are rejected.
@@ -462,13 +412,7 @@ async def download_file(form_id: str, type: str, filename: str, tenant_id: str |
     from pathlib import Path
     from fastapi.responses import FileResponse
     from backend.tools.report_lookup import build_render_file_path, build_error_file_path
-    from backend.config import get_render_base_dir, get_instance_base_dir
-
-    if IS_6_0 and not tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
+    from backend.config import RENDER_BASE_DIR, INSTANCE_BASE_DIR
 
     # ── Input validation ──────────────────────────────────────────────────────
     safe_fid  = _re.sub(r"[^0-9]", "", form_id)
@@ -482,16 +426,13 @@ async def download_file(form_id: str, type: str, filename: str, tenant_id: str |
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
 
     # ── Path construction ─────────────────────────────────────────────────────
-    # get_render_base_dir/get_instance_base_dir resolve to the tenant-scoped
-    # path when tenant_id is set, and to the unchanged 5.5 global path
-    # (RENDER_BASE_DIR/INSTANCE_BASE_DIR) when tenant_id is None.
     if type == "render":
-        file_path = build_render_file_path(safe_fid, safe_name, tenant_id)
-        base_dir  = get_render_base_dir(tenant_id)
+        file_path = build_render_file_path(safe_fid, safe_name)
+        base_dir  = RENDER_BASE_DIR
         media     = "text/html"
     else:
-        file_path = build_error_file_path(safe_fid, safe_name, tenant_id)
-        base_dir  = get_instance_base_dir(tenant_id)
+        file_path = build_error_file_path(safe_fid, safe_name)
+        base_dir  = INSTANCE_BASE_DIR
         media     = "application/xml"
 
     # ── Containment check — prevent directory traversal ───────────────────────
@@ -514,22 +455,15 @@ async def download_file(form_id: str, type: str, filename: str, tenant_id: str |
 
 
 @app.get("/reports", status_code=status.HTTP_200_OK)
-async def list_reports(tenant_id: str | None = None) -> dict:
+async def list_reports() -> dict:
     """Return all known report names from returns.xml — used for guided-mode autocomplete."""
-    if IS_6_0 and not tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
     from backend.tools.report_lookup import _parse_returns
-    names = sorted({r.get("Name", "") for r in _parse_returns(tenant_id) if r.get("Name")})
+    names = sorted({r.get("Name", "") for r in _parse_returns() if r.get("Name")})
     return {"reports": names}
 
 
 @app.get("/allowed-actions", status_code=status.HTTP_200_OK)
-async def allowed_actions(
-    login_id: str | None = None, tenant_id: str | None = None,
-) -> dict:
+async def allowed_actions(login_id: str | None = None) -> dict:
     """Return the subset of guided-menu actions this user may see/perform.
 
     Side-effect-free (unlike POSTing a sentinel message through /guided, which
@@ -537,13 +471,8 @@ async def allowed_actions(
     guided flow). Used by the frontend to filter the action menu on load and
     whenever identity changes, independent of any conversation session.
     """
-    if IS_6_0 and not tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
     from backend.guided import _allowed_actions
-    return {"actions": _allowed_actions(login_id, tenant_id)}
+    return {"actions": _allowed_actions(login_id)}
 
 
 @app.get("/status-errors/{job_id}", status_code=status.HTTP_200_OK)
@@ -583,16 +512,6 @@ async def guided(request: ChatRequest) -> ChatResponse:
         "[REQUEST] mode=guided session=%s message=%r",
         request.session_id, request.message,
     )
-    if IS_6_0 and not request.tenant_id:
-        logger.error(
-            "[VERSION_MODE] APP_VERSION=6.0 but request has no tenant_id — "
-            "rejecting session=%s (check chatbot iframe URL wiring)",
-            request.session_id or "anonymous",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in 6.0 mode.",
-        )
     start = time.monotonic()
     try:
         result = await _run_cancellable(request.request_id, guided_step(
@@ -600,8 +519,6 @@ async def guided(request: ChatRequest) -> ChatResponse:
             session_id=request.session_id,
             asp_session=request.asp_session,
             login_id=request.login_id,
-            tenant_id=request.tenant_id,
-            jwt=request.jwt,
         ))
         elapsed = time.monotonic() - start
         logger.info(
