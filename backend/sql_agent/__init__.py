@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -116,9 +117,15 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
         )
 
     # ── Step 1: schema retrieval ──────────────────────────────────────────────
+    # Run on a worker thread (not directly on the event loop) so this
+    # coroutine has a real `await` suspension point — that's what lets
+    # /stop's task.cancel() interrupt this request immediately instead of
+    # only taking effect after the whole (possibly 300s+) pipeline finishes,
+    # and it keeps this session's blocking work from stalling every other
+    # session sharing the single event loop in the meantime.
     try:
         from backend.sql_agent.retriever import get_relevant_schema
-        tables, columns, matched_labels = get_relevant_schema(q)
+        tables, columns, matched_labels = await asyncio.to_thread(get_relevant_schema, q)
         logger.info("[SQL_AGENT] tables=%s", [t["table"] for t in tables])
     except Exception as exc:
         logger.error("[SQL_AGENT] Schema retrieval failed: %s", exc)
@@ -144,9 +151,10 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
     previous_error = None
 
     for attempt in range(MAX_SQL_RETRIES):
-        # Step 2: SQL generation
+        # Step 2: SQL generation (worker thread — see note above on Step 1)
         try:
-            result = generate_sql(
+            result = await asyncio.to_thread(
+                generate_sql,
                 q, tables, columns, matched_labels=matched_labels,
                 previous_sql=previous_sql, previous_error=previous_error,
             )
@@ -185,9 +193,9 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
                 accuracy_hint=accuracy_hint,
             )
 
-        # Step 4: execution
+        # Step 4: execution (worker thread — see note above on Step 1)
         try:
-            col_names, rows, db_error = execute_query(sql)
+            col_names, rows, db_error = await asyncio.to_thread(execute_query, sql)
             serialized_rows = serialize_rows(rows)
             logger.info("[SQL_AGENT] attempt=%d rows=%d db_error=%s", attempt + 1, len(rows), db_error)
         except Exception as exc:

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import re
 
+from rapidfuzz import process as _fuzz
+
 from backend.db_qa.intent_classifier import (
     _extract_action, _extract_after_kw, _extract_period,
     _extract_quoted_or_bracketed, _self_ref, ACTION_MAP, PERIOD_ALIASES,
@@ -39,7 +41,7 @@ _USER_FIELD_PATTERNS: dict[str, str] = {
     "created_date": r"\b(created|creation\s+date)\b",
     "created_by": r"\bwho\s+creat\w*\b",
     "last_login": r"\blast\s+(log|login|logged|signed)\b",
-    "failed_login_count": r"\bfailed\s+(login|password)\b",
+    "failed_login_count": r"\bfailed\s+(logins?|log\s*in\s*(attempts?|count)?|password)\b",
     "status": r"\b(active|status|enabled|disabled)\b",
     "password_date": r"\bpassword\s+(update|change|reset)\b",
 }
@@ -396,6 +398,16 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     # ── XBRL_RETURNS / NON_XBRL_RETURNS / PERIOD / DEPT_RETURN_MAPPING ──
     _mk(Intent.RETURNS_BY_FREQUENCY, ("self", "system_wide"),
         r"\bwhich\s+returns?\s+are\s+filed\s+(on\s+a\s+)?(monthly|quarterly|annual|yearly)\b"),
+    # RETURN_FIELD is checked BEFORE PERIOD_LOOKUP/PERIOD_LIST so a
+    # return-scoped question like "what is the reporting frequency of
+    # CIMS_ROR" (asking about ONE return) doesn't fall through to the
+    # system-wide period intents (which dump every configured period,
+    # ignoring the return name entirely).
+    _mk(Intent.RETURN_FIELD, ("return",),
+        r"\breturn\s+id\s+(for|of)\b", r"\binternal\s+form\s+id\s+(for|of)\b",
+        r"\b(reporting\s+)?(period|frequency)\s+(for|of)\s+(the\s+)?(return|form|report)?\s*\S",
+        r"\bwhat\s+(period|frequency)\s+is\b.{0,40}\breturn\b",
+        r"\bhow\s+often\s+is\b.{0,40}\bfiled\b"),
     _mk(Intent.PERIOD_LOOKUP, ("system_wide",),
         r"\bperiod\s+(name|id)\s+for\b", r"\bebr\s+frequency\s+code\b",
         r"\badvance\s+notification\s+days?\s+for\b"),
@@ -407,8 +419,24 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     _mk(Intent.RETURN_VALIDATION_CONFIG, ("self", "system_wide"),
         r"\b(formula|schema|rbi)\s+validation\b", r"\bcross-report\s+validation\b",
         r"\bbusiness\s+rules?\s+for\b", r"\bvalidation\s+rules?\s+(apply|for)\b"),
+    # REPORTS_FILED_IN_RANGE / REPORTS_UPCOMING_IN_RANGE are checked BEFORE
+    # NEXT_REPORTING_DATE: both mention "due"/"reporting date" too, but a
+    # "between X and Y" date-range span is the more specific signal and
+    # must win over NEXT_REPORTING_DATE's broader "when is X due" patterns.
+    _mk(Intent.REPORTS_FILED_IN_RANGE, ("self",),
+        r"\b(filed|submitted)\s+between\b", r"\breports?\s+filed\s+between\b",
+        r"\breturns?\s+filed\s+between\b", r"\bshow\s+me\s+all\b.{0,40}\bfiled\s+between\b"),
+    _mk(Intent.REPORTS_UPCOMING_IN_RANGE, ("self",),
+        r"\b(coming\s+up|upcoming|due)\s+between\b", r"\bwhich\s+.{0,40}\bare\s+due\s+between\b",
+        r"\bwhat\s+.{0,40}\b(coming\s+up|are\s+due)\s+between\b",
+        r"\bupcoming\s+(returns?|reports?|forms?)\b", r"\bwhat\s+.{0,40}\bupcoming\s+next\s+month\b"),
+    _mk(Intent.NEXT_REPORTING_DATE, ("return",),
+        r"\bnext\s+report(ing)?\s+date\b", r"\bnext\s+due\s+date\b",
+        r"\bwhen\s+is\b.{0,40}\bdue\b", r"\bwhen\s+(is|does)\b.{0,40}\bnext\s+(report|reporting|submission|due)\b",
+        r"\bwhen\s+(should|do)\s+i\s+(submit|file|report)\b", r"\bdue\s+date\s+for\b",
+        r"\bnext\s+period[\s-]?end\b"),
     _mk(Intent.RETURN_PROFILE, ("return",),
-        r"\breturn\s+id\s+for\b", r"\btaxonomy\s+(version|does)\b", r"\bxsd\s+path\b",
+        r"\btaxonomy\s+(version|does)\b", r"\bxsd\s+path\b",
         r"\bdue\s+days?\s+.*submission\s+of\s+return\b", r"\balternate\s+name\s+for\s+return\b"),
     _mk(Intent.RETURN_LIST, ("self", "system_wide"),
         r"\ball\s+(the\s+)?xbrl\s+returns?\b", r"\bhow\s+many\s+xbrl\s+returns?\b",
@@ -523,6 +551,62 @@ def _infer_target_type(q: str, accepted: tuple[str, ...]) -> str:
     return non_self[0] if non_self else accepted[0]
 
 
+_STATUS_FUZZY_THRESHOLD = 82  # 0-100; tolerates typos like "incative" without matching unrelated words
+
+
+class _FuzzyStatusPattern:
+    """Duck-typed as a re.Pattern (only .search() is called) — matches the
+    literal keywords via regex first, then falls back to word-level fuzzy
+    matching so typos (e.g. "incative" for "inactive") are still caught,
+    per the requirement that phrasing must not depend on exact spelling.
+
+    Plain edit-distance alone scores "active" vs "inactive" at ~86/100 —
+    well above a typo-tolerant threshold — which would make the two
+    polarities fuzzy-match each other in BOTH directions. Two guards fix
+    this without disabling fuzzy matching:
+
+    *required_prefixes*: only words starting with one of these (e.g.
+    "in"/"dis"/"deact") may fuzzy-match this pattern's keywords — lets
+    "incative" still match "inactive" while blocking "active" itself.
+
+    *excluded_prefixes*: words starting with one of these are never
+    accepted as a fuzzy match for this pattern — lets "active" itself
+    stay unmatched against the "inactive" keyword set even though
+    edit-distance alone would accept it.
+    """
+
+    def __init__(self, literal_pattern: re.Pattern, fuzzy_keywords: tuple[str, ...],
+                 required_prefixes: tuple[str, ...] = (), excluded_prefixes: tuple[str, ...] = ()):
+        self._literal = literal_pattern
+        self._fuzzy_keywords = fuzzy_keywords
+        self._required_prefixes = required_prefixes
+        self._excluded_prefixes = excluded_prefixes
+
+    def search(self, q: str):
+        m = self._literal.search(q)
+        if m:
+            return m
+        for w in re.findall(r"[a-zA-Z]{4,}", q.lower()):
+            if self._required_prefixes and not any(w.startswith(p) for p in self._required_prefixes):
+                continue
+            if any(w.startswith(p) for p in self._excluded_prefixes):
+                continue
+            if _fuzz.extractOne(w, self._fuzzy_keywords, score_cutoff=_STATUS_FUZZY_THRESHOLD):
+                return True
+        return None
+
+
+_ACTIVE_PAT = _FuzzyStatusPattern(
+    _kw(r"active", r"enabled"), ("active", "enabled"),
+    excluded_prefixes=("in", "dis", "deact"),
+)
+_INACTIVE_PAT = _FuzzyStatusPattern(
+    _kw(r"inactive", r"disabled", r"deactivated"),
+    ("inactive", "disabled", "deactivated"),
+    required_prefixes=("in", "dis", "deact"),
+)
+
+
 # ── query_type keyword tables (USER_LIST / DEPARTMENT_LIST / ROLE_LIST) ──
 
 # "how many" combined with a status qualifier ("active"/"inactive") means
@@ -536,8 +620,8 @@ _USER_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("duplicate_email", _kw(r"duplicate\s+email", r"same\s+email", r"shared\s+email")),
     ("never_login", _kw(r"never\s+logged\s*in", r"never\s+log\w*", r"not\s+logged\s*in")),
     ("failed_login", _kw(r"failed\s+log\w*", r"failed\s+password")),
-    ("inactive", _kw(r"inactive", r"disabled", r"deactivated")),
-    ("active", _kw(r"active", r"enabled")),
+    ("inactive", _INACTIVE_PAT),
+    ("active", _ACTIVE_PAT),
 ]
 
 _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -546,8 +630,8 @@ _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("most", _kw(r"most\s+returns?", r"maximum\s+returns?")),
     ("fewest", _kw(r"fewest\s+returns?", r"least\s+returns?", r"minimum\s+returns?")),
     ("with_counts", _kw(r"return\s+counts?", r"with\s+their\s+return", r"assigned\s+return\s+counts?")),
-    ("inactive", _kw(r"inactive", r"disabled", r"deactivated")),
-    ("active", _kw(r"active", r"enabled")),
+    ("inactive", _INACTIVE_PAT),
+    ("active", _ACTIVE_PAT),
 ]
 
 _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -555,12 +639,10 @@ _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("exists", _kw(r"is\s+there\s+a\s+role", r"does\s+.*role.*exist", r"role\s+.*exist")),
     ("most_users", _kw(r"most\s+users", r"largest", r"biggest")),
     ("with_counts", _kw(r"user\s+counts?", r"number\s+of\s+users\s+in\s+each")),
-    ("inactive", _kw(r"inactive", r"disabled", r"deactivated")),
-    ("active", _kw(r"active", r"enabled")),
+    ("inactive", _INACTIVE_PAT),
+    ("active", _ACTIVE_PAT),
 ]
 
-_ACTIVE_PAT = _kw(r"active", r"enabled")
-_INACTIVE_PAT = _kw(r"inactive", r"disabled", r"deactivated")
 
 
 # Canonical verb per HasXxx group, checked before its synonyms so
@@ -647,6 +729,124 @@ def _extract_department_name_loose(q: str) -> str | None:
     return _extract_named_entity_before_or_after(q, ("department", "dept"))
 
 
+# Trailing filler words that _extract_after_kw's generic stop-set doesn't
+# cover — "due"/"next"/"date" etc. commonly trail the return name in
+# NEXT_REPORTING_DATE phrasings ("return DBR01 due", "return CIMS RoR next")
+# and would otherwise be captured as part of the name.
+_TRAILING_FILLER_RE = re.compile(
+    r"\s+(?:due|next|date|soon|now|please|today)\b.*$", re.IGNORECASE,
+)
+
+# Leading filler _extract_after_kw(q, "return", "form", "report") can
+# capture when "return"/"form"/"report" appears earlier in a longer phrase
+# than the actual name — e.g. "what is the RETURN id for CIMS_ROR" anchors
+# on the bare word "return" and (with no more-specific phrase tried first)
+# captures "id for CIMS_ROR" as the whole target. Stripped from the FRONT
+# of whatever was captured, for every return-scoped intent that shares this
+# extractor (return_profile, return_validation_config, submissions_for_
+# return, notification_query, ...) — not just next_reporting_date.
+_LEADING_FILLER_RE = re.compile(
+    r"^(?:id|code|number|version|detail|details|info|information|status|"
+    r"config|configuration)\s+(?:for|of)\s+", re.IGNORECASE,
+)
+
+
+def _clean_extracted_return_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    name = _LEADING_FILLER_RE.sub("", name).strip()
+    name = _TRAILING_FILLER_RE.sub("", name).strip()
+    return name or None
+
+
+def _extract_return_name_for_due_date(q: str) -> str | None:
+    """Return-name extraction for NEXT_REPORTING_DATE/RETURN_FIELD — handles
+    both "return/form/report X" anchoring (shared with the other
+    return-scoped intents) and "X for/of Y" phrasings that have no literal
+    return/form/report keyword immediately before the name (e.g. "reporting
+    date for CIMS_ROR", "reporting frequency of CIMS_ROR", "return id for
+    CIMS_ROR")."""
+    name = _extract_after_kw(q, "return", "form", "report")
+    if not name:
+        name = _extract_after_kw(
+            q, "reporting date for", "due date for", "period end for",
+            "period end date for", "reporting frequency of", "reporting frequency for",
+            "frequency of", "frequency for", "reporting period of", "reporting period for",
+            "period of", "return id for", "return id of", "internal form id for",
+            "internal form id of", "submit", "file",
+        )
+    return _clean_extracted_return_name(name)
+
+
+# field-word -> canonical RETURN_FIELD value, checked in this order so more
+# specific phrases (matched first) win over generic ones.
+_RETURN_FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("return_id", _kw(r"return\s+id", r"internal\s+form\s+id")),
+    ("frequency", _kw(r"frequency", r"period\b", r"how\s+often")),
+]
+
+
+def _extract_return_field(q: str) -> str | None:
+    for field, pat in _RETURN_FIELD_PATTERNS:
+        if pat.search(q):
+            return field
+    return None
+
+
+# Recognises "DD-Mon-YYYY", "DD/MM/YYYY", "DD-MM-YYYY", "YYYY-MM-DD",
+# "DD.MM.YYYY", or a bare month-year like "June 2025"/"Jun 2025" — the
+# same date vocabulary instance_generator.py's _DATE_FMT/_EXTRA_FMTS
+# already accept for a single date, extended here to find TWO dates in
+# one "between X and Y" question.
+_DATE_TOKEN = (
+    r"\d{1,2}[-/.](?:[A-Za-z]{3,9}|\d{1,2})[-/.]\d{2,4}"
+    r"|\d{4}-\d{1,2}-\d{1,2}"
+    r"|[A-Za-z]{3,9}\s+\d{4}"
+)
+_DATE_RANGE_RE = re.compile(
+    rf"\bbetween\s+({_DATE_TOKEN})\s+(?:and|to|-)\s+({_DATE_TOKEN})\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_date_range(q: str) -> tuple[str | None, str | None]:
+    """Return (date_from, date_to) as raw matched strings from a "between
+    X and Y" phrase (left unparsed — handler-layer parsing owns turning
+    these into actual date objects, same separation as every other entity
+    extractor in this module), or from a relative phrase ("next month" /
+    "this month") resolved here into a concrete "DD-Mon-YYYY".."DD-Mon-YYYY"
+    pair, since only the classifier sees the raw question text — by the
+    time a handler runs it only has already-extracted entities, not q."""
+    m = _DATE_RANGE_RE.search(q)
+    if m:
+        return m.group(1), m.group(2)
+
+    import calendar
+    from datetime import date as _date
+    today = _date.today()
+    if re.search(r"\bnext\s+month\b", q, re.IGNORECASE):
+        year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    elif re.search(r"\bthis\s+month\b", q, re.IGNORECASE):
+        year, month = today.year, today.month
+    else:
+        return None, None
+    last_day = calendar.monthrange(year, month)[1]
+    return f"01-{_date(year, month, 1).strftime('%b')}-{year}", f"{last_day:02d}-{_date(year, month, 1).strftime('%b')}-{year}"
+
+
+_XBRL_TYPE_RE = _kw(r"non-?xbrl", r"nx\b")
+
+
+def _extract_xbrl_type(q: str) -> str | None:
+    """"xbrl" or "non_xbrl", or None if the question doesn't specify —
+    handlers treat None as "both"."""
+    if _XBRL_TYPE_RE.search(q):
+        return "non_xbrl"
+    if re.search(r"\bxbrl\b", q, re.IGNORECASE):
+        return "xbrl"
+    return None
+
+
 def _extract_new_params(intent: Intent, q: str) -> dict:
     params: dict = {}
     explicit = _extract_quoted_or_bracketed(q)
@@ -673,7 +873,18 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
                   Intent.DEPARTMENTS_WITH_RETURN_ACCESS, Intent.DEPARTMENT_HAS_RETURN,
                   Intent.MY_RETURN_ACCESS, Intent.RETURNS_SUBMITTABLE_BY_DEPT, Intent.LOG_QUERY,
                   Intent.NOTIFICATION_QUERY, Intent.AUDIT_ENTITY_TRAIL, Intent.CROSS_ENTITY_QUERY):
-        params["target_return"] = explicit or _extract_after_kw(q, "return", "form", "report")
+        params["target_return"] = explicit or _clean_extracted_return_name(_extract_after_kw(q, "return", "form", "report"))
+    elif intent in (Intent.NEXT_REPORTING_DATE, Intent.RETURN_FIELD):
+        params["target_return"] = explicit or _extract_return_name_for_due_date(q)
+
+    if intent == Intent.RETURN_FIELD:
+        params["field"] = _extract_return_field(q)
+
+    if intent in (Intent.REPORTS_FILED_IN_RANGE, Intent.REPORTS_UPCOMING_IN_RANGE):
+        date_from, date_to = _extract_date_range(q)
+        params["date_from"] = date_from
+        params["date_to"] = date_to
+        params["xbrl_type"] = _extract_xbrl_type(q)
 
     if intent in (Intent.PERMISSION_CHECK, Intent.ROLES_WITH_PERMISSION):
         # Raw keyword, NOT the mapped HasNew/HasEdit/... attribute name —

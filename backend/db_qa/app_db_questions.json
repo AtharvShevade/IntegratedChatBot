@@ -249,7 +249,10 @@
         "What is the table linkbase path for return [return name]?",
         "What is the alternate name for return [return name]?",
         "What are the namespace details for return [return name]?",
-        "What is the reporting frequency of return [return name]?"
+        "What is the reporting frequency of return [return name]?",
+        "What is the next reporting date for return [return name]?",
+        "When is return [return name] due?",
+        "When should I submit return [return name] next?"
       ]
     },
 

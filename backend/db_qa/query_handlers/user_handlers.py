@@ -13,7 +13,7 @@ unchanged for these intents too.
 from __future__ import annotations
 
 from backend.db_qa.versions.loader import build_index
-from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
 
 _USER_FIELD_LABELS: dict[str, str] = {
     "email": "email address",
@@ -84,6 +84,10 @@ def handle_user_field(scope: dict, entities: dict, store: XMLStore) -> dict:
 
     value = u.get(attr, "").strip() or "Not set"
     who_phrase = "Your" if scope["target_type"] == "self" else f"{u.get('Name', '')}'s"
+    if field == "status":
+        display = "Yes, active" if is_active_status(value) else "No, inactive"
+        return _result("user_field", field_label.title(), [{attr: value}],
+                       f"{who_phrase} account is active: {display}.")
     return _result("user_field", field_label.title(), [{attr: value}],
                    f"{who_phrase} {field_label} is: {value}.")
 
@@ -93,10 +97,10 @@ def handle_user_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     users = store.users()
 
     if query_type == "active":
-        rows = [u for u in users if u.get("Status", "").lower() == "true"]
+        rows = [u for u in users if is_active_status(u.get("Status"))]
         label, summary = "Active Users", f"There are {len(rows)} active users."
     elif query_type == "inactive":
-        rows = [u for u in users if u.get("Status", "").lower() != "true"]
+        rows = [u for u in users if not is_active_status(u.get("Status"))]
         label, summary = "Inactive / Disabled Users", f"There are {len(rows)} inactive users."
     elif query_type == "never_login":
         rows = [u for u in users if not u.get("LastLoginDT", "").strip()]
@@ -114,17 +118,17 @@ def handle_user_list(scope: dict, entities: dict, store: XMLStore) -> dict:
         summary = (f"Found {len(rows)} user records sharing {len(dup_emails)} email address(es)."
                    if rows else "No duplicate email addresses found. All user emails are unique.")
     elif query_type == "count":
-        active = [u for u in users if u.get("Status", "").lower() == "true"]
+        active = [u for u in users if is_active_status(u.get("Status"))]
         return _result("user_list", "User Count",
                        [{"total": len(users), "active": len(active), "inactive": len(users) - len(active)}],
                        f"Total users: {len(users)} ({len(active)} active, {len(users) - len(active)} inactive).",
                        total=len(users), active=len(active))
     elif query_type == "active_count":
-        n = sum(1 for u in users if u.get("Status", "").lower() == "true")
+        n = sum(1 for u in users if is_active_status(u.get("Status")))
         return _result("user_list", "Active User Count", [{"active": n}],
                        f"Active users: {n}.", active=n)
     elif query_type == "inactive_count":
-        n = sum(1 for u in users if u.get("Status", "").lower() != "true")
+        n = sum(1 for u in users if not is_active_status(u.get("Status")))
         return _result("user_list", "Inactive User Count", [{"inactive": n}],
                        f"Inactive users: {n}.", inactive=n)
     else:

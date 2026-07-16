@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import Counter
 
 from backend.db_qa.versions.loader import build_index
-from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
 
 _ACTION_MAP: dict[str, str] = {
     "new": "HasNew", "create": "HasNew", "add": "HasNew",
@@ -38,22 +38,22 @@ def handle_role_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     roles = store.roles()
 
     if query_type == "count":
-        active = sum(1 for r in roles if r.get("Status", "").lower() == "true")
+        active = sum(1 for r in roles if is_active_status(r.get("Status")))
         return _result("role_list", "Role Count",
                        [{"total": len(roles), "active": active, "inactive": len(roles) - active}],
                        f"Total roles: {len(roles)} ({active} active, {len(roles) - active} inactive).",
                        total=len(roles), active=active)
     elif query_type == "active_count":
-        n = sum(1 for r in roles if r.get("Status", "").lower() == "true")
+        n = sum(1 for r in roles if is_active_status(r.get("Status")))
         return _result("role_list", "Active Role Count", [{"active": n}], f"Active roles: {n}.", active=n)
     elif query_type == "inactive_count":
-        n = sum(1 for r in roles if r.get("Status", "").lower() != "true")
+        n = sum(1 for r in roles if not is_active_status(r.get("Status")))
         return _result("role_list", "Inactive Role Count", [{"inactive": n}], f"Inactive roles: {n}.", inactive=n)
     elif query_type == "active":
-        rows = [r for r in roles if r.get("Status", "").lower() == "true"]
+        rows = [r for r in roles if is_active_status(r.get("Status"))]
         label, summary = "Active Roles", f"There are {len(rows)} active roles."
     elif query_type == "inactive":
-        rows = [r for r in roles if r.get("Status", "").lower() != "true"]
+        rows = [r for r in roles if not is_active_status(r.get("Status"))]
         label, summary = "Inactive Roles", f"There are {len(rows)} inactive roles."
     elif query_type in ("most_users", "with_counts"):
         counts = Counter(get_attr(u, "RoleId", "Role_Id", default="") for u in store.users())

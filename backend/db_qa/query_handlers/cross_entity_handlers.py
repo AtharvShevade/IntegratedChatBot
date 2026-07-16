@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -96,10 +97,11 @@ def handle_cross_entity_query(scope: dict, entities: dict, store: XMLStore) -> d
     # "role R with access to return X"
     if target_role and target_return:
         role = store.role_by_name(target_role)
-        ret = store.resolve_return(target_return)
-        if not role or not ret:
-            missing = target_role if not role else target_return
-            return _not_found("cross_entity_query", "Cross-Entity Query", f"'{missing}' not found.")
+        if not role:
+            return _not_found("cross_entity_query", "Cross-Entity Query", f"'{target_role}' not found.")
+        ret, early = resolve_named_return(store, scope, target_return, intent="cross_entity_query", label="Cross-Entity Query")
+        if early:
+            return early
         role_id = get_attr(role, "RoleId", "Role_Id", default="")
         ret_id, ret_code = ret.get("Id", ""), ret.get("ReturnId", "")
         dept_index = {get_attr(d, "DeptId", "Id", default=""): d for d in store.departments()}
@@ -117,9 +119,9 @@ def handle_cross_entity_query(scope: dict, entities: dict, store: XMLStore) -> d
 
     # "most recent submitter of return X"
     if target_return:
-        ret = store.resolve_return(target_return)
-        if not ret:
-            return _not_found("cross_entity_query", "Cross-Entity Query", f"Return '{target_return}' not found.")
+        ret, early = resolve_named_return(store, scope, target_return, intent="cross_entity_query", label="Cross-Entity Query")
+        if early:
+            return early
         form_id = ret.get("ReturnId") or ret.get("Id", "")
         logs = [store.enrich_instance_log_entry(l) for l in store.instance_log() if l.get("FormId") == form_id]
         logs.sort(key=lambda l: l.get("DTC", ""), reverse=True)

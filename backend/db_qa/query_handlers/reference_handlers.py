@@ -6,6 +6,7 @@ the legacy handle_bank_info/handle_segment_info behavior.
 from __future__ import annotations
 
 from backend.db_qa.xml_store import XMLStore
+from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -33,6 +34,21 @@ def handle_segment_info(scope: dict, entities: dict, store: XMLStore) -> dict:
 def handle_notification_query(scope: dict, entities: dict, store: XMLStore) -> dict:
     target_return = entities.get("target_return", "")
     notification_type = entities.get("notification_type", "")
+
+    # Notifications.xml / NotificationReturnDetails.xml have no 6.0
+    # equivalent at all — they aren't in v6_0_schema.py's SCHEMA, and no
+    # matching file exists anywhere in the real 6.0 tenant folder structure
+    # (checked against tenant 1001/1002 data). store.notifications()/
+    # notification_details() therefore always return [] under 6.0, which
+    # would otherwise be indistinguishable from "checked and none are
+    # configured" — say plainly that this data isn't available in 6.0
+    # instead of implying a real (negative) answer was found.
+    if store._is_6_0:
+        return _not_found(
+            "notification_query", "Notifications",
+            "Notification configuration is not available in this version of the application.",
+        )
+
     notifs = list(store.notifications())
     details = list(store.notification_details())
 
@@ -40,8 +56,14 @@ def handle_notification_query(scope: dict, entities: dict, store: XMLStore) -> d
         notifs = [n for n in notifs if n.get("NotificationType", "").lower() == notification_type.lower()]
 
     if target_return:
-        ret = store.resolve_return(target_return)
-        ret_id = (ret.get("ReturnId") or ret.get("Id")) if ret else None
+        # target_return is an OPTIONAL filter here (unlike return_profile
+        # etc. where it's required) — but an ambiguous partial name should
+        # still trigger disambiguation rather than silently resolving to
+        # nothing and falling through to "show every notification".
+        ret, early = resolve_named_return(store, scope, target_return, intent="notification_query", label="Notifications")
+        if early:
+            return early
+        ret_id = ret.get("ReturnId") or ret.get("Id")
         if ret_id:
             details = [d for d in details if d.get("ReturnId") == ret_id or d.get("FormId") == ret_id]
             notifs = [n for n in notifs if n.get("ReturnId") == ret_id or n.get("FormId") == ret_id]

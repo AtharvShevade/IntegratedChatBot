@@ -201,6 +201,22 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
     "FormId", "PeriodId", "Password", "PasswordHash",
 })
 
+# 6.0's User.xml stores these fields encrypted (ciphertext, not decryptable
+# here) — never worth displaying in that mode. 5.5 stores them as plain
+# text, so they stay visible there. Department/Role records also have a
+# Name/EmailId column but store them as plain text in BOTH versions, so
+# this only applies to user records specifically (detected via the
+# presence of a LoginId field, which only user rows have).
+_SKIP_FIELDS_6_0_USER_ONLY: frozenset[str] = frozenset({"Name", "EmailId", "MobileNumber"})
+
+
+def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
+    import os
+    is_user_record = bool(sample_record and "LoginId" in sample_record)
+    if is_user_record and os.getenv("APP_VERSION", "5.5").strip() == "6.0":
+        return _SKIP_FIELDS | _SKIP_FIELDS_6_0_USER_ONLY
+    return _SKIP_FIELDS
+
 _PRIORITY_COLS: list[str] = [
     "Name", "LoginId", "EmailId", "MobileNo",
     "DeptName", "RoleName", "Status", "LastLoginDT",
@@ -216,10 +232,16 @@ def _friendly(key: str) -> str:
     return _FRIENDLY_NAMES.get(key, key.replace("_", " ").title())
 
 
-def _fmt_val(v) -> str:
+_STATUS_COLS: frozenset[str] = frozenset({"Status"})
+
+
+def _fmt_val(v, col: str | None = None) -> str:
     if v is None or v == "" or v == []:
         return "\u2014"
     s = str(v).strip()
+    if col in _STATUS_COLS:
+        from backend.db_qa.xml_store import is_active_status
+        return "Active" if is_active_status(s) else "Inactive"
     if s.lower() == "true":
         return "Active"
     if s.lower() == "false":
@@ -228,7 +250,8 @@ def _fmt_val(v) -> str:
 
 
 def _select_cols(records: list[dict]) -> list[str]:
-    sample = [k for k in records[0].keys() if k not in _SKIP_FIELDS]
+    skip   = _skip_fields(records[0])
+    sample = [k for k in records[0].keys() if k not in skip]
     cols   = [c for c in _PRIORITY_COLS if c in sample]
     return cols or sample[:5]
 
@@ -254,10 +277,11 @@ def _format_plain(result: dict) -> str:
     if len(records) == 1:
         rec   = records[0]
         lines = [label, ""]
+        skip  = _skip_fields(rec)
         for k, v in rec.items():
-            if k in _SKIP_FIELDS:
+            if k in skip:
                 continue
-            fv = _fmt_val(v)
+            fv = _fmt_val(v, k)
             if fv != "\u2014":
                 lines.append(f"  {_friendly(k)}: {fv}")
         return "\n".join(lines)
@@ -265,7 +289,7 @@ def _format_plain(result: dict) -> str:
     cols   = _select_cols(records)
     hdrs   = [_friendly(c) for c in cols]
     widths = [
-        max(len(h), max((len(_fmt_val(r.get(c))) for r in records), default=0))
+        max(len(h), max((len(_fmt_val(r.get(c), c)) for r in records), default=0))
         for h, c in zip(hdrs, cols)
     ]
 
@@ -276,13 +300,28 @@ def _format_plain(result: dict) -> str:
         f"{label}  ({len(records)} records)", "",
         _row(hdrs),
         "|" + "|".join("-" * (w + 2) for w in widths) + "|",
-        *[_row([_fmt_val(r.get(c)) for c in cols]) for r in records],
+        *[_row([_fmt_val(r.get(c), c) for c in cols]) for r in records],
         "", summary,
     ]
     return "\n".join(lines)
 
 
-def _build_db_qa_data(result: dict) -> dict:
+_LIST_SHAPED_INTENTS: frozenset[str] = frozenset({
+    "users_by_department", "users_by_role", "role_users",
+})
+
+
+def _is_list_shaped(intent: str | None) -> bool:
+    """True when *intent* always represents a filtered collection (even if
+    it happens to match only one row right now) rather than a single-entity
+    lookup — these must keep the compact multi-column table shape instead
+    of falling into the single-record full-detail view."""
+    if not intent:
+        return False
+    return intent.endswith("_list") or intent in _LIST_SHAPED_INTENTS
+
+
+def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
     """Return structured table data consumed by the frontend DbQaResultBlock component.
 
     The frontend renders this as a proper HTML table rather than pre-formatted text.
@@ -316,23 +355,26 @@ def _build_db_qa_data(result: dict) -> dict:
             "cols":     ["total", "active", "inactive"],
             "headers":  ["Total", "Active", "Inactive"],
             "records":  [{
-                "total":    _fmt_val(r.get("total")),
-                "active":   _fmt_val(r.get("active")),
-                "inactive": _fmt_val(r.get("inactive")),
+                "total":    _fmt_val(r.get("total"), "total"),
+                "active":   _fmt_val(r.get("active"), "active"),
+                "inactive": _fmt_val(r.get("inactive"), "inactive"),
             }],
             "is_count": True,
         }
 
-    # Single record — only non-empty, non-ID fields
-    if len(records) == 1:
+    # Single record — only non-empty, non-ID fields (skipped for list-shaped
+    # intents, e.g. "list of active users" matching exactly one user must
+    # still render as a compact one-row table, not a full profile dump).
+    if len(records) == 1 and not _is_list_shaped(intent):
         rec  = records[0]
-        cols = [k for k in rec if k not in _SKIP_FIELDS and _fmt_val(rec.get(k)) != "\u2014"]
+        skip = _skip_fields(rec)
+        cols = [k for k in rec if k not in skip and _fmt_val(rec.get(k), k) != "\u2014"]
         return {
             "label":    label,
             "summary":  summary,
             "cols":     cols,
             "headers":  [_friendly(c) for c in cols],
-            "records":  [{c: _fmt_val(rec.get(c)) for c in cols}],
+            "records":  [{c: _fmt_val(rec.get(c), c) for c in cols}],
             "is_count": False,
         }
 
@@ -343,7 +385,7 @@ def _build_db_qa_data(result: dict) -> dict:
         "summary":  summary,
         "cols":     cols,
         "headers":  [_friendly(c) for c in cols],
-        "records":  [{c: _fmt_val(r.get(c)) for c in cols} for r in records],
+        "records":  [{c: _fmt_val(r.get(c), c) for c in cols} for r in records],
         "is_count": False,
     }
 
@@ -404,7 +446,7 @@ def handle_db_qa_query(
         # Instantiate XML data store — tenant-scoped when tenant_id is given
         # (6.0); tenant_id must come only from the authenticated request,
         # never from `params` (LLM-extracted chat entities).
-        store = xml_store.XMLStore(config.APP_DB_BASE_PATH, tenant_id=tenant_id)
+        store = xml_store.XMLStore(config.get_app_db_base_path(tenant_id), tenant_id=tenant_id)
         # ── Debug trace: log function entry with full identity context ───────────────
         debug_log(
             "DB QA ROUTER — handle_db_qa_query",
@@ -510,18 +552,26 @@ def handle_db_qa_query(
                     intent=intent, target_type=scope.get("target_type"),
                     is_admin=scope.get("is_admin"), tenant_id=tenant_id,
                 )
+                _meta = new_result.get("meta", {})
+                _is_disambiguation = bool(_meta.get("disambiguation"))
                 rendered = templates.render(intent, new_result)
                 response_dict = {
                     "intent": intent,
                     "response_text": rendered,
-                    "result_type": "db_qa_result",
+                    "result_type": "disambiguation" if _is_disambiguation else "db_qa_result",
+                    "options": _meta.get("options", []) if _is_disambiguation else [],
                     "db_intent": intent,
                     "db_found": new_result.get("found", False),
                     "db_records": new_result.get("records", []),
                     "db_summary": new_result.get("summary", ""),
                     "db_beautified": "",
-                    "db_qa_data": _build_db_qa_data(new_result),
+                    "db_qa_data": _build_db_qa_data(new_result, intent),
                 }
+                # Disambiguation prompts are a menu of return names, not a
+                # data result — beautification would only risk paraphrasing
+                # the exact option strings the user needs to reply with.
+                if _is_disambiguation:
+                    return response_dict
                 if beautify and config.APP_DB_ENABLE_BEAUTIFY:
                     try:
                         full_response = ""
@@ -578,7 +628,7 @@ def handle_db_qa_query(
             "db_records":  result.get("records", []),
             "db_summary":  result.get("summary", ""),
             "db_beautified": "",
-            "db_qa_data":  _build_db_qa_data(result),
+            "db_qa_data":  _build_db_qa_data(result, intent),
         }
         
         # Beautify if enabled and config allows

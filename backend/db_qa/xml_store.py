@@ -17,6 +17,19 @@ from backend.db_qa.versions import loader
 logger = logging.getLogger("xml_store")
 
 
+def is_active_status(value: str | None) -> bool:
+    """True when a User/Department/Role `Status` value means active/enabled.
+
+    5.5 stores this as the literal string "true"/"false". 6.0 stores a
+    numeric code instead (confirmed: 1 = active, 0 = inactive, 2 = a
+    disabled/deleted-like state) — neither convention matches the other,
+    so callers must go through this helper rather than compare to a
+    hardcoded literal.
+    """
+    v = (value or "").strip().lower()
+    return v == "true" or v == "1"
+
+
 def get_attr(row: dict, *possible_names: str, default: str = "") -> str:
     """Return the first present value from *row* among *possible_names*.
 
@@ -654,3 +667,85 @@ class XMLStore:
         if matches:
             return by_name.get(matches[0])
         return None
+
+    def find_return_candidates(self, query: str, limit: int | None = 10) -> list[dict]:
+        """Return ALL plausible return matches for *query*, not just one —
+        for callers (e.g. next-reporting-date) that must ask the user to
+        disambiguate rather than silently guess when a partial name like
+        "cims" matches many returns (resolve_return()/return_by_name()
+        collapse to a single best guess, which is wrong for that case).
+
+        Cascades: exact Name/ReturnId -> compact-normalised exact match
+        (so "cims ror" == "CIMS_ROR" == "cims-ror", same underscore/space/
+        hyphen/paren-insensitive matching backend.tools.report_lookup.
+        find_matching_reports() uses for status/generate/schedule — this
+        store's return records differ from that module's Oracle-backed
+        lookups, so the normalisation is duplicated locally rather than
+        importing it, but the matching CONTRACT is intentionally the same)
+        -> name starts-with query -> query appears anywhere in name ->
+        fuzzy (difflib). Stops at the first tier that produces any match.
+
+        *limit* caps how many rows are returned (None = unlimited) — pass
+        None when the caller needs the true total match count (e.g. to show
+        "found N matches" without silently truncating that count).
+        """
+        if not query:
+            return []
+        q = query.strip().lower()
+        if not q:
+            return []
+
+        exact = self.return_by_name(query) or self.return_by_id(query)
+        if exact:
+            return [exact]
+
+        all_returns = list(self.returns()) + list(self.non_xbrl_returns())
+        seen: set[str] = set()
+
+        def _dedup_add(rows: list[dict]) -> list[dict]:
+            out = []
+            for r in rows:
+                key = r.get("Name", "") + "|" + r.get("Id", "")
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append(r)
+            return out
+
+        def _cap(rows: list[dict]) -> list[dict]:
+            return rows if limit is None else rows[:limit]
+
+        import re as _re
+
+        def _compact(s: str) -> str:
+            return _re.sub(r"[_\-\s/()]+", "", s.lower())
+
+        q_compact = _compact(q)
+        if q_compact:
+            compact_exact = _dedup_add([
+                r for r in all_returns
+                if _compact(r.get("Name", "")) == q_compact or _compact(r.get("ReturnId", "") or "") == q_compact
+            ])
+            if compact_exact:
+                return _cap(compact_exact)
+
+        starts_with = _dedup_add([r for r in all_returns if r.get("Name", "").lower().startswith(q)])
+        if starts_with:
+            return _cap(starts_with)
+
+        contains = _dedup_add([r for r in all_returns if q in r.get("Name", "").lower()])
+        if contains:
+            return _cap(contains)
+
+        if q_compact:
+            compact_contains = _dedup_add([r for r in all_returns if q_compact in _compact(r.get("Name", ""))])
+            if compact_contains:
+                return _cap(compact_contains)
+
+        import difflib
+        names = sorted({r.get("Name", "") for r in all_returns if r.get("Name")})
+        fuzzy_n = limit if limit is not None else len(names)
+        fuzzy_names = difflib.get_close_matches(query, names, n=fuzzy_n, cutoff=0.6)
+        if not fuzzy_names:
+            return []
+        by_name_lower = {r.get("Name", "").lower(): r for r in all_returns if r.get("Name")}
+        return _dedup_add([by_name_lower[n.lower()] for n in fuzzy_names if n.lower() in by_name_lower])

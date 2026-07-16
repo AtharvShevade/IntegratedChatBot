@@ -67,8 +67,12 @@ class Intent(str, Enum):
     # XBRL_RETURNS
     RETURN_LIST = "return_list"
     RETURN_PROFILE = "return_profile"
+    RETURN_FIELD = "return_field"
     RETURN_VALIDATION_CONFIG = "return_validation_config"
     RETURNS_SUBMITTABLE_BY_DEPT = "returns_submittable_by_dept"
+    NEXT_REPORTING_DATE = "next_reporting_date"
+    REPORTS_FILED_IN_RANGE = "reports_filed_in_range"
+    REPORTS_UPCOMING_IN_RANGE = "reports_upcoming_in_range"
 
     # NON_XBRL_RETURNS
     NONXBRL_RETURN_LIST = "nonxbrl_return_list"
@@ -281,6 +285,13 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         target_types=("return",),
         required_entities=("target_return",),
     ),
+    Intent.RETURN_FIELD: IntentSpec(
+        "A single field of a named return (return id, internal form id, "
+        "reporting period/frequency, due days, version, xsd path) — NOT "
+        "the full profile dump",
+        target_types=("return",),
+        required_entities=("target_return", "field"),
+    ),
     Intent.RETURN_VALIDATION_CONFIG: IntentSpec(
         "Validation configuration for a return or system-wide — formula, "
         "schema-calc, RBI validation, large-validator, cross-report "
@@ -293,6 +304,28 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         "departments can submit a named return (e.g. DPSS09, DBR01)",
         target_types=("self", "department", "return"),
         optional_entities=("target_department", "target_return"),
+    ),
+    Intent.NEXT_REPORTING_DATE: IntentSpec(
+        "Next reporting/period-end date and submission due date for a named "
+        "return, computed from its period frequency (period.xml) and DueDays",
+        target_types=("return",),
+        required_entities=("target_return",),
+    ),
+    Intent.REPORTS_FILED_IN_RANGE: IntentSpec(
+        "Which XBRL or non-XBRL returns were actually submitted (InstanceLog "
+        "entries) between two dates, scoped to the caller's own department — "
+        "'show me all reports filed between X and Y'",
+        target_types=("self",),
+        required_entities=("date_from", "date_to"),
+        optional_entities=("xbrl_type",),
+    ),
+    Intent.REPORTS_UPCOMING_IN_RANGE: IntentSpec(
+        "Which XBRL or non-XBRL returns have a computed next reporting/due "
+        "date falling between two dates, scoped to the caller's own "
+        "department — 'what reports are coming up between X and Y'",
+        target_types=("self",),
+        required_entities=("date_from", "date_to"),
+        optional_entities=("xbrl_type",),
     ),
 
     # ── NON_XBRL_RETURNS ─────────────────────────────────────────────────

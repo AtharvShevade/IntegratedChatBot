@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from collections import Counter
 
-from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
+from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -38,24 +39,24 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
     depts = store.departments()
 
     if query_type == "count":
-        active = sum(1 for d in depts if d.get("Status", "").lower() == "true")
+        active = sum(1 for d in depts if is_active_status(d.get("Status")))
         return _result("department_list", "Department Count",
                        [{"total": len(depts), "active": active, "inactive": len(depts) - active}],
                        f"Total departments: {len(depts)} ({active} active, {len(depts) - active} inactive).",
                        total=len(depts), active=active)
     elif query_type == "active_count":
-        n = sum(1 for d in depts if d.get("Status", "").lower() == "true")
+        n = sum(1 for d in depts if is_active_status(d.get("Status")))
         return _result("department_list", "Active Department Count", [{"active": n}],
                        f"Active departments: {n}.", active=n)
     elif query_type == "inactive_count":
-        n = sum(1 for d in depts if d.get("Status", "").lower() != "true")
+        n = sum(1 for d in depts if not is_active_status(d.get("Status")))
         return _result("department_list", "Inactive Department Count", [{"inactive": n}],
                        f"Inactive departments: {n}.", inactive=n)
     elif query_type == "active":
-        rows = [d for d in depts if d.get("Status", "").lower() == "true"]
+        rows = [d for d in depts if is_active_status(d.get("Status"))]
         label, summary = "Active Departments", f"There are {len(rows)} active departments."
     elif query_type == "inactive":
-        rows = [d for d in depts if d.get("Status", "").lower() != "true"]
+        rows = [d for d in depts if not is_active_status(d.get("Status"))]
         label, summary = "Inactive Departments", f"There are {len(rows)} inactive departments."
     elif query_type in ("most", "fewest", "no_returns", "with_counts"):
         enriched = []
@@ -133,10 +134,9 @@ def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> d
 
 def handle_departments_with_return_access(scope: dict, entities: dict, store: XMLStore) -> dict:
     target = entities.get("target_return", "")
-    ret = store.resolve_return(target) if target else None
-    if not ret:
-        return _not_found("departments_with_return_access", "Departments With Return Access",
-                          f"Return '{target}' not found." if target else "Please specify a return name.")
+    ret, early = resolve_named_return(store, scope, target, intent="departments_with_return_access", label="Departments With Return Access")
+    if early:
+        return early
     ret_id = ret.get("Id", "")
     ret_code = ret.get("ReturnId", "")
     matches = []
@@ -156,10 +156,17 @@ def handle_department_has_return(scope: dict, entities: dict, store: XMLStore) -
         who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
         return _not_found("department_has_return", "Department Return Access", f"{who} department could not be found.")
     target = entities.get("target_return", "")
-    ret = store.resolve_return(target) if target else None
-    if not ret:
-        return _not_found("department_has_return", "Department Return Access",
-                          f"Return '{target}' not found." if target else "Please specify a return name.")
+    # enforce_department_auth=False: this answers "does department Y have
+    # access to X" — a return outside the ASKING user's own allowed set is
+    # still a valid, truthful question about ANOTHER department's access,
+    # not something to deny (unlike return_profile/next_reporting_date/
+    # etc., which would leak the return's own content).
+    ret, early = resolve_named_return(
+        store, scope, target, intent="department_has_return", label="Department Return Access",
+        enforce_department_auth=False,
+    )
+    if early:
+        return early
     form_ids = {f.strip() for f in dept.get("Forms", "").split("|") if f.strip()}
     nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
     has_access = ret.get("Id", "") in form_ids or ret.get("ReturnId", "") in form_ids \

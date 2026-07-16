@@ -1,4 +1,4 @@
-﻿# agent/__init__.py -- Pipeline: intent → entity resolution → lookup → response.
+# agent/__init__.py -- Pipeline: intent → entity resolution → lookup → response.
 # Session tracks last_search_terms and multi-turn stage state.
 
 from __future__ import annotations
@@ -210,6 +210,7 @@ STAGE_SCHED_NAME    = "AWAITING_SCHED_NAME"          # schedule: re-entering rep
 STAGE_CMP_REPORT    = "AWAITING_CMP_REPORT"         # compare: picking report from disambiguation
 STAGE_CMP_FILE     = "AWAITING_CMP_FILE"            # compare: confirming which 2 instances
 STAGE_PREV_DATES   = "AWAITING_PREV_DATES_CONFIRM"  # status: yes/no for previous dates
+STAGE_RETURN_QA = "AWAITING_RETURN_QA_SELECTION"  # db_qa: picking a return from disambiguation (any return-scoped intent)
 
 # In-memory session store per session_id
 _session_context: dict[str, dict[str, Any]] = {}
@@ -500,6 +501,7 @@ def _is_staged_session(session: dict[str, Any] | None) -> bool:
         STAGE_DATE, STAGE_REPORT, STAGE_GEN_REPORT, STAGE_GEN_DATE,
         STAGE_RUN, STAGE_SCHED_REPORT, STAGE_SCHED_RPT_DATE, STAGE_SCHED_DT, STAGE_SCHED_CONFIRM,
         STAGE_SCHED_NAME, STAGE_CMP_REPORT, STAGE_CMP_FILE, STAGE_PREV_DATES,
+        STAGE_RETURN_QA,
     }
     return awaiting_state in staged_states
 
@@ -557,9 +559,15 @@ def _is_plausible_date(text: str) -> bool:
 
 
 def _looks_like_new_query(text: str) -> bool:
-    """True when the message looks like a fresh status, generate, or schedule intent.
+    """True when the message looks like a fresh status, generate, schedule,
+    or db_qa (USER/DEPARTMENT/ROLE/ROLE_ACCESS/return-metadata, etc.) intent.
 
     Uses fuzzy matching so typos like 'stats of raq', 'gnearte cims', 'schdule raq' still work.
+    This gates every "awaiting X" session stage below — without the db_qa
+    check, a message like "what is the next reporting date for CIMS_DNBS4a"
+    sent right after an unrelated report-status lookup gets misread as an
+    answer to that stage's pending prompt (e.g. parsed as a generate-instance
+    date) instead of being recognised as an unrelated fresh question.
     """
     if _STATUS_OF_RE.search(text):
         return True
@@ -570,8 +578,13 @@ def _looks_like_new_query(text: str) -> bool:
     # Fuzzy status keyword + at least one meaningful non-stop word
     if _fuzzy_has_status(text):
         words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
-        return any(w not in _STOP_WORDS for w in words)
-    return False
+        if any(w not in _STOP_WORDS for w in words):
+            return True
+    from backend.agent.db_qa_router import check_new_taxonomy_intent, check_db_qa_intent
+    db_intent, _ = check_new_taxonomy_intent(text)
+    if not db_intent:
+        db_intent, _ = check_db_qa_intent(text)
+    return bool(db_intent)
 
 
 def _normalise_conversational(text: str) -> str:
@@ -1017,6 +1030,88 @@ async def decide(
                 result = _apply_auth_to_status_result(result, allowed_form_ids, tenant_id)
             return _from_result(result, intent="get_status", session_id=session_id)
 
+    # -- DB Q&A (e.g. next reporting date): disambiguation (user picks a return) --
+    if not is_reset and session.get("awaiting") == STAGE_RETURN_QA:
+        # A reply to "which return did you mean?" is normally just a bare
+        # name or a number — but the user may instead type a brand-new,
+        # self-contained question (e.g. "what is the next reporting date
+        # for R018"). _looks_like_new_query() only recognizes status/
+        # generate/schedule phrasing, so it misses that case and this
+        # message would otherwise be forced through keyword-matching
+        # against the STALE pending_options list, silently answering with
+        # the wrong return. Re-run the db_qa classifier on the raw message
+        # first: if it independently resolves to its OWN complete intent
+        # (i.e. it already contains a concrete return name/id and isn't
+        # just answering the pending prompt), treat this as a fresh
+        # question and drop the stale disambiguation instead.
+        from backend.agent.db_qa_router import check_new_taxonomy_intent, check_db_qa_intent
+        _fresh_db_intent, _fresh_db_params = check_new_taxonomy_intent(user_query)
+        if not _fresh_db_intent:
+            _fresh_db_intent, _fresh_db_params = check_db_qa_intent(user_query)
+        _looks_fresh = bool(_fresh_db_intent) and bool((_fresh_db_params or {}).get("target_return"))
+
+        if _looks_like_new_query(user_query) or _looks_fresh:
+            if session_id:
+                _session_context.pop(session_id, None)
+            session = {}
+            if _looks_fresh:
+                # Re-enter decide() as a normal fresh query so it goes
+                # through the full STEP2 QA routing path.
+                return await decide(
+                    user_query, session_id=session_id, asp_session=asp_session,
+                    login_id=login_id, user_id=user_id, role_id=role_id,
+                    conversation_history=conversation_history, tenant_id=tenant_id, jwt=jwt,
+                )
+        else:
+            pending_qa_options: list[str] = session.get("pending_options", [])
+            raw_qa_input = user_query.strip()
+
+            resolved_qa_name: str | None = None
+            if raw_qa_input.isdigit():
+                idx = int(raw_qa_input) - 1
+                if 0 <= idx < len(pending_qa_options):
+                    resolved_qa_name = pending_qa_options[idx]
+                else:
+                    opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(pending_qa_options))
+                    return _build(
+                        intent=session.get("db_intent", "next_reporting_date"), report_name=None,
+                        response_text=(
+                            f"Please enter a number between 1 and {len(pending_qa_options)}.\n\n"
+                            f"{opts_text}"
+                        ),
+                        result_type="disambiguation",
+                        options=pending_qa_options,
+                    )
+
+            if resolved_qa_name is None:
+                raw_qa_lower = raw_qa_input.lower()
+                keyword_qa_match = next(
+                    (name for name in pending_qa_options if raw_qa_lower in name.lower() or name.lower() in raw_qa_lower),
+                    None,
+                )
+                resolved_qa_name = keyword_qa_match if keyword_qa_match else raw_qa_input
+
+            db_intent = session.get("db_intent", "next_reporting_date")
+            db_params = dict(session.get("db_params") or {})
+            db_params["target_return"] = resolved_qa_name
+            if session_id:
+                _session_context.pop(session_id, None)
+
+            from backend.agent.db_qa_router import handle_db_qa_query
+            final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
+            final_role_id = role_id if role_id and role_id != "0" else "0"
+            return handle_db_qa_query(
+                message=resolved_qa_name,
+                intent=db_intent,
+                params=db_params,
+                user_id=final_user_id,
+                role_id=final_role_id,
+                beautify=True,
+                model="phi3:mini",
+                tenant_id=tenant_id,
+                login_id=login_id,
+            )
+
     # -- Generate: disambiguation (user picks a report) -----------------------
     if not is_reset and session.get("awaiting") == STAGE_GEN_REPORT:
         # If user sends a status query, escape to a fresh flow
@@ -1325,10 +1420,10 @@ async def decide(
                     ),
                     result_type="disambiguation", options=pending,
                 )
-            auth_err = _check_name_auth(selected, allowed_form_ids, "compare_reports")
+            auth_err = _check_name_auth(selected, allowed_form_ids, "compare_reports", tenant_id)
             if auth_err:
                 return auth_err
-            return await _compare_with_name(selected, session_id)
+            return await _compare_with_name(selected, session_id, tenant_id)
 
     # -- Compare: instance file selection --------------------------------------
     # NOTE: use is_reset (not _looks_like_new_query) here — option labels contain
@@ -1374,7 +1469,19 @@ async def decide(
         )
         _has_sql = bool(_DB_QUERY_KW_RE.search(user_query))
 
+        # A confident match against the deterministic db_qa classifiers means
+        # this is a real data question, not small talk — never let the LLM
+        # conversational classifier (flaky on domain phrasing, e.g. it has
+        # mis-labelled "what is my role?" as "acknowledgement") override that.
+        _looks_like_db_qa = False
         if convo_reply is None and not _has_workflow and not _has_sql:
+            from backend.agent.db_qa_router import check_new_taxonomy_intent, check_db_qa_intent
+            _probe_intent, _ = check_new_taxonomy_intent(user_query)
+            if not _probe_intent:
+                _probe_intent, _ = check_db_qa_intent(user_query)
+            _looks_like_db_qa = bool(_probe_intent)
+
+        if convo_reply is None and not _has_workflow and not _has_sql and not _looks_like_db_qa:
             convo_category = await _classify_conversational(
                 user_query,
                 history=conversation_history,
@@ -1492,7 +1599,7 @@ async def decide(
                 )
                 final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
                 final_role_id = role_id if role_id and role_id != "0" else "0"
-                return handle_db_qa_query(
+                db_result = handle_db_qa_query(
                     message=user_query,
                     intent=db_intent,
                     params=db_params,
@@ -1503,6 +1610,18 @@ async def decide(
                     tenant_id=tenant_id,
                     login_id=login_id,
                 )
+                # A partial return name (e.g. "cims") can match many returns —
+                # stash the candidate list so the user's next message ("2" or
+                # a fuller name) can be resolved, same disambiguation UX as
+                # get_status/generate/schedule below (STAGE_REPORT et al.).
+                if db_result.get("result_type") == "disambiguation" and session_id:
+                    _session_context[session_id] = {
+                        "awaiting":        STAGE_RETURN_QA,
+                        "pending_options": db_result.get("options", []),
+                        "db_intent":       db_intent,
+                        "db_params":       db_params,
+                    }
+                return db_result
 
             # ── STEP 3 : SQL / Oracle analytics ──────────────────────────────
             # Runs only when both workflow AND XML-QA checks fail.
@@ -2548,39 +2667,26 @@ def _ask_another_date(
 # Generate instance helpers
 # ---------------------------------------------------------------------------
 
-def _validate_future_schedule_date(schedule_date: str, schedule_time: str | None) -> tuple[bool, str]:
-    """Validate that ``schedule_date`` (+ optional ``schedule_time``) is strictly
-    in the future. Unlike reporting_date, the schedule date has no frequency/
-    period-boundary restriction — it only needs to be a real, future calendar date.
+def _validate_future_schedule_date(
+    schedule_date: str, schedule_time: str | None, frequency: str = "",
+) -> tuple[bool, str]:
+    """Validate that ``schedule_date`` (+ optional ``schedule_time``) is a
+    real, future calendar date that ALSO falls on a valid period-end date
+    for ``frequency`` (e.g. 31-Mar/30-Jun/30-Sep/31-Dec for Quarterly) — the
+    schedule date is the reporting period the generated instance is for, so
+    it must satisfy the same frequency rules as reporting_date, just
+    requiring a future (not past/current) date.
+
+    Delegates to validate_reporting_date (require_future=True) so both
+    dates share one frequency-validation implementation rather than
+    duplicating the per-frequency rules here.
 
     Returns ``(is_valid, error_message)``.
     """
-    from datetime import date as _date, datetime as _dt
-
-    try:
-        parsed = _dt.strptime(schedule_date.strip(), "%d-%b-%Y").date()
-    except ValueError:
-        return False, (
-            f"Cannot parse '{schedule_date}'. Please enter a date like 31-Mar-2026, "
-            "31/03/2026, or 31 March 2026."
-        )
-
-    today = _date.today()
-    if parsed < today:
-        return False, f"'{schedule_date}' is not a future date. Scheduling requires a future date."
-
-    if parsed == today:
-        if schedule_time:
-            try:
-                sched_time = _dt.strptime(schedule_time.strip(), "%H:%M").time()
-                if sched_time <= _dt.now().time():
-                    return False, "The scheduled time must be in the future for today's date."
-            except ValueError:
-                return False, "The scheduled time must be in the future for today's date."
-        else:
-            return False, "The scheduled time must be in the future for today's date."
-
-    return True, ""
+    result = validate_reporting_date(
+        schedule_date, frequency, require_future=True, time_str=schedule_time,
+    )
+    return result["valid"], (result["error"] or "")
 
 
 def _finalize_schedule(
@@ -2603,9 +2709,13 @@ def _finalize_schedule(
          generate-instance, with ``require_future=False`` (past/current dates
          only) since a reporting period can never be in the future.
       3. Schedule Date + Schedule Time — the future date/time the .NET job
-         should actually run and generate the instance. These are NOT
-         frequency-validated (any future date/time is acceptable) since they
-         describe *when to run*, not *which period*.
+         should actually run and generate the instance. Schedule Date is
+         validated against the same frequency/period-boundary rules as
+         Reporting Date (via ``_validate_future_schedule_date``, which
+         delegates to ``validate_reporting_date`` with
+         ``require_future=True``) — only future dates are accepted, but
+         they must still land on a valid period-end for the report's
+         frequency. Schedule Time itself has no frequency restriction.
       4. Confirmation (Schedule / Change Data).
 
     Handles partial input gracefully at every stage and re-prompts for
@@ -2683,12 +2793,11 @@ def _finalize_schedule(
             result_type="sched_awaiting_rpt_date",
         )
 
-    # ── Schedule-date validation — must be strictly future, but is NOT
-    # frequency-restricted (unlike reporting_date above). Schedule date/time
-    # describe *when the job should run*, not which reporting period it's
-    # for, so any future date/time is acceptable.
+    # ── Schedule-date validation — must be a future date AND satisfy the
+    # same frequency/period-boundary rules as reporting_date (e.g. only
+    # 31-Mar/30-Jun/30-Sep/31-Dec for Quarterly).
     if schedule_date:
-        _sched_valid, _sched_err = _validate_future_schedule_date(schedule_date, schedule_time)
+        _sched_valid, _sched_err = _validate_future_schedule_date(schedule_date, schedule_time, frequency)
         if not _sched_valid:
             if session_id:
                 _session_context[session_id] = {

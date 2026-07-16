@@ -97,7 +97,11 @@ RETURN_FORM_ID_ATTR: str = os.getenv("XML_6_0_RETURN_FORM_ID_ATTR", "Id")
 RETURN_NAME_ATTR: str = os.getenv("XML_6_0_RETURN_NAME_ATTR", "Name")
 
 # Period.xml's period-id attribute is "Id", not 5.5's "Period_Id". Confirmed:
-# 6.0's Period.xml has NO "Frequency" attribute at all (only Id + PeriodName) —
-# resolve_return_exact() already falls back to Return.xml's own "RepFreq"
-# attribute when period_info has no Frequency, so this degrades gracefully.
+# 6.0's Period.xml has NO "Frequency" attribute at all (only Id + PeriodName).
+# resolve_return_exact() falls back to instance_generator._PERIOD_ID_TO_FREQUENCY
+# (a version-stable PeriodId->Frequency table sourced from 5.5's own Period.xml)
+# rather than Return.xml's own "RepFreq" attribute directly — RepFreq is
+# inconsistent across returns sharing the same PeriodId (e.g. 'A' vs 'Y' both
+# appear under PeriodId 107 "Yearly"), which silently broke date-frequency
+# validation for any return using an unrecognised RepFreq code.
 PERIOD_ID_ATTR: str = os.getenv("XML_6_0_PERIOD_ID_ATTR", "Id")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -72,10 +73,14 @@ def handle_submission_list(scope: dict, entities: dict, store: XMLStore) -> dict
 
     target_return = entities.get("target_return", "")
     if target_return:
-        ret = store.resolve_return(target_return)
-        if ret:
-            form_id = ret.get("ReturnId") or ret.get("Id", "")
-            logs = [l for l in logs if l.get("FormId") == form_id]
+        # Optional filter, but still disambiguate on a partial/ambiguous
+        # name rather than silently resolving to nothing and showing every
+        # submission unfiltered.
+        ret, early = resolve_named_return(store, scope, target_return, intent="submission_list", label="Submissions")
+        if early:
+            return early
+        form_id = ret.get("ReturnId") or ret.get("Id", "")
+        logs = [l for l in logs if l.get("FormId") == form_id]
 
     label = "My Submissions" if scope["target_type"] == "self" else "Submissions"
     return _result("submission_list", label, logs, f"Found {len(logs)} submission record(s).", count=len(logs))
@@ -102,10 +107,9 @@ def handle_submission_detail(scope: dict, entities: dict, store: XMLStore) -> di
 
 def handle_submissions_for_return(scope: dict, entities: dict, store: XMLStore) -> dict:
     target = entities.get("target_return", "")
-    ret = store.resolve_return(target) if target else None
-    if not ret:
-        return _not_found("submissions_for_return", "Submissions for Return",
-                          f"Return '{target}' not found." if target else "Please specify a return name.")
+    ret, early = resolve_named_return(store, scope, target, intent="submissions_for_return", label="Submissions for Return")
+    if early:
+        return early
     form_id = ret.get("ReturnId") or ret.get("Id", "")
     logs = [store.enrich_instance_log_entry(l) for l in store.instance_log() if l.get("FormId") == form_id]
     logs.sort(key=lambda l: l.get("DTC", ""), reverse=True)
@@ -123,14 +127,15 @@ def handle_my_submission_history(scope: dict, entities: dict, store: XMLStore) -
 
     target_return = entities.get("target_return", "")
     if target_return:
-        ret = store.resolve_return(target_return)
-        if ret:
-            form_id = ret.get("ReturnId") or ret.get("Id", "")
-            matches = [l for l in logs if l.get("FormId") == form_id]
-            return _result("my_submission_history", f"My Submissions: {ret.get('Name')}", matches,
-                           f"You have submitted return '{ret.get('Name')}' {len(matches)} time(s)."
-                           if matches else f"You have not yet submitted return '{ret.get('Name')}'.",
-                           count=len(matches))
+        ret, early = resolve_named_return(store, scope, target_return, intent="my_submission_history", label="My Submission History")
+        if early:
+            return early
+        form_id = ret.get("ReturnId") or ret.get("Id", "")
+        matches = [l for l in logs if l.get("FormId") == form_id]
+        return _result("my_submission_history", f"My Submissions: {ret.get('Name')}", matches,
+                       f"You have submitted return '{ret.get('Name')}' {len(matches)} time(s)."
+                       if matches else f"You have not yet submitted return '{ret.get('Name')}'.",
+                       count=len(matches))
 
     seen_returns = {l.get("ReturnName", "") for l in logs if l.get("ReturnName")}
     return _result("my_submission_history", "My Submission History", logs,

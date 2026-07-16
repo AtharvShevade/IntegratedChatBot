@@ -109,6 +109,36 @@ def get_period_info(period_id: str | int, tenant_id: str | None = None) -> dict 
     return _parse_period_master(tenant_id).get(str(period_id).strip())
 
 
+# PeriodId -> Frequency fallback, sourced from 5.5's Period.xml (which has a
+# real Frequency attribute per period). 6.0's Period.xml carries no Frequency
+# attribute at all, so without this, frequency resolution falls back straight
+# to each Return's own RepFreq — and RepFreq is inconsistent across returns
+# sharing the same period (e.g. PeriodId 107 "Yearly" appears with RepFreq
+# 'Y' on most returns but 'A' on others, such as CIMS_RAQ(Annually)/
+# RAQ(Annually) — the same returns exist under the same PeriodId in BOTH
+# 5.5 and 6.0 data). PeriodId is the one canonical, version-stable key, so
+# resolving frequency from it (when Period.xml's own Frequency is absent)
+# fixes the exact regression: a 6.0 Yearly return with RepFreq='A' silently
+# accepted any date because 'A' isn't a code the validator recognises.
+#
+# Only IDs whose PeriodName is confirmed identical between 5.5 and 6.0 are
+# included — PeriodId 110 is deliberately excluded because 5.5 uses it for
+# "Yearly(Calendar Year)" while 6.0's period master defines it as "NA".
+_PERIOD_ID_TO_FREQUENCY: dict[str, str] = {
+    "101": "D",   # Daily
+    "102": "W",   # Weekly
+    "103": "F",   # Fortnightly
+    "104": "M",   # Monthly
+    "105": "Q",   # Quarterly
+    "106": "H",   # Half Yearly
+    "107": "Y",   # Yearly
+    "108": "C",   # Half Yearly (Calendar Year)
+    "109": "Z",   # Fortnightly + Monthly
+    "111": "HM",  # Half Monthly
+    "113": "G",   # As An When
+}
+
+
 # -- Return resolver (exact match, used post-disambiguation) --------------------
 
 def resolve_return_exact(report_name: str, tenant_id: str | None = None) -> dict | None:
@@ -133,9 +163,18 @@ def resolve_return_exact(report_name: str, tenant_id: str | None = None) -> dict
 
     period_id   = match.get("PeriodId", "").strip()
     period_info = get_period_info(period_id, tenant_id) or {}
-    # PeriodMaster Frequency is canonical; RepFreq on Return element is fallback.
-    # 6.0's Period.xml has no Frequency attribute at all — always falls back to RepFreq.
-    frequency   = (period_info.get("Frequency") or match.get("RepFreq", "")).strip().upper()
+    # Frequency resolution, in priority order:
+    #   1. Period.xml's own Frequency attribute (5.5 always has this; canonical).
+    #   2. _PERIOD_ID_TO_FREQUENCY[period_id] — the version-stable fallback for
+    #      6.0, whose Period.xml has no Frequency attribute at all.
+    #   3. The Return's own RepFreq — last resort only, since it can be
+    #      inconsistent across returns sharing the same PeriodId (e.g. 'A'
+    #      vs 'Y' both appearing under PeriodId 107 "Yearly").
+    frequency = (
+        period_info.get("Frequency")
+        or _PERIOD_ID_TO_FREQUENCY.get(period_id)
+        or match.get("RepFreq", "")
+    ).strip().upper()
     period_name = period_info.get("PeriodName", "").strip()
 
     return {
@@ -472,6 +511,78 @@ def validate_reporting_date(
 
     # D, G (as-and-when), HM, and unrecognised frequencies: any valid past date accepted
     return {"valid": True, "error": None, "suggestions": []}
+
+
+def next_reporting_date(frequency: str, due_days: str | int | None = None, *, after: date | None = None) -> dict[str, Any]:
+    """Compute the next period-end reporting date for *frequency*, plus its
+    submission due date (period-end + due_days), relative to *after* (default:
+    today). Reuses the same frequency period-end tables as
+    validate_reporting_date()/_hint_dates() so "what counts as a valid date"
+    and "what's the next one" never disagree.
+
+    Returns: {"period_end": "DD-Mon-YYYY", "due_date": "DD-Mon-YYYY" | None}
+    or {"period_end": None, "error": str} if the frequency has no fixed
+    period-end (e.g. daily, as-and-when).
+    """
+    today = after or date.today()
+    freq = (frequency or "").strip().upper()
+
+    def _next_from_ends(ends: set[tuple[int, int]]) -> date:
+        candidates = sorted(
+            date(y, m, d) for y in (today.year, today.year + 1) for (d, m) in ends
+        )
+        return next(d for d in candidates if d > today)
+
+    if freq == "Q":
+        period_end = _next_from_ends(_Q_ENDS)
+    elif freq == "H":
+        period_end = _next_from_ends(_H_FY_ENDS)
+    elif freq == "C":
+        period_end = _next_from_ends(_H_CY_ENDS)
+    elif freq == "Y":
+        period_end = _next_from_ends({(31, 3)})
+    elif freq == "B":
+        period_end = _next_from_ends({(31, 12)})
+    elif freq == "M":
+        y, m = today.year, today.month
+        last_day = calendar.monthrange(y, m)[1]
+        period_end = date(y, m, last_day)
+        if period_end <= today:
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+            last_day = calendar.monthrange(y, m)[1]
+            period_end = date(y, m, last_day)
+    elif freq == "W":
+        days_ahead = (4 - today.weekday()) % 7  # 4 = Friday
+        period_end = today + __import__("datetime").timedelta(days=days_ahead or 7)
+    elif freq == "F":
+        y, m = today.year, today.month
+        last_day = calendar.monthrange(y, m)[1]
+        for candidate in (date(y, m, 15), date(y, m, last_day)):
+            if candidate > today:
+                period_end = candidate
+                break
+        else:
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+            period_end = date(y, m, 15)
+    else:
+        return {
+            "period_end": None,
+            "due_date": None,
+            "error": f"Frequency {frequency!r} has no fixed period-end date (daily/as-and-when returns are due continuously).",
+        }
+
+    due_date = None
+    if due_days is not None:
+        try:
+            due_date = period_end + __import__("datetime").timedelta(days=int(due_days))
+        except (TypeError, ValueError):
+            due_date = None
+
+    return {
+        "period_end": period_end.strftime(_DATE_FMT),
+        "due_date": due_date.strftime(_DATE_FMT) if due_date else None,
+        "error": None,
+    }
 
 
 # -- .NET API call --------------------------------------------------------------

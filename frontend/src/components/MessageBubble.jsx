@@ -1158,6 +1158,17 @@ function SqlResultBlock({ data }) {
   )
 }
 
+function renderDbQaCell(col, value) {
+  if ((col === 'Status' || col === 'status') && (value === 'Active' || value === 'Inactive')) {
+    return (
+      <span className={`dbqa-status-pill ${value === 'Active' ? 'is-active' : 'is-inactive'}`}>
+        {value}
+      </span>
+    )
+  }
+  return value ?? '—'
+}
+
 // ── DB QA Result Block ────────────────────────────────────────────────────────
 function DbQaResultBlock({ data, fallbackText }) {
   if (!data || (data.records?.length === 0 && !data.summary)) {
@@ -1225,7 +1236,7 @@ function DbQaResultBlock({ data, fallbackText }) {
           {cols.map((c, i) => (
             <div key={c} className="dbqa-kv-row">
               <span className="dbqa-kv-key">{headers[i]}</span>
-              <span className="dbqa-kv-val">{rec[c] ?? '—'}</span>
+              <span className="dbqa-kv-val">{renderDbQaCell(c, rec[c])}</span>
             </div>
           ))}
         </div>
@@ -1248,7 +1259,7 @@ function DbQaResultBlock({ data, fallbackText }) {
           <tbody>
             {records.map((rec, ri) => (
               <tr key={ri}>
-                {cols.map((c) => <td key={c}>{rec[c] ?? '—'}</td>)}
+                {cols.map((c) => <td key={c}>{renderDbQaCell(c, rec[c])}</td>)}
               </tr>
             ))}
           </tbody>

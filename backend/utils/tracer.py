@@ -59,14 +59,14 @@ def trace(func):
         parts = [_fmt(a) for a in args] + [f"{k}={_fmt(v)}" for k, v in kwargs.items()]
         sig   = ", ".join(parts)
 
-        print(f"\n>>> ENTER {name}({sig})", flush=True)
+        _safe_print(f"\n>>> ENTER {name}({sig})")
         _trc.debug("ENTER %s  args=%s  kwargs=%s", name, args, kwargs)
 
         try:
             result = func(*args, **kwargs)
         except Exception as exc:
             # Print the error clearly before re-raising so it is visible in context
-            print(f"!!! ERROR {name} → {type(exc).__name__}: {exc}", flush=True)
+            _safe_print(f"!!! ERROR {name} -> {type(exc).__name__}: {exc}")
             _trc.exception("ERROR in traced function %s", name)
             raise
 
@@ -81,8 +81,17 @@ def trace(func):
         else:
             r_repr = repr(result)[:_MAX_RESULT]
 
-        print(f"<<< EXIT  {name} → {r_repr}", flush=True)
-        _trc.debug("EXIT  %s → %s", name, r_repr)
+        _safe_print(f"<<< EXIT  {name} -> {r_repr}")
+        _trc.debug("EXIT  %s -> %s", name, r_repr)
         return result
 
     return wrapper
+
+
+def _safe_print(line: str) -> None:
+    """print(), but never crash the call it's tracing over a console encoding
+    (e.g. Windows cp1252) that can't represent every character in *line*."""
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", errors="replace").decode("ascii"), flush=True)

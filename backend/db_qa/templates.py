@@ -73,8 +73,12 @@ TEMPLATES: dict[Intent, str] = {
 
     Intent.RETURN_LIST: "{summary}",
     Intent.RETURN_PROFILE: "{summary}",
+    Intent.RETURN_FIELD: "{summary}",
     Intent.RETURN_VALIDATION_CONFIG: "{summary}",
     Intent.RETURNS_SUBMITTABLE_BY_DEPT: "{summary}",
+    Intent.NEXT_REPORTING_DATE: "{summary}",
+    Intent.REPORTS_FILED_IN_RANGE: "{summary}",
+    Intent.REPORTS_UPCOMING_IN_RANGE: "{summary}",
 
     Intent.NONXBRL_RETURN_LIST: "{summary}",
     Intent.NONXBRL_RETURN_PROFILE: "{summary}",
