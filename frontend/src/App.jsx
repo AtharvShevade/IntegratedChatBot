@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
-import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions } from './services/api.js'
+import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
 // survives a page refresh (the .NET params are only in the URL on first load).
@@ -160,6 +160,10 @@ const _pushResult = (result) => {
     downloadLabel: result.download_label || "",
     statusNote: result.status_note || "",
     dbQaData: result.db_qa_data || null,
+    // Feedback context — carried forward onto the feedback_prompt message
+    // pushed after this one, so a thumbs click can report which query/
+    // intent it was actually about.
+    feedbackIntent: result.db_intent || result.intent || "",
 
     // IMPORTANT FIX
     errorDetails: result.error_details || [],
@@ -182,7 +186,15 @@ const _pushResult = (result) => {
 
   if (isTerminal && !jobId) {
     setTimeout(() => {
-      setMessages((prev) => [...prev, { role: "feedback_prompt" }])
+      setMessages((prev) => {
+        const lastUser = [...prev].reverse().find((m) => m.role === 'user')
+        return [...prev, {
+          role: "feedback_prompt",
+          query: lastUser?.text || null,
+          intent: resultMsg.feedbackIntent || null,
+          resultType: resultMsg.resultType || null,
+        }]
+      })
     }, 1000)
   }
 
@@ -263,7 +275,15 @@ const pollForErrors = (jobId) => {
           setMessages((prev) => {
             const last = prev[prev.length - 1]
             if (last?.role === 'feedback_prompt') return prev
-            return [...prev, { role: 'feedback_prompt' }]
+            const resultIdx = prev.findIndex((m) => String(m.jobId) === String(jobId))
+            const resultMsg = resultIdx >= 0 ? prev[resultIdx] : null
+            const lastUser = [...prev].reverse().find((m) => m.role === 'user')
+            return [...prev, {
+              role: 'feedback_prompt',
+              query: lastUser?.text || null,
+              intent: resultMsg?.feedbackIntent || null,
+              resultType: resultMsg?.resultType || null,
+            }]
           })
         }, 800)
       }
@@ -457,7 +477,13 @@ const pollForErrors = (jobId) => {
 
 
   // ── Feedback after completed action ──────────────────────────────────────
-  const handleFeedback = (response) => {
+  const handleFeedback = (response, context = {}) => {
+    sendFeedback(response === 'yes' ? 'up' : 'down', {
+      query: context.query ?? null,
+      intent: context.intent ?? null,
+      resultType: context.resultType ?? null,
+      sessionId: sessionId.current,
+    })
     if (response === 'yes') {
       setMessages((prev) => [...prev, { role: 'feedback_positive' }])
     } else {

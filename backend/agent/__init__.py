@@ -1449,7 +1449,19 @@ async def decide(
                 result_type='final',
             )
 
-        _has_workflow = (
+        # A "between DATE and DATE" range is a strong, unambiguous signal
+        # that this is a DB Q&A range question (reports_filed_in_range /
+        # reports_upcoming_in_range), never a single-report workflow
+        # request — get_status/generate_instance/schedule_report all take
+        # at most ONE date, never a range. Without this override, a stem
+        # like "generated"/"filed" (which _fuzzy_has_generate/_fuzzy_has_status
+        # also match as report-workflow keywords) would incorrectly send
+        # "what XBRL returns generated between 31-Jan-2026 and 15-Mar-2026"
+        # into the generate-instance workflow instead of DB Q&A.
+        from backend.db_qa.new_intent_classifier import _DATE_RANGE_RE
+        _has_date_range = bool(_DATE_RANGE_RE.search(user_query))
+
+        _has_workflow = not _has_date_range and (
             _fuzzy_has_status(user_query)
             or _fuzzy_has_generate(user_query)
             or _fuzzy_has_schedule(user_query)
@@ -1567,9 +1579,9 @@ async def decide(
         # "How many departments" → XML-QA even if it contains "how many".
         else:
             from backend.agent.db_qa_router import (
-                check_db_qa_intent, check_new_taxonomy_intent, handle_db_qa_query,
+                check_db_qa_intent, check_new_taxonomy_intent_full, handle_db_qa_query,
             )
-            db_intent, db_params = check_new_taxonomy_intent(user_query)
+            db_intent, db_params = await check_new_taxonomy_intent_full(user_query)
             if not db_intent:
                 db_intent, db_params = check_db_qa_intent(user_query)
             debug_log(

@@ -24,7 +24,10 @@ setup_logging(console_level=logging.INFO)
 
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
-from backend.models import ChatRequest, ChatResponse, CompareRequest, ExplainCategoryRequest  # noqa: E402
+from backend.models import (  # noqa: E402
+    ChatRequest, ChatResponse, CompareRequest, ExplainCategoryRequest, FeedbackRequest,
+)
+from backend.utils.intent_log import log_feedback  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,21 @@ async def lifespan(app: FastAPI):
                     logger.info("Column FAISS index loaded")
             except Exception as exc:
                 logger.warning("FAISS warm-up failed: %s", exc)
+
+            try:
+                from backend.db_qa.intents.embedding_index import search_intent, INDEX_PATH
+                import os as _os
+                if _os.path.exists(INDEX_PATH):
+                    search_intent("warmup", k=1)
+                    logger.info("Intent exemplar FAISS index loaded")
+                else:
+                    logger.warning(
+                        "Intent exemplar index not found at %s — "
+                        "run `python -m backend.db_qa.intents.embedding_index` to build it",
+                        INDEX_PATH,
+                    )
+            except Exception as exc:
+                logger.warning("Intent exemplar index warm-up failed: %s", exc)
 
             try:
                 from backend.config import APP_DB_BASE_PATH
@@ -387,6 +405,24 @@ async def stop_request(request: Request) -> dict:
         stopped = True
     logger.info("Stop requested: request_id=%s stopped=%s", request_id, stopped)
     return {"stopped": stopped}
+
+
+@app.post("/feedback", status_code=status.HTTP_200_OK)
+async def submit_feedback(request: FeedbackRequest) -> dict:
+    """Record a thumbs up/down on a completed assistant response.
+
+    Persisted to logs/feedback.jsonl for later analysis — see
+    backend.utils.intent_log.log_feedback. Never raises: a logging
+    failure here should not surface as a chat-breaking error.
+    """
+    log_feedback(
+        rating=request.rating,
+        query=request.query,
+        intent=request.intent,
+        result_type=request.result_type,
+        session_id=request.session_id,
+    )
+    return {"ok": True}
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)

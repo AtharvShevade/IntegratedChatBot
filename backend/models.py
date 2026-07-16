@@ -74,4 +74,13 @@ class ExplainCategoryRequest(BaseModel):
     request_id:      Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
 
 
+class FeedbackRequest(BaseModel):
+    """Request body for /feedback — thumbs up/down on a completed assistant response."""
+    rating:      str            = Field(..., pattern="^(up|down)$")
+    query:       Optional[str]  = Field(None, max_length=2000)  # the user question this feedback is about
+    intent:      Optional[str]  = Field(None, max_length=128)   # detected intent for that response, if any
+    result_type: Optional[str]  = Field(None, max_length=64)    # e.g. db_qa_result, final, error
+    session_id:  Optional[str]  = Field(None, max_length=128)
+
+
 

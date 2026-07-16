@@ -313,19 +313,23 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
     ),
     Intent.REPORTS_FILED_IN_RANGE: IntentSpec(
         "Which XBRL or non-XBRL returns were actually submitted (InstanceLog "
-        "entries) between two dates, scoped to the caller's own department — "
+        "entries) between two dates — scoped to the caller's own department "
+        "for regular users; admins may additionally ask about a named "
+        "department or system-wide across all departments — "
         "'show me all reports filed between X and Y'",
-        target_types=("self",),
+        target_types=("self", "department", "system_wide"),
         required_entities=("date_from", "date_to"),
-        optional_entities=("xbrl_type",),
+        optional_entities=("target_department", "xbrl_type"),
     ),
     Intent.REPORTS_UPCOMING_IN_RANGE: IntentSpec(
         "Which XBRL or non-XBRL returns have a computed next reporting/due "
-        "date falling between two dates, scoped to the caller's own "
-        "department — 'what reports are coming up between X and Y'",
-        target_types=("self",),
+        "date falling between two dates — scoped to the caller's own "
+        "department for regular users; admins may additionally ask about a "
+        "named department or system-wide across all departments — "
+        "'what reports are coming up between X and Y'",
+        target_types=("self", "department", "system_wide"),
         required_entities=("date_from", "date_to"),
-        optional_entities=("xbrl_type",),
+        optional_entities=("target_department", "xbrl_type"),
     ),
 
     # ── NON_XBRL_RETURNS ─────────────────────────────────────────────────

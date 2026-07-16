@@ -565,6 +565,7 @@ export default function MessageBubble({
   downloadUrl, downloadLabel, statusNote,
   errorDetails,
   errorMessages,
+  feedbackQuery, feedbackIntent,
   onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback,
   onExplainCategory,
   allowedActions,
@@ -577,7 +578,14 @@ export default function MessageBubble({
   if (isWelcome)              return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} allowedActions={allowedActions} />
   if (role === 'action_menu') return <ActionMenu onGuidedAction={onGuidedAction} allowedActions={allowedActions} />
   if (role === 'sql_welcome') return <SqlWelcomeCard />
-  if (role === 'feedback_prompt')   return <FeedbackPrompt onFeedback={onFeedback} />
+  if (role === 'feedback_prompt')   return (
+    <FeedbackPrompt
+      onFeedback={onFeedback}
+      query={feedbackQuery}
+      intent={feedbackIntent}
+      resultType={resultType}
+    />
+  )
   if (role === 'feedback_positive') {
     return (
       <div className="bubble-row assistant">
@@ -967,12 +975,12 @@ function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions }) {
 }
 
 // ── Feedback Prompt ───────────────────────────────────────────────────────────
-function FeedbackPrompt({ onFeedback }) {
+function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
   const [answered, setAnswered] = useState(false)
   const handleClick = (response) => {
     if (answered) return
     setAnswered(true)
-    onFeedback?.(response)
+    onFeedback?.(response, { query, intent, resultType })
   }
   return (
     <div className="bubble-row assistant">

@@ -47,6 +47,37 @@ export async function stopRequest(requestId) {
 }
 
 /**
+ * Send a thumbs up/down rating for a completed assistant response.
+ * Best-effort, fire-and-forget: a failure here should never surface to the
+ * user or break the chat flow, so this never throws.
+ *
+ * @param {'up'|'down'} rating
+ * @param {object} [context]
+ * @param {string|null} [context.query] - The user question this feedback is about.
+ * @param {string|null} [context.intent] - Detected intent for that response, if known.
+ * @param {string|null} [context.resultType] - e.g. db_qa_result, final, error.
+ * @param {string|null} [context.sessionId]
+ */
+export async function sendFeedback(rating, context = {}) {
+  const { query = null, intent = null, resultType = null, sessionId = null } = context
+  try {
+    await fetch(`${BASE_URL}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rating,
+        query,
+        intent,
+        result_type: resultType,
+        session_id: sessionId,
+      }),
+    })
+  } catch {
+    // Best-effort — feedback loss should never affect the chat UI.
+  }
+}
+
+/**
  * Directly execute a pre-staged instance comparison.
  *
  * Called when the user clicks "Compare Instances" in the dropdown UI.

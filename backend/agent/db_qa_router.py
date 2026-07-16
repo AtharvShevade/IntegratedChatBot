@@ -21,6 +21,7 @@ from backend.db_qa.intent_classifier import classify
 from backend.db_qa.beautifier import beautify_stream
 from backend.models import ChatResponse
 from backend.utils.debug import debug_log
+from backend.utils.intent_log import log_intent_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -92,15 +93,53 @@ _CLASSIFIER_TO_DB_INTENT = {
 
 
 def check_new_taxonomy_intent(message: str) -> tuple[str | None, dict]:
-    """Detect a new-taxonomy (backend.db_qa.intents.taxonomy.Intent) match.
+    """Detect a new-taxonomy (backend.db_qa.intents.taxonomy.Intent) match
+    via REGEX ONLY — fast, synchronous, no LLM call.
 
-    Tried BEFORE the legacy check_db_qa_intent() by decide()'s call sites.
+    Used by decide()'s cheap look-ahead routing probes (deciding whether a
+    message even looks like a DB Q&A question, before choosing between
+    SQL/conversational/DB-QA branches) where a synchronous, low-latency
+    check is required. For the actual dispatch call site that executes a
+    DB Q&A handler, use check_new_taxonomy_intent_full() instead, which
+    adds the embedding-similarity + LLM-disambiguation tiers on a regex
+    miss.
+
     Returns (intent_value, params) with params already containing
     "target_type", or (None, {}) if nothing in the new rule set matched —
     callers should fall back to check_db_qa_intent() in that case.
     """
     from backend.db_qa.new_intent_classifier import classify_new
     intent, params, _target_type = classify_new(message)
+    log_intent_outcome(
+        query=message, tier="regex_new_taxonomy",
+        intent=intent.value if intent is not None else None,
+        found=intent is not None,
+    )
+    if intent is None:
+        return None, {}
+    return intent.value, params
+
+
+async def check_new_taxonomy_intent_full(message: str) -> tuple[str | None, dict]:
+    """Detect a new-taxonomy Intent match via the FULL tiered pipeline:
+    regex -> embedding similarity -> narrow LLM disambiguation.
+
+    Unlike check_new_taxonomy_intent() (regex only, sync, cheap), this is
+    async and may issue an embedding lookup and/or a narrow LLM call —
+    use it only at the actual dispatch call site where a DB Q&A result is
+    about to be executed, not in cheap routing probes.
+
+    Returns (intent_value, params), or (None, {}) if nothing matched at
+    any tier — callers should fall back to check_db_qa_intent() in that
+    case, same as check_new_taxonomy_intent().
+    """
+    from backend.db_qa.new_intent_classifier import classify_new_with_semantic_tiers
+    intent, params, _target_type, tier = await classify_new_with_semantic_tiers(message)
+    log_intent_outcome(
+        query=message, tier=tier,
+        intent=intent.value if intent is not None else None,
+        found=intent is not None,
+    )
     if intent is None:
         return None, {}
     return intent.value, params
@@ -128,10 +167,15 @@ def check_db_qa_intent(message: str) -> tuple[str | None, dict]:
         status=_status,
     )
     if not raw_intent or raw_intent == "UNKNOWN":
+        log_intent_outcome(query=message, tier="regex_legacy", intent=None, found=False)
         return None, {}
 
     db_intent = _CLASSIFIER_TO_DB_INTENT.get(raw_intent)
     if not db_intent:
+        log_intent_outcome(
+            query=message, tier="regex_legacy", intent=None, found=False,
+            raw_intent=raw_intent,
+        )
         return None, {}
 
     mapped_params = dict(params or {})
@@ -162,6 +206,10 @@ def check_db_qa_intent(message: str) -> tuple[str | None, dict]:
     if "target_dept" in mapped_params and "target_department" not in mapped_params:
         mapped_params["target_department"] = mapped_params["target_dept"]
 
+    log_intent_outcome(
+        query=message, tier="regex_legacy", intent=db_intent, found=True,
+        raw_intent=raw_intent,
+    )
     return db_intent, mapped_params
 
 

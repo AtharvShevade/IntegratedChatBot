@@ -57,11 +57,24 @@ def resolve_date_range(date_from: str | None, date_to: str | None, question: str
         end = _parse_flexible_date(date_to)
         if start and end:
             return (start, end) if start <= end else (end, start)
-        my = _parse_month_year(date_from)
-        if my:
-            year, month = my
-            last_day = calendar.monthrange(year, month)[1]
-            return date(year, month, 1), date(year, month, last_day)
+
+        # One or both sides may be a bare "Month YYYY" instead of an exact
+        # date (e.g. "during January 2026 to December 2026") — resolve
+        # each side independently: a bare month on the "from" side starts
+        # at day 1, a bare month on the "to" side ends at that month's
+        # last day. An already-resolved exact date on either side (from
+        # the block above) is reused as-is rather than re-parsed.
+        if start is None:
+            my_from = _parse_month_year(date_from)
+            if my_from:
+                start = date(my_from[0], my_from[1], 1)
+        if end is None:
+            my_to = _parse_month_year(date_to)
+            if my_to:
+                last_day = calendar.monthrange(my_to[0], my_to[1])[1]
+                end = date(my_to[0], my_to[1], last_day)
+        if start and end:
+            return (start, end) if start <= end else (end, start)
 
     q = (question or "").lower()
     today = date.today()
@@ -102,6 +115,22 @@ def _not_found(intent: str, label: str, msg: str) -> dict:
 
 
 def _resolve_target_department(store: XMLStore, scope: dict, entities: dict) -> dict | None:
+    """Resolve which department's data a query should be scoped to.
+
+    "self" (any user): the caller's own department, resolved from their
+    own XML_User.xml row — never influenced by entities, so a regular
+    user can never widen scope by naming a different department in the
+    question text.
+
+    "department" (admin only — enforced upstream by access_control.
+    scope_query, which raises PermissionError before a handler ever
+    runs): a named department from entities["target_department"].
+
+    "system_wide" is NOT handled here — callers that accept it must
+    check scope["target_type"] == "system_wide" themselves and aggregate
+    across every department, since there's no single dept dict to return
+    for that case. See _dept_allowed_return_ids_system_wide().
+    """
     if scope["target_type"] == "self":
         u = store.user_by_id(scope.get("user_id") or scope["login_id"]) or store.user_by_name(scope["login_id"])
         if not u:
@@ -432,13 +461,32 @@ def _dept_allowed_return_ids(store: XMLStore, dept: dict | None) -> set[str] | N
     return form_ids | nx_ids
 
 
+def _all_return_ids_system_wide(store: XMLStore) -> set[str]:
+    """Return every return ID accessible by ANY department combined —
+    used only for target_type == "system_wide" (admin-only, enforced by
+    access_control.scope_query before a handler runs), where the caller
+    explicitly asked across all departments rather than one."""
+    ids: set[str] = set()
+    for dept in store.departments():
+        ids |= _dept_allowed_return_ids(store, dept) or set()
+    return ids
+
+
 def handle_reports_filed_in_range(scope: dict, entities: dict, store: XMLStore) -> dict:
     """Returns actually SUBMITTED (an InstanceLog row exists) with a filing
     timestamp (DTC) between two dates — e.g. 'show me all XBRL reports
     filed between 01-Jan-2026 and 31-Mar-2026'. 'Filed between' is read as
     the actual submission timestamp falling in the window, not the
     ReportingDate (the period the submission is FOR) — those are
-    different questions."""
+    different questions.
+
+    Scope: target_type "self" (any user) is restricted to the caller's own
+    department. "department" (a named other department) and "system_wide"
+    (across every department) are admin-only — access_control.scope_query
+    already raises PermissionError for a non-admin caller before this
+    handler ever runs, so reaching either branch here means the caller is
+    confirmed admin.
+    """
     date_from = entities.get("date_from")
     date_to = entities.get("date_to")
     resolved = resolve_date_range(date_from, date_to)
@@ -449,13 +497,23 @@ def handle_reports_filed_in_range(scope: dict, entities: dict, store: XMLStore) 
         )
     start, end = resolved
 
-    dept = _resolve_target_department(store, scope, entities)
-    if not dept:
-        return _not_found(
-            "reports_filed_in_range", "Reports Filed",
-            "Your department could not be found, so filed returns can't be determined.",
-        )
-    allowed_ids = _dept_allowed_return_ids(store, dept) or set()
+    target_type = scope.get("target_type", "self")
+    scope_phrase = "by your department"
+    if target_type == "system_wide":
+        allowed_ids = _all_return_ids_system_wide(store)
+        scope_phrase = "across all departments"
+    else:
+        dept = _resolve_target_department(store, scope, entities)
+        if not dept:
+            return _not_found(
+                "reports_filed_in_range", "Reports Filed",
+                "Your department could not be found, so filed returns can't be determined."
+                if target_type == "self" else
+                "That department could not be found.",
+            )
+        allowed_ids = _dept_allowed_return_ids(store, dept) or set()
+        if target_type == "department":
+            scope_phrase = f"by department '{dept.get('Name', '')}'"
 
     xbrl_type = entities.get("xbrl_type")
     all_returns = list(store.returns()) + list(store.non_xbrl_returns())
@@ -481,7 +539,7 @@ def handle_reports_filed_in_range(scope: dict, entities: dict, store: XMLStore) 
     label = f"{type_phrase}Reports Filed {start.strftime('%d-%b-%Y')} to {end.strftime('%d-%b-%Y')}"
     return _result(
         "reports_filed_in_range", label, matches,
-        f"Found {len(matches)} {type_phrase}report(s) filed by your department between "
+        f"Found {len(matches)} {type_phrase}report(s) filed {scope_phrase} between "
         f"{start.strftime('%d-%b-%Y')} and {end.strftime('%d-%b-%Y')}.",
         count=len(matches),
     )
@@ -494,7 +552,15 @@ def handle_reports_upcoming_in_range(scope: dict, entities: dict, store: XMLStor
     forward) using the same logic as handle_next_reporting_date, and lists
     the ones landing inside the window — this covers 'next month'/'this
     month'/a short explicit window; it does not enumerate multiple future
-    occurrences of a return across a longer span."""
+    occurrences of a return across a longer span.
+
+    Scope: target_type "self" (any user) is restricted to the caller's own
+    department. "department" (a named other department) and "system_wide"
+    (across every department) are admin-only — access_control.scope_query
+    already raises PermissionError for a non-admin caller before this
+    handler ever runs, so reaching either branch here means the caller is
+    confirmed admin.
+    """
     from backend.tools.instance_generator import next_reporting_date
 
     date_from = entities.get("date_from")
@@ -508,13 +574,23 @@ def handle_reports_upcoming_in_range(scope: dict, entities: dict, store: XMLStor
         )
     start, end = resolved
 
-    dept = _resolve_target_department(store, scope, entities)
-    if not dept:
-        return _not_found(
-            "reports_upcoming_in_range", "Upcoming Reports",
-            "Your department could not be found, so upcoming returns can't be determined.",
-        )
-    allowed_ids = _dept_allowed_return_ids(store, dept) or set()
+    target_type = scope.get("target_type", "self")
+    scope_phrase = "your department"
+    if target_type == "system_wide":
+        allowed_ids = _all_return_ids_system_wide(store)
+        scope_phrase = "all departments"
+    else:
+        dept = _resolve_target_department(store, scope, entities)
+        if not dept:
+            return _not_found(
+                "reports_upcoming_in_range", "Upcoming Reports",
+                "Your department could not be found, so upcoming returns can't be determined."
+                if target_type == "self" else
+                "That department could not be found.",
+            )
+        allowed_ids = _dept_allowed_return_ids(store, dept) or set()
+        if target_type == "department":
+            scope_phrase = f"department '{dept.get('Name', '')}'"
 
     xbrl_type = entities.get("xbrl_type")
     all_returns = list(store.returns()) + list(store.non_xbrl_returns())
@@ -544,7 +620,7 @@ def handle_reports_upcoming_in_range(scope: dict, entities: dict, store: XMLStor
     label = f"{type_phrase}Reports Upcoming {start.strftime('%d-%b-%Y')} to {end.strftime('%d-%b-%Y')}"
     return _result(
         "reports_upcoming_in_range", label, matches,
-        f"Found {len(matches)} {type_phrase}return(s) due for your department between "
+        f"Found {len(matches)} {type_phrase}return(s) due for {scope_phrase} between "
         f"{start.strftime('%d-%b-%Y')} and {end.strftime('%d-%b-%Y')}.",
         count=len(matches),
     )

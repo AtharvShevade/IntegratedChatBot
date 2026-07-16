@@ -196,6 +196,77 @@ async def _call_ollama(
     return content
 
 
+async def disambiguate_intent(user_message: str, candidates: list[tuple[str, str]]) -> str | None:
+    """Ask the LLM to pick ONE of a small set of pre-narrowed intent
+    candidates for *user_message* — used only when the embedding-similarity
+    tier (backend.db_qa.intents.embedding_index) finds 2-3 close-scoring
+    candidates and can't confidently pick a winner on its own.
+
+    This is deliberately NOT a general classifier: candidates is always a
+    short list (2-3 items) already narrowed by embedding similarity, which
+    is the case a small model like phi3:mini is actually reliable at —
+    unlike classifying cold against the full ~55-intent taxonomy.
+
+    Parameters
+    ----------
+    user_message:
+        The raw user query.
+    candidates:
+        [(intent_value, description), ...] — intent_value is the exact
+        Intent.value string the model must echo back verbatim if it picks
+        that option (e.g. "user_field", not a paraphrase).
+
+    Returns
+    -------
+    The chosen intent_value if the model picked one of the given
+    candidates, or None if it declined ("none") or returned anything
+    unexpected — callers should treat None the same as "still no
+    confident match" and fall through to the next tier.
+    """
+    if not candidates:
+        return None
+
+    valid_values = {value for value, _ in candidates}
+    options_block = "\n".join(f'  "{value}" — {desc}' for value, desc in candidates)
+    system = (
+        "You are a narrow intent disambiguator. The user's message is known to be "
+        "close to one of these specific options:\n"
+        f"{options_block}\n"
+        '  "none" — the message does not clearly match any of the above\n\n'
+        "Respond with EXACTLY ONE of the option values shown above (in quotes), or \"none\". "
+        "Output ONLY that value, no explanation, no punctuation, no extra text."
+    )
+
+    content = await _call_ollama(
+        prompt=user_message,
+        system=system,
+        model=OLLAMA_EXTRACT_MODEL,
+    )
+    normalized = content.strip().strip('"').strip()
+
+    if normalized in valid_values:
+        return normalized
+    if normalized == "none" or normalized.lower().startswith("none"):
+        return None
+
+    # Small models sometimes ignore "output ONLY the value" and echo back
+    # the option's description, or wrap the value in extra prose — fall
+    # back to a whole-word search for one of the candidate values
+    # anywhere in the response, rather than requiring an exact match.
+    # Ambiguous only if none, or more than one, candidate value appears
+    # (picking arbitrarily between two echoed values would be worse than
+    # declining).
+    found = [v for v in valid_values if re.search(rf"\b{re.escape(v)}\b", normalized)]
+    if len(found) == 1:
+        return found[0]
+
+    logger.warning(
+        "[LLM_DISAMBIGUATE_UNEXPECTED] response=%r normalized=%r candidates=%r",
+        content, normalized, valid_values,
+    )
+    return None
+
+
 async def classify_conversational_intent(user_message: str, history: list[dict] | None = None) -> str:
     content = await _call_ollama(
         prompt=user_message,

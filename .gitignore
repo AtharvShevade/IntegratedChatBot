@@ -52,6 +52,11 @@ sql_agent/output/schema.json
 sql_agent/output/description_samples.json
 sql_agent/data/.json-formatted/
 
+# ── db_qa intent-exemplar embedding index (generated — rebuild via
+#    `python -m backend.db_qa.intents.embedding_index`) ───────────────────────
+backend/db_qa/intents/output/*.faiss
+backend/db_qa/intents/output/*.pkl
+
 # ── Temporary audio files (recorded by speech input) ─────────────────────────
 *.wav
 

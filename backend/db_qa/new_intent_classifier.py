@@ -430,18 +430,34 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\bbusiness\s+rules?\s+for\b", r"\bvalidation\s+rules?\s+(apply|for)\b"),
     # REPORTS_FILED_IN_RANGE / REPORTS_UPCOMING_IN_RANGE are checked BEFORE
     # NEXT_REPORTING_DATE: both mention "due"/"reporting date" too, but a
-    # "between X and Y" date-range span is the more specific signal and
-    # must win over NEXT_REPORTING_DATE's broader "when is X due" patterns.
+    # date-range span is the more specific signal and must win over
+    # NEXT_REPORTING_DATE's broader "when is X due" patterns.
     #
-    # "file[ds]?"/"submit(ted|s)?" tolerates common verb-form slips
-    # ("files"/"file" instead of "filed") without loosening the match
-    # enough to catch unrelated words.
-    _mk(Intent.REPORTS_FILED_IN_RANGE, ("self",),
-        r"\b(file[ds]?|submit(?:ted|s)?)\s+between\b", r"\breports?\s+file[ds]?\s+between\b",
-        r"\breturns?\s+file[ds]?\s+between\b", r"\bshow\s+me\s+all\b.{0,40}\bfile[ds]?\s+between\b"),
-    _mk(Intent.REPORTS_UPCOMING_IN_RANGE, ("self",),
-        r"\b(coming\s+up|upcoming|due)\s+between\b", r"\bwhich\s+.{0,40}\bare\s+due\s+between\b",
-        r"\bwhat\s+.{0,40}\b(coming\s+up|are\s+due)\s+between\b",
+    # "file[ds]?"/"filing[s]?"/"submit(ted|s)?"/"generat(e|ed)"/"creat(e|ed)"/
+    # "produc(e|ed)" are all treated as synonyms for "filed" here — users
+    # describe an already-submitted report as filed/filing/submitted/
+    # generated/created interchangeably — and each tolerates common
+    # verb-form slips ("files"/"file" instead of "filed") without
+    # loosening the match enough to catch unrelated words.
+    #
+    # The range connector itself is also phrased multiple ways:
+    # "between X and Y", "from X to Y", "for the period X to Y" — the
+    # \s+\S in the middle covers the date span without re-deriving the
+    # exact date grammar here (that's _DATE_RANGE_RE's job); this is a
+    # cheap 0-40-char gap, not a real date parse.
+    _mk(Intent.REPORTS_FILED_IN_RANGE, ("self", "department", "system_wide"),
+        r"\b(file[ds]?|filing[s]?|submit(?:ted|s)?|generat(?:ed?|es)|creat(?:ed?|es)|produc(?:ed?|es))"
+        r"(?:\s+\S.{0,30})?\s+(?:between|from|during|for\s+the\s+period(?:\s+of)?)\b",
+        r"\breports?\s+(file[ds]?|filing[s]?|generat(?:ed?|es)|creat(?:ed?|es)|produc(?:ed?|es))"
+        r"(?:\s+\S.{0,30})?\s+(?:between|from|during|for\s+the\s+period(?:\s+of)?)\b",
+        r"\breturns?\s+(file[ds]?|filing[s]?|generat(?:ed?|es)|creat(?:ed?|es)|produc(?:ed?|es))"
+        r"(?:\s+\S.{0,30})?\s+(?:between|from|during|for\s+the\s+period(?:\s+of)?)\b",
+        r"\bshow\s+me\s+all\b.{0,40}\b(file[ds]?|filing[s]?|generat(?:ed?|es)|creat(?:ed?|es)|produc(?:ed?|es))"
+        r"(?:\s+\S.{0,30})?\s+(?:between|from|during|for\s+the\s+period(?:\s+of)?)\b"),
+    _mk(Intent.REPORTS_UPCOMING_IN_RANGE, ("self", "department", "system_wide"),
+        r"\b(coming\s+up|upcoming|due)(?:\s+\S.{0,30})?\s+(?:between|from|during|for\s+the\s+period(?:\s+of)?)\b",
+        r"\bwhich\s+.{0,40}\bare\s+due(?:\s+\S.{0,30})?\s+(?:between|from)\b",
+        r"\bwhat\s+.{0,40}\b(coming\s+up|are\s+due)(?:\s+\S.{0,30})?\s+(?:between|from)\b",
         r"\bupcoming\s+(returns?|reports?|forms?)\b", r"\bwhat\s+.{0,40}\bupcoming\s+next\s+month\b"),
     _mk(Intent.NEXT_REPORTING_DATE, ("return",),
         r"\bnext\s+report(ing)?\s+date\b", r"\bnext\s+due\s+date\b",
@@ -533,6 +549,7 @@ def classify_new(question: str) -> tuple[Intent | None, dict, str | None]:
     if kw_match is not None:
         intent, target_types = kw_match
         target_type = _infer_target_type(q, target_types)
+        target_type = _refine_range_target_type(intent, q, target_types, target_type)
         params = _extract_new_params(intent, q)
         params["target_type"] = target_type
         return intent, params, target_type
@@ -541,10 +558,121 @@ def classify_new(question: str) -> tuple[Intent | None, dict, str | None]:
         for pat in patterns:
             if pat.search(q):
                 target_type = _infer_target_type(q, target_types)
+                target_type = _refine_range_target_type(intent, q, target_types, target_type)
                 params = _extract_new_params(intent, q)
                 params["target_type"] = target_type
                 return intent, params, target_type
     return None, {}, None
+
+
+_SYSTEM_WIDE_RANGE_RE = re.compile(
+    r"\b(system[\s-]?wide|across\s+all\s+departments?|all\s+departments?|every\s+department)\b",
+    re.IGNORECASE,
+)
+
+
+def _refine_range_target_type(
+    intent: Intent, q: str, accepted: tuple[str, ...], inferred: str,
+) -> str:
+    """Correct _infer_target_type's generic 2-way guess for
+    REPORTS_FILED_IN_RANGE / REPORTS_UPCOMING_IN_RANGE, whose accepted set
+    is ("self", "department", "system_wide") — three options, not the
+    usual two _infer_target_type is designed for.
+
+    _infer_target_type only ever returns "self" (self-referential
+    phrasing like "show ME") or the first non-self accepted entry
+    ("department", for ANY other phrasing) — it has no way to tell
+    "department" and "system_wide" apart, and no way to recognise that a
+    self-referential phrasing like "show me ... system-wide" is actually
+    an explicit admin-scope request, not a self-service one. This
+    function re-derives the correct scope directly from explicit signals
+    in the question text, checked in this order regardless of what
+    _infer_target_type guessed:
+
+      1. Explicit "system-wide"/"across all departments" wording -> system_wide
+      2. An explicit named department -> department
+      3. Neither signal present -> self (never default to "department"
+         with no department actually named — that would force an
+         ordinary, non-admin-intended question through an admin-gated
+         branch with nothing to resolve, always failing with "that
+         department could not be found").
+    """
+    if intent not in (Intent.REPORTS_FILED_IN_RANGE, Intent.REPORTS_UPCOMING_IN_RANGE):
+        return inferred
+
+    if _SYSTEM_WIDE_RANGE_RE.search(q) and "system_wide" in accepted:
+        return "system_wide"
+
+    explicit_dept = _extract_named_entity_before_or_after(q, ("department", "dept"))
+    if explicit_dept and "department" in accepted:
+        return "department"
+
+    return "self" if "self" in accepted else inferred
+
+
+async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None, dict, str | None, str]:
+    """Full tiered intent classification: regex -> embedding similarity ->
+    narrow LLM disambiguation -> no match.
+
+    Returns (Intent, params, target_type, tier) — same shape as
+    classify_new() plus a 4th "tier" field recording which stage produced
+    the result ("regex", "embedding", "llm_disambiguation", "none"), so
+    callers can log outcomes per-tier (see backend.utils.intent_log).
+
+    Once an Intent is known (from any tier), params/target_type are built
+    via the SAME _extract_new_params()/_infer_target_type() helpers the
+    regex path already uses — entity extraction doesn't depend on how the
+    intent was determined, only on the question text and the intent
+    itself.
+    """
+    intent, params, target_type = classify_new(question)
+    if intent is not None:
+        return intent, params, target_type, "regex"
+
+    # A bare word or short fragment (e.g. "cims", a partial report name
+    # mid disambiguation flow) is never a genuine natural-language
+    # question — embedding similarity against single-word/fragment input
+    # is unreliable (a short token can score deceptively close to
+    # unrelated exemplars), and an LLM asked to disambiguate a bare
+    # fragment tends to force-pick a candidate rather than decline. Skip
+    # the semantic tiers entirely below this length; such input should
+    # fall through to whatever non-DB-QA flow the caller has (e.g. the
+    # compare/status/generate disambiguation-reply handling in decide()).
+    if len(question.split()) < 3:
+        return None, {}, None, "none"
+
+    from backend.db_qa.intents.embedding_index import classify_by_embedding
+    from backend.db_qa.intents.taxonomy import INTENT_SPECS
+
+    embedding_result = classify_by_embedding(question)
+    tier = embedding_result["tier"]
+
+    resolved_intent: Intent | None = None
+    if tier == "embedding_confident":
+        resolved_intent = embedding_result["intent"]
+        tier = "embedding"
+    elif tier == "embedding_ambiguous":
+        from backend.services.llm_service import disambiguate_intent
+
+        candidates = [
+            (c_intent.value, INTENT_SPECS[c_intent].description)
+            for c_intent, _score, _text in embedding_result["candidates"]
+        ]
+        chosen_value = await disambiguate_intent(question, candidates)
+        if chosen_value is not None:
+            resolved_intent = Intent(chosen_value)
+        tier = "llm_disambiguation"
+    else:
+        tier = "none"
+
+    if resolved_intent is None:
+        return None, {}, None, tier
+
+    spec = INTENT_SPECS[resolved_intent]
+    resolved_target_type = _infer_target_type(question, spec.target_types)
+    resolved_params = _extract_new_params(resolved_intent, question)
+    resolved_params["target_type"] = resolved_target_type
+    return resolved_intent, resolved_params, resolved_target_type, tier
 
 
 def _infer_target_type(q: str, accepted: tuple[str, ...]) -> str:
@@ -817,8 +945,17 @@ _DATE_TOKEN = (
     r"|\d{4}-\d{1,2}-\d{1,2}"
     r"|[A-Za-z]{3,9}\s+\d{4}"
 )
+# Accepts "between X and Y", "from X to Y", "for the period X to Y", and
+# "during X to Y" — all common ways users phrase a date range; the
+# opening connector ("between"/"from"/"during"/"for the period") and the
+# joining word ("and"/"to"/"-") are independent so any combination works
+# (e.g. "between X to Y", "during X and Y"). Tried BEFORE the bare-month
+# fallback below, so "during January 2026 to December 2026" resolves to
+# the full Jan-Dec span, not just January (the bare-month fallback only
+# ever extracts ONE month and would silently truncate a two-month range
+# if it ran first).
 _DATE_RANGE_RE = re.compile(
-    rf"\bbetween\s+({_DATE_TOKEN})\s+(?:and|to|-)\s+({_DATE_TOKEN})\b",
+    rf"\b(?:between|from|during|for\s+the\s+period(?:\s+of)?)\s+({_DATE_TOKEN})\s+(?:and|to|-)\s+({_DATE_TOKEN})\b",
     re.IGNORECASE,
 )
 
@@ -840,12 +977,33 @@ def _extract_date_range(q: str) -> tuple[str | None, str | None]:
     today = _date.today()
     if re.search(r"\bnext\s+month\b", q, re.IGNORECASE):
         year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
-    elif re.search(r"\bthis\s+month\b", q, re.IGNORECASE):
+        last_day = calendar.monthrange(year, month)[1]
+        return f"01-{_date(year, month, 1).strftime('%b')}-{year}", f"{last_day:02d}-{_date(year, month, 1).strftime('%b')}-{year}"
+    if re.search(r"\bthis\s+month\b", q, re.IGNORECASE):
         year, month = today.year, today.month
-    else:
-        return None, None
-    last_day = calendar.monthrange(year, month)[1]
-    return f"01-{_date(year, month, 1).strftime('%b')}-{year}", f"{last_day:02d}-{_date(year, month, 1).strftime('%b')}-{year}"
+        last_day = calendar.monthrange(year, month)[1]
+        return f"01-{_date(year, month, 1).strftime('%b')}-{year}", f"{last_day:02d}-{_date(year, month, 1).strftime('%b')}-{year}"
+
+    # A bare "during/for/in <Month> <Year>" with no explicit range at all —
+    # the whole named month is the implied span (mirrors
+    # return_handlers.resolve_date_range's identical bare-month handling
+    # on the extraction side).
+    bare_month = re.search(
+        r"\b(?:during|for|in)\s+([A-Za-z]{3,9}\s+\d{4})\b", q, re.IGNORECASE,
+    )
+    if bare_month:
+        try:
+            from dateutil import parser as _du_parser
+            dt = _du_parser.parse(f"1 {bare_month.group(1)}", dayfirst=True)
+            last_day = calendar.monthrange(dt.year, dt.month)[1]
+            return (
+                f"01-{dt.strftime('%b')}-{dt.year}",
+                f"{last_day:02d}-{dt.strftime('%b')}-{dt.year}",
+            )
+        except (ValueError, OverflowError):
+            pass
+
+    return None, None
 
 
 _XBRL_TYPE_RE = _kw(_NON_XBRL, r"nx\b")

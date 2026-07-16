@@ -19,6 +19,8 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           data={msg.data}
           options={msg.options}
           resultType={msg.resultType}
+          feedbackQuery={msg.query}
+          feedbackIntent={msg.intent}
           sqlData={msg.sqlData}
           dbQaData={msg.dbQaData}
           varianceData={msg.varianceData}
