@@ -23,6 +23,7 @@ wins, as before).
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from rapidfuzz import process as _fuzz
@@ -32,6 +33,8 @@ from backend.db_qa.intent_classifier import (
     _extract_quoted_or_bracketed, _self_ref, ACTION_MAP, PERIOD_ALIASES,
 )
 from backend.db_qa.intents.taxonomy import Intent
+
+logger = logging.getLogger(__name__)
 
 _USER_FIELD_PATTERNS: dict[str, str] = {
     "email": r"\bemail\b",
@@ -459,6 +462,32 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\bwhich\s+.{0,40}\bare\s+due(?:\s+\S.{0,30})?\s+(?:between|from)\b",
         r"\bwhat\s+.{0,40}\b(coming\s+up|are\s+due)(?:\s+\S.{0,30})?\s+(?:between|from)\b",
         r"\bupcoming\s+(returns?|reports?|forms?)\b", r"\bwhat\s+.{0,40}\bupcoming\s+next\s+month\b"),
+    # MONTHLY_FILING_STATUS: "what's my [XBRL|non-XBRL] filing status for
+    # <month>" and "what dates are [XBRL|non-XBRL] reports expected in
+    # <month>" — a SINGLE-month roll-up (filed vs not-filed per return),
+    # distinct from REPORTS_FILED_IN_RANGE/REPORTS_UPCOMING_IN_RANGE's
+    # explicit two-date "between X and Y" span. Checked AFTER those two so
+    # a genuine "between X and Y"/"from X to Y" range question (which also
+    # contains a month name inside its date tokens) is never miscaught
+    # here first — _NEW_RULES tries rules in list order and stops at the
+    # first match, so ordering IS the disambiguation mechanism.
+    _mk(Intent.MONTHLY_FILING_STATUS, ("self", "department", "system_wide"),
+        r"\b(filing\s+status|status)(?:\s+\S.{0,30})?\s+(for|in|during)\b.{0,40}"
+        r"\b(month|20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+        r"\bwhat.?s\s+(my|the)\b.{0,40}\bstatus(?:\s+\S.{0,30})?\s+(for|in|during)\b",
+        # "my/our [XBRL|non-XBRL] filing for <month>" — "filing" with NO
+        # "status" word, but anchored to a self-referential possessive
+        # ("my"/"our") immediately before it, which single-report generate/
+        # schedule requests naming a specific return never use (those name
+        # the report, e.g. "generate CIMS_RAQ filing for 31 march 2026" —
+        # no "my/our" directly before "filing"). Narrower than a bare
+        # \bfiling\b so it doesn't hijack those.
+        r"\b(my|our)\s+(xbrl\s+|non[\s-]?xbrl\s+|nx\s+)?filing\s+(for|in|during)\b.{0,40}"
+        r"\b(month|20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+        r"\bstatus\s+(for|of|in)\s+(this|current|last|previous|next)\s+month\b",
+        r"\bwhat\s+dates?\s+are\b.{0,40}\bexpected\s+in\b",
+        r"\b(reports?|returns?|forms?)\b.{0,20}\bexpected\s+(in|during|for)\b",
+        r"\bfiling\s+status(?:\s+\S.{0,30})?\s+(for|in|during)\b"),
     _mk(Intent.NEXT_REPORTING_DATE, ("return",),
         r"\bnext\s+report(ing)?\s+date\b", r"\bnext\s+due\s+date\b",
         r"\bwhen\s+is\b.{0,40}\bdue\b", r"\bwhen\s+(is|does)\b.{0,40}\bnext\s+(report|reporting|submission|due)\b",
@@ -571,13 +600,19 @@ _SYSTEM_WIDE_RANGE_RE = re.compile(
 )
 
 
+_RANGE_TARGET_TYPE_INTENTS = (
+    Intent.REPORTS_FILED_IN_RANGE, Intent.REPORTS_UPCOMING_IN_RANGE,
+    Intent.MONTHLY_FILING_STATUS,
+)
+
+
 def _refine_range_target_type(
     intent: Intent, q: str, accepted: tuple[str, ...], inferred: str,
 ) -> str:
     """Correct _infer_target_type's generic 2-way guess for
-    REPORTS_FILED_IN_RANGE / REPORTS_UPCOMING_IN_RANGE, whose accepted set
-    is ("self", "department", "system_wide") — three options, not the
-    usual two _infer_target_type is designed for.
+    REPORTS_FILED_IN_RANGE / REPORTS_UPCOMING_IN_RANGE / MONTHLY_FILING_
+    STATUS, whose accepted set is ("self", "department", "system_wide") —
+    three options, not the usual two _infer_target_type is designed for.
 
     _infer_target_type only ever returns "self" (self-referential
     phrasing like "show ME") or the first non-self accepted entry
@@ -597,7 +632,7 @@ def _refine_range_target_type(
          branch with nothing to resolve, always failing with "that
          department could not be found").
     """
-    if intent not in (Intent.REPORTS_FILED_IN_RANGE, Intent.REPORTS_UPCOMING_IN_RANGE):
+    if intent not in _RANGE_TARGET_TYPE_INTENTS:
         return inferred
 
     if _SYSTEM_WIDE_RANGE_RE.search(q) and "system_wide" in accepted:
@@ -658,7 +693,22 @@ async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None
             (c_intent.value, INTENT_SPECS[c_intent].description)
             for c_intent, _score, _text in embedding_result["candidates"]
         ]
-        chosen_value = await disambiguate_intent(question, candidates)
+        try:
+            chosen_value = await disambiguate_intent(question, candidates)
+        except Exception:
+            # The Ollama endpoint (local or a remote proxy) can fail
+            # transiently — timeout, connection refused, 502/503 from a
+            # proxy in front of it, etc. disambiguate_intent()'s own
+            # contract is "None means still-ambiguous, fall through to the
+            # next tier" for a DECLINED answer; a transport/HTTP failure
+            # must degrade the same way, not crash the whole chat request
+            # (this call sits deep in decide()'s STEP 2, with STEP 3/4
+            # fallbacks still available above it).
+            logger.warning(
+                "[LLM_DISAMBIGUATE_FAILED] question=%r candidates=%r",
+                question, [c[0] for c in candidates], exc_info=True,
+            )
+            chosen_value = None
         if chosen_value is not None:
             resolved_intent = Intent(chosen_value)
         tier = "llm_disambiguation"
@@ -670,6 +720,9 @@ async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None
 
     spec = INTENT_SPECS[resolved_intent]
     resolved_target_type = _infer_target_type(question, spec.target_types)
+    resolved_target_type = _refine_range_target_type(
+        resolved_intent, question, spec.target_types, resolved_target_type,
+    )
     resolved_params = _extract_new_params(resolved_intent, question)
     resolved_params["target_type"] = resolved_target_type
     return resolved_intent, resolved_params, resolved_target_type, tier
@@ -784,6 +837,25 @@ _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("active", _ACTIVE_PAT),
 ]
 
+# Values here must match submission_handlers.handle_submission_list's own
+# _STATUS_GROUPS keys ("pending"/"approved"/"audited"/"rejected") plus its
+# two CIMS-upload branches and "has_error_doc" — checked in this order so
+# "pending approval" (containing the substring "approv" too) matches
+# "pending" first, not "approved".
+_SUBMISSION_STATUS_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("pending", _kw(r"pending")),
+    ("rejected", _kw(r"rejected")),
+    ("audited", _kw(r"audited")),
+    ("approved", _kw(r"approved")),
+    ("cims_ok", _kw(r"uploaded\s+to\s+cims\s+success\w*", r"cims\s+upload\s+success\w*", r"cims\s+ok")),
+    ("cims_failed", _kw(r"failed\s+cims\s+upload", r"cims\s+upload\s+fail\w*")),
+    ("has_error_doc", _kw(r"error\s+doc(?:ument)?")),
+]
+
+_MENU_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("top_level", _kw(r"top[\s-]?level")),
+]
+
 
 
 # Canonical verb per HasXxx group, checked before its synonyms so
@@ -821,6 +893,17 @@ def _extract_query_type(q: str, table: list[tuple[str, re.Pattern]]) -> str | No
             return "active_count"
         if _INACTIVE_PAT.search(q):
             return "inactive_count"
+    for value, pat in table:
+        if pat.search(q):
+            return value
+    return None
+
+
+def _first_match(q: str, table: list[tuple[str, re.Pattern]]) -> str | None:
+    """Plain first-match-wins lookup — like _extract_query_type but without
+    its "how many active/inactive X" special case, which only makes sense
+    for User/Department/Role-style boolean active/inactive fields, not for
+    categories like submission status or menu top-level/nested."""
     for value, pat in table:
         if pat.search(q):
             return value
@@ -1019,6 +1102,69 @@ def _extract_xbrl_type(q: str) -> str | None:
     return None
 
 
+_MONTH_NAME_RE = re.compile(
+    r"\b(january|february|march|april|may|june|july|august|september|"
+    r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
+    re.IGNORECASE,
+)
+_MONTH_YEAR_RE = re.compile(
+    r"\b((?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    r"\s+\d{4})\b",
+    re.IGNORECASE,
+)
+_BARE_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+
+
+def _extract_month_year(q: str) -> str | None:
+    """Return a "Month YYYY" string (e.g. "June 2025") for the single month
+    a monthly-status question refers to, or None if nothing resolvable was
+    found. Tried in this order:
+
+      1. Explicit "Month YYYY"/"Mon YYYY" (e.g. "June 2025", "for June 2025").
+      2. Relative-month phrases ("this month"/"current month" -> the
+         calendar month execution is running in; "last/previous month" ->
+         the month before that; "next month" -> the month after) resolved
+         to a concrete "Month YYYY" using today's date — same relative-
+         phrase vocabulary already supported by resolve_date_range/
+         _extract_date_range for range questions, but resolving to ONE
+         month rather than a (start, end) pair.
+      3. A bare month name with no year ("What's my XBRL status for
+         June?") — paired with the current year, since a bank's own
+         reporting history is what's being asked about and users
+         overwhelmingly mean the current cycle, not an arbitrary past year;
+         a query_type-level clarification isn't warranted for something
+         this recoverable.
+      4. A bare year with no month ("filing status for 2025") is NOT
+         resolved here — a whole year is a range question
+         (reports_filed_in_range/reports_upcoming_in_range own that
+         shape), not a single-month status question, so returning None
+         lets the caller's own "please specify a month" fallback fire
+         instead of silently guessing a month within the year.
+    """
+    m = _MONTH_YEAR_RE.search(q)
+    if m:
+        return m.group(1)
+
+    ql = q.lower()
+    from datetime import date as _date
+    today = _date.today()
+    if re.search(r"\b(this|current)\s+month\b", ql):
+        return today.strftime("%B %Y")
+    if re.search(r"\b(last|previous|prior)\s+month\b", ql):
+        year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+        return _date(year, month, 1).strftime("%B %Y")
+    if re.search(r"\bnext\s+month\b", ql):
+        year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+        return _date(year, month, 1).strftime("%B %Y")
+
+    bare_month = _MONTH_NAME_RE.search(q)
+    if bare_month and not _BARE_YEAR_RE.search(q):
+        return f"{bare_month.group(1).title()} {today.year}"
+
+    return None
+
+
 def _extract_new_params(intent: Intent, q: str) -> dict:
     params: dict = {}
     explicit = _extract_quoted_or_bracketed(q)
@@ -1058,6 +1204,22 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
         params["date_to"] = date_to
         params["xbrl_type"] = _extract_xbrl_type(q)
 
+    if intent == Intent.MONTHLY_FILING_STATUS:
+        params["month_year"] = _extract_month_year(q)
+        params["xbrl_type"] = _extract_xbrl_type(q)
+        # Every MONTHLY_FILING_STATUS phrasing that names a department also
+        # names a month via a trailing "for <month>" clause ("status for
+        # department Compliance for March 2026") — unlike other department-
+        # taking intents, so _extract_named_entity_before_or_after's
+        # after-keyword fallback (which only stops at "?"/end-of-string/
+        # " is"/" has"/" and") swallows the month clause into the
+        # department name. Trim it back off here rather than teaching the
+        # shared extractor about a stop-word specific to this one intent.
+        dept = explicit or _extract_named_entity_before_or_after(q, ("department", "dept"))
+        if dept:
+            dept = re.sub(r"\s+for\s+.*$", "", dept, flags=re.IGNORECASE).strip() or None
+        params["target_department"] = dept
+
     if intent in (Intent.PERMISSION_CHECK, Intent.ROLES_WITH_PERMISSION):
         # Raw keyword, NOT the mapped HasNew/HasEdit/... attribute name —
         # query_handlers/role_handlers.py's handle_permission_check() and
@@ -1086,6 +1248,12 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
         params["query_type"] = _extract_query_type(q, _ROLE_QUERY_TYPE_PATTERNS)
         if params["query_type"] == "exists":
             params["target_role"] = explicit or _extract_named_entity_before_or_after(q, ("role",))
+
+    if intent == Intent.SUBMISSION_LIST:
+        params["status"] = _first_match(q, _SUBMISSION_STATUS_PATTERNS)
+
+    if intent == Intent.MENU_LIST:
+        params["query_type"] = _first_match(q, _MENU_QUERY_TYPE_PATTERNS)
 
     if intent in (Intent.PERMISSION_CHECK, Intent.ROLE_MODULE_ACCESS, Intent.ROLES_WITH_PERMISSION):
         m = re.search(

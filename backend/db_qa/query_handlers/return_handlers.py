@@ -626,6 +626,148 @@ def handle_reports_upcoming_in_range(scope: dict, entities: dict, store: XMLStor
     )
 
 
+# Fixed (day, month) period-end pairs per frequency code, same terminal
+# dates instance_generator.next_reporting_date()/validate_reporting_date()
+# use — duplicated here (rather than importing instance_generator's
+# underscore-prefixed module-private sets) since this only needs to answer
+# "does this frequency end in month M", not compute an actual next date.
+_Q_END_MONTHS: dict[str, set[int]] = {
+    "Q": {3, 6, 9, 12},
+    "H": {3, 9},
+    "C": {6, 12},
+    "Y": {3},
+    "B": {12},
+}
+
+
+def _period_end_day(frequency: str, year: int, month: int) -> int | None:
+    """The period-end day-of-month for *frequency* in (year, month), or
+    None if *frequency* has no period-end falling in that month at all
+    (e.g. a Quarterly return has no period-end in April)."""
+    freq = (frequency or "").strip().upper()
+    if freq in _Q_END_MONTHS:
+        return calendar.monthrange(year, month)[1] if month in _Q_END_MONTHS[freq] else None
+    if freq == "M":
+        return calendar.monthrange(year, month)[1]
+    if freq == "F":
+        # Fortnightly ends both mid-month (15th) and month-end — for a
+        # monthly roll-up, the month-end occurrence stands in for the
+        # period; the 15th's own filing is a separate InstanceLog entry
+        # this simplified monthly view doesn't split out.
+        return calendar.monthrange(year, month)[1]
+    if freq == "W":
+        # Weekly (Friday-ending) has no single "period-end day of the
+        # month" — every week in the month is its own period. Not
+        # representable in a one-row-per-return monthly view; excluded
+        # from monthly status entirely (same as D/G/HM below).
+        return None
+    return None  # D, G (as-and-when), HM, and unrecognised: no fixed period-end
+
+
+def handle_monthly_filing_status(scope: dict, entities: dict, store: XMLStore) -> dict:
+    """Per-return filed/not-filed roll-up for a single calendar month, e.g.
+    "what's my XBRL filing status for June 2025?" or "what dates are
+    non-XBRL reports expected in June 2025?".
+
+    Only returns whose reporting frequency has a period-end date landing in
+    the target month are considered "due" that month (a Quarterly return is
+    not due every month, only quarter-end months) — this is a narrower,
+    single-month view of the same frequency/period-end resolution
+    handle_next_reporting_date and handle_reports_upcoming_in_range use, not
+    a re-derivation of it. "Filed" means an InstanceLog entry exists whose
+    ReportingDate equals that period-end (the period the submission is FOR,
+    not when it was actually submitted — same distinction documented on
+    handle_reports_filed_in_range).
+
+    Scope: target_type "self" is restricted to the caller's own department;
+    "department" (named other) and "system_wide" (all departments) are
+    admin-only, already enforced by access_control.scope_query before this
+    handler runs.
+    """
+    month_year = entities.get("month_year")
+    if not month_year:
+        return _not_found(
+            "monthly_filing_status", "Filing Status",
+            "Please specify a month, e.g. \"what's my XBRL filing status for June 2025?\" "
+            "or \"non-XBRL status for this month\".",
+        )
+    my = _parse_month_year(month_year)
+    if not my:
+        return _not_found(
+            "monthly_filing_status", "Filing Status",
+            f"Could not understand the month {month_year!r}.",
+        )
+    year, month = my
+    month_label = date(year, month, 1).strftime("%B %Y")
+
+    target_type = scope.get("target_type", "self")
+    scope_phrase = "your department"
+    if target_type == "system_wide":
+        allowed_ids = _all_return_ids_system_wide(store)
+        scope_phrase = "all departments"
+    else:
+        dept = _resolve_target_department(store, scope, entities)
+        if not dept:
+            return _not_found(
+                "monthly_filing_status", "Filing Status",
+                "Your department could not be found, so filing status can't be determined."
+                if target_type == "self" else
+                "That department could not be found.",
+            )
+        allowed_ids = _dept_allowed_return_ids(store, dept) or set()
+        if target_type == "department":
+            scope_phrase = f"department '{dept.get('Name', '')}'"
+
+    xbrl_type = entities.get("xbrl_type")
+    all_returns = list(store.returns()) + list(store.non_xbrl_returns())
+    all_returns = _filter_by_xbrl_type(store, all_returns, xbrl_type)
+    all_returns = [r for r in all_returns if r.get("Id", "") in allowed_ids or r.get("ReturnId", "") in allowed_ids]
+
+    logs_by_form: dict[str, list[dict]] = {}
+    for log in store.instance_log():
+        logs_by_form.setdefault(log.get("FormId", ""), []).append(log)
+
+    rows = []
+    for ret in all_returns:
+        frequency, period_name = _resolve_return_frequency_code(store, ret)
+        end_day = _period_end_day(frequency, year, month)
+        if end_day is None:
+            continue
+        period_end = date(year, month, end_day)
+        period_end_str = period_end.strftime("%d-%b-%Y")
+
+        form_id = ret.get("Id", "") or ret.get("ReturnId", "")
+        filed_entry = next(
+            (l for l in logs_by_form.get(form_id, [])
+             if _parse_flexible_date((l.get("ReportingDate") or "").split(" ")[0]) == period_end),
+            None,
+        )
+        rows.append({
+            "ReturnName": ret.get("Name", ""),
+            "Frequency": period_name or frequency,
+            "ExpectedDate": period_end_str,
+            "Filed": bool(filed_entry),
+            "FiledOn": (filed_entry.get("DTC") or "").split(" ")[0] if filed_entry else None,
+        })
+
+    rows.sort(key=lambda r: (r["Filed"], r["ReturnName"]))
+    filed_count = sum(1 for r in rows if r["Filed"])
+    type_phrase = {"xbrl": "XBRL ", "non_xbrl": "non-XBRL "}.get(xbrl_type, "")
+    label = f"{type_phrase}Filing Status — {month_label}"
+    if not rows:
+        return _result(
+            "monthly_filing_status", label, [],
+            f"No {type_phrase}return(s) due for {scope_phrase} in {month_label}.",
+            count=0,
+        )
+    return _result(
+        "monthly_filing_status", label, rows,
+        f"{filed_count} of {len(rows)} {type_phrase}return(s) due for {scope_phrase} "
+        f"in {month_label} have been filed.",
+        count=len(rows), filed=filed_count,
+    )
+
+
 # ── NON_XBRL_RETURNS ─────────────────────────────────────────────────────
 
 def handle_nonxbrl_return_list(scope: dict, entities: dict, store: XMLStore) -> dict:

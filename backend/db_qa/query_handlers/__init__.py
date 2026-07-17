@@ -101,6 +101,7 @@ NEW_INTENT_TO_HANDLER: dict[Intent, NewHandler] = {
     Intent.NEXT_REPORTING_DATE: return_handlers.handle_next_reporting_date,
     Intent.REPORTS_FILED_IN_RANGE: return_handlers.handle_reports_filed_in_range,
     Intent.REPORTS_UPCOMING_IN_RANGE: return_handlers.handle_reports_upcoming_in_range,
+    Intent.MONTHLY_FILING_STATUS: return_handlers.handle_monthly_filing_status,
     Intent.NONXBRL_RETURN_LIST: return_handlers.handle_nonxbrl_return_list,
     Intent.NONXBRL_RETURN_PROFILE: return_handlers.handle_nonxbrl_return_profile,
     Intent.DEPT_RETURN_ACCESS_MATRIX: return_handlers.handle_dept_return_access_matrix,

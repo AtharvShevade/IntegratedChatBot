@@ -1334,6 +1334,19 @@ html, body, #root {
 
 .dbqa-summary { font-size: 0.75rem; color: var(--text-muted); padding: 2px 0; }
 
+.dbqa-pagination {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 2px 0;
+}
+.dbqa-page-btn {
+  font-size: 0.75rem; font-weight: 600; padding: 5px 12px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--decision-bg); color: var(--text);
+  cursor: pointer; transition: background 0.12s, opacity 0.12s;
+}
+.dbqa-page-btn:hover:not(:disabled) { background: rgba(1,90,170,0.08); }
+.dbqa-page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.dbqa-page-info { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+
 /* ── Simple error cards (DIMENSION / UNKNOWN) ── */
 .error-simple-section {
   margin-top: 10px;

@@ -319,12 +319,23 @@ class XMLStore:
         return period_id
 
     def return_name_by_id(self, return_id: str) -> str:
+        """Resolve a return's internal Id OR its ReturnId code to its Name.
+
+        XML_InstanceLog.xml's FormId matches a return's internal "Id"
+        field (e.g. "2029"), not its "ReturnId" code (e.g. "R018") — the
+        two are unrelated identifiers on the same record. Checking them
+        as alternatives here (not via get_attr's "first present wins"
+        priority, which always returns ReturnId since it's virtually
+        always set and so never even looks at Id) is required for FormId
+        lookups to ever succeed; ReturnId is also checked so a caller
+        passing a ReturnId code instead of a numeric Id still resolves.
+        """
         rid = str(return_id)
         for r in self.returns():
-            if get_attr(r, "ReturnId", "Id") == rid:
+            if r.get("Id") == rid or r.get("ReturnId") == rid:
                 return r.get("Name", rid)
         for r in self.non_xbrl_returns():
-            if get_attr(r, "ReturnId", "Id") == rid:
+            if r.get("Id") == rid or r.get("ReturnId") == rid:
                 return r.get("Name", rid)
         return return_id
 

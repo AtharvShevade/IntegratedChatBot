@@ -73,6 +73,7 @@ class Intent(str, Enum):
     NEXT_REPORTING_DATE = "next_reporting_date"
     REPORTS_FILED_IN_RANGE = "reports_filed_in_range"
     REPORTS_UPCOMING_IN_RANGE = "reports_upcoming_in_range"
+    MONTHLY_FILING_STATUS = "monthly_filing_status"
 
     # NON_XBRL_RETURNS
     NONXBRL_RETURN_LIST = "nonxbrl_return_list"
@@ -329,6 +330,20 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         "'what reports are coming up between X and Y'",
         target_types=("self", "department", "system_wide"),
         required_entities=("date_from", "date_to"),
+        optional_entities=("target_department", "xbrl_type"),
+    ),
+    Intent.MONTHLY_FILING_STATUS: IntentSpec(
+        "Per-return filed/not-filed roll-up for a single named or relative "
+        "calendar month (e.g. 'June 2025', 'this month', 'last month') — "
+        "only returns whose reporting frequency has a period-end in that "
+        "month are considered due, each shown as Filed (an InstanceLog "
+        "entry exists for that period) or Not Filed — scoped to the "
+        "caller's own department for regular users; admins may "
+        "additionally ask about a named department or system-wide across "
+        "all departments — 'what's my XBRL filing status for June 2025?', "
+        "'what's the non-XBRL status for this month?'",
+        target_types=("self", "department", "system_wide"),
+        required_entities=("month_year",),
         optional_entities=("target_department", "xbrl_type"),
     ),
 

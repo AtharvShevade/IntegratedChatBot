@@ -54,6 +54,7 @@ TEMPLATES: dict[Intent, str] = {
     Intent.NEXT_REPORTING_DATE: "{summary}",
     Intent.REPORTS_FILED_IN_RANGE: "{summary}",
     Intent.REPORTS_UPCOMING_IN_RANGE: "{summary}",
+    Intent.MONTHLY_FILING_STATUS: "{summary}",
 
     Intent.NONXBRL_RETURN_LIST: "{summary}",
     Intent.NONXBRL_RETURN_PROFILE: "{summary}",

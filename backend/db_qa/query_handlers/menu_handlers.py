@@ -14,12 +14,20 @@ def _not_found(intent: str, label: str, msg: str) -> dict:
 
 def handle_menu_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     section = entities.get("section", "")
+    query_type = (entities.get("query_type") or "").lower()
     options = [o for o in store.options() if o.get("IsMenu", "").lower() == "true"]
+    if query_type == "top_level":
+        # "Top-level" means no ParentOptionId — IsMenu alone doesn't
+        # distinguish a parent section (e.g. "User Management") from its
+        # own children (e.g. "Users", "Roles"), so a bare IsMenu filter
+        # over-counts by including every nested item too.
+        options = [o for o in options if not (o.get("ParentOptionId") or "").strip()]
     if section:
         options = [o for o in options if section.lower() in o.get("OptionName", "").lower()]
     label = "My Menu" if scope["target_type"] == "self" else "System Menu & Modules"
+    level_phrase = "top-level " if query_type == "top_level" else ""
     return _result("menu_list", label, options,
-                   f"There are {len(options)} menu item(s)" + (f" under '{section}'." if section else "."),
+                   f"There are {len(options)} {level_phrase}menu item(s)" + (f" under '{section}'." if section else "."),
                    count=len(options))
 
 

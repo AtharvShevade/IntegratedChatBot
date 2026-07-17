@@ -55,10 +55,20 @@ def _extract_quoted_or_bracketed(text: str) -> str | None:
 
 
 def _extract_after_kw(text: str, *keywords: str) -> str | None:
-    """Return the word(s) following the first matching keyword."""
+    """Return the word(s) following the first matching keyword.
+
+    The captured character class includes parentheses — many real return
+    names in this dataset are parenthesized (e.g. "CIMS_RAQ(Annually)",
+    "CIMS_RAQ(Monthly)"). Without them, a name containing "(" couldn't
+    reach the terminator lookahead at all (that character isn't in the
+    class), so the WHOLE match failed rather than just truncating the
+    name — e.g. "return CIMS_RAQ(Annually)?" extracted nothing, silently
+    falling through to "no target_return" instead of resolving or erroring
+    on the specific return.
+    """
     for kw in keywords:
         m = re.search(
-            rf"\b{re.escape(kw)}\b\s+(?:called\s+|named\s+)?([A-Za-z0-9_.\-\s]{{1,40}}?)(?:\?|$|\sis\b|\shas\b|\sand\b)",
+            rf"\b{re.escape(kw)}\b\s+(?:called\s+|named\s+)?([A-Za-z0-9_.\-\s()]{{1,40}}?)(?:\?|$|\sis\b|\shas\b|\sand\b)",
             text,
             re.IGNORECASE,
         )

@@ -242,6 +242,13 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "total":            "Total",
     "active":           "Active",
     "inactive":         "Inactive",
+    "Frequency":        "Frequency",
+    "ExpectedDate":     "Expected Date",
+    "Filed":            "Filed",
+    "FiledOn":          "Filed On",
+    "AuditDateTime":    "Date/Time",
+    "AuditType":        "Action",
+    "Remark":           "Remark",
 }
 
 _SKIP_FIELDS: frozenset[str] = frozenset({
@@ -250,6 +257,16 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
 })
 
 def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
+    # InstanceLog-derived records (submissions) carry both a raw numeric
+    # "Status" code (0-11) and a human "StatusLabel" ("New / Pending",
+    # "Approved", ...). Displaying both duplicates the "Status" header
+    # AND runs the raw code through the User/Department Active/Inactive
+    # boolean formatter below (_fmt_val's _STATUS_COLS branch), which is
+    # meaningless for a status CODE and rendered almost every row as
+    # "Inactive" regardless of its real status. StatusLabel supersedes
+    # Status whenever both are present, so skip the raw field.
+    if sample_record and "StatusLabel" in sample_record:
+        return _SKIP_FIELDS | {"Status"}
     return _SKIP_FIELDS
 
 _PRIORITY_COLS: list[str] = [
@@ -257,7 +274,9 @@ _PRIORITY_COLS: list[str] = [
     "DeptName", "RoleName", "Status", "LastLoginDT",
     "ReturnName", "ReturnCode", "PeriodName",
     "OptionName", "MenuName", "AccessType",
-    "UserName", "StatusLabel", "CreatedDate", "FailedLoginCount",
+    "UserName", "AuditDateTime", "AuditType", "Remark",
+    "StatusLabel", "CreatedDate", "FailedLoginCount",
+    "Frequency", "ExpectedDate", "Filed", "FiledOn",
 ]
 
 _COUNT_KEYS: frozenset[str] = frozenset({"total", "active", "inactive"})
@@ -274,6 +293,13 @@ def _fmt_val(v, col: str | None = None) -> str:
     if v is None or v == "" or v == []:
         return "\u2014"
     s = str(v).strip()
+    if col == "Filed":
+        # Checked before the generic true/false->Active/Inactive mapping
+        # below \u2014 that mapping is meant for Status-style fields and would
+        # otherwise render a not-filed return as "Inactive", which reads
+        # as the return itself being disabled rather than simply not yet
+        # filed for the period in question.
+        return "Filed" if s.lower() == "true" else "Not Filed"
     if col in _STATUS_COLS:
         from backend.db_qa.xml_store import is_active_status
         return "Active" if is_active_status(s) else "Inactive"

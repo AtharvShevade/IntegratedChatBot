@@ -1458,10 +1458,27 @@ async def decide(
         # also match as report-workflow keywords) would incorrectly send
         # "what XBRL returns generated between 31-Jan-2026 and 15-Mar-2026"
         # into the generate-instance workflow instead of DB Q&A.
-        from backend.db_qa.new_intent_classifier import _DATE_RANGE_RE
+        from backend.db_qa.new_intent_classifier import _DATE_RANGE_RE, classify_new
+        from backend.db_qa.intents.taxonomy import Intent as _Intent
         _has_date_range = bool(_DATE_RANGE_RE.search(user_query))
 
-        _has_workflow = not _has_date_range and (
+        # A monthly filing-status question ("what's my XBRL filing status
+        # for June 2025?", "non-XBRL status for this month") is DB Q&A
+        # (MONTHLY_FILING_STATUS), never the single-report status workflow
+        # — but it has no two-date range for _has_date_range to catch, and
+        # "filing status"/"status" is exactly what _fuzzy_has_status also
+        # matches as a report-workflow keyword. Without this override every
+        # monthly-status question was being sent into the single-report
+        # get_status workflow (which then either fails auth against a
+        # resolved single report or fuzzy-matches an unrelated report name)
+        # instead of ever reaching STEP 2 (DB Q&A). Uses the regex tier
+        # only (classify_new, not the async semantic-tiers classifier) —
+        # cheap and synchronous, matching _has_date_range's own cost profile
+        # for this pre-STEP-1 gate.
+        _probe_monthly_intent, _, _ = classify_new(user_query)
+        _has_monthly_status = _probe_monthly_intent == _Intent.MONTHLY_FILING_STATUS
+
+        _has_workflow = not _has_date_range and not _has_monthly_status and (
             _fuzzy_has_status(user_query)
             or _fuzzy_has_generate(user_query)
             or _fuzzy_has_schedule(user_query)

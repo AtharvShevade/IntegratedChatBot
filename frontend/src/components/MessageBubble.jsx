@@ -1178,7 +1178,14 @@ function renderDbQaCell(col, value) {
 }
 
 // ── DB QA Result Block ────────────────────────────────────────────────────────
+const DBQA_PAGE_SIZE = 10
+
 function DbQaResultBlock({ data, fallbackText }) {
+  // Hooks must run unconditionally on every render (Rules of Hooks) — this
+  // has to sit above the early returns below, even though `page` is only
+  // read/used by the table branches further down.
+  const [page, setPage] = useState(0)
+
   if (!data || (data.records?.length === 0 && !data.summary)) {
     return <div className="bubble assistant-bubble">{fallbackText || 'No data found.'}</div>
   }
@@ -1190,7 +1197,38 @@ function DbQaResultBlock({ data, fallbackText }) {
   } = data
   if (records.length === 0) return <div className="bubble assistant-bubble">{summary || fallbackText}</div>
   const hasStructuredMeta = tableNames.length || rowLabels.length || contexts.length || cellCodes.length
+
+  // Paginate any table over DBQA_PAGE_SIZE rows — click through pages
+  // instead of scrolling the whole message vertically. Horizontal
+  // scrolling (dbqa-table-wrapper's overflow-x) is unrelated and stays as
+  // the mechanism for wide tables with many columns.
+  const totalPages = Math.max(1, Math.ceil(records.length / DBQA_PAGE_SIZE))
+  const clampedPage = Math.min(page, totalPages - 1)
+  const pageStart = clampedPage * DBQA_PAGE_SIZE
+  const pageEnd = Math.min(pageStart + DBQA_PAGE_SIZE, records.length)
+  const showPagination = records.length > DBQA_PAGE_SIZE
+  const paginationEl = showPagination && (
+    <div className="dbqa-pagination">
+      <button
+        type="button"
+        className="dbqa-page-btn"
+        onClick={() => setPage((p) => Math.max(0, p - 1))}
+        disabled={clampedPage === 0}
+      >‹ Prev</button>
+      <span className="dbqa-page-info">
+        {pageStart + 1}–{pageEnd} of {records.length} · Page {clampedPage + 1} of {totalPages}
+      </span>
+      <button
+        type="button"
+        className="dbqa-page-btn"
+        onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+        disabled={clampedPage >= totalPages - 1}
+      >Next ›</button>
+    </div>
+  )
+
   if (hasStructuredMeta) {
+    const pageIdxs = Array.from({ length: pageEnd - pageStart }, (_, i) => pageStart + i)
     return (
       <div className="dbqa-block structured-dbqa">
         {label && (
@@ -1205,7 +1243,7 @@ function DbQaResultBlock({ data, fallbackText }) {
               <tr><th>DB TableName</th><th>Row Label(s)</th><th>Context</th><th>Cell Code</th></tr>
             </thead>
             <tbody>
-              {records.map((_, i) => (
+              {pageIdxs.map((i) => (
                 <tr key={i}>
                   <td>{tableNames[i] ?? '—'}</td>
                   <td>{rowLabels[i] ?? '—'}</td>
@@ -1216,6 +1254,7 @@ function DbQaResultBlock({ data, fallbackText }) {
             </tbody>
           </table>
         </div>
+        {paginationEl}
         {summary && <div className="dbqa-summary">{summary}</div>}
       </div>
     )
@@ -1251,6 +1290,7 @@ function DbQaResultBlock({ data, fallbackText }) {
       </div>
     )
   }
+  const pageRecords = records.slice(pageStart, pageEnd)
   return (
     <div className="dbqa-block">
       {label && (
@@ -1265,14 +1305,15 @@ function DbQaResultBlock({ data, fallbackText }) {
             <tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr>
           </thead>
           <tbody>
-            {records.map((rec, ri) => (
-              <tr key={ri}>
+            {pageRecords.map((rec, ri) => (
+              <tr key={pageStart + ri}>
                 {cols.map((c) => <td key={c}>{renderDbQaCell(c, rec[c])}</td>)}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {paginationEl}
       {summary && <div className="dbqa-summary">{summary}</div>}
     </div>
   )

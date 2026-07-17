@@ -284,6 +284,15 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What non-XBRL returns are due between two dates?",
         "What returns are upcoming next month?",
     ],
+    Intent.MONTHLY_FILING_STATUS: [
+        "What's my XBRL filing status for June 2025?",
+        "What's my non-XBRL filing status for June 2025?",
+        "What's the non-XBRL status for this month?",
+        "What's my filing status for last month?",
+        "What dates are non-XBRL reports expected in June 2025?",
+        "Which XBRL returns have I filed this month, and which are still pending?",
+        "Give me my department's non-XBRL status for next month.",
+    ],
 
     # ── NON_XBRL_RETURNS ─────────────────────────────────────────────────
     Intent.NONXBRL_RETURN_LIST: [
