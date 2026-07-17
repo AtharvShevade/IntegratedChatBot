@@ -201,20 +201,18 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
     "FormId", "PeriodId", "Password", "PasswordHash",
 })
 
-# 6.0's User.xml stores these fields encrypted (ciphertext, not decryptable
-# here) — never worth displaying in that mode. 5.5 stores them as plain
-# text, so they stay visible there. Department/Role records also have a
-# Name/EmailId column but store them as plain text in BOTH versions, so
-# this only applies to user records specifically (detected via the
-# presence of a LoginId field, which only user rows have).
-_SKIP_FIELDS_6_0_USER_ONLY: frozenset[str] = frozenset({"Name", "EmailId", "MobileNumber"})
+# User.xml stores these fields encrypted (ciphertext, not decryptable
+# here) — never worth displaying. Department/Role records also have a
+# Name/EmailId column but store them as plain text, so this only applies
+# to user records specifically (detected via the presence of a LoginId
+# field, which only user rows have).
+_SKIP_FIELDS_USER_ONLY: frozenset[str] = frozenset({"Name", "EmailId", "MobileNumber"})
 
 
 def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
-    import os
     is_user_record = bool(sample_record and "LoginId" in sample_record)
-    if is_user_record and os.getenv("APP_VERSION", "5.5").strip() == "6.0":
-        return _SKIP_FIELDS | _SKIP_FIELDS_6_0_USER_ONLY
+    if is_user_record:
+        return _SKIP_FIELDS | _SKIP_FIELDS_USER_ONLY
     return _SKIP_FIELDS
 
 _PRIORITY_COLS: list[str] = [

@@ -268,7 +268,6 @@ class TestRealDataFrequencyResolution:
             print("OK")
         """)
         env = dict(os.environ)
-        env["APP_VERSION"] = "6.0"
         env["BASE_REPO_PATH"] = str(PATH_6_0_1001.parent.parent)
         result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True)
         assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
@@ -287,7 +286,6 @@ class TestRealDataFrequencyResolution:
             print("OK")
         """)
         env = dict(os.environ)
-        env["APP_VERSION"] = "6.0"
         env["BASE_REPO_PATH"] = str(PATH_6_0_1001.parent.parent)
         result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True)
         assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
@@ -307,7 +305,6 @@ class TestRealDataFrequencyResolution:
             print("OK")
         """)
         env = dict(os.environ)
-        env["APP_VERSION"] = "6.0"
         env["BASE_REPO_PATH"] = str(PATH_6_0_1001.parent.parent)
         result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True)
         assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"

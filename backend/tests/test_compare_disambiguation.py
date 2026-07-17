@@ -8,10 +8,9 @@ name had just been shown as a valid option.
 Root cause: the STAGE_CMP_REPORT disambiguation-selection branch in
 decide() called _check_name_auth(selected, allowed_form_ids, "compare_reports")
 and _compare_with_name(selected, session_id) WITHOUT tenant_id. Both
-functions default tenant_id to None, so in 6.0 mode this looked up
-Returns.xml under the wrong (non-tenant-scoped) path and always failed to
-resolve the FormId — exactly reproducing the reported error. In 5.5 mode
-tenant_id is legitimately always None, so this bug only manifested in 6.0.
+functions default tenant_id to None, so this looked up Returns.xml under
+the wrong (non-tenant-scoped) path and always failed to resolve the
+FormId — exactly reproducing the reported error.
 
 Exact-name and Return ID compare flows (which go through _handle_compare's
 single-match branch, unaffected by this omission) must continue to work
@@ -111,7 +110,7 @@ class TestPartialNameDisambiguation5_5:
 
 # ── Non-regression: exact name / Return ID flows (single-match, unaffected) ──
 
-class TestExactNameAndReturnIdNoRegression5_5:
+class TestExactNameAndReturnIdNoRegression:
     def test_exact_report_name_resolves_directly(self):
         session_id = "test-cmp-exact-1"
         _session_context.pop(session_id, None)
@@ -140,7 +139,6 @@ class TestCompareDisambiguation6_0:
     def _run_in_subprocess(self, script_body: str) -> subprocess.CompletedProcess:
         script = textwrap.dedent(script_body)
         env = dict(os.environ)
-        env["APP_VERSION"] = "6.0"
         env["BASE_REPO_PATH"] = str(PATH_6_0_1001.parent.parent)
         return subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True)
 

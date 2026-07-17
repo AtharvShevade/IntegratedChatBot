@@ -83,7 +83,7 @@ class XMLStore:
 
     Usage::
 
-        store = XMLStore("D:/Repo5.5/Database")
+        store = XMLStore("D:/Repo/1001/DataBase", tenant_id="1001")
         active = [u for u in store.users() if u["Status"] == "true"]
     """
 
@@ -97,11 +97,10 @@ class XMLStore:
         "nonxbrl_returns":  ["__return_index__"],
     }
 
-    # Entities not present in the schema (e.g. XML_UserLevels.xml doesn't
-    # exist on disk; segments/error_log/uploaded_file_log/cross_validation_log
-    # have no 6.0 equivalent) still resolve here as best-effort filenames so
-    # 5.5's file-not-found path (empty list, not an error) keeps working
-    # exactly as before for any entity a version's schema doesn't define.
+    # Entities not present in the schema (e.g. user_levels/notifications, or
+    # segments/error_log/uploaded_file_log/cross_validation_log, which have
+    # no 6.0 equivalent) still resolve here as best-effort filenames so a
+    # missing file degrades to an empty list rather than raising.
     _LEGACY_FALLBACK_FILENAMES: dict[str, str] = {
         "user_levels":            "XML_UserLevels.xml",
         "notifications":          "Notifications.xml",
@@ -120,20 +119,8 @@ class XMLStore:
             self._db = Path(_config.get_app_db_base_path(tenant_id))
         self._tenant_id = tenant_id
 
-        # Read APP_VERSION live (not backend.version_mode's cached
-        # module-level constant) so tests can monkeypatch the env var
-        # per-instance without relying on import order. Production
-        # behavior is unchanged — a real process still only ever sets
-        # this once at startup — this just removes an import-time cache
-        # that made the deployment-level switch impossible to unit test
-        # in-process.
-        import os as _os
-        self._is_6_0 = _os.getenv("APP_VERSION", "5.5").strip() == "6.0"
-
-        from backend.db_qa import versions as _versions
-        self._schema = (
-            _versions.v6_0_schema.SCHEMA if self._is_6_0 else _versions.v5_5_schema.SCHEMA
-        )
+        from backend.db_qa.versions import v6_0_schema
+        self._schema = v6_0_schema.SCHEMA
 
         # Raw-data cache: entity_name → list[row_dict]
         self._cache: dict[str, list[dict[str, str]]] = {}
@@ -145,17 +132,17 @@ class XMLStore:
     def _resolve_source_path(self, entity_name: str) -> Path:
         """Return the on-disk path _load() should mtime-check for *entity_name*.
 
-        Entities defined in the active schema use their schema filename —
-        unless that .xml is missing AND the entity has a configured JSON
-        fallback under 6.0, in which case the JSON path is used instead so
-        the mtime check (and cache invalidation) tracks the file that will
-        actually be read, not the absent .xml.
+        Entities defined in the schema use their schema filename — unless
+        that .xml is missing AND the entity has a configured JSON fallback,
+        in which case the JSON path is used instead so the mtime check
+        (and cache invalidation) tracks the file that will actually be
+        read, not the absent .xml.
 
         Entities NOT in the schema at all (legacy-only lookups like
-        user_levels/notifications, or 6.0-absent entities) fall back to
-        their 5.5-style filename so a missing file still resolves to a real
-        (non-existent) path and degrades to [] via the existing OSError
-        branch below, rather than raising or silently misbehaving.
+        user_levels/notifications, or entities with no 6.0 equivalent) fall
+        back to a best-effort filename so a missing file still resolves to
+        a real (non-existent) path and degrades to [] via the existing
+        OSError branch below, rather than raising or silently misbehaving.
         """
         spec = self._schema.get(entity_name)
         if spec is not None:
@@ -163,7 +150,6 @@ class XMLStore:
             if (
                 not xml_path.exists()
                 and spec.json_fallback
-                and self._is_6_0
                 and spec.json_filename
             ):
                 return self._db / spec.json_filename
@@ -238,11 +224,11 @@ class XMLStore:
             spec = self._schema.get(entity_name)
             if spec is not None:
                 data = loader.load_entity(
-                    entity_name, self._db, schema=self._schema, is_6_0=self._is_6_0,
+                    entity_name, self._db, schema=self._schema, is_6_0=True,
                 )
             else:
-                # Not in this version's schema — same degrade-to-[] behavior
-                # as a missing file (e.g. user_levels on 5.5).
+                # Not in the schema — same degrade-to-[] behavior as a
+                # missing file (e.g. user_levels, notifications).
                 data = []
 
             if not data and entity_name in self._cache:

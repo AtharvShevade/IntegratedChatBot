@@ -59,7 +59,7 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
     session_user:
         Identity resolved from the authenticated session/request — NEVER
         from LLM-extracted chat entities. Expected keys: "login_id",
-        "user_id" (optional), "tenant_id" (optional, 6.0 only).
+        "user_id" (optional), "tenant_id" (required).
     intent:
         The resolved Intent name (string value).
     entities:
@@ -83,23 +83,15 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
     ------
     PermissionError
         If *session_user* is not authorized for the requested target_type,
-        or if 6.0 mode is active and tenant_id is missing from the session.
+        or if tenant_id is missing from the session.
     """
     login_id = session_user.get("login_id") or ""
     tenant_id = session_user.get("tenant_id")  # session only — never entities
     target_type = entities.get("target_type", "self")
 
-    # Read APP_VERSION live rather than backend.version_mode's cached
-    # module-level constant (frozen at whatever value existed the first
-    # time that module was imported in this process) — production only
-    # ever has one value per process anyway, so this changes nothing
-    # there, but makes the check correct regardless of import order in
-    # tests or any future in-process multi-version tooling.
-    import os as _os
-    is_6_0 = _os.getenv("APP_VERSION", "5.5").strip() == "6.0"
-    if is_6_0 and not tenant_id:
+    if not tenant_id:
         raise PermissionError(
-            "A tenant context is required to answer this question in 6.0 mode."
+            "A tenant context is required to answer this question."
         )
 
     scope: dict = {

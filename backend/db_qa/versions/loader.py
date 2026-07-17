@@ -5,8 +5,8 @@ fallback info) and a base directory, load_entity() returns a list of plain
 dicts keyed by *logical* field names, regardless of which raw XML/JSON
 attribute names the underlying file actually uses.
 
-Kept independent of XMLStore and version_mode so it can be unit-tested
-directly against real data directories without constructing a store.
+Kept independent of XMLStore so it can be unit-tested directly against
+real data directories without constructing a store.
 """
 from __future__ import annotations
 
