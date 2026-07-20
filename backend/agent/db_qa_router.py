@@ -249,6 +249,8 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "AuditDateTime":    "Date/Time",
     "AuditType":        "Action",
     "Remark":           "Remark",
+    "ReportingDate":    "Reporting Date",
+    "GeneratedOn":      "Generated On",
 }
 
 _SKIP_FIELDS: frozenset[str] = frozenset({

@@ -193,6 +193,43 @@ def _get_status_fast_with_bg_job(query: str) -> dict:
     return result
 
 
+def _get_status_by_id_fast_with_bg_job(instance_id: str) -> dict:
+    """Same fast+bg-job pattern as _get_status_fast_with_bg_job, for a
+    status lookup by a known InstanceLog Id rather than a report name —
+    "what is the status of <id>". The background error-enrichment job
+    (when applicable) targets THIS specific row, not "the latest instance
+    for this form", since the whole point of an id-based lookup is a
+    specific submission, not whichever happens to be newest.
+    """
+    from backend.tools.report_lookup import get_report_status_by_id_fast, _parse_instances
+
+    result = get_report_status_by_id_fast(instance_id)
+
+    if (
+        result.get("type") in ("final", "latest_with_ask")
+        and result.get("status_code") in _FAILED_STATUSES
+        and result.get("error_count", 0) > 0
+    ):
+        job_id = str(_uuid_mod.uuid4())
+        _error_jobs[job_id] = {"status": "pending", "payload": None}
+
+        form_id = result["form_id"]
+        row = next((r for r in _parse_instances() if r.get("Id", "").strip() == instance_id.strip()), None)
+        if row:
+            code = _safe_status(row)
+            dl   = _get_download_info(row, form_id)
+            thread = threading.Thread(
+                target=_run_error_enrichment_async,
+                args=(job_id, form_id, row, dl, code),
+                daemon=True,
+            )
+            thread.start()
+            result["job_id"]      = job_id
+            result["result_type"] = result.get("result_type", "final")
+
+    return result
+
+
 logger = logging.getLogger(__name__)
 
 # Stage constants -- stored in session under key "awaiting"
@@ -1458,9 +1495,23 @@ async def decide(
         # also match as report-workflow keywords) would incorrectly send
         # "what XBRL returns generated between 31-Jan-2026 and 15-Mar-2026"
         # into the generate-instance workflow instead of DB Q&A.
-        from backend.db_qa.new_intent_classifier import _DATE_RANGE_RE, classify_new
+        from backend.db_qa.new_intent_classifier import _DATE_RANGE_RE, _INSTANCE_ID_RE, classify_new
         from backend.db_qa.intents.taxonomy import Intent as _Intent
         _has_date_range = bool(_DATE_RANGE_RE.search(user_query))
+
+        # A submission-log GUID id in the question ("what is the status of
+        # f7593ff72d644345865eaa84ae0b3073") is a status-by-id lookup —
+        # it must use the SAME rich status-checking pipeline as a
+        # report-name lookup (error extraction, 4000-series gating, the
+        # "check another reporting date" follow-up), not db_qa's plain
+        # summary. A GUID appearing anywhere in the question is
+        # distinctive enough (32 hex chars) to trust as this signal
+        # regardless of surrounding wording. See the STEP-1 workflow
+        # block below, which branches on this BEFORE the generic
+        # name-search status path (a bare GUID has no report name for
+        # find_matching_reports() to match, so it must never reach that
+        # branch).
+        _has_guid_status = bool(_INSTANCE_ID_RE.search(user_query))
 
         # A monthly filing-status question ("what's my XBRL filing status
         # for June 2025?", "non-XBRL status for this month") is DB Q&A
@@ -1479,7 +1530,8 @@ async def decide(
         _has_monthly_status = _probe_monthly_intent == _Intent.MONTHLY_FILING_STATUS
 
         _has_workflow = not _has_date_range and not _has_monthly_status and (
-            _fuzzy_has_status(user_query)
+            _has_guid_status
+            or _fuzzy_has_status(user_query)
             or _fuzzy_has_generate(user_query)
             or _fuzzy_has_schedule(user_query)
             or bool(_CMP_KW_RE.search(user_query))
@@ -1520,6 +1572,25 @@ async def decide(
         # Any workflow keyword blocks SQL and QA fast-paths entirely.
         if _has_workflow:
             logger.info("[INTENT:STEP1] workflow signal detected session=%s", session_id)
+
+            # ── Status-by-id fast-path: a known InstanceLog GUID always wins ──
+            # "what is the status of <id>" already names the EXACT submission —
+            # skip name search/disambiguation entirely and run the same
+            # error-extraction/4000-series/"other reporting dates" pipeline a
+            # report-name lookup gets, just seeded from the known row instead
+            # of a name-driven "pick the latest instance" search.
+            if _has_guid_status:
+                _guid_match = _INSTANCE_ID_RE.search(user_query)
+                _instance_id = _guid_match.group(0) if _guid_match else None
+                if _instance_id:
+                    logger.info(
+                        "[INTENT:STEP1] status-by-id fast-path id=%s session=%s",
+                        _instance_id, session_id,
+                    )
+                    result = _get_status_by_id_fast_with_bg_job(_instance_id)
+                    if allowed_form_ids is not None:
+                        result = _apply_auth_to_status_result(result, allowed_form_ids)
+                    return _from_result(result, intent="get_status", session_id=session_id)
 
             # ── Schedule fast-path: schedule beats generate / status ──────────
             # When schedule keyword is detected (and no status signal overrides),
@@ -2987,6 +3058,78 @@ def _handle_schedule(
     return _finalize_schedule(ret, reporting_date, schedule_date, schedule_time, scheduled_datetime, session_id, login_id)
 
 
+def _matching_instance_log_rows(
+    form_id: str, reporting_date: str, login_id: str | None,
+) -> list[dict]:
+    from backend import config
+    from backend.db_qa.xml_store import XMLStore
+
+    if not config.APP_DB_BASE_PATH:
+        return []
+    store = XMLStore(config.APP_DB_BASE_PATH)
+    return [
+        l for l in store.instance_log()
+        if l.get("FormId", "") == str(form_id)
+        and l.get("ReportingDate", "").strip().lower() == reporting_date.strip().lower()
+        and (not login_id or l.get("UserId", "") == login_id)
+    ]
+
+
+def _parse_dtc(dtc: str):
+    from datetime import datetime as _datetime
+    try:
+        return _datetime.strptime(dtc.strip(), "%d-%b-%Y %I:%M:%S %p")
+    except (ValueError, AttributeError):
+        return None
+
+
+async def _find_new_instance_log_id(
+    form_id: str, reporting_date: str, login_id: str | None,
+    before_ids: frozenset[str] = frozenset(),
+) -> str | None:
+    """Best-effort lookup of the just-created InstanceLog row's Id after a
+    successful generate-instance call.
+
+    call_generate_api's .NET response array never includes the new row's
+    Id (see its own docstring — only a bool/date/message tuple) — only a
+    fresh read of XML_InstanceLog.xml has it. The row may not be flushed
+    to disk the instant the API responds, so this retries briefly before
+    giving up. A miss here must never fail the (already successful)
+    generation — the caller only omits the ID line, it doesn't surface an
+    error for what's otherwise a completed action.
+
+    *before_ids* — the set of matching rows' Ids captured BEFORE the
+    generate-instance call was made — is required, not optional in
+    practice: a return/reporting-date combination commonly gets
+    generated repeatedly across testing/real use, so many OLD rows can
+    already match (FormId, ReportingDate, UserId) by the time this looks
+    up "the new one". Without a before/after diff, "pick whichever
+    matching row looks most recent" can return a stale row from a much
+    earlier generation — worse, it did so via a plain string sort on DTC
+    ("DD-Mon-YYYY ..."), which isn't even chronologically correct (e.g.
+    "Jul" sorts before "Jun" alphabetically, backwards from calendar
+    order) on top of not being scoped to "since this call" at all. Only
+    a row whose Id wasn't already present before the call can be the one
+    this call created.
+    """
+    for attempt in range(3):
+        if attempt:
+            await asyncio.sleep(1.0)
+        rows = _matching_instance_log_rows(form_id, reporting_date, login_id)
+        new_rows = [r for r in rows if r.get("Id") and r["Id"] not in before_ids]
+        if not new_rows:
+            continue
+        if len(new_rows) == 1:
+            return new_rows[0]["Id"]
+        # More than one new row appeared (e.g. a rapid double-submit) —
+        # break the tie with an actually-parsed datetime, not a string
+        # sort, so month-name ordering can't scramble the result.
+        from datetime import datetime as _datetime
+        new_rows.sort(key=lambda r: _parse_dtc(r.get("DTC", "")) or _datetime.min, reverse=True)
+        return new_rows[0]["Id"]
+    return None
+
+
 async def _finalize_generation(
     ret: dict[str, Any],
     reporting_date: str,
@@ -3044,6 +3187,16 @@ async def _finalize_generation(
             options=suggestions if suggestions else None,
         )
 
+    # Snapshot which rows already match (FormId, ReportingDate, UserId)
+    # BEFORE calling the API — the same (return, reporting date) is
+    # routinely generated more than once across testing/real use, so
+    # several old rows can already satisfy this filter. Only a row whose
+    # Id wasn't in this snapshot can be the one THIS call creates.
+    before_ids = frozenset(
+        r["Id"] for r in _matching_instance_log_rows(ret["form_id"], reporting_date, login_id)
+        if r.get("Id")
+    )
+
     api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
     if session_id:
         _session_context.pop(session_id, None)
@@ -3053,12 +3206,15 @@ async def _finalize_generation(
             "[GENERATE_SUCCESS] report=%r date=%s session=%s",
             ret["name"], reporting_date, session_id,
         )
+        instance_id = await _find_new_instance_log_id(ret["form_id"], reporting_date, login_id, before_ids)
+        id_line = f"\nID             : {instance_id}" if instance_id else ""
         return _build(
             intent="generate_instance", report_name=ret["name"],
             response_text=(
                 f"Generating instance for '{ret['name']}'"
                 f"\nReporting Date : {reporting_date}"
                 f"\nStatus         : {api_result['message']}"
+                f"{id_line}"
             ),
             result_type="gen_success",
         )

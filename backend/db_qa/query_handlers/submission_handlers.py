@@ -27,6 +27,22 @@ def _login_ids_for(store: XMLStore, login_id: str, user_id: str | None) -> set[s
 
 
 def handle_submission_status(scope: dict, entities: dict, store: XMLStore) -> dict:
+    """Status for one specific submission, identified by its InstanceLog
+    Id — e.g. "what is the status of f7593ff72d644345865eaa84ae0b3073".
+
+    Shows the same compact 4-line view (Return / Reporting Date / Status
+    / Generated On) as the report-name-based "what is the status of CIMS
+    ROR" workflow, including its status label vocabulary (Not Started/In
+    Progress/Success/Failed/Approved/Rejected via
+    report_lookup._STATUS_LABELS) rather than db_qa's own broader
+    InstanceLog status vocabulary — so the same underlying submission
+    reads identically whether it's looked up by name or by id. Deliberately
+    surfaces only these four fields, not every raw InstanceLog attribute
+    (DTC/FileUploadDT/ReportStartDT/IsExtract/IsCims/...), which a generic
+    full-record dump would otherwise show.
+    """
+    from backend.tools.report_lookup import _STATUS_LABELS
+
     submission_id = entities.get("submission_id", "")
     if not submission_id:
         return _not_found("submission_status", "Submission Status", "Please specify a submission id.")
@@ -40,9 +56,21 @@ def handle_submission_status(scope: dict, entities: dict, store: XMLStore) -> di
             return _not_found("submission_status", "Submission Status",
                               f"Submission '{submission_id}' does not belong to your account.")
 
-    enriched = store.enrich_instance_log_entry(entry)
-    return _result("submission_status", f"Submission {submission_id}", [enriched],
-                   f"Submission '{submission_id}' status: {enriched.get('StatusLabel', 'Unknown')}.")
+    return_name = store.return_name_by_id(entry.get("FormId", ""))
+    try:
+        status_code = int(entry.get("Status", ""))
+    except (TypeError, ValueError):
+        status_code = None
+    status_label = _STATUS_LABELS.get(status_code, entry.get("Status") or "Unknown")
+
+    row = {
+        "ReturnName": return_name,
+        "ReportingDate": entry.get("ReportingDate", ""),
+        "StatusLabel": status_label,
+        "GeneratedOn": entry.get("DTC", ""),
+    }
+    return _result("submission_status", return_name, [row],
+                   f"Submission '{submission_id}' status: {status_label}.")
 
 
 def handle_submission_list(scope: dict, entities: dict, store: XMLStore) -> dict:

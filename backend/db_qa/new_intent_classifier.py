@@ -382,6 +382,19 @@ def _match_keyword_rules(q: str) -> tuple[Intent, tuple[str, ...]] | None:
     return best[1].intent, best[1].target_types
 
 
+# An InstanceLog row's Id — a 32-char hex GUID, dashed or not (e.g.
+# "f7593ff72d644345865eaa84ae0b3073" or the dashed 8-4-4-4-12 form). This
+# is what a generate-instance call now echoes back to the user (see
+# _find_new_instance_log_id in agent/__init__.py) and what SUBMISSION_STATUS
+# needs to recognise even with no literal "submission" word in the
+# question ("what is the status of <id>"). Kept as a plain string
+# fragment (not compiled) so it can be embedded inside _mk()'s raw
+# pattern strings; _INSTANCE_ID_RE below is the compiled form used
+# directly by callers outside this module (e.g. decide()'s workflow gate).
+_INSTANCE_ID_PATTERN = r"(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})"
+_INSTANCE_ID_RE = re.compile(_INSTANCE_ID_PATTERN, re.IGNORECASE)
+
+
 def _mk(intent: Intent, target_types: tuple[str, ...], *patterns: str):
     return (intent, target_types, [re.compile(p, re.IGNORECASE) for p in patterns])
 
@@ -522,7 +535,14 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\binstance\s+document\s+path\s+for\b", r"\bcims\s+upload\s+status\s+for\s+my\s+submission\b",
         r"\brejection\s+reason\b"),
     _mk(Intent.SUBMISSION_STATUS, ("self", "other_user"),
-        r"\bstatus\s+of\s+(my\s+)?submission\b", r"\bwas\s+my\s+submission\b.*\brejected\b"),
+        r"\bstatus\s+of\s+(my\s+)?submission\b", r"\bwas\s+my\s+submission\b.*\brejected\b",
+        # "what is the status of <instance log id>" / "...of id: <id>" —
+        # no literal "submission" word at all. This is the Id a
+        # generate-instance call now echoes back to the user (see
+        # _find_new_instance_log_id in agent/__init__.py), a 32-char hex
+        # GUID (dashed or not) — distinctive enough to anchor on directly
+        # rather than requiring "submission" in the phrasing.
+        rf"\bstatus\s+of\s+(?:id\s*[:#]?\s*)?{_INSTANCE_ID_PATTERN}\b"),
     _mk(Intent.SUBMISSION_LIST, ("self", "other_user", "return", "system_wide"),
         r"\bwhich\s+(of\s+my\s+)?submissions?\s+are\s+pending\b",
         r"\bsubmissions?\s+.*(approved|audited|rejected|cims)\b",
@@ -579,6 +599,7 @@ def classify_new(question: str) -> tuple[Intent | None, dict, str | None]:
         intent, target_types = kw_match
         target_type = _infer_target_type(q, target_types)
         target_type = _refine_range_target_type(intent, q, target_types, target_type)
+        target_type = _refine_submission_target_type(intent, q, target_types, target_type)
         params = _extract_new_params(intent, q)
         params["target_type"] = target_type
         return intent, params, target_type
@@ -588,6 +609,7 @@ def classify_new(question: str) -> tuple[Intent | None, dict, str | None]:
             if pat.search(q):
                 target_type = _infer_target_type(q, target_types)
                 target_type = _refine_range_target_type(intent, q, target_types, target_type)
+                target_type = _refine_submission_target_type(intent, q, target_types, target_type)
                 params = _extract_new_params(intent, q)
                 params["target_type"] = target_type
                 return intent, params, target_type
@@ -641,6 +663,34 @@ def _refine_range_target_type(
     explicit_dept = _extract_named_entity_before_or_after(q, ("department", "dept"))
     if explicit_dept and "department" in accepted:
         return "department"
+
+    return "self" if "self" in accepted else inferred
+
+
+def _refine_submission_target_type(
+    intent: Intent, q: str, accepted: tuple[str, ...], inferred: str,
+) -> str:
+    """Correct _infer_target_type's generic 2-way guess for
+    SUBMISSION_STATUS / SUBMISSION_DETAIL, whose accepted set is
+    ("self", "other_user") — "other_user" is admin-only (access_control.
+    TARGET_TYPES_REQUIRING_ADMIN), but _infer_target_type falls back to
+    it for ANY phrasing that isn't self-referential ("my"/"I"), not just
+    phrasing that actually names another user. "What is the status of
+    <instance-log-id>?" has neither a self-referential word NOR a named
+    other user — it's simply asking about a specific submission, which
+    could well be the caller's own — so it must default to "self", not
+    silently deny a regular user via the admin-gated branch. Only an
+    explicitly named other user ("...made by jsmith", "...for user
+    jsmith") should route to "other_user".
+    """
+    if intent not in (Intent.SUBMISSION_STATUS, Intent.SUBMISSION_DETAIL):
+        return inferred
+
+    named_user = _extract_after_kw(
+        q, "user", "for user", "of user", "about user", "made by", "submitted by",
+    )
+    if named_user and "other_user" in accepted:
+        return "other_user"
 
     return "self" if "self" in accepted else inferred
 
@@ -721,6 +771,9 @@ async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None
     spec = INTENT_SPECS[resolved_intent]
     resolved_target_type = _infer_target_type(question, spec.target_types)
     resolved_target_type = _refine_range_target_type(
+        resolved_intent, question, spec.target_types, resolved_target_type,
+    )
+    resolved_target_type = _refine_submission_target_type(
         resolved_intent, question, spec.target_types, resolved_target_type,
     )
     resolved_params = _extract_new_params(resolved_intent, question)
@@ -1165,6 +1218,30 @@ def _extract_month_year(q: str) -> str | None:
     return None
 
 
+def _extract_submission_id(q: str) -> str | None:
+    """A submission/InstanceLog id — either the numeric legacy form
+    ("submission 4021") or the 32-char hex GUID an instance-generation
+    call now returns to the user ("status of f7593ff7...", "status of
+    id: f7593ff7..."). Checked in this order:
+
+      1. A GUID-looking token anywhere in the text — distinctive enough
+         (32 hex chars) to trust regardless of surrounding wording.
+      2. An explicit "id <value>"/"id: <value>" — covers non-GUID ids
+         typed with an explicit "id" label.
+      3. "submission <number>" — the plain-numeric-id phrasing.
+    """
+    m = _INSTANCE_ID_RE.search(q)
+    if m:
+        return m.group(0)
+    m = re.search(r"\bid\s*[:#]?\s*([A-Za-z0-9\-]{1,40})\b", q, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"\bsubmission\s+(?:id\s+)?(\d+)\b", q, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
 def _extract_new_params(intent: Intent, q: str) -> dict:
     params: dict = {}
     explicit = _extract_quoted_or_bracketed(q)
@@ -1172,7 +1249,12 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
     if intent in (Intent.USER_PROFILE, Intent.USER_FIELD, Intent.USERS_BY_DEPARTMENT,
                   Intent.AUDIT_HISTORY, Intent.SUBMISSION_STATUS, Intent.SUBMISSION_DETAIL,
                   Intent.USER_ACCESS_SUMMARY, Intent.SECURITY_EVENTS):
-        params["target_user"] = explicit or _extract_after_kw(q, "user", "for user", "of user", "about user")
+        params["target_user"] = explicit or _extract_after_kw(
+            q, "user", "for user", "of user", "about user", "made by", "submitted by",
+        )
+
+    if intent in (Intent.SUBMISSION_STATUS, Intent.SUBMISSION_DETAIL):
+        params["submission_id"] = _extract_submission_id(q)
 
     if intent == Intent.USERS_BY_DEPARTMENT:
         params["target_department"] = explicit or _extract_department_name_loose(q)

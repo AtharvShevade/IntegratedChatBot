@@ -3265,13 +3265,21 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
     return {**base, "type": "final", "dtc": current_dtc}
 
 
-def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict]) -> dict:
-    sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
-    latest_row  = sorted_rows[0]
-    code        = _safe_status(latest_row)
-    dl          = _get_download_info(latest_row, form_id)
-    current_dtc = latest_row.get("DTC", "").strip()
-    rep_date    = latest_row.get("ReportingDate", "").strip()
+def _build_status_result_from_row(form_id: str, ret_name: str, row: dict) -> dict:
+    """Build the same result shape _build_status_result_fast produces, but
+    for an ALREADY KNOWN row rather than "pick the latest of these
+    instances" — shared by _build_status_result_fast (which still picks
+    the latest row for a name-based lookup) and get_report_status_by_id_fast
+    (which already knows exactly which row the caller means, from its
+    InstanceLog Id), so both produce byte-identical output — same status
+    vocabulary, same error-extraction/4000-series gating, same "other
+    reporting dates" follow-up — regardless of whether the submission was
+    looked up by report name or by id.
+    """
+    code        = _safe_status(row)
+    dl          = _get_download_info(row, form_id)
+    current_dtc = row.get("DTC", "").strip()
+    rep_date    = row.get("ReportingDate", "").strip()
     all_instances   = get_available_instances(form_id)
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
@@ -3291,19 +3299,46 @@ def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict]
         "reporting_date":        rep_date,
         "status":                map_status(code),
         "status_code":           code,
-        "form_id":               form_id,
         "run_time":              current_dtc,
         "download_url":          dl["download_url"],
         "download_label":        dl["download_label"],
         "status_note":           dl["status_note"],
         "error_category_counts": error_category_counts,
-        "is_4000_series":        is_4000,          # ← NEW
+        "is_4000_series":        is_4000,
         "error_messages":        [],
         "error_details":         [],
     }
     if other_instances:
         return {**base, "type": "latest_with_ask", "return_name": ret_name, "other_instances": other_instances}
     return {**base, "type": "final"}
+
+
+def _build_status_result_fast(form_id: str, ret_name: str, instances: list[dict]) -> dict:
+    sorted_rows = sorted(instances, key=_dtc_sort_key, reverse=True)
+    latest_row  = sorted_rows[0]
+    return _build_status_result_from_row(form_id, ret_name, latest_row)
+
+
+def get_report_status_by_id_fast(instance_id: str) -> dict:
+    """Status for one specific submission, identified by its InstanceLog
+    Id (e.g. the Id echoed back after a generate-instance call) —
+    reuses the exact same status-building pipeline as report-name-based
+    lookups (get_report_status_fast -> _build_status_result_fast) via
+    _build_status_result_from_row, instead of a name-driven "pick the
+    latest instance" search, since the caller already knows exactly
+    which submission they mean.
+    """
+    instance_id = instance_id.strip()
+    row = next((r for r in _parse_instances() if r.get("Id", "").strip() == instance_id), None)
+    if not row:
+        return {"type": "error", "message": f"Submission '{instance_id}' not found."}
+
+    form_id = row.get(_instance_log_attrs()["form_id"], "").strip()
+    ret_name = next(
+        (r.get("Name", "") for r in _parse_returns() if r.get("Id", "").strip() == form_id),
+        form_id,
+    )
+    return _build_status_result_from_row(form_id, ret_name, row)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
