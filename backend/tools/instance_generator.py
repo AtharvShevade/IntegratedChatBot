@@ -227,6 +227,7 @@ def _hint_dates(frequency: str, year: int, *, filter_future: bool = True, filter
 
 def validate_reporting_date(
     date_str: str, frequency: str, *, require_future: bool = False, time_str: str | None = None,
+    skip_frequency_check: bool = False,
 ) -> dict[str, Any]:
     """Validate a reporting date against frequency rules.
 
@@ -235,11 +236,22 @@ def validate_reporting_date(
                         accepted — past/current dates are rejected.  When False
                         (default, generate-instance mode) only past/current dates
                         are accepted — future dates are rejected.
-                        All frequency/period checks (Q/M/Y/H/…) are applied in both modes.
+                        All frequency/period checks (Q/M/Y/H/…) are applied in both modes
+                        unless skip_frequency_check is set.
         time_str:       Optional "HH:MM" schedule time. When the date resolves to
                         today and a time is given, the current-day check compares
                         the full datetime (so a later time today is accepted)
                         instead of rejecting today's date outright.
+        skip_frequency_check: When True, skip the Q/M/Y/H/… period-end checks
+                        entirely — used for the SCHEDULE date (when the .NET
+                        job should run), which is unrelated to the report's
+                        reporting-period boundary and just needs to be any
+                        real, parseable, future calendar date. The reporting
+                        date itself always keeps skip_frequency_check=False
+                        (default) since it IS the period the instance is for.
+                        Multi-format date parsing (dd-MMM-yyyy, dd/mm/yyyy,
+                        dd-mm-yyyy, yyyy-mm-dd, dd.mm.yyyy) and the future/past
+                        date requirement above still apply either way.
 
     Returns: {"valid": bool, "error": str | None, "suggestions": list[str]}
     """
@@ -355,15 +367,25 @@ def validate_reporting_date(
 
         if is_past or is_today_and_not_later:
             logger.debug("[PAST_DATE_REJECTED_SCHEDULE] date=%s time=%s today=%s", ds, time_str, today_date)
-            # Suggest the next valid future dates for this frequency.
-            future_hints = _hint_dates(frequency, today_date.year, filter_past=True)
-            if not future_hints:
-                # All current-year dates have passed — pull from next year.
-                future_hints = _hint_dates(frequency, today_date.year + 1, filter_past=True)
+            if skip_frequency_check:
+                # Schedule date has no period-end concept — suggest plain
+                # future calendar dates (tomorrow, a week out) instead of
+                # frequency period-ends, which would be misleading here.
+                from datetime import timedelta as _timedelta
+                future_hints = [
+                    (today_date + _timedelta(days=1)).strftime(_DATE_FMT),
+                    (today_date + _timedelta(days=7)).strftime(_DATE_FMT),
+                ]
+            else:
+                # Suggest the next valid future dates for this frequency.
+                future_hints = _hint_dates(frequency, today_date.year, filter_past=True)
+                if not future_hints:
+                    # All current-year dates have passed — pull from next year.
+                    future_hints = _hint_dates(frequency, today_date.year + 1, filter_past=True)
             error_msg = (
                 "The scheduled time must be in the future for today's date."
                 if is_today_past_time else
-                f"'{ds}' is not a future date. Scheduling requires a future reporting date."
+                f"'{ds}' is not a future date. Scheduling requires a future date."
             )
             return {
                 "valid":       False,
@@ -380,6 +402,12 @@ def validate_reporting_date(
                 "error":       f"'{ds}' is a future date. Future reporting dates are not allowed.",
                 "suggestions": past_suggestions,
             }
+
+    if skip_frequency_check:
+        # Schedule date: any real, future calendar date is fine — it's just
+        # when the job runs, not the reporting period, so it never needs to
+        # land on a frequency period-end.
+        return {"valid": True, "error": None, "suggestions": []}
 
     freq = (frequency or "").strip().upper()
     day, month, year = parsed.day, parsed.month, parsed.year

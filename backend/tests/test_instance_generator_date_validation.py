@@ -1,6 +1,6 @@
 """Regression tests for Schedule Report date validation (instance_generator.py).
 
-Covers two bugs:
+Covers:
 
 1. Frequency validation was silently skipped for some Yearly (and
    potentially other) reports when a return's RepFreq field used
@@ -10,16 +10,23 @@ Covers two bugs:
    and accepted any date. Fixed via _PERIOD_ID_TO_FREQUENCY, a
    PeriodId->Frequency fallback sourced from Period.xml's own mapping.
 
-2. Schedule Date used a separate, less capable validator
-   (_validate_future_schedule_date) that only tried a single strptime
-   format and had no frequency check at all — any structurally-unparsable
-   date (including calendar-invalid ones like 31-Nov-2026, which
-   strptime also rejects) surfaced a generic "Cannot parse" message
-   instead of a specific "not a valid calendar date" explanation, and
-   any future date was accepted regardless of frequency. Fixed by
-   having _validate_future_schedule_date delegate to
-   validate_reporting_date(require_future=True), so both dates share
-   one implementation.
+2. Schedule Date parsing: multiple input formats (dd-MMM-yyyy, dd/mm/yyyy,
+   dd-mm-yyyy, yyyy-mm-dd, dd.mm.yyyy) must be accepted, and
+   calendar-invalid dates (e.g. 31-Nov-2026) must get a specific "not a
+   valid calendar date" message rather than a generic "Cannot parse" one.
+   _validate_future_schedule_date delegates to
+   validate_reporting_date(require_future=True) for this shared parsing.
+
+3. Schedule Date must NOT be constrained to the report's frequency
+   period-end (unlike Reporting Date, which IS the reporting period and
+   must land on a period-end). The Schedule Date is only "when the .NET
+   job should run" — any real, future calendar date/time is valid
+   regardless of frequency. This reverses an earlier, stricter fix that
+   had required Schedule Date to satisfy the same period-end rules as
+   Reporting Date; that turned out to be the wrong behavior; the fix now
+   is validate_reporting_date(..., skip_frequency_check=True) for the
+   Schedule Date call site only — Reporting Date's own validation is
+   completely unaffected.
 """
 from __future__ import annotations
 
@@ -135,46 +142,60 @@ class TestPeriodIdFrequencyFallback:
 # ── Issue 1: frequency validation for Schedule Date (all frequencies) ───────
 
 class TestScheduleDateFrequencyValidation:
+    """Schedule Date has NO frequency/period-end constraint — it's just when
+    the job should run, not the reporting period. Any real future date, for
+    any frequency, must be accepted (contrast with Reporting Date, which
+    IS constrained — see TestInvalidCalendarDateMessages /
+    test_reporting_date_gives_calendar_explanation_not_cannot_parse below,
+    and instance_generator.py's own validate_reporting_date tests)."""
+
     def test_quarterly_schedule_accepts_future_quarter_end(self):
         y = _future_year()
         valid, err = _validate_future_schedule_date(f"31-Dec-{y}", None, "Q")
         assert valid is True, err
 
-    def test_quarterly_schedule_rejects_future_non_quarter_end(self):
+    def test_quarterly_schedule_accepts_future_non_quarter_end(self):
         y = _future_year()
         valid, err = _validate_future_schedule_date(f"15-Dec-{y}", None, "Q")
-        assert valid is False
-        assert "quarter-end" in err
+        assert valid is True, err
 
     def test_yearly_schedule_accepts_future_31_mar(self):
         y = _future_year()
         valid, err = _validate_future_schedule_date(f"31-Mar-{y}", None, "Y")
         assert valid is True, err
 
-    def test_yearly_schedule_rejects_future_30_nov(self):
-        """Exact scenario from the bug report: a Yearly report must not
-        accept 30-Nov as a schedule date."""
+    def test_yearly_schedule_accepts_future_30_nov(self):
+        """A Yearly report's Schedule Date is not required to be 31-Mar —
+        only Reporting Date is."""
         y = _future_year()
         valid, err = _validate_future_schedule_date(f"30-Nov-{y}", None, "Y")
-        assert valid is False
-        assert "Yearly" in err
+        assert valid is True, err
 
-    def test_half_yearly_schedule_rejects_wrong_month(self):
+    def test_half_yearly_schedule_accepts_any_future_month(self):
         y = _future_year()
         valid, err = _validate_future_schedule_date(f"30-Nov-{y}", None, "H")
-        assert valid is False
+        assert valid is True, err
 
-    def test_monthly_schedule_rejects_non_last_day(self):
+    def test_monthly_schedule_accepts_non_last_day(self):
         y = _future_year()
         valid, err = _validate_future_schedule_date(f"15-Jun-{y}", None, "M")
-        assert valid is False
-        assert "last day" in err
+        assert valid is True, err
 
     def test_schedule_date_still_rejects_past_dates(self):
         y = _past_year()
         valid, err = _validate_future_schedule_date(f"31-Mar-{y}", None, "Y")
         assert valid is False
         assert "future" in err.lower()
+
+    @pytest.mark.parametrize("fmt_date", [
+        "{d}/05/{y}", "{d}-05-{y}", "{y}-05-{d}", "{d}.05.{y}",
+    ])
+    def test_schedule_date_accepts_multiple_formats(self, fmt_date):
+        y = _future_year()
+        valid, err = _validate_future_schedule_date(
+            fmt_date.format(d="15", y=y), None, "Q",
+        )
+        assert valid is True, err
 
 
 # ── Issue 2: invalid calendar date message (vs "Cannot parse") ──────────────

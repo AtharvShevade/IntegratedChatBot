@@ -2766,20 +2766,22 @@ def _validate_future_schedule_date(
     schedule_date: str, schedule_time: str | None, frequency: str = "",
 ) -> tuple[bool, str]:
     """Validate that ``schedule_date`` (+ optional ``schedule_time``) is a
-    real, future calendar date that ALSO falls on a valid period-end date
-    for ``frequency`` (e.g. 31-Mar/30-Jun/30-Sep/31-Dec for Quarterly) — the
-    schedule date is the reporting period the generated instance is for, so
-    it must satisfy the same frequency rules as reporting_date, just
-    requiring a future (not past/current) date.
+    real, future calendar date/time — this is simply when the .NET job
+    should run, not the reporting period the generated instance is FOR, so
+    it does NOT need to land on a frequency period-end (unlike
+    reporting_date, which does). Any real future date in any of the
+    supported formats (dd-MMM-yyyy, dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd,
+    dd.mm.yyyy) is accepted.
 
-    Delegates to validate_reporting_date (require_future=True) so both
-    dates share one frequency-validation implementation rather than
-    duplicating the per-frequency rules here.
+    Delegates to validate_reporting_date (require_future=True,
+    skip_frequency_check=True) so date parsing and the future-date rule
+    aren't duplicated here.
 
     Returns ``(is_valid, error_message)``.
     """
     result = validate_reporting_date(
         schedule_date, frequency, require_future=True, time_str=schedule_time,
+        skip_frequency_check=True,
     )
     return result["valid"], (result["error"] or "")
 
@@ -2803,13 +2805,13 @@ def _finalize_schedule(
          generate-instance, with ``require_future=False`` (past/current dates
          only) since a reporting period can never be in the future.
       3. Schedule Date + Schedule Time — the future date/time the .NET job
-         should actually run and generate the instance. Schedule Date is
-         validated against the same frequency/period-boundary rules as
-         Reporting Date (via ``_validate_future_schedule_date``, which
-         delegates to ``validate_reporting_date`` with
-         ``require_future=True``) — only future dates are accepted, but
-         they must still land on a valid period-end for the report's
-         frequency. Schedule Time itself has no frequency restriction.
+         should actually run and generate the instance. This is unrelated to
+         the report's reporting period, so Schedule Date is only required to
+         be a real, future calendar date (via ``_validate_future_schedule_date``,
+         which delegates to ``validate_reporting_date`` with
+         ``require_future=True, skip_frequency_check=True``) — no
+         period-end/frequency constraint applies. Multiple input formats are
+         accepted (dd-MMM-yyyy, dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd, dd.mm.yyyy).
       4. Confirmation (Schedule / Change Data).
 
     Handles partial input gracefully at every stage and re-prompts for
@@ -2885,9 +2887,9 @@ def _finalize_schedule(
             result_type="sched_awaiting_rpt_date",
         )
 
-    # ── Schedule-date validation — must be a future date AND satisfy the
-    # same frequency/period-boundary rules as reporting_date (e.g. only
-    # 31-Mar/30-Jun/30-Sep/31-Dec for Quarterly).
+    # ── Schedule-date validation — must simply be a real, future calendar
+    # date/time (any supported format). No frequency/period-boundary
+    # constraint — that only applies to reporting_date above.
     if schedule_date:
         _sched_valid, _sched_err = _validate_future_schedule_date(schedule_date, schedule_time, frequency)
         if not _sched_valid:
