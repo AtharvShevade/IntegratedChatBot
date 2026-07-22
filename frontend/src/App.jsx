@@ -30,6 +30,18 @@ const _tenantId   = _readParam('tenant_id',  'chat_tenant_id')
 const _domain     = _readParam('domain',     'chat_domain')
 const _jwt        = _params.get('jwt') || ''  // never persisted — short-lived, must be fresh
 
+// ── Theme (5.5 vs 6.0) ────────────────────────────────────────────────────
+// Same version signal as the backend's APP_VERSION: 6.0's embed always sends
+// tenant_id, 5.5's never does. One shared build serves both themes — the
+// unused theme's CSS chunk is never fetched, so there's no FOUC/collision
+// risk between the two stylesheets.
+const _isV6 = Boolean(_tenantId)
+if (_isV6) {
+  import('./App.6.0.css')
+} else {
+  import('./App.5.5.css')
+}
+
 // ── Persistent storage key (isolated per uid) ─────────────────────────────
 const STORAGE_KEY = `chat_history_${_uid}`
 
