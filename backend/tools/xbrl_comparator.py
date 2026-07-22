@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _ROOT     = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _LOGS_DIR = os.path.join(_ROOT, "logs")
 
-from backend.config import INSTANCE_LOG_XML_PATH as _LOG_FILE
+from backend.config import instance_log_xml_path as _log_file_path
 from backend.tools.xml_loader import load_xml_tree
 
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ def _ctx_key_from_ref(ctx_ref: str) -> str:
 
 def _parse_instance_log() -> list[dict]:
     """Return all InstanceLog rows that have a non-empty InstanceDocPath."""
-    root = load_xml_tree(_LOG_FILE, "XML_InstanceLog.xml")
+    root = load_xml_tree(_log_file_path(), "XML_InstanceLog.xml")
     if root is None:
         return []
     return [

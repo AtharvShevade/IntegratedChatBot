@@ -20,6 +20,16 @@ const _uid        = _readParam('uid',         'chat_uid')
 const _roleId     = _readParam('roleId',      'chat_roleId') || _readParam('rid', 'chat_rid') || ''
 const _aspSession = _params.get('aspSession') || ''  // never persisted — cookie-like, must be fresh
 
+// APP_VERSION=6.0 only — tenant identity + JWT, read as plain URL params for
+// manual/dev testing in THIS standalone test frontend. Note: the real 6.0
+// production embed (WebiDEALReact's ChatbotIframe.jsx) does NOT pass the jwt
+// via URL — it delivers it through a CHATBOT_READY/CHATBOT_AUTH postMessage
+// handshake after the iframe loads. If this frontend is ever embedded the
+// same way, replace the `jwt` URL-param read below with that handshake.
+const _tenantId   = _readParam('tenant_id',  'chat_tenant_id')
+const _domain     = _readParam('domain',     'chat_domain')
+const _jwt        = _params.get('jwt') || ''  // never persisted — short-lived, must be fresh
+
 // ── Persistent storage key (isolated per uid) ─────────────────────────────
 const STORAGE_KEY = `chat_history_${_uid}`
 
@@ -60,6 +70,31 @@ export default function App() {
   // and tell the backend to cancel the matching asyncio task.
   const activeRequestRef = useRef(null)
 
+  // ── APP_VERSION=6.0 JWT — real production source is a postMessage
+  // handshake with the embedding parent (WebiDEALReact's ChatbotIframe.jsx),
+  // NOT a URL param. Starts from the `_jwt` URL-param fallback (manual/dev
+  // testing convenience) and gets overwritten the moment a real
+  // CHATBOT_AUTH message arrives. A ref (not state) because it's read
+  // imperatively at request time, not rendered.
+  const jwtRef = useRef(_jwt)
+  useEffect(() => {
+    if (window.parent === window) return  // not embedded in an iframe — nothing to shake hands with
+
+    function handleAuthMessage(event) {
+      if (!event.data || event.data.type !== 'CHATBOT_AUTH') return
+      if (typeof event.data.jwt === 'string' && event.data.jwt) {
+        jwtRef.current = event.data.jwt
+      }
+    }
+    window.addEventListener('message', handleAuthMessage)
+    // Announce readiness so the parent knows to send CHATBOT_AUTH. Target
+    // origin "*" here is safe — this message carries no secret, only a
+    // ready signal; the parent itself decides which origin to reply to.
+    window.parent.postMessage({ type: 'CHATBOT_READY' }, '*')
+
+    return () => window.removeEventListener('message', handleAuthMessage)
+  }, [])
+
   // ── Role-permission-filtered action list (which of the 5 guided actions
   // this user may see/perform — e.g. a Checker never sees Generate/Schedule).
   // Fetched once identity is known so even the very first WelcomeCard render
@@ -75,7 +110,10 @@ export default function App() {
     let cancelled = false
     ;(async () => {
       try {
-        const actions = await getAllowedActions(_loginId || null)
+        const actions = await getAllowedActions(_loginId || null, {
+          tenantId: _tenantId || null,
+          domain: _domain || null,
+        })
         if (!cancelled && actions.length > 0) {
           setAllowedActions(actions)
         }
@@ -183,22 +221,34 @@ const _pushResult = (result) => {
   }
 
   const shouldShowActionMenu = result.result_type === 'error' || isTerminal
+  // Application Database Q&A answers ("what is my role", "how many active
+  // users", etc.) are direct factual answers, not part of a report workflow —
+  // they get feedback only, no post-action menu. 'db_qa_result' is produced
+  // exclusively by backend/db_qa/ (backend/agent/db_qa_router.py) and never
+  // by the separate SQL-agent/Oracle NL-to-SQL feature (which always uses
+  // 'db_result'), so this is a reliable discriminator, not text matching.
+  const isDbQa = result.result_type === 'db_qa_result'
 
   if (isTerminal && !jobId) {
+    // Feedback must render before the action menu. A single scheduled state
+    // update appends both in the correct array order in one go — two
+    // independent setTimeouts (previously 1000ms for feedback, 800ms for the
+    // menu) raced, and the menu's shorter delay always won, putting it first.
     setTimeout(() => {
       setMessages((prev) => {
         const lastUser = [...prev].reverse().find((m) => m.role === 'user')
-        return [...prev, {
+        const feedbackMsg = {
           role: "feedback_prompt",
           query: lastUser?.text || null,
           intent: resultMsg.feedbackIntent || null,
           resultType: resultMsg.resultType || null,
-        }]
+        }
+        return isDbQa ? [...prev, feedbackMsg] : [...prev, feedbackMsg, { role: "action_menu" }]
       })
-    }, 1000)
-  }
-
-  if (shouldShowActionMenu) {
+    }, 800)
+  } else if (shouldShowActionMenu) {
+    // Non-terminal (e.g. plain 'error') or job-pending results: no feedback
+    // prompt applies here, so the menu just shows on its own, unchanged.
     setTimeout(() => {
       setMessages((prev) => [...prev, { role: "action_menu" }])
     }, 800)
@@ -350,7 +400,7 @@ const pollForErrors = (jobId) => {
         _uid || null,
         _roleId || null,
         recentHistory,
-        { signal, requestId },
+        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null },
       )
       _pushResult(result)
     } catch (err) {
@@ -388,7 +438,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId },
+        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null },
       )
       _pushResult(result)
     } catch (err) {
@@ -419,7 +469,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId },
+        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null },
       )
       _pushResult(result)
     } catch (err) {

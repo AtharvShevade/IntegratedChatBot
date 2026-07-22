@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 
-from backend.config import INSTANCE_BASE_DIR
+from backend.config import instance_base_dir
 from backend.utils.instance_label_parser import parse_instance_filename
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def get_instances_for_report(report_id: str) -> list[dict]:
     Empty list on any error (folder missing, no XML files, all filenames
     unparseable).  Errors are logged so callers can surface them.
     """
-    base_dir = INSTANCE_BASE_DIR
+    base_dir = instance_base_dir()
     folder = os.path.join(base_dir, str(report_id).strip())
 
     if not os.path.isdir(folder):

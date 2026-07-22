@@ -22,6 +22,7 @@ load_dotenv()
 from backend.utils.logger import log_exception, setup_logging  # noqa: E402
 setup_logging(console_level=logging.INFO)
 
+from backend import version_config  # noqa: E402
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
 from backend.models import (  # noqa: E402
@@ -97,10 +98,10 @@ async def lifespan(app: FastAPI):
                 logger.warning("Intent exemplar index warm-up failed: %s", exc)
 
             try:
-                from backend.config import APP_DB_BASE_PATH
-                if APP_DB_BASE_PATH:
+                from backend.config import app_db_base_path
+                if app_db_base_path():
                     from backend.db_qa.xml_store import XMLStore
-                    store = XMLStore(APP_DB_BASE_PATH)
+                    store = XMLStore(app_db_base_path())
                     _ = store.users()
                     _ = store.departments()
                     _ = store.roles()
@@ -183,6 +184,36 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
+def _make_repo_scope(tenant_id: str | None, domain: str | None, jwt: str | None):
+    """Build the version_config.repo_scope for one request.
+
+    APP_VERSION=5.5 (default): always a no-op — root=None so
+    config.get_active_root() keeps returning BASE_REPO_PATH exactly as
+    before this existed.
+
+    APP_VERSION=6.0: resolves TenantId (trusting an explicit tenant_id, or
+    falling back to a domain -> TenantId lookup in XML_Tenant.xml) and sets
+    the active root to D:\\Repo6\\Repo6\\{TenantId} for the request. If no
+    tenant can be resolved, the scope is still a no-op — downstream reads
+    fail closed (file-not-found -> empty results) rather than silently
+    reading data under the bare, non-tenant-scoped repo root.
+    """
+    if not version_config.IS_V6:
+        return version_config.repo_scope(None)
+
+    resolved_tenant_id = version_config.resolve_tenant_id(tenant_id, domain)
+    if not resolved_tenant_id:
+        logger.warning(
+            "[APP_VERSION=6.0] Could not resolve tenant_id (tenant_id=%r, domain=%r) — "
+            "request will run with no tenant repo root set.",
+            tenant_id, domain,
+        )
+        return version_config.repo_scope(None, tenant_id=tenant_id, jwt=jwt)
+
+    root = version_config.repo_root_for_tenant(resolved_tenant_id)
+    return version_config.repo_scope(root, tenant_id=resolved_tenant_id, jwt=jwt)
+
+
 @app.post("/chat", response_model=ChatResponse, status_code=status.HTTP_200_OK)
 async def chat(request: ChatRequest) -> ChatResponse:
     logger.info(
@@ -201,6 +232,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
         asp_session="provided" if request.asp_session else "NOT PROVIDED",
         session_id=request.session_id or "none",
     )
+
+    # ── APP_VERSION=6.0: resolve tenant repo root for this request only.
+    # No-op under 5.5 (root stays None -> BASE_REPO_PATH, unchanged behavior).
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
+    _repo_scope.__enter__()
     try:
         result = await _run_cancellable(request.request_id, decide(
             request.message,
@@ -248,6 +284,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to process your request at the moment. Please try again.",
         ) from exc
+    finally:
+        _repo_scope.__exit__(None, None, None)
 
 
 @app.post("/compare-execute", response_model=ChatResponse, status_code=status.HTTP_200_OK)
@@ -431,13 +469,17 @@ async def health() -> dict:
 
 
 @app.get("/download-file", status_code=status.HTTP_200_OK)
-async def download_file(form_id: str, type: str, filename: str):
+async def download_file(
+    form_id: str, type: str, filename: str,
+    tenant_id: str | None = None, domain: str | None = None,
+):
     """Serve a render or error file for download.
 
     Query params:
         form_id   — numeric report ID (non-numeric chars stripped server-side)
         type      — "render" | "error"
         filename  — bare filename, no directory component allowed
+        tenant_id / domain — APP_VERSION=6.0 only; resolves the tenant repo root
 
     Security: form_id is sanitised to digits only; filename is reduced to its
     basename so path-traversal attempts ('../../../etc/passwd') are rejected.
@@ -448,58 +490,63 @@ async def download_file(form_id: str, type: str, filename: str):
     from pathlib import Path
     from fastapi.responses import FileResponse
     from backend.tools.report_lookup import build_render_file_path, build_error_file_path
-    from backend.config import RENDER_BASE_DIR, INSTANCE_BASE_DIR
+    from backend.config import render_base_dir, instance_base_dir
 
-    # ── Input validation ──────────────────────────────────────────────────────
-    safe_fid  = _re.sub(r"[^0-9]", "", form_id)
-    safe_name = os.path.basename(filename)  # strips any directory component
+    with _make_repo_scope(tenant_id, domain, None):
+        # ── Input validation ──────────────────────────────────────────────────
+        safe_fid  = _re.sub(r"[^0-9]", "", form_id)
+        safe_name = os.path.basename(filename)  # strips any directory component
 
-    if not safe_fid:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
-    if not safe_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
-    if type not in ("render", "error"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
+        if not safe_fid:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
+        if not safe_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
+        if type not in ("render", "error"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
 
-    # ── Path construction ─────────────────────────────────────────────────────
-    if type == "render":
-        file_path = build_render_file_path(safe_fid, safe_name)
-        base_dir  = RENDER_BASE_DIR
-        media     = "text/html"
-    else:
-        file_path = build_error_file_path(safe_fid, safe_name)
-        base_dir  = INSTANCE_BASE_DIR
-        media     = "application/xml"
+        # ── Path construction ───────────────────────────────────────────────────
+        if type == "render":
+            file_path = build_render_file_path(safe_fid, safe_name)
+            base_dir  = render_base_dir()
+            media     = "text/html"
+        else:
+            file_path = build_error_file_path(safe_fid, safe_name)
+            base_dir  = instance_base_dir()
+            media     = "application/xml"
 
-    # ── Containment check — prevent directory traversal ───────────────────────
-    resolved  = Path(file_path).resolve()
-    base_real = Path(base_dir).resolve()
-    try:
-        resolved.relative_to(base_real)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+        # ── Containment check — prevent directory traversal ─────────────────────
+        resolved  = Path(file_path).resolve()
+        base_real = Path(base_dir).resolve()
+        try:
+            resolved.relative_to(base_real)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
 
-    if not resolved.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+        if not resolved.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
 
-    logger.info("[DOWNLOAD] type=%s form_id=%s filename=%s", type, safe_fid, safe_name)
-    return FileResponse(
-        path=str(resolved),
-        media_type=media,
-        filename=safe_name,
-    )
+        logger.info("[DOWNLOAD] type=%s form_id=%s filename=%s", type, safe_fid, safe_name)
+        return FileResponse(
+            path=str(resolved),
+            media_type=media,
+            filename=safe_name,
+        )
 
 
 @app.get("/reports", status_code=status.HTTP_200_OK)
-async def list_reports() -> dict:
+async def list_reports(tenant_id: str | None = None, domain: str | None = None) -> dict:
     """Return all known report names from returns.xml — used for guided-mode autocomplete."""
     from backend.tools.report_lookup import _parse_returns
-    names = sorted({r.get("Name", "") for r in _parse_returns() if r.get("Name")})
+    with _make_repo_scope(tenant_id, domain, None):
+        names = sorted({r.get("Name", "") for r in _parse_returns() if r.get("Name")})
     return {"reports": names}
 
 
 @app.get("/allowed-actions", status_code=status.HTTP_200_OK)
-async def allowed_actions(login_id: str | None = None) -> dict:
+async def allowed_actions(
+    login_id: str | None = None,
+    tenant_id: str | None = None, domain: str | None = None,
+) -> dict:
     """Return the subset of guided-menu actions this user may see/perform.
 
     Side-effect-free (unlike POSTing a sentinel message through /guided, which
@@ -508,7 +555,8 @@ async def allowed_actions(login_id: str | None = None) -> dict:
     whenever identity changes, independent of any conversation session.
     """
     from backend.guided import _allowed_actions
-    return {"actions": _allowed_actions(login_id)}
+    with _make_repo_scope(tenant_id, domain, None):
+        return {"actions": _allowed_actions(login_id)}
 
 
 @app.get("/status-errors/{job_id}", status_code=status.HTTP_200_OK)
@@ -549,6 +597,8 @@ async def guided(request: ChatRequest) -> ChatResponse:
         request.session_id, request.message,
     )
     start = time.monotonic()
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
+    _repo_scope.__enter__()
     try:
         result = await _run_cancellable(request.request_id, guided_step(
             request.message,
@@ -573,3 +623,5 @@ async def guided(request: ChatRequest) -> ChatResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to process your request at the moment. Please try again.",
         ) from exc
+    finally:
+        _repo_scope.__exit__(None, None, None)

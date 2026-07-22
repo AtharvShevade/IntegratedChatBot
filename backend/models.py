@@ -17,6 +17,11 @@ class ChatRequest(BaseModel):
     role_id:              Optional[str]  = Field(None, max_length=64)   # current user's role ID (for DB Q&A admin check)
     request_id:           Optional[str]  = Field(None, max_length=64)   # client-generated ID; enables Stop Generation
 
+    # ── APP_VERSION=6.0 only — tenant resolution + instance-gen auth ──────────
+    tenant_id:            Optional[str]  = Field(None, max_length=64)   # resolved TenantId, forwarded by the React frontend
+    domain:               Optional[str]  = Field(None, max_length=256)  # fallback: looked up in XML_Tenant.xml if tenant_id absent
+    jwt:                  Optional[str]  = Field(None, max_length=4096) # from CHATBOT_AUTH postMessage; replaces asp_session for 6.0's .NET API calls
+
 
 class ChatResponse(BaseModel):
     intent: str = ""

@@ -17,7 +17,7 @@ import os
 import xml.etree.ElementTree as ET
 from typing import Tuple
 
-from backend.config import SCHEDULER_QUEUE_XML_PATH
+from backend.config import scheduler_queue_xml_path
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def append_schedule_entry(
     Tuple of ``(success: bool, schedule_id: str)``.
     On failure *success* is ``False`` and *schedule_id* is an empty string.
     """
-    path = SCHEDULER_QUEUE_XML_PATH
+    path = scheduler_queue_xml_path()
 
     try:
         # ── Initialise the file if it does not exist ──────────────────────────

@@ -13,13 +13,20 @@ from typing import Any
 
 import httpx
 
+from backend import version_config
+from backend import config as _config
+
 logger = logging.getLogger(__name__)
 
 _ROOT        = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_PERIOD_FILE = os.path.join(_ROOT, "logs", "period.xml")
+_PERIOD_FILE = os.path.join(_ROOT, "logs", "period.xml")  # 5.5 only — project-local, not under BASE_REPO_PATH
 _DOTNET_URL            = os.getenv("DOTNET_API_URL",        "https://localhost:5000")
 _DOTNET_CONTROLLER     = os.getenv("DOTNET_CONTROLLER",     "CreateInstance")
 _DOTNET_SESSION_COOKIE = os.getenv("DOTNET_SESSION_COOKIE", "")
+
+# 6.0 instance-generation API (CreateInstanceController.GenerateReportDB) —
+# separate host/auth mechanism from the 5.5 .NET app above.
+_DOTNET_V6_URL: str = os.getenv("DOTNET_V6_API_URL", "https://localhost:7072")
 _DATE_FMT    = "%d-%b-%Y"
 _EXTRA_FMTS  = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
 
@@ -39,21 +46,32 @@ _H_CY_ENDS = {(30, 6), (31, 12)}                       # Half-Yearly Calendar Ye
 
 # -- Period master XML parser (TTL-cached, refreshes every 24 hours) ------------
 
-_period_ttl   = float(os.getenv("PERIOD_TTL_SEC", "86400"))  # 24 hours
-_period_cache: dict = {"data": None, "ts": 0.0}
+_period_ttl    = float(os.getenv("PERIOD_TTL_SEC", "86400"))  # 24 hours
+_period_caches: dict[str, dict] = {}  # path -> {"data": ..., "ts": ...} (path-keyed: 6.0 serves multiple tenants)
 
 
 def _parse_period_master() -> dict[str, dict]:
-    """Parse period.xml and return {period_id: attrib_dict}.
+    """Parse the period master and return {period_id: attrib_dict}.
     Cached for PERIOD_TTL_SEC seconds (default 24 hours).
-    """
-    now = time.monotonic()
-    if _period_cache["data"] is not None and (now - _period_cache["ts"]) < _period_ttl:
-        return _period_cache["data"]
 
-    path = _PERIOD_FILE
-    id_attr = "Period_Id"
-    label = "period.xml"
+    5.5 reads the project-local logs/period.xml (unchanged, pre-existing
+    behavior — not under BASE_REPO_PATH). 6.0 has its own tenant-scoped
+    Period.xml under {TenantId}\\DataBase\\, with different attribute names
+    (Id instead of Period_Id) — confirmed against
+    D:\\Repo6\\Repo6\\1001\\DataBase\\Period.xml.
+    """
+    if version_config.IS_V6:
+        path = _config.period_xml_path()
+        id_attr = "Id"
+    else:
+        path = _PERIOD_FILE
+        id_attr = "Period_Id"
+    label = os.path.basename(path)
+
+    now = time.monotonic()
+    cache = _period_caches.get(path)
+    if cache is not None and (now - cache["ts"]) < _period_ttl:
+        return cache["data"]
 
     if not os.path.exists(path):
         logger.warning("%s not found: %s", label, path)
@@ -66,8 +84,7 @@ def _parse_period_master() -> dict[str, dict]:
             if pid:
                 out[pid] = el.attrib
         logger.info("Loaded %d period(s) from %s (cache refreshed)", len(out), label)
-        _period_cache["data"] = out
-        _period_cache["ts"]   = now
+        _period_caches[path] = {"data": out, "ts": now}
         return out
     except ET.ParseError as exc:
         logger.error("XML parse error in %s: %s", label, exc)
@@ -743,4 +760,127 @@ async def call_generate_api(
         return {"success": False, "message": "Generation service timed out. Please try again."}
     except Exception as exc:
         logger.exception("[API_FAILURE] Unexpected error calling generate API: %s", exc)
+        return {"success": False, "message": "Instance generation failed. Please try again."}
+
+
+# -- 6.0 .NET API call ------------------------------------------------------
+#
+# 6.0's CreateInstanceController is a different controller with a different
+# DTO and auth mechanism than 5.5's FunPubInsertInstanceLog — this is a new,
+# separate function; call_generate_api() above is untouched and still used
+# for APP_VERSION=5.5.
+#
+#     POST /api/CreateInstance/GenerateReportDB
+#     [FromForm] ReportDto { ReturnId, RptDate, AuditType }
+#     Cookie: accessToken={jwt}   (confirmed: [Authorize] reads the JWT from
+#         the same HttpOnly "accessToken" cookie the main React app relies on
+#         via withCredentials — NOT an Authorization: Bearer header. The
+#         ChatbotToken endpoint just echoes Request.Cookies["accessToken"]
+#         back as JSON so the cross-origin chatbot iframe can obtain it via
+#         postMessage and replay it here as a cookie.)
+#
+# Response: StatusCode(result.StatusCode, result.Success ? result.Data : result.Error)
+
+_V6_ACCESS_TOKEN_COOKIE_NAME = "accessToken"
+
+async def call_generate_api_v6(
+    form_id: str,
+    reporting_date: str,
+    tenant_id: str,
+    jwt: str | None = None,
+    audit_type: int = 0,
+    language: str = "en",
+) -> dict[str, Any]:
+    """POST to the 6.0 .NET CreateInstanceController.GenerateReportDB action.
+
+    form_id        — maps to ReportDto.ReturnId (6.0's Return.xml Id serves
+                      both the FormId and ReturnId role, see report_lookup.py).
+    reporting_date — RptDate, expected as dd-MMM-yyyy (StandardDateFormat in
+                      CreateInstanceModel.cs).
+    tenant_id      — resolved TenantId for the current request; not sent on
+                      the wire directly (the .NET side reads it from the JWT's
+                      TenantId claim) — included here for logging only.
+    jwt            — short-lived token from POST /api/Authentication/chatbotToken,
+                      forwarded from the chatbot iframe's CHATBOT_AUTH postMessage.
+                      Sent back as the "accessToken" cookie (see module comment above).
+    """
+    url = f"{_DOTNET_V6_URL}/api/CreateInstance/GenerateReportDB"
+
+    form_data = {
+        "ReturnId":   str(form_id),
+        "RptDate":    reporting_date,
+        "AuditType":  str(audit_type),
+    }
+    headers = {"language": language}
+    cookies: dict[str, str] = {}
+    if jwt:
+        cookies[_V6_ACCESS_TOKEN_COOKIE_NAME] = jwt
+    else:
+        logger.warning(
+            "[GENERATE_API_V6] No JWT provided for tenant_id=%s form_id=%s — "
+            "request will likely be rejected (401)",
+            tenant_id, form_id,
+        )
+
+    logger.info(
+        "[GENERATE_API_V6_CALL] url=%s tenant_id=%s form_id=%s date=%s",
+        url, tenant_id, form_id, reporting_date,
+    )
+    _t0 = time.time()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0),
+            follow_redirects=False,
+            verify=False,
+        ) as client:
+            resp = await client.post(url, data=form_data, headers=headers, cookies=cookies)
+
+        _elapsed = time.time() - _t0
+        logger.info(
+            "[PERF] operation=generate_api_v6 http_status=%s duration=%.2fs form_id=%s",
+            resp.status_code, _elapsed, form_id,
+        )
+
+        if resp.status_code == 401:
+            logger.error("[API_FAILURE] 6.0 Generate API returned 401 — JWT invalid/expired")
+            return {
+                "success": False,
+                "message": "Authentication failed. Your session may have expired. Please try again.",
+            }
+
+        try:
+            data = resp.json()
+        except Exception:
+            snippet = resp.text[:200].strip()
+            logger.error("[API_FAILURE] 6.0 Generate API returned non-JSON: %s", snippet)
+            return {"success": False, "message": "Instance generation failed. Please try again."}
+
+        if resp.status_code not in (200, 201, 202):
+            message = data.get("message") if isinstance(data, dict) else None
+            logger.error(
+                "[API_FAILURE] 6.0 Generate API returned HTTP %s: %s",
+                resp.status_code, data,
+            )
+            return {"success": False, "message": message or "Instance generation failed. Please try again."}
+
+        # Success path — result.Data is the new InstanceLog Id (see
+        # CreateInstanceModel.GenerateInstanceDBAsync -> OperationResult.Successful).
+        new_id = data if not isinstance(data, dict) else data.get("data") or data.get("Data")
+        logger.info(
+            "[GENERATE_SUBMITTED_V6] tenant_id=%s form_id=%s date=%s new_instance_log_id=%s",
+            tenant_id, form_id, reporting_date, new_id,
+        )
+        return {"success": True, "message": "Instance generation submitted successfully.", "instance_log_id": new_id}
+
+    except httpx.ConnectError:
+        logger.error(
+            "[API_FAILURE] Cannot connect to 6.0 .NET API at %s — check DOTNET_V6_API_URL",
+            url,
+        )
+        return {"success": False, "message": "Unable to process the request right now. Please try again."}
+    except httpx.TimeoutException:
+        logger.error("[API_FAILURE] Timeout calling 6.0 .NET API at %s", url)
+        return {"success": False, "message": "Generation service timed out. Please try again."}
+    except Exception as exc:
+        logger.exception("[API_FAILURE] Unexpected error calling 6.0 generate API: %s", exc)
         return {"success": False, "message": "Instance generation failed. Please try again."}

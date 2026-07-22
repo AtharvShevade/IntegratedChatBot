@@ -15,11 +15,17 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
  * a sentinel message through /guided.
  *
  * @param {string|null} loginId
+ * @param {object} [opts]
+ * @param {string|null} [opts.tenantId] - APP_VERSION=6.0 only.
+ * @param {string|null} [opts.domain] - APP_VERSION=6.0 only, fallback if tenantId absent.
  * @returns {Promise<string[]>} allowed action labels, or [] on failure.
  */
-export async function getAllowedActions(loginId) {
+export async function getAllowedActions(loginId, opts = {}) {
+  const { tenantId, domain } = opts
   const params = new URLSearchParams()
   if (loginId)  params.set('login_id', loginId)
+  if (tenantId) params.set('tenant_id', tenantId)
+  if (domain)   params.set('domain', domain)
   const qs = params.toString()
   const res = await fetch(`${BASE_URL}/allowed-actions${qs ? `?${qs}` : ''}`)
   if (!res.ok) throw new Error('Failed to fetch allowed actions')
@@ -128,6 +134,9 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
+ * @param {string|null} [opts.tenantId] - APP_VERSION=6.0 only.
+ * @param {string|null} [opts.domain] - APP_VERSION=6.0 only, fallback if tenantId absent.
+ * @param {string|null} [opts.jwt] - APP_VERSION=6.0 only; replaces asp_session for .NET API calls.
  * @returns {Promise<{intent: string, report_name: string|null, response_text: string, need_clarification: boolean}>}
  * @throws {Error} - With a user-friendly message on failure.
  */
@@ -141,7 +150,7 @@ export async function sendMessage(
   conversationHistory = [],
   opts = {},
 ) {
-  const { signal, requestId } = opts
+  const { signal, requestId, tenantId, domain, jwt } = opts
   const body = { message }
   if (sessionId)                    body.session_id           = sessionId
   if (aspSession)                   body.asp_session          = aspSession
@@ -150,6 +159,9 @@ export async function sendMessage(
   if (roleId)                       body.role_id              = roleId
   if (conversationHistory?.length)  body.conversation_history = conversationHistory
   if (requestId)                    body.request_id           = requestId
+  if (tenantId)                     body.tenant_id            = tenantId
+  if (domain)                       body.domain               = domain
+  if (jwt)                          body.jwt                  = jwt
 
   const res = await fetch(`${BASE_URL}/chat`, {
     method: 'POST',
@@ -179,10 +191,13 @@ export async function sendMessage(
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
+ * @param {string|null} [opts.tenantId] - APP_VERSION=6.0 only.
+ * @param {string|null} [opts.domain] - APP_VERSION=6.0 only, fallback if tenantId absent.
+ * @param {string|null} [opts.jwt] - APP_VERSION=6.0 only; replaces asp_session for .NET API calls.
  * @returns {Promise<object>}
  */
 export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null, userId = null, roleId = null, opts = {}) {
-  const { signal, requestId } = opts
+  const { signal, requestId, tenantId, domain, jwt } = opts
   const body = { message }
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
@@ -190,6 +205,9 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
   if (userId)     body.user_id     = userId
   if (roleId)     body.role_id     = roleId
   if (requestId)  body.request_id  = requestId
+  if (tenantId)   body.tenant_id   = tenantId
+  if (domain)     body.domain      = domain
+  if (jwt)        body.jwt         = jwt
 
   const res = await fetch(`${BASE_URL}/guided`, {
     method: 'POST',

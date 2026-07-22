@@ -494,16 +494,16 @@ def handle_db_qa_query(
     """
     try:
         # Feature gate: gracefully return if not configured
-        if not config.APP_DB_BASE_PATH:
+        if not config.app_db_base_path():
             logger.warning("[DB_QA] APP_DB_BASE_PATH not configured, returning disabled response")
             return {
                 "result": "Database Q&A feature is not configured.",
                 "db_found": False,
                 "result_type": "db_disabled",
             }
-        
+
         # Instantiate XML data store.
-        store = xml_store.XMLStore(config.APP_DB_BASE_PATH)
+        store = xml_store.XMLStore(config.app_db_base_path())
         # ── Debug trace: log function entry with full identity context ───────────────
         debug_log(
             "DB QA ROUTER — handle_db_qa_query",
@@ -511,7 +511,7 @@ def handle_db_qa_query(
             intent=intent,
             user_id_raw=user_id,
             role_id_raw=role_id,
-            xml_base_path=config.APP_DB_BASE_PATH,
+            xml_base_path=config.app_db_base_path(),
         )
         
         # Resolve caller identity robustly: in some integrations user_id may carry

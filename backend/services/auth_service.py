@@ -21,12 +21,20 @@ import logging
 import os
 import time
 
+from backend import version_config
 from backend.config import (
-    XML_DEPT_PATH,
-    XML_USER_PATH,
-    XML_ROLE_ACCESS_PATH,
+    xml_dept_path,
+    xml_user_path,
+    xml_role_access_path,
+    xml_option_path,
 )
 from backend.tools.xml_loader import load_xml_tree
+
+# 6.0's Department.xml uses different attribute names than 5.5's XML_Dept.xml
+# (Id/ReturnId/NXReturnId instead of DeptId/Forms/NXForms) — same two-step
+# LoginId -> Dept -> allowed-FormIds flow, just different raw attribute names.
+_DEPT_ID_ATTR:    str = "Id" if version_config.IS_V6 else "DeptId"
+_DEPT_FORMS_ATTR: str = "ReturnId" if version_config.IS_V6 else "Forms"
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +64,7 @@ def _auth_xml_mtime() -> float:
     If either file changes, the auth cache is considered stale regardless of TTL.
     """
     mtime = 0.0
-    for path in (XML_USER_PATH, XML_DEPT_PATH):
+    for path in (xml_user_path(), xml_dept_path()):
         try:
             mtime = max(mtime, os.path.getmtime(path))
         except OSError:
@@ -129,10 +137,10 @@ def invalidate(login_id: str) -> None:
 def _lookup(login_id: str) -> set[str] | None:
     """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids."""
     # ── Step 1: resolve DepartmentId from XML_User.xml ──────────────────────
-    user_root = load_xml_tree(XML_USER_PATH, "XML_User.xml")
+    user_root = load_xml_tree(xml_user_path(), "XML_User.xml")
     if user_root is None:
         logger.error(
-            "[AUTH] Cannot load XML_User.xml (path=%s) — denying all access", XML_USER_PATH
+            "[AUTH] Cannot load XML_User.xml (path=%s) — denying all access", xml_user_path()
         )
         return None
 
@@ -166,18 +174,18 @@ def _lookup(login_id: str) -> set[str] | None:
         return set()  # deny rather than allow
 
     # ── Step 2: resolve Forms from XML_Dept.xml ─────────────────────────────
-    dept_root = load_xml_tree(XML_DEPT_PATH, "XML_Dept.xml")
+    dept_root = load_xml_tree(xml_dept_path(), "XML_Dept.xml")
     if dept_root is None:
         logger.error(
             "[AUTH] Step 2 FAILED | Cannot load XML_Dept.xml (path=%s) — "
             "denying access for LoginId=%r",
-            XML_DEPT_PATH, login_id,
+            xml_dept_path(), login_id,
         )
         return None
 
     for el in dept_root.findall("Row"):
-        if el.attrib.get("DeptId", "").strip() == dept_id:
-            forms_raw = el.attrib.get("Forms", "")
+        if el.attrib.get(_DEPT_ID_ATTR, "").strip() == dept_id:
+            forms_raw = el.attrib.get(_DEPT_FORMS_ATTR, "")
             form_ids = {f.strip() for f in forms_raw.split("|") if f.strip()}
             logger.info(
                 "[AUTH] SUMMARY | LoginId: %r | DepartmentId: %r | "
@@ -208,11 +216,11 @@ def get_user_role_id(login_id: str) -> str | None:
     ``None``
         User not found or XML unavailable.
     """
-    user_root = load_xml_tree(XML_USER_PATH, "XML_User.xml")
+    user_root = load_xml_tree(xml_user_path(), "XML_User.xml")
     if user_root is None:
         logger.error(
             "[AUTH_ROLE] Cannot load XML_User.xml (path=%s) — cannot resolve RoleId",
-            XML_USER_PATH,
+            xml_user_path(),
         )
         return None
 
@@ -232,21 +240,64 @@ def get_user_role_id(login_id: str) -> str | None:
 
 def load_role_access_xml():
     """Load and return the root element of XML_RoleAccess.xml."""
-    return load_xml_tree(XML_ROLE_ACCESS_PATH, "XML_RoleAccess.xml")
+    return load_xml_tree(xml_role_access_path(), "XML_RoleAccess.xml")
+
+
+def _option_parent_map() -> dict[str, str]:
+    """6.0 only: {OptionId: ParentOptionId} from Option.xml, for the
+    ancestor-permission walk below."""
+    root = load_xml_tree(xml_option_path(), "Option.xml")
+    if root is None:
+        return {}
+    return {
+        el.attrib.get("Id", "").strip(): el.attrib.get("ParentOptionId", "").strip()
+        for el in root.findall("Row")
+        if el.attrib.get("Id", "").strip()
+    }
+
+
+def _role_access_has_new(root, role_id: str, option_id: str) -> str | None:
+    """Return the raw HasNew value for (role_id, option_id) in RoleAccess.xml,
+    or None if no such row exists."""
+    for el in root.findall("Row"):
+        if (
+            el.attrib.get("RoleId", "").strip() == role_id
+            and el.attrib.get("OptionId", "").strip() == option_id
+        ):
+            return el.attrib.get("HasNew", "false").strip().lower()
+    return None
 
 
 def validate_create_instance_access(role_id: str) -> bool:
     """Return True if the role is permitted to create instances.
 
-    Looks for a ``<Row>`` in XML_RoleAccess.xml where ``RoleId`` == *role_id*,
-    ``OptionId`` == the literal string ``"CreateInstance"``, and ``HasNew``
-    == ``"true"``.
+    Looks for a ``<Row>`` in RoleAccess.xml where ``RoleId`` == *role_id*,
+    ``OptionId`` == the CreateInstance option for the active version, and
+    ``HasNew`` == ``"true"``.
 
-    Returns False if the XML is unavailable, the row is missing, or
-    ``HasNew`` is not ``"true"``.
+    5.5 identifies the option by the literal string ``"CreateInstance"``.
+
+    6.0 uses a numeric OptionId instead — confirmed as ``"19"`` ("XBRL
+    Generation") from the .NET side's
+    ``[RequirePermission(19, PermissionType.New)]`` on
+    ``CreateInstanceController.GenerateReportDB``. 6.0's RoleAccess.xml can
+    grant access at a PARENT option instead of the leaf (confirmed against
+    real tenant data: RoleId 101 has an explicit row for OptionId 18
+    "Instance Generation", option 19's parent, but none for 19 itself) — so
+    for 6.0 this walks up Option.xml's ParentOptionId chain from 19 until it
+    finds an explicit RoleAccess row, and uses that row's HasNew. This
+    mirrors how the option menu is grouped (Instance Generation > XBRL
+    Generation / Non-XBRL Generation / SDMX Generation) — access granted at
+    the group level is treated as covering its children.
+
+    This is a UX-level pre-check only; the .NET API enforces the real
+    permission server-side regardless, so a stale/incorrect value here
+    fails safe (denies), not open.
+
+    Returns False if the XML is unavailable, or no row is found for the
+    option or any of its ancestors, or the closest matching row's ``HasNew``
+    is not ``"true"``.
     """
-    option_id = "CreateInstance"
-
     root = load_role_access_xml()
     if root is None:
         logger.error(
@@ -255,21 +306,37 @@ def validate_create_instance_access(role_id: str) -> bool:
         )
         return False
 
-    for el in root.findall("Row"):
-        if (
-            el.attrib.get("RoleId", "").strip() == role_id
-            and el.attrib.get("OptionId", "").strip() == option_id
-        ):
-            has_new = el.attrib.get("HasNew", "false").strip().lower()
+    if not version_config.IS_V6:
+        has_new = _role_access_has_new(root, role_id, "CreateInstance")
+        allowed = has_new == "true"
+        logger.info(
+            "[AUTH_ROLE] role_id=%r CreateInstance HasNew=%r → allowed=%s",
+            role_id, has_new, allowed,
+        )
+        if has_new is None:
+            logger.warning(
+                "[AUTH_ROLE] No CreateInstance row found in XML_RoleAccess.xml for role_id=%r",
+                role_id,
+            )
+        return allowed
+
+    parent_map = _option_parent_map()
+    option_id = "19"
+    visited: set[str] = set()
+    while option_id and option_id not in visited:
+        visited.add(option_id)
+        has_new = _role_access_has_new(root, role_id, option_id)
+        if has_new is not None:
             allowed = has_new == "true"
             logger.info(
-                "[AUTH_ROLE] role_id=%r CreateInstance HasNew=%r → allowed=%s",
-                role_id, has_new, allowed,
+                "[AUTH_ROLE] role_id=%r OptionId=%r (checked from leaf OptionId=19) HasNew=%r → allowed=%s",
+                role_id, option_id, has_new, allowed,
             )
             return allowed
+        option_id = parent_map.get(option_id, "")
 
     logger.warning(
-        "[AUTH_ROLE] No CreateInstance row found in XML_RoleAccess.xml for role_id=%r",
+        "[AUTH_ROLE] No RoleAccess row found for role_id=%r on OptionId=19 or any ancestor",
         role_id,
     )
     return False

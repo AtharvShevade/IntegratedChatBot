@@ -99,13 +99,7 @@ def _to_iso_date(date_str: str) -> str:
 # IMPORTS & CONFIG  (from original file 1)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from backend.config import (
-    RETURNS_XML_PATH      as _RETURNS_FILE,
-    INSTANCE_LOG_XML_PATH as _INSTANCE_FILE,
-    INSTANCE_BASE_DIR     as _INSTANCE_BASE_DIR,
-    RENDER_BASE_DIR       as _RENDER_BASE_DIR,
-)
-
+from backend import config, version_config
 from backend.tools.xml_loader import load_xml_tree
 
 _INSTANCE_LOG_ATTR_5_5 = {
@@ -120,7 +114,7 @@ _INSTANCE_LOG_ATTR_5_5 = {
 def _instance_log_attrs() -> dict[str, str]:
     return _INSTANCE_LOG_ATTR_5_5
 
-_STATUS_LABELS: dict[int, str] = {
+_STATUS_LABELS_5_5: dict[int, str] = {
     11: "Success",
     3:  "Failed",
     5:  "Failed",
@@ -133,9 +127,33 @@ _STATUS_LABELS: dict[int, str] = {
     12: "Rejected",
     0:  "Not Started",
 }
+_FAILED_STATUSES_5_5:  frozenset[int] = frozenset({3, 5, 8, 10, 13})
+_SUCCESS_STATUSES_5_5: frozenset[int] = frozenset({9, 11})
 
-_FAILED_STATUSES:  frozenset[int] = frozenset({3, 5, 8, 10, 13})
-_SUCCESS_STATUSES: frozenset[int] = frozenset({9, 11})
+# 6.0 InstanceLog.Status uses a different numeric scheme — confirmed from the
+# .NET CreateInstanceModel.GetStatusAsync switch statement. Status 70 has
+# been observed in real 6.0 sample data but falls through that switch's
+# unmapped/default branch too (the .NET side doesn't recognize it either) —
+# left unmapped here on purpose so callers see "Unknown" rather than a
+# guessed label; confirm the real meaning of 70 before adding it.
+_STATUS_LABELS_6_0: dict[int, str] = {
+    60: "Success",
+    25: "Failed",
+    45: "Failed",
+    55: "Validation Error",
+    10: "In Progress",
+    20: "In Progress",
+    30: "In Progress",
+    40: "In Progress",
+    50: "In Progress",
+    0:  "Not Started",
+}
+_FAILED_STATUSES_6_0:  frozenset[int] = frozenset({25, 45})
+_SUCCESS_STATUSES_6_0: frozenset[int] = frozenset({60})
+
+_STATUS_LABELS:     dict[int, str] = _STATUS_LABELS_6_0     if version_config.IS_V6 else _STATUS_LABELS_5_5
+_FAILED_STATUSES:   frozenset[int] = _FAILED_STATUSES_6_0   if version_config.IS_V6 else _FAILED_STATUSES_5_5
+_SUCCESS_STATUSES:  frozenset[int] = _SUCCESS_STATUSES_6_0  if version_config.IS_V6 else _SUCCESS_STATUSES_5_5
 
 _returns_ttl   = float(os.getenv("RETURNS_TTL_SEC",   "3600"))
 _instances_ttl = float(os.getenv("INSTANCES_TTL_SEC", "120"))
@@ -191,48 +209,66 @@ class _TTLCache:
         return data
 
 
-_returns_cache:   "_TTLCache | None" = None
-_instances_cache: "_TTLCache | None" = None
-_norm_cache:      "_TTLCache | None" = None
+# Path-keyed (not single global) so a 6.0 process serving multiple tenants
+# in successive requests keeps one correctly-invalidated cache per tenant
+# path, rather than one cache frozen to whichever tenant hit it first.
+_returns_caches:   dict[str, "_TTLCache"] = {}
+_instances_caches: dict[str, "_TTLCache"] = {}
+_norm_caches:      dict[str, "_TTLCache"] = {}
 
 
-def _returns_cache_for() -> "_TTLCache":
-    global _returns_cache
-    if _returns_cache is None:
-        _returns_cache = _TTLCache(ttl=_returns_ttl, file_path=_RETURNS_FILE)
-    return _returns_cache
+def _returns_cache_for(path: str) -> "_TTLCache":
+    cache = _returns_caches.get(path)
+    if cache is None:
+        cache = _TTLCache(ttl=_returns_ttl, file_path=path)
+        _returns_caches[path] = cache
+    return cache
 
 
-def _instances_cache_for() -> "_TTLCache":
-    global _instances_cache
-    if _instances_cache is None:
-        _instances_cache = _TTLCache(ttl=_instances_ttl, file_path=_INSTANCE_FILE)
-    return _instances_cache
+def _instances_cache_for(path: str) -> "_TTLCache":
+    cache = _instances_caches.get(path)
+    if cache is None:
+        cache = _TTLCache(ttl=_instances_ttl, file_path=path)
+        _instances_caches[path] = cache
+    return cache
 
 
-def _norm_cache_for() -> "_TTLCache":
-    global _norm_cache
-    if _norm_cache is None:
-        _norm_cache = _TTLCache(ttl=_returns_ttl, file_path=_RETURNS_FILE)
-    return _norm_cache
+def _norm_cache_for(path: str) -> "_TTLCache":
+    cache = _norm_caches.get(path)
+    if cache is None:
+        cache = _TTLCache(ttl=_returns_ttl, file_path=path)
+        _norm_caches[path] = cache
+    return cache
+
+
+# 6.0's Return.xml uses <Row> elements; 5.5's Returns.xml uses <Return>.
+_RETURNS_ROW_TAG: str = "Row" if version_config.IS_V6 else "Return"
 
 
 def _parse_returns() -> tuple[dict, ...]:
-    cache = _returns_cache_for()
+    path = config.returns_xml_path()
+    cache = _returns_cache_for(path)
     cached = cache.get()
     if cached is not None:
         return cached
-    path = _RETURNS_FILE
-    root = load_xml_tree(path, "Returns.xml")
+    root = load_xml_tree(path, os.path.basename(path))
     if root is None:
         return ()
     seen_names: set[str] = set()
     rows: list[dict] = []
-    for el in root.findall("Return"):
+    for el in root.findall(_RETURNS_ROW_TAG):
         name = el.attrib.get("Name", "").strip()
         if name and name not in seen_names:
             seen_names.add(name)
-            rows.append(el.attrib)
+            attrs = dict(el.attrib)
+            if version_config.IS_V6:
+                # 6.0's Return.xml has no separate ReturnId attribute — Id
+                # serves both the FormId and ReturnId role (confirmed: the
+                # .NET DTO's ReturnId field is populated with the FormId
+                # value). Aliasing it here means every downstream reader of
+                # r.get("ReturnId") — unchanged from 5.5 — keeps working.
+                attrs["ReturnId"] = attrs.get("Id", "")
+            rows.append(attrs)
     result = tuple(rows)
     logger.info(
         "Loaded %d unique return(s) from %s (cache refreshed)",
@@ -241,13 +277,51 @@ def _parse_returns() -> tuple[dict, ...]:
     return cache.set(result)
 
 
+# 6.0's InstanceLog.xml renames several attributes relative to 5.5's
+# XML_InstanceLog.xml (confirmed against D:\Repo6\Repo6\1001\DataBase\
+# InstanceLog.xml). Rather than threading version-awareness through every
+# one of this file's ~3000 lines of status/sort/download-link logic that
+# already reads the 5.5 names, each 6.0 row is remapped to the 5.5 shape
+# once, right here at the parse boundary — everything downstream keeps
+# working unchanged against FormId/DTC/InstanceDocPath/ErrorDocPath/
+# RenderedExcelDocPath/UserId exactly as it does for 5.5.
+_V6_INSTANCE_LOG_ATTR_ALIASES: dict[str, str] = {
+    "FormId":               "ReturnId",
+    "UserId":               "CreatedBy",
+    "InstanceDocPath":      "InstanceDoc",
+    "ErrorDocPath":         "ErrorDoc",
+    "RenderedExcelDocPath": "RenderDoc",
+    "ApprovedDt":           "ApprovedDT",
+}
+
+# 6.0 CreateDT is "yyyy-MM-dd-HH-mm-ss"; 5.5 DTC is "%d-%b-%Y %I:%M:%S %p"
+# (e.g. "30-Sep-2024 12:43:45 PM") — reformatted so _dtc_sort_key() and every
+# other %d-%b-%Y consumer in this file keep working unchanged.
+def _v6_reformat_create_dt(raw: str) -> str:
+    if not raw:
+        return ""
+    try:
+        dt = datetime.strptime(raw.strip(), "%Y-%m-%d-%H-%M-%S")
+        return dt.strftime("%d-%b-%Y %I:%M:%S %p")
+    except ValueError:
+        return raw
+
+
+def _normalize_v6_instance_row(raw: dict) -> dict:
+    row = dict(raw)
+    for legacy_name, v6_name in _V6_INSTANCE_LOG_ATTR_ALIASES.items():
+        row[legacy_name] = raw.get(v6_name, "")
+    row["DTC"] = _v6_reformat_create_dt(raw.get("CreateDT", ""))
+    return row
+
+
 def _parse_instances() -> tuple[dict, ...]:
-    cache = _instances_cache_for()
+    path = config.instance_log_xml_path()
+    cache = _instances_cache_for(path)
     cached = cache.get()
     if cached is not None:
         return cached
-    path = _INSTANCE_FILE
-    label = "XML_InstanceLog.xml"
+    label = os.path.basename(path)
     logger.debug("[report_lookup] _parse_instances: loading from %s", path)
     root = load_xml_tree(path, label)
     if root is None:
@@ -256,6 +330,8 @@ def _parse_instances() -> tuple[dict, ...]:
         )
         return ()
     rows = [el.attrib for el in root.findall("Row")]
+    if version_config.IS_V6:
+        rows = [_normalize_v6_instance_row(r) for r in rows]
     result = tuple(rows)
     if not result:
         logger.warning(
@@ -2886,8 +2962,9 @@ def _compact_normalise(s: str) -> str:
 
 
 def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
-    norm_cache = _norm_cache_for()
-    returns_cache = _returns_cache_for()
+    returns_path = config.returns_xml_path()
+    norm_cache = _norm_cache_for(returns_path)
+    returns_cache = _returns_cache_for(returns_path)
     if norm_cache.loaded_at < returns_cache.loaded_at:
         norm_cache._data = None
     cached = norm_cache.get()
@@ -3063,11 +3140,11 @@ def _safe_status(row: dict) -> int:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_render_file_path(form_id: str, filename: str) -> str:
-    base = _RENDER_BASE_DIR
+    base = config.render_base_dir()
     return os.path.join(base, os.path.basename(form_id), os.path.basename(filename))
 
 def build_error_file_path(form_id: str, filename: str) -> str:
-    base = _INSTANCE_BASE_DIR
+    base = config.instance_base_dir()
     return os.path.join(base, os.path.basename(form_id), os.path.basename(filename))
 
 def file_exists(path: str) -> bool:
@@ -3090,9 +3167,24 @@ def _is_4000_series(return_id: str) -> bool:
         return False
 
 
+def _download_tenant_qs() -> str:
+    """Tenant query-string suffix for /download-file links — 6.0 only.
+
+    The download link is a plain GET URL the frontend opens later, outside
+    the request that resolved the tenant, so the tenant_id must be embedded
+    in the URL itself (see main.py's /download-file, which accepts it as an
+    optional query param).
+    """
+    if not version_config.IS_V6:
+        return ""
+    tenant_id = version_config.get_active_tenant_id()
+    return f"&tenant_id={tenant_id}" if tenant_id else ""
+
+
 def _get_download_info(row: dict, form_id: str) -> dict:
     code = _safe_status(row)
     attrs = _instance_log_attrs()
+    tenant_qs = _download_tenant_qs()
 
     def _try_render():
         path_str = row.get(attrs["render_doc"], "").strip()
@@ -3101,7 +3193,7 @@ def _get_download_info(row: dict, form_id: str) -> dict:
         if not filename: return None
         full_path = build_render_file_path(form_id, filename)
         if file_exists(full_path):
-            return {"download_url": f"/download-file?form_id={form_id}&type=render&filename={filename}", "download_label": "Download Render File", "status_note": ""}
+            return {"download_url": f"/download-file?form_id={form_id}&type=render&filename={filename}{tenant_qs}", "download_label": "Download Render File", "status_note": ""}
         return {"download_url": "", "download_label": "", "status_note": "Render file not found."}
 
     def _try_error():
@@ -3111,7 +3203,7 @@ def _get_download_info(row: dict, form_id: str) -> dict:
         if not filename: return None
         full_path = build_error_file_path(form_id, filename)
         if file_exists(full_path):
-            return {"download_url": f"/download-file?form_id={form_id}&type=error&filename={filename}", "download_label": "Download Error File", "status_note": "", "error_file_path": full_path}
+            return {"download_url": f"/download-file?form_id={form_id}&type=error&filename={filename}{tenant_qs}", "download_label": "Download Error File", "status_note": "", "error_file_path": full_path}
         return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
 
     if code in _FAILED_STATUSES:

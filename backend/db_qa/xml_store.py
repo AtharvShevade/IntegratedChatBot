@@ -12,6 +12,7 @@ import os
 import threading
 from pathlib import Path
 
+from backend import version_config
 from backend.db_qa.versions import loader
 
 logger = logging.getLogger("xml_store")
@@ -49,8 +50,8 @@ _SENSITIVE_FIELDS = {
     "RefreshToken", "RefreshTokenExpiryTime",
 }
 
-# Human-readable status labels for XML_InstanceLog Status codes
-SUBMISSION_STATUS_LABELS: dict[str, str] = {
+# Human-readable status labels for XML_InstanceLog Status codes (5.5).
+_SUBMISSION_STATUS_LABELS_5_5: dict[str, str] = {
     "0": "New / Pending",
     "1": "In Progress",
     "2": "Submitted",
@@ -59,6 +60,27 @@ SUBMISSION_STATUS_LABELS: dict[str, str] = {
     "9": "Approved",
     "11": "Audited",
 }
+
+# 6.0's InstanceLog.Status uses a different numeric scheme — confirmed from
+# the .NET CreateInstanceModel.GetStatusAsync switch statement. Status "70"
+# has been observed in real 6.0 sample data but isn't handled by that
+# switch either; left unmapped on purpose (falls through to "Unknown").
+_SUBMISSION_STATUS_LABELS_6_0: dict[str, str] = {
+    "0":  "New / Pending",
+    "10": "In Progress",
+    "20": "In Progress",
+    "30": "In Progress",
+    "40": "In Progress",
+    "50": "In Progress",
+    "25": "Failed",
+    "45": "Failed",
+    "55": "Validation Error",
+    "60": "Success",
+}
+
+SUBMISSION_STATUS_LABELS: dict[str, str] = (
+    _SUBMISSION_STATUS_LABELS_6_0 if version_config.IS_V6 else _SUBMISSION_STATUS_LABELS_5_5
+)
 
 
 def _safe(record: dict) -> dict:
@@ -108,10 +130,10 @@ class XMLStore:
             self._db = Path(db_path)
         else:
             from backend import config as _config
-            self._db = Path(_config.APP_DB_BASE_PATH)
+            self._db = Path(_config.app_db_base_path())
 
         from backend.db_qa import versions as _versions
-        self._schema = _versions.v5_5_schema.SCHEMA
+        self._schema = _versions.get_schema_map()
 
         # Raw-data cache: entity_name → list[row_dict]
         self._cache: dict[str, list[dict[str, str]]] = {}

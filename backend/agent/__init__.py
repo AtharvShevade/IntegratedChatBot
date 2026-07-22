@@ -27,8 +27,10 @@ from backend.llm_extractor import (
     preprocess_generate_query,
 )
 from backend.services.llm_service import chat_response, classify_conversational_intent
+from backend import version_config
 from backend.tools.instance_generator import (
     call_generate_api,
+    call_generate_api_v6,
     resolve_return_exact,
     validate_reporting_date,
 )
@@ -1371,49 +1373,65 @@ async def decide(
                 ),
                 result_type="sched_awaiting_name",
             )
-        # "Schedule" button or any confirmation → finalize
-        sched_form_id = session.get("sched_form_id", "")
-        if session_id:
-            _session_context.pop(session_id, None)
-        logger.info(
-            "[SCHEDULE_CONFIRMED] report=%r reporting_date=%s date=%s time=%s session=%s",
-            sched_name, sched_reporting_date, sched_date, sched_time, session_id,
-        )
-        # Append confirmed schedule entry to SchedulerQueue.xml
-        from backend.services.scheduler_queue_service import append_schedule_entry
-        _sq_ok, _sq_id = append_schedule_entry(
-            report_name=sched_name,
-            form_id=sched_form_id,
-            reporting_date=sched_reporting_date or "",
-            schedule_dt=sched_dt or f"{sched_date} {sched_time}",
-            user_id=login_id or "",
-        )
-        if _sq_ok:
+        if raw == "schedule":
+            # Explicit "Schedule" button click → finalize
+            sched_form_id = session.get("sched_form_id", "")
+            if session_id:
+                _session_context.pop(session_id, None)
             logger.info(
-                "[SCHEDULER_QUEUE] Entry appended: id=%s report=%r session=%s",
-                _sq_id, sched_name, session_id,
+                "[SCHEDULE_CONFIRMED] report=%r reporting_date=%s date=%s time=%s session=%s",
+                sched_name, sched_reporting_date, sched_date, sched_time, session_id,
             )
-        else:
-            logger.error(
-                "[SCHEDULER_QUEUE] Failed to append entry for report=%r session=%s",
-                sched_name, session_id,
+            # Append confirmed schedule entry to SchedulerQueue.xml
+            from backend.services.scheduler_queue_service import append_schedule_entry
+            _sq_ok, _sq_id = append_schedule_entry(
+                report_name=sched_name,
+                form_id=sched_form_id,
+                reporting_date=sched_reporting_date or "",
+                schedule_dt=sched_dt or f"{sched_date} {sched_time}",
+                user_id=login_id or "",
             )
+            if _sq_ok:
+                logger.info(
+                    "[SCHEDULER_QUEUE] Entry appended: id=%s report=%r session=%s",
+                    _sq_id, sched_name, session_id,
+                )
+            else:
+                logger.error(
+                    "[SCHEDULER_QUEUE] Failed to append entry for report=%r session=%s",
+                    sched_name, session_id,
+                )
+            return _build(
+                intent="schedule_report",
+                report_name=sched_name,
+                response_text=(
+                    f"Schedule confirmed:\n"
+                    f"Report          : {sched_name}\n"
+                    f"Reporting Date  : {sched_reporting_date}\n"
+                    f"Schedule Date   : {sched_date}\n"
+                    f"Schedule Time   : {sched_time}\n"
+                    f"Scheduled       : {sched_dt or f'{sched_date} {sched_time}'}"
+                ),
+                result_type="schedule_parsed",
+                scheduled_datetime=sched_dt,
+                schedule_date=sched_date,
+                schedule_time=sched_time,
+                reporting_date_out=sched_reporting_date,
+            )
+        # Anything else — including an unrelated free-text query — is NOT a
+        # confirmation. Do not execute, do not process it as a new query;
+        # re-prompt with the same two options and leave the pending
+        # confirmation session state untouched so the buttons still work.
+        logger.info(
+            "[SCHEDULE_CONFIRM_IGNORED] non-option input=%r while awaiting confirmation session=%s",
+            user_query, session_id,
+        )
         return _build(
             intent="schedule_report",
             report_name=sched_name,
-            response_text=(
-                f"Schedule confirmed:\n"
-                f"Report          : {sched_name}\n"
-                f"Reporting Date  : {sched_reporting_date}\n"
-                f"Schedule Date   : {sched_date}\n"
-                f"Schedule Time   : {sched_time}\n"
-                f"Scheduled       : {sched_dt or f'{sched_date} {sched_time}'}"
-            ),
-            result_type="schedule_parsed",
-            scheduled_datetime=sched_dt,
-            schedule_date=sched_date,
-            schedule_time=sched_time,
-            reporting_date_out=sched_reporting_date,
+            response_text="Please confirm the schedule first by selecting **Schedule** or **Change Data**.",
+            result_type="sched_confirm",
+            options=["Schedule", "Change Data"],
         )
 
     # -- Compare: report disambiguation ----------------------------------------
@@ -3064,9 +3082,9 @@ def _matching_instance_log_rows(
     from backend import config
     from backend.db_qa.xml_store import XMLStore
 
-    if not config.APP_DB_BASE_PATH:
+    if not config.app_db_base_path():
         return []
-    store = XMLStore(config.APP_DB_BASE_PATH)
+    store = XMLStore(config.app_db_base_path())
     return [
         l for l in store.instance_log()
         if l.get("FormId", "") == str(form_id)
@@ -3197,7 +3215,14 @@ async def _finalize_generation(
         if r.get("Id")
     )
 
-    api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
+    if version_config.IS_V6:
+        api_result = await call_generate_api_v6(
+            ret["form_id"], reporting_date,
+            tenant_id=version_config.get_active_tenant_id() or "",
+            jwt=version_config.get_active_jwt(),
+        )
+    else:
+        api_result = await call_generate_api(ret["form_id"], reporting_date, asp_session)
     if session_id:
         _session_context.pop(session_id, None)
 
