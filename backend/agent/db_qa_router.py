@@ -229,6 +229,8 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "UserCode":         "User Code",
     "ReturnName":       "Return",
     "ReturnCode":       "Return Code",
+    "ReturnLabel":      "Return Name",
+    "ReturnId":         "Return ID",
     "PeriodName":       "Period",
     "Description":      "Description",
     "OptionName":       "Module",
@@ -274,7 +276,7 @@ def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
 _PRIORITY_COLS: list[str] = [
     "Name", "LoginId", "EmailId", "MobileNo",
     "DeptName", "RoleName", "Status", "LastLoginDT",
-    "ReturnName", "ReturnCode", "PeriodName",
+    "ReturnName", "ReturnCode", "ReturnLabel", "ReturnId", "PeriodName",
     "OptionName", "MenuName", "AccessType",
     "UserName", "AuditDateTime", "AuditType", "Remark",
     "StatusLabel", "CreatedDate", "FailedLoginCount",

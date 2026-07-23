@@ -12,7 +12,6 @@ import os
 import threading
 from pathlib import Path
 
-from backend import version_config
 from backend.db_qa.versions import loader
 
 logger = logging.getLogger("xml_store")
@@ -61,26 +60,14 @@ _SUBMISSION_STATUS_LABELS_5_5: dict[str, str] = {
     "11": "Audited",
 }
 
-# 6.0's InstanceLog.Status uses a different numeric scheme — confirmed from
-# the .NET CreateInstanceModel.GetStatusAsync switch statement. Status "70"
-# has been observed in real 6.0 sample data but isn't handled by that
-# switch either; left unmapped on purpose (falls through to "Unknown").
-_SUBMISSION_STATUS_LABELS_6_0: dict[str, str] = {
-    "0":  "New / Pending",
-    "10": "In Progress",
-    "20": "In Progress",
-    "30": "In Progress",
-    "40": "In Progress",
-    "50": "In Progress",
-    "25": "Failed",
-    "45": "Failed",
-    "55": "Validation Error",
-    "60": "Success",
-}
-
-SUBMISSION_STATUS_LABELS: dict[str, str] = (
-    _SUBMISSION_STATUS_LABELS_6_0 if version_config.IS_V6 else _SUBMISSION_STATUS_LABELS_5_5
-)
+# Status-code interpretation is version-independent (see the matching note
+# in backend/tools/report_lookup.py): 6.0's InstanceLog.Status used to come
+# from a separate/temporary XBRLGeneration service with its own numeric
+# scheme (60/25/45/.../0, from .NET CreateInstanceModel.GetStatusAsync).
+# That service is no longer the source of truth — 6.0's InstanceLog now
+# uses the SAME codes as 5.5's XML_InstanceLog.xml, so the 5.5 mapping
+# below is the single source of truth for both versions.
+SUBMISSION_STATUS_LABELS: dict[str, str] = _SUBMISSION_STATUS_LABELS_5_5
 
 
 def _safe(record: dict) -> dict:

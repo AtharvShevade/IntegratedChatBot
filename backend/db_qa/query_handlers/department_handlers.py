@@ -104,12 +104,36 @@ def handle_department_profile(scope: dict, entities: dict, store: XMLStore) -> d
                    f"Department '{dept.get('Name')}' (id {dept_id}) has {user_count} user(s).")
 
 
+def _return_access_row(ret: dict) -> dict:
+    """Return-Code / Return-Name / Return-ID row for a department's
+    accessible-returns table.
+
+    ReturnCode is the raw code the department's Forms/NXForms list
+    references (Returns.xml's "Id" attribute, e.g. "2030" — distinct from
+    the human-facing ReturnId code, e.g. "R009"). On 6.0 there is no
+    separate ReturnId attribute at all (v6_0_schema.py maps it to None), so
+    `ret.get("ReturnId") or ret.get("Id", "")` falls back to the same code
+    shown in ReturnCode — same fallback pattern used everywhere else in
+    this codebase that needs a return's "ReturnId for this FormId".
+    """
+    return {
+        "ReturnCode": ret.get("Id", ""),
+        "ReturnLabel": ret.get("Name", ""),
+        "ReturnId": ret.get("ReturnId") or ret.get("Id", ""),
+    }
+
+
 def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> dict:
     dept = _resolve_target_department(store, scope, entities)
     if not dept:
         who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
         return _not_found("department_returns", "Department Returns", f"{who} department could not be found.")
 
+    # dept.get(...) may list the same code more than once (e.g.
+    # "2014|2033|...|2033") — harmless here since xbrl/non_xbrl are built by
+    # filtering the master returns list (one entry per real return), not by
+    # iterating the code list, so a repeated code can never produce a
+    # duplicate row.
     form_ids = [f.strip() for f in dept.get("Forms", "").split("|") if f.strip()]
     nx_ids = [f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()]
     xbrl_type = entities.get("xbrl_type")
@@ -118,17 +142,21 @@ def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> d
     non_xbrl = [dict(r) for r in store.non_xbrl_returns() if r.get("ReturnId") in nx_ids or r.get("Id") in nx_ids]
 
     if xbrl_type == "non_xbrl":
-        records = [{"type": "Non-XBRL", **r} for r in non_xbrl]
+        records = [_return_access_row(r) for r in non_xbrl]
     elif xbrl_type == "xbrl":
-        records = [{"type": "XBRL", **r} for r in xbrl]
+        records = [_return_access_row(r) for r in xbrl]
     else:
-        records = [{"type": "XBRL", **r} for r in xbrl] + [{"type": "Non-XBRL", **r} for r in non_xbrl]
+        records = [_return_access_row(r) for r in xbrl] + [_return_access_row(r) for r in non_xbrl]
 
     dept_name = dept.get("Name", "")
     who_phrase = "Your department" if scope["target_type"] == "self" else f"Department '{dept_name}'"
-    label = "My Department's Returns" if scope["target_type"] == "self" else f"Returns of {dept_name}"
-    return _result("department_returns", label, records,
-                   f"{who_phrase} has {len(xbrl)} XBRL and {len(non_xbrl)} non-XBRL returns.",
+    label = "Returns Accessible To Your Department" if scope["target_type"] == "self" else f"Returns of {dept_name}"
+    total = len(xbrl) + len(non_xbrl)
+    if total == 0:
+        summary = f"{who_phrase} does not currently have access to any returns."
+    else:
+        summary = f"{who_phrase} has access to {len(xbrl)} XBRL and {len(non_xbrl)} non-XBRL return(s) ({total} total)."
+    return _result("department_returns", label, records, summary,
                    dept_name=dept_name, xbrl_count=len(xbrl), non_xbrl_count=len(non_xbrl))
 
 

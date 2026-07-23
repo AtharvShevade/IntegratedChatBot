@@ -19,7 +19,6 @@ from backend import config as _config
 logger = logging.getLogger(__name__)
 
 _ROOT        = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_PERIOD_FILE = os.path.join(_ROOT, "logs", "period.xml")  # 5.5 only — project-local, not under BASE_REPO_PATH
 _DOTNET_URL            = os.getenv("DOTNET_API_URL",        "https://localhost:5000")
 _DOTNET_CONTROLLER     = os.getenv("DOTNET_CONTROLLER",     "CreateInstance")
 _DOTNET_SESSION_COOKIE = os.getenv("DOTNET_SESSION_COOKIE", "")
@@ -52,21 +51,25 @@ _period_caches: dict[str, dict] = {}  # path -> {"data": ..., "ts": ...} (path-k
 
 def _parse_period_master() -> dict[str, dict]:
     """Parse the period master and return {period_id: attrib_dict}.
-    Cached for PERIOD_TTL_SEC seconds (default 24 hours).
+    Cached for PERIOD_TTL_SEC seconds (default 24 hours), keyed by the
+    resolved path so a change of tenant/repo root (or an edit to
+    BASE_REPO_PATH) is picked up on its own cache entry rather than
+    reusing another tenant's stale data.
 
-    5.5 reads the project-local logs/period.xml (unchanged, pre-existing
-    behavior — not under BASE_REPO_PATH). 6.0 has its own tenant-scoped
-    Period.xml under {TenantId}\\DataBase\\, with different attribute names
-    (Id instead of Period_Id) — confirmed against
-    D:\\Repo6\\Repo6\\1001\\DataBase\\Period.xml.
+    Always reads config.period_xml_path() — the SAME version/tenant-aware
+    resolver every other repo-XML reader in this codebase uses
+    (config._active_root(), which honors version_config.repo_scope's
+    per-request root override). This used to read a hardcoded
+    project-local logs/period.xml on 5.5 — a stale snapshot that never saw
+    edits made to the real D:\\Repo(new)\\DataBase\\XML_Period.xml — which
+    is why a Period.xml update could go unnoticed; that project-local copy
+    is no longer read at all. 6.0 uses "Id" as its PeriodId attribute name
+    instead of 5.5's "Period_Id" (confirmed against
+    D:\\Repo6\\Repo6\\1001\\DataBase\\Period.xml) — same file, different
+    attribute name, handled here.
     """
-    if version_config.IS_V6:
-        path = _config.period_xml_path()
-        id_attr = "Id"
-    else:
-        path = _PERIOD_FILE
-        id_attr = "Period_Id"
-    label = os.path.basename(path)
+    path = _config.period_xml_path()
+    id_attr = "Id" if version_config.IS_V6 else "Period_Id"
 
     now = time.monotonic()
     cache = _period_caches.get(path)
@@ -74,7 +77,7 @@ def _parse_period_master() -> dict[str, dict]:
         return cache["data"]
 
     if not os.path.exists(path):
-        logger.warning("%s not found: %s", label, path)
+        logger.warning("[PERIOD_MASTER] file not found: %s", path)
         return {}
     try:
         root = ET.parse(path).getroot()
@@ -83,11 +86,15 @@ def _parse_period_master() -> dict[str, dict]:
             pid = el.attrib.get(id_attr, "").strip()
             if pid:
                 out[pid] = el.attrib
-        logger.info("Loaded %d period(s) from %s (cache refreshed)", len(out), label)
+        logger.info(
+            "[PERIOD_MASTER] loaded %d period(s) from %s (cache refreshed): %s",
+            len(out), path,
+            {pid: attrs.get("Frequency", "") for pid, attrs in out.items()},
+        )
         _period_caches[path] = {"data": out, "ts": now}
         return out
     except ET.ParseError as exc:
-        logger.error("XML parse error in %s: %s", label, exc)
+        logger.error("[PERIOD_MASTER] XML parse error in %s: %s", path, exc)
         return {}
 
 
@@ -117,6 +124,38 @@ _PERIOD_ID_TO_FREQUENCY: dict[str, str] = {
     "111": "HM",  # Half Monthly
     "113": "G",   # As An When
 }
+
+
+# Frequency-code aliases for date-validation purposes only (never rewrites
+# the "frequency" value stored/returned elsewhere, e.g. in
+# resolve_return_exact()'s result dict — only how the period-end rules
+# below interpret it).
+#
+# 6.0's real Period.xml (D:\Repo6\Repo6\{TenantId}\DataBase\Period.xml) uses
+# the single letter "A" for BOTH PeriodId 107 "Yearly" and PeriodId 113
+# "As An When" — the same code covering two different periods. Because "A"
+# wasn't a code the Q/M/Y/H/C/B/W/F period-end checks recognised, it fell
+# through to the "unrecognised frequency -> any valid past date accepted"
+# catch-all, so annual (6.0) reporting dates were never actually validated
+# against a period-end at all (e.g. CIMS_RAQ(Annually), PeriodId 107,
+# RepFreq/Period.xml Frequency "A" — any calendar-valid date, including
+# 31-Mar, was silently accepted). Per the business decision, "A" is
+# aliased onto "B" (Yearly/Calendar-Year, 31-Dec) for now — i.e. treat
+# BOTH PeriodIds sharing code "A" as one "annually" rule with a calendar-
+# year-end, since the reporting date for these returns is expected to land
+# on 31-Dec, not 31-Mar (the "Y"/Financial-Year rule).
+_FREQUENCY_ALIASES: dict[str, str] = {
+    "A": "B",
+}
+
+
+def _normalize_frequency(frequency: str) -> str:
+    """Upper-cased frequency code with _FREQUENCY_ALIASES applied — the
+    single place every period-end-aware function below resolves "which
+    rule set applies", so validate_reporting_date()/_hint_dates()/
+    next_reporting_date() can never disagree about it."""
+    freq = (frequency or "").strip().upper()
+    return _FREQUENCY_ALIASES.get(freq, freq)
 
 
 # -- Return resolver (exact match, used post-disambiguation) --------------------
@@ -174,7 +213,7 @@ def _hint_dates(frequency: str, year: int, *, filter_future: bool = True, filter
     *filter_past*   (default False) — exclude dates on or before today (scheduling mode).
     Both flags are mutually exclusive; *filter_past* takes priority when both are set.
     """
-    freq = (frequency or "").upper()
+    freq = _normalize_frequency(frequency)
     today = date.today()
 
     candidates: list[str] = []
@@ -409,7 +448,7 @@ def validate_reporting_date(
         # land on a frequency period-end.
         return {"valid": True, "error": None, "suggestions": []}
 
-    freq = (frequency or "").strip().upper()
+    freq = _normalize_frequency(frequency)
     day, month, year = parsed.day, parsed.month, parsed.year
 
     def _filter_future(suggestions: list[str]) -> list[str]:
@@ -532,7 +571,7 @@ def next_reporting_date(frequency: str, due_days: str | int | None = None, *, af
     period-end (e.g. daily, as-and-when).
     """
     today = after or date.today()
-    freq = (frequency or "").strip().upper()
+    freq = _normalize_frequency(frequency)
 
     def _next_from_ends(ends: set[tuple[int, int]]) -> date:
         candidates = sorted(

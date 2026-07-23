@@ -258,7 +258,15 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         all_of=(_G_DEPT_NOUN, _kw(r"returns?", r"forms?", r"reports?")),
         any_of=(_kw(r"department.{0,30}access", r"access.{0,30}(return|form|report)",
                      rf"which\s+(xbrl|{_NON_XBRL})?\s*returns?", r"does\s+.{0,20}department",
-                     r"xbrl\s+returns?", rf"{_NON_XBRL}\s+returns?"),),
+                     r"xbrl\s+returns?", rf"{_NON_XBRL}\s+returns?",
+                     # Order-independent: "returns accessible to my department",
+                     # "returns my department can access", "returns are assigned
+                     # to my department" — covers "return(s)/form(s)/report(s)"
+                     # ... "access(ible)"/"assign(ed)" in EITHER direction,
+                     # unlike the two directional alternatives above which only
+                     # cover "department...access" or "access...return".
+                     r"(?:returns?|forms?|reports?).{0,40}(?:access\w*|assign\w*)",
+                     r"(?:access\w*|assign\w*).{0,40}(?:returns?|forms?|reports?)"),),
         excludes=(_kw(r"summary\s+of\s+my\s+access", r"full\s+summary", r"full\s+profile"),),
     ),
 

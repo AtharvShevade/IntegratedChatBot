@@ -27,6 +27,20 @@ Covers:
    is validate_reporting_date(..., skip_frequency_check=True) for the
    Schedule Date call site only — Reporting Date's own validation is
    completely unaffected.
+
+4. Reporting-date validation for annual (6.0) reports was silently
+   unrestricted. Root causes, both fixed in instance_generator.py:
+     a. _parse_period_master() read a hardcoded project-local
+        logs/period.xml snapshot on 5.5 instead of the real, live,
+        version/tenant-aware config.period_xml_path() — so an edit to the
+        actual repo's Period.xml could go unnoticed. It now always reads
+        config.period_xml_path().
+     b. 6.0's real Period.xml uses frequency code "A" for BOTH PeriodId
+        107 "Yearly" and PeriodId 113 "As An When" — a code the Q/M/Y/H/
+        C/B/W/F period-end checks didn't recognise, so it fell through to
+        the "any valid past date accepted" catch-all. _FREQUENCY_ALIASES
+        now aliases "A" onto "B" (Yearly/Calendar-Year, 31-Dec) so both
+        PeriodIds sharing that code get one consistent "annually" rule.
 """
 from __future__ import annotations
 
@@ -39,12 +53,15 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import backend.tools.instance_generator as ig
 from backend.tools.instance_generator import validate_reporting_date, resolve_return_exact
 from backend.agent import _validate_future_schedule_date
 
 PATH_5_5 = Path(r"D:\Repo(new)\DataBase")
+PATH_6_0_TENANT_1001 = Path(r"D:\Repo6\Repo6\1001\DataBase")
 
 _need_5_5 = pytest.mark.skipif(not PATH_5_5.is_dir(), reason="5.5 real data tree not present")
+_need_6_0 = pytest.mark.skipif(not PATH_6_0_TENANT_1001.is_dir(), reason="6.0 real tenant data tree not present")
 
 
 def _future_year() -> int:
@@ -257,3 +274,105 @@ class TestRealDataFrequencyResolution:
         ret = resolve_return_exact("CIMS_RAQ(Annually)")
         assert ret is not None
         assert ret["frequency"] == "Y"
+
+    @_need_6_0
+    def test_6_0_period_xml_gives_period_107_frequency_a(self, monkeypatch):
+        """6.0's real Period.xml gives PeriodId 107 "Yearly" the code "A"
+        (not 5.5's "Y") — confirmed directly against the real tenant file
+        rather than through the full APP_VERSION/repo_scope machinery
+        (which relies on module-load-time constants elsewhere in
+        backend.config that a mid-session monkeypatch can't safely flip
+        without leaking state into every other test in this session).
+        _normalize_frequency() is what applies the "A"->"B" alias; this
+        only confirms the raw code get_period_info() surfaces."""
+        monkeypatch.setattr(ig, "_period_caches", {})
+        monkeypatch.setattr(
+            ig._config, "period_xml_path",
+            lambda: str(PATH_6_0_TENANT_1001 / "Period.xml"),
+        )
+        monkeypatch.setattr(ig.version_config, "IS_V6", True)
+        info = ig.get_period_info("107")
+        assert info is not None
+        assert info.get("Frequency") == "A"
+        assert info.get("PeriodName", "").strip() == "Yearly"
+
+
+# ── Issue 4: Period.xml path resolution + "A" frequency alias ───────────────
+
+class TestFrequencyAlias:
+    def test_a_aliases_to_b(self):
+        assert ig._normalize_frequency("A") == "B"
+        assert ig._normalize_frequency("a") == "B"  # case-insensitive
+
+    @pytest.mark.parametrize("freq", ["Q", "M", "Y", "H", "C", "B", "W", "F", "D", "G", "HM"])
+    def test_other_codes_pass_through_unchanged(self, freq):
+        assert ig._normalize_frequency(freq) == freq
+
+    def test_empty_or_none_frequency_is_untouched(self):
+        assert ig._normalize_frequency("") == ""
+        assert ig._normalize_frequency(None) == ""
+
+
+class TestAnnualFrequencyCodeAValidation:
+    """Frequency "A" (6.0's real code for both PeriodId 107 "Yearly" and
+    PeriodId 113 "As An When") must validate as an annual/Calendar-Year
+    period-end (31-Dec) — the exact bug-report scenario: a report the
+    system used to accept on 31-Mar must now be rejected, with 31-Dec
+    accepted and suggested instead."""
+
+    def test_accepts_31_dec(self):
+        y = _past_year()
+        result = validate_reporting_date(f"31-Dec-{y}", "A")
+        assert result["valid"] is True
+
+    def test_rejects_31_mar_with_31_dec_suggestion(self):
+        y = _past_year()
+        result = validate_reporting_date(f"31-Mar-{y}", "A")
+        assert result["valid"] is False
+        assert "31-Dec" in result["error"]
+        assert f"31-Dec-{y}" in result["suggestions"]
+
+    def test_matches_plain_b_frequency_behavior(self):
+        """"A" must be indistinguishable from "B" for validation purposes —
+        same accept/reject outcome for the same input."""
+        y = _past_year()
+        for d in (f"31-Dec-{y}", f"31-Mar-{y}", f"30-Jun-{y}"):
+            assert validate_reporting_date(d, "A")["valid"] == validate_reporting_date(d, "B")["valid"]
+
+
+class TestPeriodMasterReadsConfiguredPath:
+    """_parse_period_master() must resolve the period file through
+    config.period_xml_path() (version/tenant-aware, honors
+    version_config.repo_scope's per-request root override) — never a
+    hardcoded project-local path — so an edit to the real repo's
+    Period.xml/XML_Period.xml is always picked up."""
+
+    def test_reads_from_config_period_xml_path(self, tmp_path, monkeypatch):
+        period_file = tmp_path / "XML_Period.xml"
+        period_file.write_text(
+            '<?xml version="1.0"?>\n<Document>\n'
+            '<Row Period_Id="999" Frequency="Q" PeriodName="Test Quarter"/>\n'
+            "</Document>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ig._config, "period_xml_path", lambda: str(period_file))
+        monkeypatch.setattr(ig.version_config, "IS_V6", False)
+        info = ig.get_period_info("999")
+        assert info is not None
+        assert info["Frequency"] == "Q"
+        assert info["PeriodName"] == "Test Quarter"
+
+    def test_uses_id_attribute_name_for_6_0(self, tmp_path, monkeypatch):
+        period_file = tmp_path / "Period.xml"
+        period_file.write_text(
+            '<?xml version="1.0"?>\n<Document>\n'
+            '<Row Id="999" Frequency="A" PeriodName="Test Annual"/>\n'
+            "</Document>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ig._config, "period_xml_path", lambda: str(period_file))
+        monkeypatch.setattr(ig.version_config, "IS_V6", True)
+        info = ig.get_period_info("999")
+        assert info is not None
+        assert info["Frequency"] == "A"
+

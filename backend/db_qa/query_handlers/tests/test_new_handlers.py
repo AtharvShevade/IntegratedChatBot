@@ -5,10 +5,12 @@ legacy-reexport-intact check and a denial-path check.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from backend.db_qa import access_control, query_handlers as qh
+from backend.db_qa.query_handlers import department_handlers
 from backend.db_qa.xml_store import XMLStore
 
 PATH_5_5 = Path(r"D:\Repo(new)\DataBase")
@@ -54,6 +56,69 @@ def test_department_returns_self(store):
     r = qh.dispatch2("department_returns", scope, {"target_type": "self"}, store)
     assert r["found"] is True
     assert "XBRL" in r["summary"]
+
+
+@_need_5_5
+def test_department_returns_self_row_shape_and_dedup(store):
+    """'Which returns does my department have access to?' — real data:
+    iris810's department (DeptId 100) lists return code 2033 TWICE in its
+    Forms attribute; the returned table must still show it exactly once,
+    and every row must resolve to the real Return Code / Return Name /
+    Return ID triple from Returns.xml (not hardcoded)."""
+    scope = _scoped(ADMIN_LOGIN, "department_returns", {"target_type": "self"})
+    r = qh.dispatch2("department_returns", scope, {"target_type": "self"}, store)
+    assert r["found"] is True
+    for rec in r["records"]:
+        assert set(rec.keys()) == {"ReturnCode", "ReturnLabel", "ReturnId"}
+    codes = [rec["ReturnCode"] for rec in r["records"]]
+    assert codes.count("2033") == 1
+    assert {"ReturnCode": "2029", "ReturnLabel": "CIMS_ROR", "ReturnId": "R018"} in r["records"]
+
+
+def test_department_returns_dept_not_found():
+    """Caller's department can't be resolved -> friendly not-found response,
+    not a crash."""
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        r = department_handlers.handle_department_returns({"target_type": "self"}, {}, None)
+    assert r["found"] is False
+    assert "could not be found" in r["summary"]
+
+
+def test_department_returns_no_returns_assigned():
+    """Department resolves but has no Forms/NXForms at all -> clear
+    'no returns' response, not an empty table with no explanation."""
+    class _EmptyStore:
+        def returns(self):
+            return []
+        def non_xbrl_returns(self):
+            return []
+
+    dept = {"Name": "Empty Dept", "Forms": "", "NXForms": ""}
+    with patch.object(department_handlers, "_resolve_target_department", return_value=dept):
+        r = department_handlers.handle_department_returns({"target_type": "self"}, {}, _EmptyStore())
+    assert r["found"] is False
+    assert r["records"] == []
+    assert "does not currently have access to any returns" in r["summary"]
+
+
+def test_department_returns_return_id_falls_back_to_code_when_unset():
+    """6.0 has no separate ReturnId attribute (v6_0_schema.py maps it to
+    None, which XMLStore surfaces as ""/None) — the Return ID column must
+    fall back to the same code shown in Return Code rather than going
+    blank, exactly like every other ReturnId-consuming call site in this
+    codebase (e.g. `ret.get("ReturnId") or ret.get("Id", "")`)."""
+    class _FakeStore:
+        def returns(self):
+            return [{"Id": "2030", "Name": "CIMS_RAQ", "ReturnId": ""}]
+        def non_xbrl_returns(self):
+            return []
+        def enrich_return(self, ret):
+            return dict(ret)
+
+    dept = {"Name": "Dept", "Forms": "2030", "NXForms": ""}
+    with patch.object(department_handlers, "_resolve_target_department", return_value=dept):
+        r = department_handlers.handle_department_returns({"target_type": "self"}, {}, _FakeStore())
+    assert r["records"] == [{"ReturnCode": "2030", "ReturnLabel": "CIMS_RAQ", "ReturnId": "2030"}]
 
 
 @_need_5_5

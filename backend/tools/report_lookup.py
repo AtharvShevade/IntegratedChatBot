@@ -130,30 +130,18 @@ _STATUS_LABELS_5_5: dict[int, str] = {
 _FAILED_STATUSES_5_5:  frozenset[int] = frozenset({3, 5, 8, 10, 13})
 _SUCCESS_STATUSES_5_5: frozenset[int] = frozenset({9, 11})
 
-# 6.0 InstanceLog.Status uses a different numeric scheme — confirmed from the
-# .NET CreateInstanceModel.GetStatusAsync switch statement. Status 70 has
-# been observed in real 6.0 sample data but falls through that switch's
-# unmapped/default branch too (the .NET side doesn't recognize it either) —
-# left unmapped here on purpose so callers see "Unknown" rather than a
-# guessed label; confirm the real meaning of 70 before adding it.
-_STATUS_LABELS_6_0: dict[int, str] = {
-    60: "Success",
-    25: "Failed",
-    45: "Failed",
-    55: "Validation Error",
-    10: "In Progress",
-    20: "In Progress",
-    30: "In Progress",
-    40: "In Progress",
-    50: "In Progress",
-    0:  "Not Started",
-}
-_FAILED_STATUSES_6_0:  frozenset[int] = frozenset({25, 45})
-_SUCCESS_STATUSES_6_0: frozenset[int] = frozenset({60})
-
-_STATUS_LABELS:     dict[int, str] = _STATUS_LABELS_6_0     if version_config.IS_V6 else _STATUS_LABELS_5_5
-_FAILED_STATUSES:   frozenset[int] = _FAILED_STATUSES_6_0   if version_config.IS_V6 else _FAILED_STATUSES_5_5
-_SUCCESS_STATUSES:  frozenset[int] = _SUCCESS_STATUSES_6_0  if version_config.IS_V6 else _SUCCESS_STATUSES_5_5
+# Status-code interpretation is version-independent: 6.0's InstanceLog used
+# to be populated by a separate/temporary XBRLGeneration service with its
+# own incompatible numeric scheme (60/25/45/55/10/20/30/40/50/0, sourced
+# from .NET CreateInstanceModel.GetStatusAsync — observed values like 70
+# didn't even match that switch's own cases). That service is no longer the
+# source of truth: 6.0's InstanceLog.Status now uses the SAME codes as
+# 5.5's XML_InstanceLog.xml (8/9/11/etc.), so the 5.5 mapping below is the
+# single source of truth for both versions — do not add a separate 6.0
+# table here again.
+_STATUS_LABELS:     dict[int, str] = _STATUS_LABELS_5_5
+_FAILED_STATUSES:   frozenset[int] = _FAILED_STATUSES_5_5
+_SUCCESS_STATUSES:  frozenset[int] = _SUCCESS_STATUSES_5_5
 
 _returns_ttl   = float(os.getenv("RETURNS_TTL_SEC",   "3600"))
 _instances_ttl = float(os.getenv("INSTANCES_TTL_SEC", "120"))

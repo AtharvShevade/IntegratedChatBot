@@ -71,6 +71,25 @@ def test_permission_check_variants(text, expected_action):
 
 
 @pytest.mark.parametrize("text", [
+    "Which returns does my department have access to?",   # canonical / catalog wording
+    "What returns can my department access?",
+    "Show me the returns accessible to my department.",
+    "Which returns are available for my department?",
+    "What returns is my department allowed to access?",
+    "List all returns my department has access to.",
+    "Show returns accessible by my department.",
+    "Which returns can my department view?",
+    "Which returns can my department access?",
+    "What returns are assigned to my department?",
+    "Give me the list of returns my department can access.",
+])
+def test_department_returns_self_variants(text):
+    intent, params, tt = classify_new(text)
+    assert intent == Intent.DEPARTMENT_RETURNS
+    assert tt == "self"
+
+
+@pytest.mark.parametrize("text", [
     "What are all the departments in the system?",
     "List all departments",
     "Show me every department",
