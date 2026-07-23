@@ -1338,6 +1338,20 @@ html, body, #root {
 .dbqa-table tbody tr:last-child td      { border-bottom: none; }
 .dbqa-table tbody tr:hover td           { background: rgba(1,90,170,0.08); transition: background 0.12s; }
 
+.dbqa-pagination {
+  display: flex; align-items: center; justify-content: center;
+  gap: 14px; padding: 4px 0 2px;
+}
+.dbqa-page-btn {
+  padding: 5px 14px; font-size: 0.76rem; font-weight: 600;
+  color: var(--accent); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 999px;
+  cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.dbqa-page-btn:hover:not(:disabled) { background: var(--decision-bg); border-color: var(--accent); }
+.dbqa-page-btn:disabled             { color: var(--text-muted); opacity: 0.45; cursor: not-allowed; }
+.dbqa-page-info { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+
 .dbqa-kv-list { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .dbqa-kv-row  { display: flex; align-items: flex-start; gap: 10px; padding: 7px 14px; border-bottom: 1px solid rgba(46,51,80,0.3); }
 .dbqa-kv-row:last-child         { border-bottom: none; }
