@@ -1707,6 +1707,33 @@ html, body, #root {
 .error-explanation-markdown p:last-child {
   margin-bottom: 0;
 }
+.error-explanation-markdown ul {
+  margin: 0 0 10px 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+.error-explanation-markdown ul:last-child {
+  margin-bottom: 0;
+}
+.error-explanation-markdown li {
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+.error-explanation-markdown li:last-child {
+  margin-bottom: 0;
+}
+.error-explanation-markdown strong {
+  color: var(--section-color, #2c2c2c);
+  font-weight: 700;
+}
+.error-explanation-markdown code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #1f2937;
+}
 .error-explanation-raw {
   font-size: 0.78em;
   color: #888;
@@ -1778,6 +1805,33 @@ html, body, #root {
 }
 .error-explanation-markdown p:last-child {
   margin-bottom: 0;
+}
+.error-explanation-markdown ul {
+  margin: 0 0 10px 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+.error-explanation-markdown ul:last-child {
+  margin-bottom: 0;
+}
+.error-explanation-markdown li {
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+.error-explanation-markdown li:last-child {
+  margin-bottom: 0;
+}
+.error-explanation-markdown strong {
+  color: var(--section-color, #2c2c2c);
+  font-weight: 700;
+}
+.error-explanation-markdown code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #1f2937;
 }
 .error-explanation-raw {
   font-size: 0.78em;
@@ -1927,6 +1981,33 @@ html, body, #root {
 }
 .error-explanation-markdown p:last-child {
   margin-bottom: 0;
+}
+.error-explanation-markdown ul {
+  margin: 0 0 10px 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+.error-explanation-markdown ul:last-child {
+  margin-bottom: 0;
+}
+.error-explanation-markdown li {
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+.error-explanation-markdown li:last-child {
+  margin-bottom: 0;
+}
+.error-explanation-markdown strong {
+  color: var(--section-color, #2c2c2c);
+  font-weight: 700;
+}
+.error-explanation-markdown code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #1f2937;
 }
 .error-explanation-raw {
   font-size: 0.78em;
@@ -2115,5 +2196,178 @@ html, body, #root {
   font-weight: 600;
   cursor: pointer;
   margin-left: auto;
+}
+
+/* ── Formula error card — structured explanation panel ──────────────────────
+   Replaces the plain-markdown rendering with a proper enterprise card:
+   compact header (not a full-width banner), a stats grid for the reported/
+   calculated/difference numbers, key-value blocks for DB locations, and a
+   distinct callout for the fix instruction. Scoped to formula_error groups
+   only — dimensional/xbrl_schema panels keep their existing styling. */
+
+.error-panel-wrapper {
+  gap: 14px;
+}
+
+.formula-error-card {
+  background: #fff;
+  border: 1px solid #e5e0ec;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.formula-error-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: #f5eefb;
+  color: #6a0dad;
+  font-size: 0.8em;
+  font-weight: 700;
+  border-bottom: 1px solid #e5e0ec;
+}
+
+.formula-error-card-header .section-icon {
+  font-size: 1em;
+}
+
+.formula-error-card-body {
+  padding: 16px 18px;
+}
+
+.formula-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.formula-error-title {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #c0392b;
+}
+
+.formula-error-explanation {
+  margin: 0;
+  font-size: 0.92em;
+  line-height: 1.6;
+  color: #2c2c2c;
+  max-width: 62ch;
+}
+
+.formula-error-note {
+  margin: 0;
+  font-size: 0.8em;
+  line-height: 1.5;
+  color: #7a7a85;
+  font-style: italic;
+}
+
+.formula-error-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px 16px;
+  background: #f8f8fb;
+  border: 1px solid #ececf0;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.formula-error-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.formula-error-stat-label {
+  font-size: 0.68em;
+  font-weight: 700;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.formula-error-stat-value {
+  font-size: 0.98em;
+  font-weight: 700;
+  color: #1f2937;
+  word-break: break-word;
+}
+
+.formula-error-location {
+  background: #f8f8fb;
+  border: 1px solid #ececf0;
+  border-radius: 8px;
+  padding: 10px 16px;
+}
+
+.formula-error-location-heading {
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6a0dad;
+  margin-bottom: 8px;
+}
+
+.formula-error-kv-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 14px;
+  row-gap: 5px;
+  align-items: baseline;
+}
+
+.formula-error-kv-label {
+  font-size: 0.78em;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.formula-error-kv-value {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.82em;
+  background: rgba(106, 13, 173, 0.08);
+  color: #4a0a7a;
+  padding: 2px 7px;
+  border-radius: 5px;
+  word-break: break-word;
+  width: fit-content;
+}
+
+.formula-error-fix {
+  background: #eef8f0;
+  border: 1px solid #cdeccf;
+  border-left: 3px solid #2e9e46;
+  border-radius: 8px;
+  padding: 10px 16px;
+}
+
+.formula-error-fix-heading {
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1f7a34;
+  margin-bottom: 4px;
+}
+
+.formula-error-fix-text {
+  margin: 0;
+  font-size: 0.88em;
+  line-height: 1.55;
+  color: #1f2937;
+}
+
+@media (max-width: 480px) {
+  .formula-error-stats-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .error-summary-dl-btn:hover { background: #546e7a; }

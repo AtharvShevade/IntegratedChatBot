@@ -3234,7 +3234,7 @@ async def _finalize_generation(
             ret["name"], reporting_date, session_id,
         )
         instance_id = await _find_new_instance_log_id(ret["form_id"], reporting_date, login_id, before_ids)
-        id_line = f"\nID             : {instance_id}" if instance_id else ""
+        id_line = f"\nRequest ID     : {instance_id}" if instance_id else ""
         return _build(
             intent="generate_instance", report_name=ret["name"],
             response_text=(

@@ -207,6 +207,117 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
   )
 }
 
+// ── Formula error explanation: structured card rendering ─────────────────────
+// The backend explanation is one markdown string with a known, consistent
+// shape (title / paragraph / bullet stats / bullet locations / fix) built by
+// report_lookup.py's _render_*_explanation* functions. Parsing it into
+// typed blocks lets each part get real layout (a stats grid, key-value
+// location rows, a distinct fix callout) that plain ReactMarkdown text
+// can't produce — without requiring any backend/API change, since this
+// parses the exact same string the API already returns.
+function _parseFormulaBulletItem(line) {
+  const body = line.replace(/^- /, '')
+  const boldMatch = body.match(/^\*\*(.+?):\*\*\s*(.+)$/)
+  if (boldMatch) return { label: boldMatch[1], value: boldMatch[2] }
+  const plainMatch = body.match(/^([A-Za-z ]+):\s*(.+)$/)
+  if (plainMatch) return { label: plainMatch[1], value: plainMatch[2].replace(/`/g, '') }
+  return { label: '', value: body }
+}
+
+function _parseFormulaExplanationBlocks(text) {
+  if (!text) return []
+  const blocks = text.trim().split(/\n{2,}/).map((b) => b.trim()).filter(Boolean)
+  const parsed = []
+  for (const block of blocks) {
+    const lines = block.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (lines.length === 0) continue
+
+    const titleMatch = lines[0].match(/^❌\s*\*\*(.+?)\*\*\s*$/)
+    if (titleMatch && lines.length === 1) {
+      parsed.push({ type: 'title', text: titleMatch[1] })
+      continue
+    }
+
+    if (lines.every((l) => l.startsWith('- '))) {
+      parsed.push({ type: 'stats', items: lines.map(_parseFormulaBulletItem) })
+      continue
+    }
+
+    const headerOnlyMatch = lines[0].match(/^\*\*(.+?):\*\*$/)
+    if (headerOnlyMatch && lines.length > 1 && lines.slice(1).every((l) => l.startsWith('- '))) {
+      parsed.push({ type: 'location', heading: headerOnlyMatch[1], items: lines.slice(1).map(_parseFormulaBulletItem) })
+      continue
+    }
+
+    const inlineFixMatch = block.match(/^\*\*How to fix:\*\*\s*([\s\S]+)$/i)
+    if (inlineFixMatch) {
+      parsed.push({ type: 'fix', text: inlineFixMatch[1].trim() })
+      continue
+    }
+
+    if (lines.length === 1 && /round/i.test(lines[0])) {
+      parsed.push({ type: 'note', text: lines[0] })
+      continue
+    }
+
+    parsed.push({ type: 'paragraph', text: block })
+  }
+  return parsed
+}
+
+function FormulaErrorContent({ explanation }) {
+  const blocks = useMemo(() => _parseFormulaExplanationBlocks(explanation), [explanation])
+  if (blocks.length === 0) return null
+  return (
+    <div className="formula-error-body">
+      {blocks.map((b, i) => {
+        switch (b.type) {
+          case 'title':
+            return <h4 key={i} className="formula-error-title">❌ {b.text}</h4>
+          case 'paragraph':
+            return <p key={i} className="formula-error-explanation">{b.text}</p>
+          case 'note':
+            return <p key={i} className="formula-error-note">{b.text}</p>
+          case 'stats':
+            return (
+              <div key={i} className="formula-error-stats-grid">
+                {b.items.map((it, j) => (
+                  <div key={j} className="formula-error-stat">
+                    <span className="formula-error-stat-label">{it.label}</span>
+                    <span className="formula-error-stat-value">{it.value}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          case 'location':
+            return (
+              <div key={i} className="formula-error-location">
+                <div className="formula-error-location-heading">{b.heading}</div>
+                <div className="formula-error-kv-grid">
+                  {b.items.map((it, j) => (
+                    <div key={j} className="formula-error-kv-row">
+                      <span className="formula-error-kv-label">{it.label}</span>
+                      <code className="formula-error-kv-value">{it.value}</code>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          case 'fix':
+            return (
+              <div key={i} className="formula-error-fix">
+                <div className="formula-error-fix-heading">How to fix</div>
+                <p className="formula-error-fix-text">{b.text}</p>
+              </div>
+            )
+          default:
+            return null
+        }
+      })}
+    </div>
+  )
+}
+
 // ── PlainTextErrorPanel ───────────────────────────────────────────────────────
 function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabel }) {
   const groups = useMemo(() => {
@@ -224,10 +335,15 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
     if (Array.isArray(details) && details.length > 0) {
       for (const err of details) {
         if (err?.rule_name !== undefined) {
+          // The backend template already prepends "⚙ Formula Error — {rule_name}"
+          // to err.explanation, but this panel renders its own section header
+          // with the same icon/label/rule name above each item — strip the
+          // duplicate leading line rather than show it twice.
+          const rawExplanation = err.explanation || err.business_rule || `Validation rule '${err.rule_name}' failed.`
           push_item({
             _error_category: err._error_category || 'formula_error',
             section:         err.rule_name,
-            explanation:     err.explanation || err.business_rule || `Validation rule '${err.rule_name}' failed.`,
+            explanation:     rawExplanation.replace(/^⚙\s*Formula Error\s*—[^\n]*\n+/, ''),
             raw_message:     err.business_rule || '',
           })
           continue
@@ -256,11 +372,12 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
     <div className="error-panel-wrapper">
       {groups.map((group, gi) => {
         const color = group.meta.color
+        const isFormula = group.cat === 'formula_error'
         return (
-          <div key={gi} className="error-section-group">
+          <div key={gi} className={isFormula ? 'formula-error-card' : 'error-section-group'}>
             <div
-              className="error-section-header"
-              style={{ '--section-color': color, background: color }}
+              className={isFormula ? 'formula-error-card-header' : 'error-section-header'}
+              style={isFormula ? undefined : { '--section-color': color, background: color }}
             >
               <span className="section-icon">{group.meta.icon}</span>
               <span className="section-name">
@@ -271,16 +388,12 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
             {group.items.map((item, ii) => (
               <div
                 key={ii}
-                className="error-explanation-box"
-                style={{ '--section-color': color, borderLeftColor: color }}
+                className={isFormula ? 'formula-error-card-body' : 'error-explanation-box'}
+                style={isFormula ? undefined : { '--section-color': color, borderLeftColor: color }}
               >
                 {item.explanation && (
-                  group.cat === 'formula_error'
-                    ? (
-                        <div className="error-explanation-text error-explanation-markdown">
-                          <ReactMarkdown>{item.explanation}</ReactMarkdown>
-                        </div>
-                      )
+                  isFormula
+                    ? <FormulaErrorContent explanation={item.explanation} />
                     : <p className="error-explanation-text">{item.explanation}</p>
                 )}
                 {item.raw_message && item.raw_message !== item.explanation && (

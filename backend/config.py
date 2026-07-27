@@ -95,6 +95,11 @@ def render_base_dir() -> str:
     return os.path.join(_active_root(), "Render")
 
 
+def json_metadata_base_dir() -> str:
+    """Root of the per-return taxonomy-metadata JSON tree: Json/<form_id>/*.json."""
+    return os.path.join(_active_root(), "Json")
+
+
 # ---------------------------------------------------------------------------
 # Backward-compatible module-level constants.
 #

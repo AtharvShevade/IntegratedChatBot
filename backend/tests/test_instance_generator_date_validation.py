@@ -39,8 +39,9 @@ Covers:
         107 "Yearly" and PeriodId 113 "As An When" — a code the Q/M/Y/H/
         C/B/W/F period-end checks didn't recognise, so it fell through to
         the "any valid past date accepted" catch-all. _FREQUENCY_ALIASES
-        now aliases "A" onto "B" (Yearly/Calendar-Year, 31-Dec) so both
-        PeriodIds sharing that code get one consistent "annually" rule.
+        now aliases "A" onto "Y" (Yearly/Financial-Year, 31-Mar) so both
+        PeriodIds sharing that code get one consistent "annually" rule,
+        since the financial year ends 31-Mar (not 31-Dec).
 """
 from __future__ import annotations
 
@@ -283,7 +284,7 @@ class TestRealDataFrequencyResolution:
         (which relies on module-load-time constants elsewhere in
         backend.config that a mid-session monkeypatch can't safely flip
         without leaking state into every other test in this session).
-        _normalize_frequency() is what applies the "A"->"B" alias; this
+        _normalize_frequency() is what applies the "A"->"Y" alias; this
         only confirms the raw code get_period_info() surfaces."""
         monkeypatch.setattr(ig, "_period_caches", {})
         monkeypatch.setattr(
@@ -300,9 +301,9 @@ class TestRealDataFrequencyResolution:
 # ── Issue 4: Period.xml path resolution + "A" frequency alias ───────────────
 
 class TestFrequencyAlias:
-    def test_a_aliases_to_b(self):
-        assert ig._normalize_frequency("A") == "B"
-        assert ig._normalize_frequency("a") == "B"  # case-insensitive
+    def test_a_aliases_to_y(self):
+        assert ig._normalize_frequency("A") == "Y"
+        assert ig._normalize_frequency("a") == "Y"  # case-insensitive
 
     @pytest.mark.parametrize("freq", ["Q", "M", "Y", "H", "C", "B", "W", "F", "D", "G", "HM"])
     def test_other_codes_pass_through_unchanged(self, freq):
@@ -315,29 +316,29 @@ class TestFrequencyAlias:
 
 class TestAnnualFrequencyCodeAValidation:
     """Frequency "A" (6.0's real code for both PeriodId 107 "Yearly" and
-    PeriodId 113 "As An When") must validate as an annual/Calendar-Year
-    period-end (31-Dec) — the exact bug-report scenario: a report the
-    system used to accept on 31-Mar must now be rejected, with 31-Dec
-    accepted and suggested instead."""
+    PeriodId 113 "As An When") must validate as an annual/Financial-Year
+    period-end (31-Mar), since the financial year ends 31-Mar — a report
+    dated 31-Dec must now be rejected, with 31-Mar accepted and suggested
+    instead."""
 
-    def test_accepts_31_dec(self):
-        y = _past_year()
-        result = validate_reporting_date(f"31-Dec-{y}", "A")
-        assert result["valid"] is True
-
-    def test_rejects_31_mar_with_31_dec_suggestion(self):
+    def test_accepts_31_mar(self):
         y = _past_year()
         result = validate_reporting_date(f"31-Mar-{y}", "A")
-        assert result["valid"] is False
-        assert "31-Dec" in result["error"]
-        assert f"31-Dec-{y}" in result["suggestions"]
+        assert result["valid"] is True
 
-    def test_matches_plain_b_frequency_behavior(self):
-        """"A" must be indistinguishable from "B" for validation purposes —
+    def test_rejects_31_dec_with_31_mar_suggestion(self):
+        y = _past_year()
+        result = validate_reporting_date(f"31-Dec-{y}", "A")
+        assert result["valid"] is False
+        assert "31-Mar" in result["error"]
+        assert f"31-Mar-{y}" in result["suggestions"]
+
+    def test_matches_plain_y_frequency_behavior(self):
+        """"A" must be indistinguishable from "Y" for validation purposes —
         same accept/reject outcome for the same input."""
         y = _past_year()
         for d in (f"31-Dec-{y}", f"31-Mar-{y}", f"30-Jun-{y}"):
-            assert validate_reporting_date(d, "A")["valid"] == validate_reporting_date(d, "B")["valid"]
+            assert validate_reporting_date(d, "A")["valid"] == validate_reporting_date(d, "Y")["valid"]
 
 
 class TestPeriodMasterReadsConfiguredPath:

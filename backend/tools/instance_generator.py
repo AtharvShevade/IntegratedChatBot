@@ -140,12 +140,12 @@ _PERIOD_ID_TO_FREQUENCY: dict[str, str] = {
 # against a period-end at all (e.g. CIMS_RAQ(Annually), PeriodId 107,
 # RepFreq/Period.xml Frequency "A" — any calendar-valid date, including
 # 31-Mar, was silently accepted). Per the business decision, "A" is
-# aliased onto "B" (Yearly/Calendar-Year, 31-Dec) for now — i.e. treat
-# BOTH PeriodIds sharing code "A" as one "annually" rule with a calendar-
-# year-end, since the reporting date for these returns is expected to land
-# on 31-Dec, not 31-Mar (the "Y"/Financial-Year rule).
+# aliased onto "Y" (Yearly/Financial-Year, 31-Mar) — i.e. treat BOTH
+# PeriodIds sharing code "A" as one "annually" rule keyed to the financial
+# year end, since the reporting date for these returns is expected to land
+# on 31-Mar (financial year end), not 31-Dec (the "B"/Calendar-Year rule).
 _FREQUENCY_ALIASES: dict[str, str] = {
-    "A": "B",
+    "A": "Y",
 }
 
 

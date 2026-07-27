@@ -1795,9 +1795,13 @@ def _compute_sum_discrepancy(instances: list[dict]) -> list[dict]:
     from decimal import Decimal, InvalidOperation
     enriched = []
     for inst in instances:
-        vars_by_id = {v["var"]: v for v in inst.get("variables", [])}
-        lhs_var  = vars_by_id.get("V1")
-        rhs_vars = [v for k, v in sorted(vars_by_id.items()) if k != "V1"]
+        # NOTE: a sum($V2)-style formula assigns the SAME variable name to
+        # multiple XBRL facts (e.g. one per day of a fortnight) that must all
+        # be added together — group into a dict keyed by var name here would
+        # silently keep only the last one. Keep every occurrence instead.
+        variables = inst.get("variables", [])
+        lhs_var  = next((v for v in variables if v.get("var") == "V1"), None)
+        rhs_vars = [v for v in variables if v.get("var") != "V1"]
         inst = dict(inst)
         inst["lhs_var"] = lhs_var; inst["rhs_vars"] = rhs_vars
         if lhs_var:
@@ -1851,6 +1855,665 @@ def _compute_ratio_discrepancy(instances: list[dict]) -> list[dict]:
     return enriched
 
 
+_HUMANIZE_LOWERCASE_WORDS = frozenset({
+    "of", "to", "the", "and", "for", "in", "on", "with", "or", "a", "an", "at", "as",
+})
+
+
+def _humanize_rule_name(name: str) -> str:
+    """"TotalOfAverageCashReserves" -> "Total of Average Cash Reserves" — same
+    split _camel_to_words already does, with small connecting words lowercased
+    (except the first) so it reads like a normal title rather than an
+    all-capitalized identifier."""
+    words = _camel_to_words(name).split()
+    return " ".join(
+        w.lower() if (i > 0 and w.lower() in _HUMANIZE_LOWERCASE_WORDS) else w
+        for i, w in enumerate(words)
+    )
+
+
+_CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def _format_amount(value_str: str, unit: str = "") -> str:
+    """Render an exact computed number for direct display — never re-derived
+    or restated by an LLM, so it can never drift from the arithmetic already
+    done in _compute_sum_discrepancy/_compute_ratio_discrepancy."""
+    from decimal import Decimal, InvalidOperation
+    try:
+        val = Decimal(str(value_str).replace(",", "").strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return f"{value_str} {unit}".strip()
+    formatted = f"{val:,.4f}".rstrip("0").rstrip(".") if val % 1 else f"{val:,.0f}"
+    symbol = _CURRENCY_SYMBOLS.get((unit or "").strip().upper())
+    if symbol:
+        return f"{symbol}{formatted}"
+    return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _extract_round_divisor(formula: str) -> str | None:
+    """Pull the rounding divisor out of a round($Vn div D)-style formula
+    expression, e.g. "round($V1 div 1000) * 1000 = ..." -> "1000"."""
+    m = re.search(r'round\s*\(\s*\$?\w+\s*div\s*(\d+)\s*\)', formula or "", re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _location_lines(var: dict | None) -> list[str]:
+    """"Where to check" lines for one variable, as markdown list items —
+    prefers the HTML's own backtracking columns (db_table/cell_code, the
+    actual DB table + cell an operator can look up) over the taxonomy
+    JSON's column/code (coarser: some returns, e.g. mpd03-entry-n, don't
+    record a table name there at all).
+
+    Each line is a "- " list item so consecutive items render as one tight
+    markdown list (distinct rendered lines) even though they're joined by a
+    single "\\n" — CommonMark only requires a blank line between separate
+    *paragraphs*, not between list items, unlike the plain text lines this
+    used to return."""
+    if not var:
+        return []
+    lines = []
+    if var.get("db_table"):
+        lines.append(f"- Table: `{var['db_table']}`")
+    if var.get("cell_code"):
+        lines.append(f"- Code: `{var['cell_code']}`")
+    if not lines and var.get("db_location"):
+        lines.append(f"- {var['db_location']}")
+    return lines
+
+
+def _dedupe_locations(variables: list[dict]) -> list[dict]:
+    """Distinct (db_table, cell_code) locations across a list of variables,
+    in first-seen order — a sum_check's rhs often repeats the same location
+    once per day/period, and there's no reason to print it 14 times."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for v in variables:
+        key = (v.get("db_table", ""), v.get("cell_code", ""))
+        if key == ("", ""):
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
+
+
+def _render_sum_check_explanation_detailed(rule: dict) -> str | None:
+    """Fully deterministic sum_check explanation — no LLM call, no risk of
+    restating the wrong number or dropping the DB location. Returns None if
+    the rule doesn't have enough computed data (caller falls back to the
+    existing template in that case)."""
+    instances = rule.get("instances", [])
+    if not instances:
+        return None
+    inst = instances[0]
+    lhs = inst.get("lhs_var") or {}
+    rhs = inst.get("rhs_vars") or []
+    if not lhs or not inst.get("reported_total") or not inst.get("calculated_sum"):
+        return None
+
+    rule_name       = rule.get("rule_name", "")
+    unit            = inst.get("unit") or lhs.get("unit", "")
+    biz_msg_raw = next(
+        (i.get("business_message", "").strip() for i in instances if i.get("business_message", "").strip()),
+        "",
+    )
+    biz_msg_raw = re.sub(r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg_raw, flags=re.IGNORECASE).strip('"').strip("'").strip()
+    total_field     = _resolve_total_field_name(lhs, biz_msg_raw) or "the reported total"
+    component_field = (
+        (rhs[0].get("concept_label") or rhs[0].get("concept")) if rhs else "its underlying values"
+    )
+    count = len(rhs)
+
+    lines = [f"⚙ Formula Error — {rule_name}", ""]
+    lines.append(f"❌ **{_humanize_rule_name(rule_name)} does not match**")
+    lines.append("")
+    if count:
+        lines.append(
+            f"The reported total for {total_field} does not match the sum of its "
+            f"{count} underlying value{'s' if count != 1 else ''} ({component_field})."
+        )
+    else:
+        lines.append(f"The reported total for {total_field} does not match its calculated sum.")
+    lines.append("")
+    lines.append(f"- **Reported total:** {_format_amount(inst['reported_total'], unit)}")
+    lines.append(f"- **Calculated sum:** {_format_amount(inst['calculated_sum'], unit)}")
+    if inst.get("difference"):
+        lines.append(f"- **Difference:** {_format_amount(inst['difference'], unit)}")
+    lines.append("")
+
+    rule_desc = f"The validation rule requires the total to equal the sum of all {count} value{'s' if count != 1 else ''}"
+    divisor = _extract_round_divisor(rule.get("formula_expression", ""))
+    if divisor:
+        rule_desc += f", rounded to the nearest {int(divisor):,}"
+    rule_desc += "."
+    lines.append(rule_desc)
+
+    lhs_loc = _location_lines(lhs)
+    if lhs_loc:
+        lines.append("")
+        lines.append("**Where to check:**")
+        lines.extend(lhs_loc)
+
+    rhs_locations = _dedupe_locations(rhs)
+    if rhs_locations:
+        lines.append("")
+        lines.append(
+            "**The underlying value is stored in:**" if len(rhs_locations) == 1
+            else "**The underlying values are stored in:**"
+        )
+        for i, v in enumerate(rhs_locations):
+            if i > 0:
+                lines.append("")
+            lines.extend(_location_lines(v))
+
+    lines.append("")
+    lines.append(
+        f"**How to fix:** Review the reported total for {total_field} and its {count} "
+        f"underlying value{'s' if count != 1 else ''} for {component_field}. Correct "
+        "whichever is wrong so the total equals the sum, then revalidate the return."
+    )
+    return "\n".join(lines)
+
+
+def _render_ratio_check_explanation_detailed(rule: dict) -> str | None:
+    """Deterministic ratio_check/rounded_equality explanation — same
+    rationale as _render_sum_check_explanation_detailed."""
+    instances = rule.get("instances", [])
+    if not instances:
+        return None
+    inst = instances[0]
+    v1 = inst.get("lhs_var") or {}
+    v2 = inst.get("numerator_var") or {}
+    v3 = inst.get("denominator_var") or {}
+    if not v1 or not v2 or not v3 or not inst.get("calculated_value"):
+        return None
+
+    rule_name = rule.get("rule_name", "")
+    biz_msg_raw = next(
+        (i.get("business_message", "").strip() for i in instances if i.get("business_message", "").strip()),
+        "",
+    )
+    biz_msg_raw = re.sub(r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg_raw, flags=re.IGNORECASE).strip('"').strip("'").strip()
+    result_field = _resolve_total_field_name(v1, biz_msg_raw) or "the reported value"
+    num_field    = v2.get("concept_label") or v2.get("concept") or "the numerator"
+    den_field    = v3.get("concept_label") or v3.get("concept") or "the denominator"
+
+    lines = [f"⚙ Formula Error — {rule_name}", ""]
+    lines.append(f"❌ **{_humanize_rule_name(rule_name)} does not match**")
+    lines.append("")
+    lines.append(
+        f"The reported {result_field} does not match the value calculated from "
+        f"{num_field} and {den_field}."
+    )
+    lines.append("")
+    lines.append(f"- **Reported value:** {_format_amount(inst.get('reported_value', ''), v1.get('unit', ''))}")
+    lines.append(f"- **{num_field}:** {_format_amount(inst.get('numerator_value', ''), inst.get('numerator_unit', ''))}")
+    lines.append(f"- **{den_field}:** {_format_amount(inst.get('denominator_value', ''), inst.get('denominator_unit', ''))}")
+    lines.append(f"- **Calculated value:** {_format_amount(inst['calculated_value'], v1.get('unit', ''))}")
+
+    for label, var in ((result_field, v1), (num_field, v2), (den_field, v3)):
+        loc = _location_lines(var)
+        if loc:
+            lines.append("")
+            lines.append(f"**Where to check {label}:**")
+            lines.extend(loc)
+
+    lines.append("")
+    lines.append(
+        f"**How to fix:** Verify {result_field}, {num_field}, and {den_field}, then revalidate the report."
+    )
+    return "\n".join(lines)
+
+
+def _rounding_rule_sentence(formula_expression: str) -> str | None:
+    divisor = _extract_round_divisor(formula_expression)
+    if not divisor:
+        return None
+    return f"Values are compared after rounding to the nearest {int(divisor):,}."
+
+
+def _extract_named_total_from_message(business_message: str) -> str | None:
+    """Some formula-message authoring conventions name their own total
+    concept directly, by stating it twice — e.g. "Value of X (X = Sum of
+    all its child elements)", or "Value of 'Y' ('Y' = A / B)". When that
+    repetition is present, the repeated phrase is a name guaranteed to be
+    about *this* assertion (quoted from its own authored text), which is a
+    more reliable source than a taxonomy concept label that may be
+    correctly joined but styled differently (e.g. a taxonomy's "Aggregate
+    minimum deposit required to be kept with RBI" vs. the same assertion's
+    own "Total of average cash reserves required to be maintained" — both
+    correct, but only one matches how this specific check is described).
+
+    Two purely structural strategies, tried in order — neither hardcodes
+    any rule name, concept name, or business term, so this applies
+    identically to any assertion authored with either convention and
+    returns None (falls back to the taxonomy label) for any message that
+    follows neither:
+
+    1. A single/double-quoted phrase that repeats verbatim anywhere in the
+       message — quotes give an unambiguous boundary even when the concept
+       name itself contains parentheses (e.g. "'Col 3 as a % of Col. 2
+       (in%)'", which a bare paren-matching approach would misparse).
+    2. No quotes: "Value of X (X = ..." using the first "(" as the
+       boundary — only reliable when X has no internal parentheses.
+    """
+    if not business_message:
+        return None
+
+    def _norm(s: str) -> str:
+        return re.sub(r'\s+', ' ', s).strip().lower()
+
+    seen: dict[str, str] = {}
+    for a, b in re.findall(r"'([^']{3,120})'|\"([^\"]{3,120})\"", business_message):
+        phrase = (a or b).strip()
+        key = _norm(phrase)
+        if key in seen:
+            return seen[key]
+        seen[key] = phrase
+
+    m = re.match(r'^\s*Value of\s+(.+?)\s*\(\s*(.+?)\s*=', business_message, re.IGNORECASE)
+    if m:
+        candidate, repeated = m.group(1).strip(), m.group(2).strip()
+        if candidate and _norm(candidate) == _norm(repeated):
+            return candidate
+
+    return None
+
+
+def _resolve_total_field_name(lhs: dict, biz_msg: str) -> str:
+    """Preferred name for a sum_check/ratio_check's total (LHS) concept:
+    the assertion's own message when it names its concept explicitly (see
+    _extract_named_total_from_message), else the taxonomy-resolved concept
+    label, else the raw HTML-derived concept text."""
+    return (
+        _extract_named_total_from_message(biz_msg)
+        or lhs.get("concept_label")
+        or lhs.get("concept")
+        or ""
+    )
+
+
+def _build_verified_sum_check_context(rule: dict) -> dict | None:
+    """The ONLY thing sent to the LLM for a sum_check rule — every field is
+    already backend-verified (computed Decimal math, taxonomy-resolved
+    labels, HTML backtracking table/code). Deliberately excludes the raw
+    per-instance variable list (e.g. 14 near-duplicate daily rows) in favor
+    of one deduped "children" summary — a focused context, not the full
+    parsed rule. Returns None if the discrepancy math didn't resolve, so the
+    caller can fall back rather than send the LLM half-formed data."""
+    instances = rule.get("instances", [])
+    if not instances:
+        return None
+    inst = instances[0]
+    lhs = inst.get("lhs_var") or {}
+    rhs = inst.get("rhs_vars") or []
+    if not lhs or not inst.get("reported_total") or not inst.get("calculated_sum"):
+        return None
+
+    unit = inst.get("unit") or lhs.get("unit", "")
+    biz_msg = next(
+        (i.get("business_message", "").strip() for i in instances if i.get("business_message", "").strip()),
+        "",
+    )
+    biz_msg = re.sub(r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg, flags=re.IGNORECASE).strip('"').strip("'").strip()
+
+    return {
+        "rule_name":         rule.get("rule_name", ""),
+        "error_message":     biz_msg,
+        "total_field":       _resolve_total_field_name(lhs, biz_msg),
+        "component_field":   (rhs[0].get("concept_label") or rhs[0].get("concept")) if rhs else "",
+        "child_value_count": len(rhs),
+        "unit":              unit,
+        "rounding_rule":     _rounding_rule_sentence(rule.get("formula_expression", "")),
+    }
+
+
+def _build_verified_ratio_check_context(rule: dict) -> dict | None:
+    """Same rationale as _build_verified_sum_check_context, for ratio_check."""
+    instances = rule.get("instances", [])
+    if not instances:
+        return None
+    inst = instances[0]
+    v1 = inst.get("lhs_var") or {}
+    v2 = inst.get("numerator_var") or {}
+    v3 = inst.get("denominator_var") or {}
+    if not v1 or not v2 or not v3 or not inst.get("calculated_value"):
+        return None
+
+    biz_msg = next(
+        (i.get("business_message", "").strip() for i in instances if i.get("business_message", "").strip()),
+        "",
+    )
+    biz_msg = re.sub(r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg, flags=re.IGNORECASE).strip('"').strip("'").strip()
+
+    return {
+        "rule_name":        rule.get("rule_name", ""),
+        "error_message":    biz_msg,
+        "result_field":     _resolve_total_field_name(v1, biz_msg),
+        "numerator_field":  v2.get("concept_label") or v2.get("concept") or "",
+        "denominator_field": v3.get("concept_label") or v3.get("concept") or "",
+    }
+
+
+# The taxonomy-resolved field-name keys any verified context may carry —
+# sum_check contexts have the first two, ratio_check contexts have the last
+# three. Neither this list nor anything downstream names a specific rule;
+# it only names the SHAPE of the context object, which is identical for
+# every sum_check/ratio_check rule regardless of which concepts it involves.
+_VERIFIED_CONTEXT_FIELD_NAME_KEYS = (
+    "total_field", "component_field",
+    "result_field", "numerator_field", "denominator_field",
+)
+
+
+def _explain_verified_context_via_llm(
+    context: dict, ollama_base: str, model: str, timeout: float, keep_alive: str,
+) -> dict | None:
+    """Send ONLY the tight verified-facts context (never the full rule, never
+    the taxonomy JSON) to the LLM and ask for exactly two short plain-text
+    values: an explanation sentence and a fix sentence. Never asked to
+    restate numbers/tables/codes — those are always rendered deterministically
+    by the caller and spliced in afterward. Returns None on any failure so
+    the caller can fall back to a deterministic sentence.
+
+    The context may carry BOTH the assertion's own authored error_message
+    (business-message phrasing) and the taxonomy-resolved field labels
+    (total_field/component_field/etc.) — two independently valid but
+    DIFFERENT names for the same concept (e.g. a CRR return's error message
+    says "cash reserves"; its XBRL concept label says "minimum deposit").
+    Left unconstrained, the LLM can pick one name for the explanation
+    sentence and the other for the fix sentence, which reads as if two
+    different fields are being discussed. The fix here is two-part: (1) the
+    prompt mandates verbatim, consistent use of the resolved field names in
+    BOTH sentences and demotes error_message to background context only; (2)
+    the result is rejected (falling back to the deterministic sentence,
+    which is always internally consistent) if either sentence doesn't
+    actually contain every resolved field name — never a rule-specific
+    check, just a shape check against whichever field-name keys this
+    context happens to carry.
+    """
+    import json as _json
+    import httpx as _httpx
+
+    field_names = [context[k] for k in _VERIFIED_CONTEXT_FIELD_NAME_KEYS if context.get(k)]
+
+    prompt = (
+        "Explain this formula validation error to a business user.\n\n"
+        "Use ONLY the verified facts in the JSON below — these are already "
+        "confirmed by the backend. Do not invent values, concepts, tables, "
+        "columns, codes, or calculations. Do not expose internal variable names "
+        "such as V1, V2, V3. Do not mention taxonomy JSON, backtracking, internal "
+        "variable IDs, or that this text was generated by an LLM.\n\n"
+        f"{_json.dumps(context, indent=2, ensure_ascii=False)}\n\n"
+        "Produce exactly two short plain-text values:\n"
+        "  explanation — ONE sentence stating what business value failed "
+        "validation and why, using EXACTLY the resolved field names given "
+        "(e.g. 'total_field', 'component_field', or 'result_field'/"
+        "'numerator_field'/'denominator_field' — whichever are present), "
+        "verbatim, never as V1/V2/V3.\n"
+        "  fix — ONE short sentence: the specific corrective action, naming "
+        "the SAME fields with the EXACT SAME wording used in 'explanation'.\n\n"
+        "CRITICAL — do not substitute a different name or phrase for a field "
+        "that already has a resolved name, even if 'error_message' describes "
+        "it differently. 'error_message' is background context ONLY, to help "
+        "you understand why the check failed — it is never a source of names. "
+        "Every resolved field name must appear, unchanged, in BOTH the "
+        "explanation and the fix — using one name in one sentence and a "
+        "different name for the same field in the other sentence is wrong, "
+        "even if both names are individually accurate.\n\n"
+        "Do NOT restate exact numbers (totals, sums, differences) — those are "
+        "already shown separately to the user. Do NOT mention round(), div, sum(), "
+        "or any arithmetic operator.\n\n"
+        "Return ONLY a single-line JSON object with exactly these two keys: "
+        '{"explanation": "...", "fix": "..."}\n'
+        "No other text, no markdown code fences."
+    )
+    api_payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a regulatory reporting assistant. Explain business "
+                    "validation failures using ONLY the verified JSON facts given. "
+                    "Never invent values. Never use V1, V2, V3. Never mention "
+                    "taxonomy, backtracking, or internal implementation details. "
+                    "Always name each resolved field identically in both sentences "
+                    "you produce — never switch to an alternate name for the same "
+                    "field, even if the error_message uses different wording. "
+                    "Respond with ONLY a single-line JSON object containing exactly "
+                    "the keys explanation, fix — no other text, no markdown."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "keep_alive": keep_alive,
+        "options": {"temperature": 0.0, "num_predict": 150},
+    }
+    try:
+        with _httpx.Client(timeout=timeout) as client:
+            resp = client.post(f"{ollama_base}/api/chat", json=api_payload)
+            resp.raise_for_status()
+        raw = resp.json()["message"]["content"].strip()
+        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.IGNORECASE)
+        fields = _json.loads(raw)
+        explanation = str(fields.get("explanation", "")).strip()
+        fix = str(fields.get("fix", "")).strip()
+        if not explanation or not fix or "V1" in explanation or "V1" in fix:
+            return None
+
+        exp_l, fix_l = explanation.lower(), fix.lower()
+        missing = [
+            name for name in field_names
+            if name.lower() not in exp_l or name.lower() not in fix_l
+        ]
+        if missing:
+            logger.warning(
+                "[FORMULA_LLM] verified-context phrasing dropped/renamed field(s) %r "
+                "for rule=%r — using deterministic sentence (explanation=%r fix=%r)",
+                missing, context.get("rule_name", ""), explanation, fix,
+            )
+            return None
+        return {"explanation": explanation, "fix": fix}
+    except Exception as exc:
+        logger.warning(
+            "[FORMULA_LLM] verified-context phrasing failed for rule=%r: %s — using deterministic sentence",
+            context.get("rule_name", ""), exc,
+        )
+    return None
+
+
+def _render_verified_sum_check_explanation(rule: dict, llm_text: dict | None) -> str | None:
+    """Assemble the final explanation: LLM-phrased prose (if available) for
+    the explanation/fix sentences, deterministic code for everything that
+    must never drift — headline, exact numbers, rounding rule, DB locations."""
+    instances = rule.get("instances", [])
+    if not instances:
+        return None
+    inst = instances[0]
+    lhs = inst.get("lhs_var") or {}
+    rhs = inst.get("rhs_vars") or []
+    if not lhs or not inst.get("reported_total") or not inst.get("calculated_sum"):
+        return None
+
+    rule_name       = rule.get("rule_name", "")
+    unit            = inst.get("unit") or lhs.get("unit", "")
+    biz_msg_raw = next(
+        (i.get("business_message", "").strip() for i in instances if i.get("business_message", "").strip()),
+        "",
+    )
+    biz_msg_raw = re.sub(r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg_raw, flags=re.IGNORECASE).strip('"').strip("'").strip()
+    total_field     = _resolve_total_field_name(lhs, biz_msg_raw) or "the reported total"
+    component_field = (rhs[0].get("concept_label") or rhs[0].get("concept")) if rhs else "its underlying values"
+    count = len(rhs)
+
+    lines = [f"⚙ Formula Error — {rule_name}", ""]
+    lines.append(f"❌ **{_humanize_rule_name(rule_name)} does not match**")
+    lines.append("")
+    if llm_text:
+        lines.append(llm_text["explanation"])
+    elif count:
+        lines.append(
+            f"The reported total for {total_field} does not match the sum of its "
+            f"{count} underlying value{'s' if count != 1 else ''} ({component_field})."
+        )
+    else:
+        lines.append(f"The reported total for {total_field} does not match its calculated sum.")
+    lines.append("")
+    lines.append(f"- **Reported total:** {_format_amount(inst['reported_total'], unit)}")
+    lines.append(f"- **Calculated sum:** {_format_amount(inst['calculated_sum'], unit)}")
+    if inst.get("difference"):
+        lines.append(f"- **Difference:** {_format_amount(inst['difference'], unit)}")
+    lines.append("")
+
+    rule_desc = _rounding_rule_sentence(rule.get("formula_expression", "")) or (
+        f"The validation rule requires the total to equal the sum of all {count} value{'s' if count != 1 else ''}."
+    )
+    lines.append(rule_desc)
+
+    lhs_loc = _location_lines(lhs)
+    if lhs_loc:
+        lines.append("")
+        lines.append("**Where to check:**")
+        lines.extend(lhs_loc)
+
+    rhs_locations = _dedupe_locations(rhs)
+    if rhs_locations:
+        lines.append("")
+        lines.append(
+            "**The underlying value is stored in:**" if len(rhs_locations) == 1
+            else "**The underlying values are stored in:**"
+        )
+        for i, v in enumerate(rhs_locations):
+            if i > 0:
+                lines.append("")
+            lines.extend(_location_lines(v))
+
+    lines.append("")
+    if llm_text:
+        lines.append(f"**How to fix:** {llm_text['fix']}")
+    else:
+        lines.append(
+            f"**How to fix:** Review the reported total for {total_field} and its {count} "
+            f"underlying value{'s' if count != 1 else ''} for {component_field}. Correct "
+            "whichever is wrong so the total equals the sum, then revalidate the return."
+        )
+    return "\n".join(lines)
+
+
+def _render_verified_ratio_check_explanation(rule: dict, llm_text: dict | None) -> str | None:
+    """ratio_check counterpart to _render_verified_sum_check_explanation."""
+    instances = rule.get("instances", [])
+    if not instances:
+        return None
+    inst = instances[0]
+    v1 = inst.get("lhs_var") or {}
+    v2 = inst.get("numerator_var") or {}
+    v3 = inst.get("denominator_var") or {}
+    if not v1 or not v2 or not v3 or not inst.get("calculated_value"):
+        return None
+
+    rule_name = rule.get("rule_name", "")
+    biz_msg_raw = next(
+        (i.get("business_message", "").strip() for i in instances if i.get("business_message", "").strip()),
+        "",
+    )
+    biz_msg_raw = re.sub(r'^en\s*:\s*(?:Identity\s*)?', '', biz_msg_raw, flags=re.IGNORECASE).strip('"').strip("'").strip()
+    result_field = _resolve_total_field_name(v1, biz_msg_raw) or "the reported value"
+    num_field    = v2.get("concept_label") or v2.get("concept") or "the numerator"
+    den_field    = v3.get("concept_label") or v3.get("concept") or "the denominator"
+
+    lines = [f"⚙ Formula Error — {rule_name}", ""]
+    lines.append(f"❌ **{_humanize_rule_name(rule_name)} does not match**")
+    lines.append("")
+    if llm_text:
+        lines.append(llm_text["explanation"])
+    else:
+        lines.append(
+            f"The reported {result_field} does not match the value calculated from "
+            f"{num_field} and {den_field}."
+        )
+    lines.append("")
+    lines.append(f"- **Reported value:** {_format_amount(inst.get('reported_value', ''), v1.get('unit', ''))}")
+    lines.append(f"- **{num_field}:** {_format_amount(inst.get('numerator_value', ''), inst.get('numerator_unit', ''))}")
+    lines.append(f"- **{den_field}:** {_format_amount(inst.get('denominator_value', ''), inst.get('denominator_unit', ''))}")
+    lines.append(f"- **Calculated value:** {_format_amount(inst['calculated_value'], v1.get('unit', ''))}")
+
+    for label, var in ((result_field, v1), (num_field, v2), (den_field, v3)):
+        loc = _location_lines(var)
+        if loc:
+            lines.append("")
+            lines.append(f"**Where to check {label}:**")
+            lines.extend(loc)
+
+    lines.append("")
+    if llm_text:
+        lines.append(f"**How to fix:** {llm_text['fix']}")
+    else:
+        lines.append(f"**How to fix:** Verify {result_field}, {num_field}, and {den_field}, then revalidate the report.")
+    return "\n".join(lines)
+
+
+# Header names as they appear in the backtracking-enabled 4000-series
+# FORMULA_ERROR variable table (11 columns: DB TableName, Table Header,
+# Column Label(s), Variable Id, Row Label(s), Instance Data(s), Entered
+# Data(s), Unit, Decimal, Context, Cell Code) mapped to canonical field
+# names. "value" is deliberately mapped to Instance Data(s) — the raw
+# absolute figure the formula's own arithmetic (round/div/sum) operates on
+# — not Entered Data(s), which is the DB-scaled display figure.
+_FORMULA_VAR_HEADER_MAP: dict[str, str] = {
+    "db tablename":     "db_table",
+    "db table name":    "db_table",
+    "table header":     "table_header",
+    "column label(s)":  "column_label",
+    "column label":     "column_label",
+    "variable id":      "var",
+    "row label(s)":     "row_label",
+    "row label":        "row_label",
+    "instance data(s)": "value",
+    "instance data":    "value",
+    "entered data(s)":  "entered_value",
+    "entered data":     "entered_value",
+    "unit":             "unit",
+    "decimal":          "decimal",
+    "context":          "context",
+    "cell code":        "cell_code",
+}
+
+
+def _map_formula_var_row(headers: list[str], cells: list[str]) -> dict[str, str]:
+    """Map one formula-error variable row to canonical fields.
+
+    Header-driven when a <th> header row was captured for this table (the
+    real backtracking-enabled 4000-series layout — 11 columns, header-
+    labelled, order not guaranteed). Falls back to the original positional
+    assumption (var, concept, value, context, unit, decimal) only when no
+    header row is available, so older/simpler report layouts keep working
+    exactly as before.
+    """
+    if headers and len(headers) == len(cells):
+        out: dict[str, str] = {}
+        for hdr, cell in zip(headers, cells):
+            key = _FORMULA_VAR_HEADER_MAP.get(hdr.strip().lower())
+            if key and cell:
+                out[key] = cell
+        if not out.get("concept"):
+            out["concept"] = out.get("column_label") or out.get("table_header", "")
+        return out
+
+    padded = cells + [""] * max(0, 6 - len(cells))
+    return {
+        "var":     padded[0].strip(),
+        "concept": padded[1].strip(),
+        "value":   padded[2].strip(),
+        "context": padded[3].strip(),
+        "unit":    padded[4].strip(),
+        "decimal": padded[5].strip(),
+    }
+
+
 def parse_formula_errors(html_path: str) -> list[dict]:
     """Parse formula errors — FIXED multi-instance collection.
 
@@ -1892,6 +2555,8 @@ def parse_formula_errors(html_path: str) -> list[dict]:
             self._in_cell         = False
             self._is_msghead      = False
             self._is_fv_row       = False
+            self._is_hdr_row      = False
+            self._headers: list[str] = []
             self._cell_texts: list[str] = []
             self._cur_instance: dict | None = None
 
@@ -1905,10 +2570,18 @@ def parse_formula_errors(html_path: str) -> list[dict]:
             return bool(classes & set(cls_names))
 
         def _flush_instance(self):
-            """Commit _cur_instance to current rule if it has content."""
+            """Commit _cur_instance to current rule if it has content.
+
+            A panel with no variable table at all (e.g. a mandatory-field
+            presence check whose only row is the business message, like
+            "Dates for Half Month is mandatory" with no fv rows) still
+            carries real information — the message itself — so it must be
+            kept, not silently dropped for lacking "variables".
+            """
             if (self._cur_instance is not None
                     and self._cur_rule is not None
-                    and self._cur_instance.get("variables")):
+                    and (self._cur_instance.get("variables")
+                         or self._cur_instance.get("business_message"))):
                 self._cur_rule["instances"].append(self._cur_instance)
             self._cur_instance = None
 
@@ -1950,13 +2623,17 @@ def parse_formula_errors(html_path: str) -> list[dict]:
                 # KEY FIX: flush the PREVIOUS instance before starting a new table
                 self._flush_instance()
                 self._in_table = True
+                self._headers = []
                 self._cur_instance = {"business_message": "", "variables": []}
             elif tag == "tr" and self._in_table:
                 self._in_tr = True; self._cell_texts = []
                 self._is_msghead = self._has_class(attrs, "msgHead")
                 self._is_fv_row  = self._has_class(attrs, "fv") or "fv" in self._attr(attrs, "class").split()
+                self._is_hdr_row = False
             elif tag in ("td", "th") and self._in_tr:
                 self._in_cell = True; self._buf = ""
+                if tag == "th":
+                    self._is_hdr_row = True
             elif tag == "br" and self._in_cell:
                 self._buf += " "
 
@@ -1989,11 +2666,19 @@ def parse_formula_errors(html_path: str) -> list[dict]:
             elif tag == "table" and self._in_table:
                 self._flush_instance()
                 self._in_table = False
+                self._headers = []
             elif tag in ("td", "th") and self._in_cell:
                 self._cell_texts.append(self._buf.strip()); self._in_cell = False; self._buf = ""
             elif tag == "tr" and self._in_tr:
                 self._in_tr = False
                 cells = self._cell_texts
+                if self._is_hdr_row and cells and not self._is_msghead:
+                    # Header row (e.g. "DB TableName", "Variable Id", ... "Cell
+                    # Code") — captured so fv rows in this table can be mapped
+                    # by column name instead of an assumed position.
+                    self._headers = [c.strip() for c in cells]
+                    self._cell_texts = []
+                    return
                 if self._is_msghead and cells and self._cur_instance is not None:
                     raw_msg = " ".join(c for c in cells if c).strip()
                     raw_msg = raw_msg.replace("\u00a0", " ").lstrip("▼").strip()
@@ -2001,23 +2686,25 @@ def parse_formula_errors(html_path: str) -> list[dict]:
                     raw_msg = raw_msg.strip('"').strip("'").strip()
                     self._cur_instance["business_message"] = raw_msg
                 elif self._is_fv_row and len(cells) >= 3 and self._cur_instance is not None:
-                    var_id  = cells[0].strip() if len(cells) > 0 else ""
-                    concept = cells[1].strip() if len(cells) > 1 else ""
-                    value   = cells[2].strip() if len(cells) > 2 else ""
-                    context = cells[3].strip() if len(cells) > 3 else ""
-                    unit    = cells[4].strip() if len(cells) > 4 else ""
-                    decimal = cells[5].strip() if len(cells) > 5 else ""
+                    field_map = _map_formula_var_row(self._headers, cells)
+                    var_id  = field_map.get("var", "")
+                    context = field_map.get("context", "")
                     if var_id:
                         self._cur_instance["variables"].append({
                             "var":                var_id,
-                            "concept":            concept,
-                            "concept_label":      _camel_to_words(concept),
-                            "value":              value,
+                            "concept":            field_map.get("concept", ""),
+                            "concept_label":      _camel_to_words(field_map.get("concept", "")),
+                            "value":              field_map.get("value", ""),
+                            "entered_value":      field_map.get("entered_value", ""),
                             "context":            context,
                             "context_hint":       _extract_context_hint(context),
                             "context_decomposed": _decompose_context(context),
-                            "unit":               unit,
-                            "decimal":            decimal,
+                            "unit":               field_map.get("unit", ""),
+                            "decimal":            field_map.get("decimal", ""),
+                            "db_table":           field_map.get("db_table", ""),
+                            "table_header":       field_map.get("table_header", ""),
+                            "row_label":          field_map.get("row_label", ""),
+                            "cell_code":          field_map.get("cell_code", ""),
                         })
                 self._cell_texts = []
 
@@ -2126,6 +2813,48 @@ def enrich_formula_errors(rules: list[dict]) -> list[dict]:
     return enriched_rules
 
 
+def _enrich_formula_rule_with_taxonomy(rule: dict, taxonomy: dict | None) -> dict:
+    """Attach return-JSON metadata (concept label + DB location) to a parsed
+    formula rule, when a taxonomy match is available for its assertion.
+
+    Matches by rule_name == assertion_id, then by each variable's "var" id
+    (V1/V2/...) against that assertion's variable list in the taxonomy JSON.
+    A no-op (returns rule unchanged) when there's no taxonomy loaded, no
+    matching assertion, or a variable isn't in the taxonomy's map — this is
+    the graceful-fallback path, not an error: callers already tolerate
+    missing concept_label/db_location.
+
+    Mutates variable dicts in place (they're shared by reference between
+    "variables" and the lhs_var/rhs_vars/numerator_var/denominator_var
+    computed in _compute_sum_discrepancy/_compute_ratio_discrepancy, so one
+    pass over "variables" is enough to update every view of them).
+    """
+    if not taxonomy:
+        return rule
+
+    from backend.tools import taxonomy_lookup
+
+    var_meta = taxonomy_lookup.build_variable_metadata_map(taxonomy, rule.get("rule_name", ""))
+    if not var_meta:
+        return rule
+
+    rule = dict(rule)
+    rule["_taxonomy_matched"] = True
+
+    for inst in rule.get("instances", []):
+        for v in inst.get("variables", []):
+            meta = var_meta.get(v.get("var", ""))
+            if not meta:
+                continue
+            if meta.get("label"):
+                v["concept_label"] = meta["label"]
+            location = taxonomy_lookup.format_db_location(meta)
+            if location:
+                v["db_location"] = location
+
+    return rule
+
+
 def _extract_missing_fields_from_formula(formula: str) -> list[str]:
     """Extract variable IDs from a presence-check formula."""
     vars_found = re.findall(r'\$V(\d+)', formula, re.IGNORECASE)
@@ -2163,6 +2892,7 @@ def _build_formula_llm_payload(rule: dict) -> dict:
                     "commodity":      v1.get("value", ""),
                     "concept":        v1.get("concept_label") or v1.get("concept", ""),
                     "context":        v1.get("context_hint", "") or v1.get("context", ""),
+                    "location":       v1.get("db_location", ""),
                     "missing_fields": _extract_missing_fields_from_formula(formula),
                 })
         if failing_items:
@@ -2174,13 +2904,19 @@ def _build_formula_llm_payload(rule: dict) -> dict:
         rhs  = inst.get("rhs_vars") or []
         unit = inst.get("unit") or lhs.get("unit", "")
         payload.update({
-            "total_field":    lhs.get("concept_label") or lhs.get("concept", ""),
+            "total_field":          lhs.get("concept_label") or lhs.get("concept", ""),
+            "total_field_location": lhs.get("db_location", ""),
             "reported_total": inst.get("reported_total", ""),
             "calculated_sum": inst.get("calculated_sum", ""),
             "difference":     inst.get("difference", ""),
             "unit":           unit,
             "components":     [
-                {"label": v.get("concept_label") or v.get("concept", ""), "value": v.get("value", ""), "context": v.get("context_hint", "")}
+                {
+                    "label":    v.get("concept_label") or v.get("concept", ""),
+                    "value":    v.get("value", ""),
+                    "context":  v.get("context_hint", ""),
+                    "location": v.get("db_location", ""),
+                }
                 for v in rhs if v.get("value")
             ],
         })
@@ -2197,12 +2933,15 @@ def _build_formula_llm_payload(rule: dict) -> dict:
         inst = instances[0]
         v1 = inst.get("lhs_var") or {}; v2 = inst.get("numerator_var") or {}; v3 = inst.get("denominator_var") or {}
         payload.update({
-            "result_field":      v1.get("concept_label") or v1.get("concept", ""),
+            "result_field":            v1.get("concept_label") or v1.get("concept", ""),
+            "result_field_location":   v1.get("db_location", ""),
             "reported_value":    inst.get("reported_value", ""),
-            "numerator_field":   v2.get("concept_label") or v2.get("concept", ""),
+            "numerator_field":         v2.get("concept_label") or v2.get("concept", ""),
+            "numerator_field_location": v2.get("db_location", ""),
             "numerator_value":   inst.get("numerator_value", ""),
             "numerator_unit":    inst.get("numerator_unit", ""),
-            "denominator_field": v3.get("concept_label") or v3.get("concept", ""),
+            "denominator_field":         v3.get("concept_label") or v3.get("concept", ""),
+            "denominator_field_location": v3.get("db_location", ""),
             "denominator_value": inst.get("denominator_value", ""),
             "denominator_unit":  inst.get("denominator_unit", ""),
             "calculated_value":  inst.get("calculated_value", ""),
@@ -2216,7 +2955,13 @@ def _build_formula_llm_payload(rule: dict) -> dict:
             all_inst_data.append({
                 "business_message": inst.get("business_message", ""),
                 "variables": [
-                    {"label": v.get("concept_label") or v.get("concept", ""), "value": v.get("value", ""), "unit": v.get("unit", ""), "context": v.get("context_hint", "")}
+                    {
+                        "label":    v.get("concept_label") or v.get("concept", ""),
+                        "value":    v.get("value", ""),
+                        "unit":     v.get("unit", ""),
+                        "context":  v.get("context_hint", ""),
+                        "location": v.get("db_location", ""),
+                    }
                     for v in inst.get("variables", []) if v.get("value")
                 ],
             })
@@ -2330,6 +3075,13 @@ def _fallback_formula_explanation(rule: dict) -> str:
         else:
             reason = "A required value is missing."
         fix = "Enter the missing value for each listed item, then revalidate the report."
+        first_loc = next(
+            (v.get("db_location", "") for inst in instances for v in inst.get("variables", [])
+             if v.get("var") == "V1" and v.get("db_location")),
+            "",
+        )
+        if first_loc:
+            fix += f" Check {first_loc}."
         return _render_formula_explanation_template(
             "Required value missing", reason, fix, rule_name=rule_name
         )
@@ -2347,6 +3099,8 @@ def _fallback_formula_explanation(rule: dict) -> str:
             f"Review the values that make up {total_lbl} and ensure the total "
             "is calculated correctly, then revalidate the report."
         )
+        if lhs.get("db_location"):
+            fix += f" Check {lhs['db_location']}."
         return _render_formula_explanation_template(
             "Total does not match", reason, fix, ftype=ftype, rule_name=rule_name
         )
@@ -2365,6 +3119,9 @@ def _fallback_formula_explanation(rule: dict) -> str:
             f"{lbl_v2} and {lbl_v3}."
         )
         fix = f"Verify {lbl_v1}, {lbl_v2}, and {lbl_v3}, then revalidate the report."
+        locations = [loc for loc in (v1.get("db_location"), v2.get("db_location"), v3.get("db_location")) if loc]
+        if locations:
+            fix += f" Check {', '.join(locations)}."
         return _render_formula_explanation_template(
             "Value does not match", reason, fix, ftype=ftype, rule_name=rule_name
         )
@@ -2373,38 +3130,69 @@ def _fallback_formula_explanation(rule: dict) -> str:
     reason = biz_msg or (f"The validation rule '{rule_name}' failed." if rule_name else "A validation rule failed.")
     fix = "Review the reported figures and correct any discrepancy, then revalidate the report."
     return _render_formula_explanation_template("Validation failed", reason, fix, rule_name=rule_name)
- 
- 
-def explain_formula_errors(rules: list[dict]) -> list[dict]:
-    """
-    Explain formula errors — evidence-only prompts.
-    The LLM must not claim fields are empty unless the payload proves they are.
-    ALL failing instances are included in the payload.
+
+
+def _explain_single_formula_rule(
+    rule: dict,
+    taxonomy: dict | None,
+    ollama_base: str,
+    model: str,
+    timeout: float,
+    keep_alive: str,
+) -> dict:
+    """Explain one formula-error rule — the per-error unit of work shared by
+    both the sequential and concurrent paths in explain_formula_errors.
+
+    Never raises: any failure — taxonomy join, payload building, or the
+    Ollama call itself — falls through to the deterministic template, so one
+    bad rule can never take down the whole batch or disappear from the
+    results when run under a ThreadPoolExecutor.
     """
     import json as _json
     import httpx as _httpx
- 
-    if not rules:
-        return rules
- 
-    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "180"))
-    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
- 
-    logger.info(
-        "[STATUS_FLOW] Starting FORMULA_ERROR LLM enrichment, rules=%d", len(rules)
-    )
-    start   = time.perf_counter()
-    results: list[dict] = []
- 
-    for rule in rules:
-        rule           = dict(rule)
-        ftype          = rule.get("formula_type", "general")
-        rule_name      = rule.get("rule_name", "")
+
+    rule = dict(rule)
+    try:
+        rule      = _enrich_formula_rule_with_taxonomy(rule, taxonomy)
+        ftype     = rule.get("formula_type", "general")
+        rule_name = rule.get("rule_name", "")
+
+        # sum_check/ratio_check: the backend already has every fact needed
+        # (exact computed numbers, resolved concept labels, DB table/code) —
+        # the LLM is only asked to phrase two short sentences (explanation,
+        # fix) from a tight verified-facts context; it never sees or
+        # restates the numbers/tables/codes, which are always rendered
+        # deterministically and spliced in regardless of what the LLM
+        # returns. If the LLM call fails, a deterministic sentence fills
+        # in — the numeric/location facts are identical either way.
+        if ftype == "sum_check":
+            context = _build_verified_sum_check_context(rule)
+            if context:
+                llm_text = _explain_verified_context_via_llm(context, ollama_base, model, timeout, keep_alive)
+                rendered = _render_verified_sum_check_explanation(rule, llm_text)
+                if rendered:
+                    rule["explanation"] = rendered
+                    return rule
+            deterministic = _render_sum_check_explanation_detailed(rule)
+            if deterministic:
+                rule["explanation"] = deterministic
+                return rule
+        elif ftype in ("ratio_check", "rounded_equality"):
+            context = _build_verified_ratio_check_context(rule)
+            if context:
+                llm_text = _explain_verified_context_via_llm(context, ollama_base, model, timeout, keep_alive)
+                rendered = _render_verified_ratio_check_explanation(rule, llm_text)
+                if rendered:
+                    rule["explanation"] = rendered
+                    return rule
+            deterministic = _render_ratio_check_explanation_detailed(rule)
+            if deterministic:
+                rule["explanation"] = deterministic
+                return rule
+
         payload        = _build_formula_llm_payload(rule)  # existing function — unchanged
         instance_count = len(rule.get("instances", []))
- 
+
         # ------------------------------------------------------------------
         # Type-specific instruction — describes what IS in the payload,
         # not what the LLM should assume. The LLM only ever produces the
@@ -2421,6 +3209,9 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
                 "using the business field name from 'total_field', not V1/V2. "
                 "'fix' must tell the user to review the underlying values that make "
                 "up 'total_field' and correct the discrepancy before revalidating. "
+                "If 'total_field_location' or any component's 'location' is a "
+                "non-empty string, 'fix' must name that exact table/column/code "
+                "as where to check instead of a generic instruction. "
                 "Do NOT mention the formula, the round()/div/sum() operators, or any "
                 "arithmetic. Do NOT quote 'reported_total', 'calculated_sum', "
                 "'difference', or individual component values — those already "
@@ -2434,6 +3225,10 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
                 "match the value calculated from 'numerator_field' and "
                 "'denominator_field' — using those business field names, not V1/V2/V3. "
                 "'fix' must tell the user to verify those fields and revalidate. "
+                "If 'result_field_location', 'numerator_field_location', or "
+                "'denominator_field_location' is a non-empty string, 'fix' must "
+                "name those exact table/column/code locations instead of a "
+                "generic instruction. "
                 "Do NOT mention the formula or show any arithmetic — those values "
                 "already appear in the table shown to the user."
             )
@@ -2461,7 +3256,8 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
                 "'reason' must state, in one sentence, that a required value is "
                 "missing. Do NOT frame this as a total or sum mismatch. "
                 "'fix' must tell the user to enter the missing value(s) and "
-                "revalidate. "
+                "revalidate. If an item in 'all_failing_instances' has a "
+                "non-empty 'location', name that exact table/column/code. "
                 "Do NOT claim specific fields are empty unless the business_rule "
                 "explicitly states which fields are required."
             )
@@ -2565,10 +3361,83 @@ def explain_formula_errors(rules: list[dict]) -> list[dict]:
 
         if not explanation or len(explanation) < 15:
             explanation = _fallback_formula_explanation(rule)
- 
+
         rule["explanation"] = explanation
-        results.append(rule)
- 
+        return rule
+    except Exception as exc:
+        logger.warning(
+            "[FORMULA_LLM] unexpected failure explaining rule=%r: %s — using deterministic fallback",
+            rule.get("rule_name", ""), exc,
+        )
+        rule["explanation"] = _fallback_formula_explanation(rule)
+        return rule
+
+
+def explain_formula_errors(rules: list[dict], form_id: str = "") -> list[dict]:
+    """
+    Explain formula errors — evidence-only prompts.
+    The LLM must not claim fields are empty unless the payload proves they are.
+    ALL failing instances are included in the payload.
+
+    form_id : str, optional
+        When given and in the 4000-series (backtracking-enabled) range, the
+        matching return-JSON taxonomy metadata (Json/<form_id>/*.json) is
+        loaded and joined onto each rule's variables (concept label + DB
+        table/column/code) before building the LLM payload. Falls back to
+        the pre-existing HTML-only behavior when no form_id is given, the
+        return isn't 4000-series, no JSON file exists for it, or an
+        assertion isn't found in it — this is never a hard requirement.
+
+    Each rule is explained via _explain_single_formula_rule, run through a
+    bounded ThreadPoolExecutor (OLLAMA_MAX_CONCURRENCY, default 2) so
+    multiple Ollama calls can be in flight at once — the existing Ollama
+    call is a blocking httpx.Client request, and this whole function is
+    already invoked off the main event loop via run_in_executor, so a
+    thread pool is the smallest safe way to add concurrency without
+    converting the call chain to asyncio. executor.map yields results in
+    input order regardless of completion order, so no manual re-sorting is
+    needed to preserve the original error order.
+    """
+    if not rules:
+        return rules
+
+    taxonomy: dict | None = None
+    if form_id and _is_4000_series(form_id):
+        try:
+            from backend.tools import taxonomy_lookup
+            taxonomy = taxonomy_lookup.get_return_json(form_id)
+        except Exception as exc:
+            logger.warning(
+                "[FORMULA_LLM] taxonomy lookup failed for form_id=%s: %s", form_id, exc
+            )
+
+    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    model       = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
+    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "180"))
+    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+    try:
+        max_concurrency = int(os.getenv("OLLAMA_MAX_CONCURRENCY", "2"))
+    except ValueError:
+        max_concurrency = 2
+    max_concurrency = max(1, max_concurrency)
+
+    logger.info(
+        "[STATUS_FLOW] Starting FORMULA_ERROR LLM enrichment, rules=%d concurrency=%d model=%s",
+        len(rules), max_concurrency, model,
+    )
+    start = time.perf_counter()
+
+    def _worker(rule: dict) -> dict:
+        return _explain_single_formula_rule(rule, taxonomy, ollama_base, model, timeout, keep_alive)
+
+    max_workers = max(1, min(max_concurrency, len(rules)))
+    if max_workers == 1:
+        results = [_worker(rule) for rule in rules]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(_worker, rules))
+
     logger.info(
         "[STATUS_FLOW] FORMULA_ERROR enrichment complete — rules=%d  elapsed=%.3fs",
         len(results),
@@ -2806,7 +3675,9 @@ def count_errors_by_category(error_file_path: str) -> dict:
 _MAX_EXPLAIN = 5
 
 
-def explain_errors_by_category(error_file_path: str, category: str) -> list[dict]:
+def explain_errors_by_category(
+    error_file_path: str, category: str, form_id: str = ""
+) -> list[dict]:
     """Parse and explain up to _MAX_EXPLAIN errors with full context and root-cause linking.
 
     Parameters
@@ -2815,6 +3686,9 @@ def explain_errors_by_category(error_file_path: str, category: str) -> list[dict
         Absolute path to the error HTML/XML file.
     category : str
         One of "formula_error", "xbrl_schema", "dimensional".
+    form_id : str, optional
+        Passed through to explain_formula_errors for 4000-series taxonomy-
+        JSON enrichment. Ignored for other categories.
 
     Returns
     -------
@@ -2840,7 +3714,7 @@ def explain_errors_by_category(error_file_path: str, category: str) -> list[dict
             raw_rules = parse_formula_errors(error_file_path)
             trimmed   = raw_rules[:_MAX_EXPLAIN]
             enriched  = enrich_formula_errors(trimmed)
-            explained = explain_formula_errors(enriched)
+            explained = explain_formula_errors(enriched, form_id=form_id)
             for rule in explained:
                 rule["_error_category"] = "formula_error"
             logger.info(
@@ -2897,8 +3771,9 @@ def explain_errors_by_category(error_file_path: str, category: str) -> list[dict
 def explain_errors_by_category_for_form(
     error_file_path: str, category: str, form_id: str = ""
 ) -> list[dict]:
-    """Like explain_errors_by_category but applies 4000-series tag for xbrl_schema."""
-    results = explain_errors_by_category(error_file_path, category)
+    """Like explain_errors_by_category but applies 4000-series tag for xbrl_schema
+    and passes form_id through for formula_error taxonomy-JSON enrichment."""
+    results = explain_errors_by_category(error_file_path, category, form_id=form_id)
 
     if category == "xbrl_schema" and form_id:
         return_id    = _get_return_id_for_form(form_id)
