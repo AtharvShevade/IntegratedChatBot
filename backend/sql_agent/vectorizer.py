@@ -1,3 +1,4 @@
+from functools import lru_cache
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import faiss
@@ -17,9 +18,19 @@ def embed_documents(texts):
     return np.array(vectors, dtype="float32")
 
 
+@lru_cache(maxsize=64)
+def _embed_query_cached(prefixed_query: str):
+    # Returned array is cached — callers must not mutate it in place.
+    vec = model.encode([prefixed_query], normalize_embeddings=True)[0]
+    vec.setflags(write=False)
+    return vec
+
+
 def embed_query(query):
-    query = QUERY_PREFIX + query
-    return model.encode([query], normalize_embeddings=True)[0]
+    # get_relevant_schema() calls this up to 4x per user query (table/column/
+    # label search, twice on near-identical text) — caching avoids re-running
+    # the embedding model redundantly on the same string within one request.
+    return _embed_query_cached(QUERY_PREFIX + query)
 
 
 def build_faiss_index(vectors):

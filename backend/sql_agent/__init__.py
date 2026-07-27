@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # ── Minimum word-count guard ───────────────────────────────────────────────────
 MIN_QUERY_WORDS = 5   # queries with fewer words are too vague for accurate SQL
-MAX_SQL_RETRIES = 1   # max generate→validate→execute attempts per user query
+MAX_SQL_RETRIES = 2   # max generate→validate→execute attempts per user query
 
 # ── Time-context patterns for the accuracy hint ───────────────────────────────
 _TIME_PATTERNS = [
@@ -161,7 +161,14 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
             sql = result.get("sql", "")
             logger.info("[SQL_AGENT] attempt=%d sql=\n%s", attempt + 1, sql)
         except RuntimeError as exc:
-            logger.error("[SQL_AGENT] SQL generation failed: %s", exc)
+            # generate_sql() raises RuntimeError for Ollama-level failures
+            # (connection refused, timeout, HTTP 5xx from a proxy) — these
+            # are transient infra issues, not "the model wrote bad SQL", so
+            # they deserve the same retry budget as a validation/execution
+            # failure instead of failing outright on the very first hiccup.
+            logger.error("[SQL_AGENT] attempt=%d SQL generation failed: %s", attempt + 1, exc)
+            if attempt + 1 < MAX_SQL_RETRIES:
+                continue
             return _build_result(
                 response_text="SQL generation failed. Please try again.",
                 result_type="db_result",

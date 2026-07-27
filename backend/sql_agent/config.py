@@ -30,6 +30,7 @@ ROW_LABEL_INDEX_PATH = os.path.join(FAISS_OUTPUT_DIR, "row_label_index.faiss")
 ROW_LABEL_META_PATH  = os.path.join(FAISS_OUTPUT_DIR, "row_label_meta.pkl")
 SCHEMA_JSON_PATH    = os.path.join(FAISS_OUTPUT_DIR, "schema.json")
 DESC_SAMPLES_PATH   = os.path.join(FAISS_OUTPUT_DIR, "description_samples.json")
+COLUMN_TYPES_PATH   = os.path.join(FAISS_OUTPUT_DIR, "column_types.json")
 
 # ── Embedding model ────────────────────────────────────────────────────────────
 EMBED_MODEL  = os.getenv("SQL_EMBED_MODEL",  "BAAI/bge-large-en")

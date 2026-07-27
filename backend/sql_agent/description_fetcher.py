@@ -14,9 +14,12 @@ from backend.sql_agent.config import (
     DESC_SAMPLES_PATH,
     SCHEMA_JSON_PATH,
     FAISS_OUTPUT_DIR,
+    COLUMN_TYPES_PATH,
 )
 
-# Column names that act as row labels / identifiers in this schema
+# Column names that act as row labels / identifiers in this schema.
+# Kept as a fast-path allowlist — most tables still match here without
+# needing the Oracle metadata round-trip in _detect_label_columns().
 LABEL_COLUMNS = {
     "description",
     "item",
@@ -37,9 +40,92 @@ LABEL_COLUMNS = {
     "asset_type",
     "movement_from_npa",
     "sl_no_description",
+    "assets",
 }
 
-MAX_SAMPLES = 50          # max distinct values to fetch per table
+# Columns that are structurally never row-labels, even though they may be
+# CHAR/VARCHAR2 in Oracle (bank/report identifiers, not descriptive metrics).
+NON_LABEL_COLUMNS = {
+    "code", "rdate", "typeid", "type_id", "id", "sl_no", "return_code",
+    # Free-text annotation fields can coincidentally have low cardinality in
+    # a given data snapshot (e.g. mostly blank/NIL) and pass the cardinality
+    # heuristic below, but they're never a real row-category axis — e.g.
+    # CIMS_ALE_M_SEC2_D1.REMARK sampled as random test strings, not a fixed
+    # enumerable label like its real label column DERIVATIVE. Including a
+    # false-positive label column here also disables the single-label-column
+    # deterministic autofix for tables that otherwise have exactly one.
+    "remark", "remarks", "comment", "comments", "note", "notes",
+    "narration", "description_text",
+}
+
+MAX_SAMPLES = 50          # max distinct values to keep per table in the final sample
+_FETCH_POOL_CAP = 1000    # max distinct values to pull from Oracle before selecting from them
+
+# Kept in sync with sql_generator._TOTAL_ROW_KEYWORDS. Duplicated here (rather
+# than imported) to avoid a circular import — sql_generator already imports
+# from this module. A row matching any of these is a "total/overall" row that
+# the prompt and the deterministic vertical-format autofix both depend on
+# being present; it must never be silently dropped by sample truncation.
+_TOTAL_ROW_KEYWORDS = [
+    "total", "grand total", "sub-total", "subtotal",
+    "all industries", "c. total", "c total", "grand-total",
+    "i. gross", "iii. non-food", "ii. food",
+]
+
+# Heuristic thresholds for detecting label columns not covered by the
+# LABEL_COLUMNS whitelist (any text column whose distinct-value count is
+# small relative to its row count behaves like a row-label, regardless of
+# its name).
+_LABEL_MAX_DISTINCT       = 200
+_LABEL_MAX_DISTINCT_RATIO = 0.5
+
+
+def _detect_label_columns(cursor, table: str, col_names: list[str]) -> list[str]:
+    """
+    Return columns in *table* that behave like row-labels: VARCHAR2/CHAR type,
+    not a known identifier column, and with low cardinality relative to row
+    count. Falls back to [] on any Oracle error (table missing/inaccessible).
+    """
+    candidates = [c for c in col_names if c not in NON_LABEL_COLUMNS]
+    if not candidates:
+        return []
+
+    try:
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM USER_TAB_COLUMNS "
+            "WHERE TABLE_NAME = :t AND DATA_TYPE IN ('VARCHAR2', 'CHAR', 'NVARCHAR2', 'NCHAR')",
+            {"t": table.upper()},
+        )
+        text_cols = {r[0].lower() for r in cursor.fetchall()}
+    except Exception:
+        return []
+
+    text_candidates = [c for c in candidates if c in text_cols]
+    if not text_candidates:
+        return []
+
+    try:
+        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+        row_count = cursor.fetchone()[0]
+    except Exception:
+        return []
+
+    if row_count == 0:
+        return []
+
+    detected = []
+    for col in text_candidates:
+        try:
+            cursor.execute(f"SELECT COUNT(DISTINCT {col.upper()}) FROM {table}")
+            distinct_count = cursor.fetchone()[0]
+        except Exception:
+            continue
+        if distinct_count == 0:
+            continue
+        if distinct_count <= _LABEL_MAX_DISTINCT and (distinct_count / row_count) <= _LABEL_MAX_DISTINCT_RATIO:
+            detected.append(col)
+
+    return detected
 
 
 def _get_connection():
@@ -78,27 +164,54 @@ def fetch_and_save(schema_json_path=None):
             col_names = [c["name"].lower() for c in entry["columns"]]
             label_cols_in_table = [c for c in col_names if c in LABEL_COLUMNS]
 
+            # Whitelist miss? Fall back to the cardinality heuristic instead
+            # of silently skipping the table (this is what left ~57% of
+            # tables — e.g. anything using "assets" as its label column —
+            # without any row-label samples at all).
+            if not label_cols_in_table:
+                label_cols_in_table = _detect_label_columns(cursor, table, col_names)
+
             if not label_cols_in_table:
                 continue
 
             table_samples = {}
             for col in label_cols_in_table:
                 try:
+                    # Pull a larger pool first — selecting which MAX_SAMPLES
+                    # to KEEP happens in Python below, so an arbitrary
+                    # ROWNUM cutoff here can't silently drop the one row
+                    # that matters (e.g. 'XX. Total Assets' sorting past
+                    # position 50 out of 127 distinct values).
                     cursor.execute(
                         f"SELECT DISTINCT {col.upper()} FROM {table} "
                         f"WHERE {col.upper()} IS NOT NULL AND ROWNUM <= :max_rows",
-                        {"max_rows": MAX_SAMPLES},
+                        {"max_rows": _FETCH_POOL_CAP},
                     )
                     rows = cursor.fetchall()
-                    values = [str(r[0]).strip() for r in rows if r[0]]
-                    if values:
-                        table_samples[col] = sorted(values)
+                    values = sorted({str(r[0]).strip() for r in rows if r[0]})
+                    if not values:
+                        continue
+
+                    if len(values) <= MAX_SAMPLES:
+                        table_samples[col] = values
+                    else:
+                        # Always keep total/overall-style rows regardless of
+                        # where they'd sort, then fill the remaining budget.
+                        is_total = lambda v: any(kw in v.lower() for kw in _TOTAL_ROW_KEYWORDS)
+                        total_rows = [v for v in values if is_total(v)]
+                        other_rows = [v for v in values if not is_total(v)]
+                        fill = max(0, MAX_SAMPLES - len(total_rows))
+                        table_samples[col] = sorted(total_rows + other_rows[:fill])
                 except Exception:
                     pass  # table may be empty or inaccessible
 
             if table_samples:
                 samples[entry["table"]] = table_samples
-                print(f"  ✓ {table}: sampled {sum(len(v) for v in table_samples.values())} values")
+                # ASCII-only: Windows consoles default to cp1252, which can't
+                # encode a checkmark and crashes the whole run before the
+                # final json.dump() — this run is meant to complete cleanly
+                # without needing PYTHONIOENCODING set.
+                print(f"  [ok] {table}: sampled {sum(len(v) for v in table_samples.values())} values")
 
     finally:
         cursor.close()
@@ -110,6 +223,61 @@ def fetch_and_save(schema_json_path=None):
 
     print(f"\n  Saved → {DESC_SAMPLES_PATH}")
     return samples
+
+
+def fetch_and_save_column_types(schema_json_path=None):
+    """
+    Bulk-fetch REAL Oracle column data types via USER_TAB_COLUMNS (one query)
+    and cache them to column_types.json.
+
+    Without this, the DDL prompt builder has to guess a column's Oracle type
+    from schema.json alone (which carries no type info) — its fallback
+    guess defaults an unsampled column to NUMBER, which is wrong for any
+    text/label column that fetch_and_save() hasn't sampled yet and actively
+    misleads the LLM into thinking it can SUM() a text column.
+
+    Returns dict: { table_name: { col_name: {"data_type": ..., "data_length": ...} } }
+    """
+    try:
+        conn = _get_connection()
+    except Exception as e:
+        print(f"  [description_fetcher] DB connection failed: {e}")
+        return {}
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, DATA_LENGTH FROM USER_TAB_COLUMNS"
+        )
+        rows = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+    types: dict = {}
+    for table_name, column_name, data_type, data_length in rows:
+        types.setdefault(table_name.lower(), {})[column_name.lower()] = {
+            "data_type":   data_type,
+            "data_length": data_length,
+        }
+
+    os.makedirs(FAISS_OUTPUT_DIR, exist_ok=True)
+    with open(COLUMN_TYPES_PATH, "w") as f:
+        json.dump(types, f, indent=2)
+
+    print(f"  [ok] Saved real column types for {len(types)} tables -> {COLUMN_TYPES_PATH}")
+    return types
+
+
+def load_column_types(path=None) -> dict:
+    """Load previously fetched real Oracle column types. Returns {} if file missing."""
+    if path is None:
+        path = COLUMN_TYPES_PATH
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
 
 def load_samples(path=None):
