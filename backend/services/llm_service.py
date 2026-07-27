@@ -76,9 +76,15 @@ Intent routing priority — apply in this order, stop at first match:
   2. APP Q&A   — user/department/role/permission/audit/log/return/submission questions → use db_* intents
                IMPORTANT: XML domain wins over action verb — "how many departments" → db_list_departments,
                NOT query_database, even though it contains "how many"
-  3. SQL AGENT — Oracle analytics, banking metrics with NO XML domain entity → use "query_database"
-               ONLY use when: NPA, SLR, CRR, CAR, loans, deposits, exposure, provision, transactions
-               and the query does NOT mention users/departments/roles/returns/permissions/audits
+  3. SQL AGENT — Oracle analytics, banking/regulatory metrics with NO XML domain entity →
+               use "query_database". This is NOT limited to a fixed list of terms — ANY
+               question asking for a specific financial/regulatory data point, aggregate,
+               or metric from a report/return/section (a number, amount, balance, ratio,
+               or value, however it's phrased — NPA, SLR, CRR, CAR, loans, deposits,
+               exposure, provision, transactions, derivatives, notional principal,
+               advances, investments, yields, etc. are just examples, not an exhaustive
+               list) qualifies, as long as the query does NOT mention
+               users/departments/roles/returns-metadata/permissions/audits
   4. UNKNOWN   — greetings, help, or fully unrelated messages
 
 Rules for all intents:
@@ -144,6 +150,30 @@ Rules:
 _CLASSIFY_CONVERSATIONAL_SYSTEM_PROMPT = """\
 You are a classifier for conversational user messages for a report assistant.
 Respond with exactly one word: greeting, acknowledgement, or unsupported.
+
+Definitions:
+  greeting       — ONLY a social opener with no request at all, e.g. "hi", "hello",
+                   "good morning". Nothing else qualifies.
+  acknowledgement — ONLY a short reaction to something the assistant just said, with
+                   NO new request and NO data/report/metric/entity mentioned, e.g.
+                   "thanks", "ok", "got it", "no", "sounds good".
+  unsupported    — EVERYTHING ELSE. This includes any message that names, asks for,
+                   or references a report, return, metric, amount, value, date, field,
+                   section, table, or any specific data point — even if short, terse,
+                   incomplete, or oddly phrased, and even if you don't recognise the
+                   specific term used. When in doubt between acknowledgement and
+                   unsupported, choose unsupported.
+
+Examples:
+  "hi"                                              -> greeting
+  "thanks"                                           -> acknowledgement
+  "ok sounds good"                                   -> acknowledgement
+  "Derivative notional principal from ALE domestic"  -> unsupported
+  "gross NPA for Q1"                                 -> unsupported
+  "total loan assets"                                -> unsupported
+  "what is my role"                                  -> unsupported
+  "show me the report status"                        -> unsupported
+
 Only output the one word. Do not include any explanation, punctuation, or extra text.
 """.strip()
 
@@ -153,6 +183,7 @@ async def _call_ollama(
     system: str,
     history: list[dict] | None = None,
     model: str | None = None,
+    temperature: float = 0.1,
 ) -> str:
     history_msgs = [
         {"role": item["role"], "content": item["text"]}
@@ -169,7 +200,7 @@ async def _call_ollama(
         "stream":     False,
         "keep_alive": _KEEP_ALIVE,
         "options": {
-            "temperature": 0.1,
+            "temperature": temperature,
             "num_predict": 256,
         },
     }
@@ -273,6 +304,7 @@ async def classify_conversational_intent(user_message: str, history: list[dict] 
         system=_CLASSIFY_CONVERSATIONAL_SYSTEM_PROMPT,
         history=history,
         model=OLLAMA_EXTRACT_MODEL,
+        temperature=0.0,
     )
     normalized = re.sub(r'[^a-z]', '', content.strip().lower())
     if normalized in {"greeting", "acknowledgement", "unsupported"}:
@@ -312,6 +344,9 @@ async def extract_intent_entities_llm(user_query: str, history: list[dict] | Non
         ],
         "stream":     False,
         "format":     "json",
+        "options": {
+            "temperature": 0.0,
+        },
     }
 
     logger.debug(

@@ -269,11 +269,16 @@ _GEN_KW_RE      = re.compile(
 )
 _SCHED_KW_RE    = re.compile(r'\b(schedule|scheduled|scheduling)\b', re.I)
 
-# DB query keyword detector — catches data-fetch queries regardless of LLM classification
+# DB query keyword detector — catches data-fetch queries regardless of LLM classification.
+# Deliberately not meant to be an exhaustive metric list (that's a losing battle — new
+# regulatory/banking terms show up constantly); it's a fast, deterministic short-circuit
+# for the common cases, with extract_intent_entities_llm's generic (non-enumerated)
+# "any financial/regulatory data point" rule as the real fallback for anything this misses.
 _DB_QUERY_KW_RE = re.compile(
     r'\b(fetch|retrieve|show|list|display|get|select|query|how\s+many|what\s+is\s+the|'
     r'total|sum|count|average|npa|gnpa|nnpa|sma|car|slr|crr|psl|rwa|pcr|'
     r'exposure|provision|capital|loan|deposit|asset|liability|'
+    r'derivative|notional|principal|advance|advances|investment|investments|yield|'
     r'gross|net|outstanding|balance|amount|value|data|records?|figures?|'
     r'from\s+(the\s+)?(database|db|oracle|table))\b',
     re.I,
