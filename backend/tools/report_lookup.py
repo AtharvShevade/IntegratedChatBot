@@ -863,7 +863,7 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
     def _generate_suggestion(entry: dict) -> str:
         actual   = (entry.get("actualValue") or entry.get("entered_data(s)") or
                     entry.get("instance_data(s)") or entry.get("instance_data") or "")
-        expected = entry.get("expectedValue") or entry.get("decimal") or ""
+        expected = _expected_type_from_err(entry)
         err_type = entry.get("errorType", "")
         rule     = entry.get("rule", "")
         cell     = entry.get("cellCode", "")
@@ -1309,6 +1309,27 @@ def _example_value_for_datatype(expected: str) -> str:
     return _XBRL_DATATYPE_EXAMPLES.get(key, "")
 
 
+def _expected_type_from_err(err: dict) -> str:
+    """The expected-type name for a schema error, e.g. "decimal" or "date".
+
+    err["decimal"] is the XBRL fact's *decimals* attribute (a precision
+    indicator like "INF" or "-3"), NOT a data-type name — never treat it as
+    a stand-in for the expected type. Falls back to pulling the type word
+    straight out of the validator's own message text (e.g. "'abc' is not a
+    valid value for 'decimal'" -> "decimal") when expectedValue is absent —
+    generic, works for any type name the validator names.
+    """
+    expected = (err.get("expectedValue") or "").strip()
+    if expected:
+        return expected
+    m = re.search(
+        r"is not a valid value for\s+['‘’“”]([^'\"‘’“”]+)['‘’“”]",
+        err.get("message", "") or err.get("validation_message", ""),
+        re.IGNORECASE,
+    )
+    return m.group(1).strip() if m else ""
+
+
 def _build_fallback_business_explanation(err: dict) -> str:
     """
     Evidence-based fallback for XBRL schema errors.
@@ -1354,8 +1375,8 @@ def _build_fallback_business_explanation(err: dict) -> str:
         if m:
             actual = m.group(1).strip()
  
-    expected = (err.get("expectedValue") or err.get("decimal") or "").strip()
- 
+    expected = _expected_type_from_err(err)
+
     # Use validator message as the factual anchor
     raw_validator_msg = (
         err.get("validation_message")
@@ -1372,20 +1393,27 @@ def _build_fallback_business_explanation(err: dict) -> str:
     ).strip()
  
     lines = []
- 
+
+    # "Cell X contains Y" names WHERE the problem is; "the entered value is Y"
+    # states WHAT is wrong with it — distinct facts, so both are kept when a
+    # cell code is available, rather than treating the second as a duplicate
+    # of the first and dropping it.
+    if cell and not is_direct and actual:
+        lines.append(f"Cell {cell} contains '{actual}'.")
+
     if actual:
-        lines.append(f"The entered value \"{actual}\" is invalid.")
+        lines.append(f"The entered value is '{actual}'.")
     else:
         lines.append(f"{subject} failed validation.")
 
     if expected:
-        lines.append(f"This field accepts only {expected} values.")
+        lines.append(f"This value is not a valid {expected}.")
     elif clean_validator_msg:
         lines.append(clean_validator_msg.rstrip(".") + ".")
 
     example_val = _example_value_for_datatype(expected)
     if example_val:
-        lines.append(f"A valid {expected} looks like this: {example_val}.")
+        lines.append(f"A valid {expected} looks like this: eg.{example_val}")
 
     # Downstream effects — include only if explicitly populated by root-cause analysis
     if err.get("downstream_effects"):
@@ -1584,7 +1612,7 @@ def _explain_single_error(
         example_instruction = (
             "7. Include one short sentence giving ONLY a concrete example value "
             f"for the '{expected_type}' type — format it exactly like "
-            f"\"A valid {expected_type} looks like this: 34.56\" (using a realistic "
+            f"\"A valid {expected_type} looks like this: eg.34.56\" (using a realistic "
             f"example value for the '{expected_type}' type in place of 34.56). "
             "Do NOT also describe the general shape/definition of the type "
             "(e.g. do not additionally say it should have a whole number and a "
@@ -1659,7 +1687,7 @@ def _explain_single_error(
                     "business language. Never write two sentences that restate the same fact "
                     "in different words — each sentence must add new information. When giving "
                     "an example value, state ONLY the concrete example (e.g. 'A valid decimal "
-                    "looks like this: 34.56') and do not also describe the type's general "
+                    "looks like this: eg.34.56') and do not also describe the type's general "
                     "shape or definition. End with exactly ONE combined closing sentence about "
                     "correcting the value and revalidating — never separate sentences for "
                     "fixing, revalidating, and resubmitting. Return short sentences only. "
@@ -1719,8 +1747,8 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
             "validation_error": (
                 _extract_raw_validation_message(err)
                 or (
-                    f"'{err['actualValue']}' is not a valid value for '{err['decimal']}'"
-                    if err.get("actualValue") and err.get("decimal") else ""
+                    f"'{err['actualValue']}' is not a valid value for '{_expected_type_from_err(err)}'"
+                    if err.get("actualValue") and _expected_type_from_err(err) else ""
                 )
                 or err.get("actualValue", "")
             ).strip(),
@@ -1730,13 +1758,32 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
     results: list[dict] = []
  
     for i, err in enumerate(grouped):
-        cell        = err.get("cellCode", "") or err.get("cell", "")
-        explanation = _explain_single_error(err, ollama_base, model, timeout, keep_alive)
-        if not explanation or len(explanation) < 10:
-            logger.warning(
-                "[LLM_RETRY] index=%d cell=%r — using fallback", i, cell
-            )
+        cell     = err.get("cellCode", "") or err.get("cell", "")
+        actual   = (
+            err.get("entered_data(s)") or err.get("actualValue")
+            or err.get("instance_data(s)")
+            or (err.get("all_invalid_values") or [None])[0] or ""
+        ).strip()
+        expected = _expected_type_from_err(err)
+        has_cascade    = bool(err.get("cascade_errors"))
+        has_downstream = bool(err.get("downstream_effects"))
+
+        # The common "wrong data type" shape (a value + the type it should
+        # have been, nothing else going on) is rendered deterministically —
+        # no LLM call, so the cell reference can never be dropped and the
+        # example-value line can never be mangled (e.g. a stray "eg " prefix)
+        # the way free-form LLM phrasing occasionally produced. Anything
+        # messier (cascades, downstream effects, or no clear expected type)
+        # still goes through the LLM's more flexible narrative composition.
+        if actual and expected and not has_cascade and not has_downstream:
             explanation = _build_fallback_business_explanation(err)
+        else:
+            explanation = _explain_single_error(err, ollama_base, model, timeout, keep_alive)
+            if not explanation or len(explanation) < 10:
+                logger.warning(
+                    "[LLM_RETRY] index=%d cell=%r — using fallback", i, cell
+                )
+                explanation = _build_fallback_business_explanation(err)
         merged = dict(err)
         merged["explanation"] = explanation
         merged.setdefault("cell", cell)
