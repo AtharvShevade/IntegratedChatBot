@@ -48,6 +48,27 @@ _ACTIONS_REQUIRING_INSTANCE_GENERATION: frozenset[str] = frozenset({
 # ── Per-session guided state ───────────────────────────────────────────────────
 _guided_sessions: dict[str, dict[str, Any]] = {}
 
+# ── Request ID (Instance ID) detection for the status report-name step ────────
+# A real Request ID is a 32-char hex string or a hyphenated UUID (see
+# backend.db_qa.new_intent_classifier._INSTANCE_ID_RE, reused below for the
+# exact-shape check). Report names/ReturnIds/short names in this system
+# (e.g. "CIMS_ROR", "R149", "RAQ") always contain at least one non-hex
+# letter, and bare numeric form_ids are consistently 3-4 digits — so
+# "hex-only characters AND at least 6 of them" cleanly identifies an
+# attempted Request ID (complete or not) without ever matching a real
+# report name/ReturnId/short name input, leaving that lookup path untouched.
+import re as _re_guided
+_HEX_ONLY_RE = _re_guided.compile(r"^[0-9a-f]+$", _re_guided.IGNORECASE)
+_MIN_REQUEST_ID_ATTEMPT_LEN = 6
+
+
+def _looks_like_request_id_attempt(text: str) -> bool:
+    """True if *text* is plausibly an attempt at a Request ID (complete or
+    not) — used only to decide whether to try an exact-ID lookup instead of
+    the existing report-name/ReturnId/short-name fuzzy match, never to
+    accept a partial ID as a match itself."""
+    return bool(_HEX_ONLY_RE.match(text)) and len(text) >= _MIN_REQUEST_ID_ATTEMPT_LEN
+
 
 def _allowed_actions(login_id: str | None) -> list[str]:
     """Return the subset of GUIDED_ACTIONS this user may see/perform.
@@ -173,6 +194,39 @@ async def guided_step(
     )
 
     if stage == STAGE_STATUS_REPORT:
+        # Request ID (Instance ID) support: only attempted when the input
+        # looks like an ID (hex-only, 6+ chars — see
+        # _looks_like_request_id_attempt) so real report name/ReturnId/
+        # short-name inputs are completely unaffected and fall through to
+        # the existing fuzzy match below, unchanged.
+        if _looks_like_request_id_attempt(msg):
+            from backend.db_qa.new_intent_classifier import _INSTANCE_ID_RE
+            from backend.tools.report_lookup import get_report_status_by_id_fast
+
+            if _INSTANCE_ID_RE.fullmatch(msg):
+                logger.info("[GUIDED_STATUS_ID_LOOKUP] id=%r session=%s", msg, session_id)
+                result = get_report_status_by_id_fast(msg)
+                if result.get("type") == "error":
+                    # Exact match only — a well-shaped but non-existent ID
+                    # gets the same "no match" wording as an incomplete one.
+                    result = {
+                        "type": "error",
+                        "message": f"No matching Request ID found for '{msg}'. Please enter the complete Request ID.",
+                    }
+            else:
+                # Hex-looking but not a complete/valid shape (e.g. a prefix
+                # fragment) — never guess or partially match; do not fall
+                # through to report-name matching for this input.
+                logger.info("[GUIDED_STATUS_ID_LOOKUP] incomplete id=%r session=%s", msg, session_id)
+                result = {
+                    "type": "error",
+                    "message": f"No matching Request ID found for '{msg}'. Please enter the complete Request ID.",
+                }
+            if allowed_form_ids is not None:
+                from backend.agent import _apply_auth_to_status_result
+                result = _apply_auth_to_status_result(result, allowed_form_ids)
+            return _from_result(result, intent="get_status", session_id=session_id)
+
         # Fuzzy-match the input directly against returns.xml — no LLM needed.
         logger.info("[GUIDED_STATUS_LOOKUP] input=%r session=%s", msg, session_id)
         result = get_report_status(msg)
