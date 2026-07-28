@@ -93,58 +93,23 @@ const _SUMMARY_CAT_META = {
 }
 const _CAT_ORDER = ['formula_error', 'xbrl_schema', 'dimensional']
 
-// ── ErrorSummaryPanelReadOnly ─────────────────────────────────────────────────
-// Shown for non-4000-series failed reports.
-// Displays error counts and download button only — no explain buttons.
-function ErrorSummaryPanelReadOnly({ counts, downloadUrl, downloadLabel }) {
-  const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
-
-  const activeCategories = _CAT_ORDER.filter(
-    (cat) => counts && counts[cat] && counts[cat] > 0
-  )
-
-  return (
-    <div className="error-summary-panel">
-      <div className="error-summary-heading">⚠ Error Summary</div>
-      <div className="error-summary-body">
-        {activeCategories.length > 0 && (
-          <div className="error-summary-counts">
-            {activeCategories.map((cat) => {
-              const meta = _SUMMARY_CAT_META[cat]
-              return (
-                <div key={cat} className={`error-count-chip ${meta.cls}`}>
-                  <span>{meta.icon}</span>
-                  <span>{meta.label}:</span>
-                  <span className="error-count-num">{counts[cat]}</span>
-                </div>
-              )
-            })}
-          </div>
-        )}
-        <div className="error-summary-actions">
-            {downloadUrl && (
-            <button
-              className="error-summary-dl-btn"
-              onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
-            >
-              ⬇ {downloadLabel || 'Download error report'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── ErrorSummaryPanel ─────────────────────────────────────────────────────────
-// Shown for 4000-series failed reports — counts + explain buttons.
-function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCategory, formId, reportName }) {
+// Counts are always shown for every active category. An "Explain" button is
+// only rendered for categories in explainableCategories — 4000-series
+// reports pass every category (unchanged); non-4000-series reports pass
+// only the categories with a working non-backtracking explain flow behind
+// them (currently just formula_error — see backend/tools/formula_error_generic.py).
+// Categories left out of the list still show their count, just without a button.
+function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCategory, formId, reportName, explainableCategories = _CAT_ORDER }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const [loadingCat, setLoadingCat] = useState(null)
 
   const errorFilePath = counts?.error_file_path ?? ''
   const activeCategories = _CAT_ORDER.filter(
     (cat) => counts && counts[cat] && counts[cat] > 0
+  )
+  const explainableActiveCategories = activeCategories.filter(
+    (cat) => explainableCategories.includes(cat)
   )
 
   const handleExplain = async (cat) => {
@@ -176,7 +141,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
           </div>
         )}
         <div className="error-summary-actions">
-          {activeCategories.map((cat) => {
+          {explainableActiveCategories.map((cat) => {
             const meta = _SUMMARY_CAT_META[cat]
             const isLoading = loadingCat === cat
             return (
@@ -853,26 +818,21 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
       )
     }
     if (isFailed && errorCategoryCounts) {
-      if (is4000Series) {
-        return (
-          <ErrorSummaryPanel
-            counts={errorCategoryCounts}
-            downloadUrl={downloadUrl}
-            downloadLabel={downloadLabel}
-            onExplainCategory={onExplainCategory}
-            formId={data?.form_id}
-            reportName={data?.report_name}
-          />
-        )
-      } else {
-        return (
-          <ErrorSummaryPanelReadOnly
-            counts={errorCategoryCounts}
-            downloadUrl={downloadUrl}
-            downloadLabel={downloadLabel}
-          />
-        )
-      }
+      // 4000-series reports can explain every category. Other returns only
+      // have a working non-backtracking explain flow for formula errors so
+      // far (backend/tools/formula_error_generic.py) — xbrl_schema and
+      // dimensional still show as counts-only until their own flows exist.
+      return (
+        <ErrorSummaryPanel
+          counts={errorCategoryCounts}
+          downloadUrl={downloadUrl}
+          downloadLabel={downloadLabel}
+          onExplainCategory={onExplainCategory}
+          formId={data?.form_id}
+          reportName={data?.report_name}
+          explainableCategories={is4000Series ? _CAT_ORDER : ['formula_error']}
+        />
+      )
     }
     if (resolvedErrorMessages.length > 0) {
       return (

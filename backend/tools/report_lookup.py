@@ -3624,7 +3624,7 @@ def extract_error_summary(error_file_path: str) -> dict:
 _SUPPORTED_ERROR_CATEGORIES = frozenset({"formula_error", "dimensional", "xbrl_schema"})
 
 
-def count_errors_by_category(error_file_path: str) -> dict:
+def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
     """Parse the error file and return counts per supported category.
 
     Each category is parsed INDEPENDENTLY — a file can have nonzero counts
@@ -3632,6 +3632,12 @@ def count_errors_by_category(error_file_path: str) -> dict:
 
     DIMENSION gate: the DIMENSION panel badge is read first; if it is 0
     the dimensional parser is skipped entirely (no false positives).
+
+    form_id (optional): when provided and NOT a 4000-series return, the
+    formula-error count uses the separate non-backtracking parser
+    (backend.tools.formula_error_generic) instead of parse_formula_errors —
+    otherwise (form_id absent or 4000-series) counting is byte-for-byte the
+    existing behavior below, unchanged.
     """
     result: dict = {"error_file_path": error_file_path}
 
@@ -3667,7 +3673,11 @@ def count_errors_by_category(error_file_path: str) -> dict:
 
     # ── FORMULA_ERROR ──────────────────────────────────────────────────────────
     try:
-        rules = parse_formula_errors(error_file_path)
+        if form_id and not _is_4000_series(form_id):
+            from backend.tools.formula_error_generic import parse_generic_formula_errors
+            rules = parse_generic_formula_errors(error_file_path)
+        else:
+            rules = parse_formula_errors(error_file_path)
         total = sum(r.get("error_count", len(r.get("instances", []))) for r in rules)
         if total:
             result["formula_error"] = total
@@ -3758,6 +3768,25 @@ def explain_errors_by_category(
 
     try:
         if category == "formula_error":
+            # 4000-series returns (backtracking-enabled error files) keep the
+            # existing flow exactly as-is, unchanged, below. Every other
+            # return uses a fully separate parser/explainer
+            # (backend.tools.formula_error_generic) built for the different
+            # HTML table shape those files actually have (verified against
+            # real 2065/in-rbi-raq error files — no backtracking columns at
+            # all). form_id absent/unknown defaults to the existing flow, so
+            # behavior for any caller not passing form_id is unchanged.
+            if form_id and not _is_4000_series(form_id):
+                from backend.tools.formula_error_generic import explain_generic_formula_error_file
+                explained = explain_generic_formula_error_file(
+                    error_file_path, form_id=form_id, max_rules=_MAX_EXPLAIN,
+                )
+                logger.info(
+                    "[explain_errors_by_category] generic-formula done rules=%d elapsed=%.3fs form_id=%s",
+                    len(explained), time.perf_counter() - start, form_id,
+                )
+                return explained
+
             raw_rules = parse_formula_errors(error_file_path)
             trimmed   = raw_rules[:_MAX_EXPLAIN]
             enriched  = enrich_formula_errors(trimmed)
@@ -3835,14 +3864,14 @@ def explain_errors_by_category_for_form(
 # SECTION 8: MAIN ERROR INFO ROUTER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get_error_counts(code: int, dl: dict) -> dict:
+def _get_error_counts(code: int, dl: dict, form_id: str = "") -> dict:
     """Return error category counts for a failed status result. No LLM invoked."""
     if code not in _FAILED_STATUSES:
         return {}
     path = dl.get("error_file_path", "")
     if not path:
         return {}
-    return count_errors_by_category(path)
+    return count_errors_by_category(path, form_id=form_id)
 
 
 def _enrich_with_error_messages(code: int, dl: dict) -> list[str]:
@@ -4163,7 +4192,7 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
         }
     code = _safe_status(row)
     dl   = _get_download_info(row, form_id)
-    error_category_counts = _get_error_counts(code, dl)
+    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
@@ -4199,7 +4228,7 @@ def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str) -> dict:
         }
     code = _safe_status(row)
     dl   = _get_download_info(row, form_id)
-    error_category_counts = _get_error_counts(code, dl)
+    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     is_4000 = _is_4000_series(form_id)
@@ -4236,7 +4265,7 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
     _t = time.monotonic()
-    error_category_counts = _get_error_counts(code, dl)
+    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
     logger.debug("[STATUS_FLOW] error count duration=%.3fs counts=%r", time.monotonic() - _t, error_category_counts)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
@@ -4285,7 +4314,7 @@ def _build_status_result_from_row(form_id: str, ret_name: str, row: dict) -> dic
     all_instances   = get_available_instances(form_id)
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
-    error_category_counts = _get_error_counts(code, dl)
+    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
@@ -4426,7 +4455,7 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str) -> dic
         }
     code = _safe_status(row)
     dl   = _get_download_info(row, form_id)
-    error_category_counts = _get_error_counts(code, dl)
+    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
