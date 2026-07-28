@@ -101,9 +101,9 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
             needs_more_info=True,
             more_info_hint=(
                 f"Please use at least {MIN_QUERY_WORDS} words. For example:\n"
-                "\u2022 'Show gross NPA for Q1 FY2024'\n"
+                "\u2022 'Overseas assets total for ALE section 1A'\n"
                 "\u2022 'Total loan assets from RAQ section 1 latest'\n"
-                "\u2022 'Fetch derivative notional principal from ALE domestic March 2025'"
+                "\u2022 'Fetch derivative notional principal from ALE domestic'"
             ),
         )
 
