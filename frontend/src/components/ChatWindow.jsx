@@ -33,13 +33,17 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           statusNote={msg.statusNote}
           errorDetails={msg.errorDetails}
           jobId={msg.jobId}
+          batchCategory={msg.batchCategory}
+          batchErrorFilePath={msg.batchErrorFilePath}
+          batchFormId={msg.batchFormId}
+          batchReportName={msg.batchReportName}
 
           onFollowUp={onFollowUp}
           onSuggestion={onSuggestion}
           onGuidedAction={onGuidedAction}
           onCompare={onCompare}
           onFeedback={onFeedback}
-          onExplainCategory={(cat, errorFilePath, formId, reportName) => onExplainCategory?.(cat, errorFilePath, formId, reportName)}
+          onExplainCategory={(cat, errorFilePath, formId, reportName, offset) => onExplainCategory?.(cat, errorFilePath, formId, reportName, offset)}
           allowedActions={allowedActions}
         />
       ))}

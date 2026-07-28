@@ -230,6 +230,18 @@ _OPERATOR_MEANING = {
     "<=": "less than or equal to",
 }
 
+def _relationship_meaning(relationship: str, lhs_label: str, rhs_phrase: str) -> str:
+    """Plain-English restatement of the verified relationship, using the
+    actual resolved labels — included in the LLM context so the model
+    never has to infer meaning from the terse "lhs_greater"/"lhs_equal"/
+    "lhs_less" code itself; it's handed the already-correct fact as a
+    sentence fragment and only needs to work it into natural prose."""
+    if relationship == "lhs_greater":
+        return f"{lhs_label} is actually GREATER than {rhs_phrase}"
+    if relationship == "lhs_less":
+        return f"{lhs_label} is actually LESS than {rhs_phrase}"
+    return f"{lhs_label} and {rhs_phrase} are actually EQUAL"
+
 _OPERATOR_FN = {
     "=":  lambda a, b: a == b,
     "<>": lambda a, b: a != b,
@@ -666,19 +678,20 @@ def _fix_sentence(operator: str, relationship: str, lhs_label: str, rhs_label_pa
 
 
 def render_generic_formula_explanation(rule: dict, llm_text: dict | None = None) -> str | None:
-    """Deterministic explanation — every number, location, and the
-    pass/fail verdict always come from code.
+    """Explanation with every number, location, and the pass/fail verdict
+    always coming from code — never from *llm_text*, regardless of whether
+    *llm_text* is supplied.
 
-    The condition sentence (what the rule checks and why it failed) is
-    ALWAYS the deterministic wording from _condition_sentence — this is
-    never handed to an LLM to rephrase. That sentence is exactly where a
-    prior bug lived (claiming one value "exceeded" another when the two
-    were actually equal); the fix is to stop that sentence from ever being
-    LLM-influenced at all, not to add better instructions and hope an LLM
-    follows them. Only the closing "how to fix" line may optionally be
-    replaced by *llm_text['fix']* (validated — see
-    explain_generic_context_via_llm) when supplied; otherwise it uses the
-    deterministic default from _fix_sentence.
+    *llm_text*, when supplied, is a dict already validated by
+    explain_generic_context_via_llm (see _llm_output_is_grounded) against
+    the SAME verified facts used to build the deterministic sentence below.
+    Its 'explanation' replaces the condition sentence and its 'fix' replaces
+    the closing line — both purely wording substitutions; nothing about the
+    numbers/labels/locations printed elsewhere in this function is affected
+    by it. When *llm_text* is None (LLM unavailable, or its wording failed
+    grounding validation), both sentences fall back to the fully
+    deterministic _condition_sentence / _fix_sentence templates — so the
+    explanation is never less than correct, only sometimes less natural.
 
     Returns None if the rule doesn't have enough parsed/computed data
     (caller may still show a bare evidence-only fallback built from
@@ -731,6 +744,7 @@ def render_generic_formula_explanation(rule: dict, llm_text: dict | None = None)
         difference_str = _format_amount(abs(calc["difference"]), unit)
 
         lines.append(
+            llm_text["explanation"] if llm_text else
             _condition_sentence(
                 calc["operator"], lhs_label, rhs_label_parts, calc["relationship"],
                 equal_value_str, difference_str,
@@ -817,17 +831,26 @@ def build_generic_llm_context(rule: dict) -> dict | None:
     if calc is None:
         return None
 
+    lhs_label = labels.get(lhs_vars[0], lhs_vars[0])
+    rhs_terms = [
+        {"label": labels.get(v, v), "value": str(values_by_var.get(v, Decimal(0)))}
+        for v in rhs_vars
+    ]
+    rhs_phrase = _combined_rhs_phrase([t["label"] for t in rhs_terms])
+
     return {
-        "rule_name": rule.get("rule_name", ""),
+        # rule_name is deliberately NOT included — it's an internal
+        # identifier, not a business fact, and prior manual testing showed
+        # models latching onto it and describing the fix in terms of the
+        # (long, technical) rule name instead of quoting the actual
+        # lhs_label/rhs_terms labels sitting right next to it.
         "operator": calc["operator"],
         "operator_meaning": _OPERATOR_MEANING.get(calc["operator"], calc["operator"]),
         "relationship": calc["relationship"],
-        "lhs_label": labels.get(lhs_vars[0], lhs_vars[0]),
+        "relationship_meaning": _relationship_meaning(calc["relationship"], lhs_label, rhs_phrase),
+        "lhs_label": lhs_label,
         "lhs_value": str(calc["lhs_value"]),
-        "rhs_terms": [
-            {"label": labels.get(v, v), "value": str(values_by_var.get(v, Decimal(0)))}
-            for v in rhs_vars
-        ],
+        "rhs_terms": rhs_terms,
         "rhs_total": str(calc["rhs_value"]),
         "difference": str(calc["difference"]),
         "values_equal": calc["values_equal"],
@@ -836,50 +859,108 @@ def build_generic_llm_context(rule: dict) -> dict | None:
     }
 
 
+def _llm_output_is_grounded(explanation: str, fix: str, context: dict) -> bool:
+    """The single grounding check applied to whatever the LLM returns —
+    same logic regardless of whether it's judging just a "fix" sentence or
+    an "explanation" + "fix" pair, so tightening/loosening this in one place
+    protects both call shapes.
+
+    Rejects unless every resolved label appears verbatim (case-insensitive)
+    somewhere in the combined text, unless it's clean of "V1"/"V2"-style
+    references, and — the direct guard against the bug this whole context
+    redesign exists to prevent — unless relationship is "lhs_equal", also
+    rejects wording that claims one side exceeded/fell short of the other.
+    """
+    required_names = [context["lhs_label"]] + [t["label"] for t in context["rhs_terms"]]
+    combined = f"{explanation} {fix}".lower()
+    if not all(name.lower() in combined for name in required_names if name):
+        return False
+    if re.search(r"\bv\d+\b", combined):
+        return False
+    if context.get("relationship") == "lhs_equal" and re.search(
+        r"\bexceed|exceeds|exceeded|is greater|is lower|is higher|is less than\b", combined
+    ):
+        return False
+    return True
+
+
 def explain_generic_context_via_llm(
     context: dict, ollama_base: str, model: str, timeout: float, keep_alive: str,
 ) -> dict | None:
-    """Ask the LLM for exactly one short "how to fix" sentence, phrased
-    from the already-verified context above.
+    """Ask the LLM to write a natural, non-templated explanation of one
+    already-verified comparison, from the context above ONLY.
 
-    The condition/explanation sentence is deliberately NOT requested here
-    any more — render_generic_formula_explanation always uses its own
-    deterministic wording for that sentence (see _condition_sentence), since
-    that is exactly where an earlier bug lived (an LLM-phrased sentence
-    claiming one value "exceeded" another when the verified relationship
-    was actually "equal"). Keeping the LLM out of that sentence entirely is
-    the fix, not a stricter prompt.
+    The context is the ONLY thing that can vary the output — everything in
+    it (operator, relationship, labels, values, difference, rounding,
+    locations elsewhere) was already computed deterministically before this
+    function is ever called. This function's job is wording, never
+    arithmetic: it cannot change a number, invent a field, or flip which
+    side is larger, because none of that is left for it to decide — it's
+    handed the answer and asked only to phrase it.
 
-    Rejects (returns None, triggering the deterministic fallback) unless
-    the fix sentence mentions every resolved label verbatim, and — as a
-    direct guard against the same class of bug — unless relationship is
-    "lhs_equal", also rejects if the wording claims one side exceeded or
-    fell short of the other.
+    Rejects (returns None, triggering the deterministic fallback throughout
+    render_generic_formula_explanation) unless the combined explanation+fix
+    text passes _llm_output_is_grounded — every resolved label quoted
+    verbatim, no V1/V2/Vn references, and no wording that contradicts the
+    given relationship. That grounding check, not a longer prompt alone, is
+    what guarantees correctness even when the model doesn't perfectly
+    follow instructions.
     """
     import json as _json
     import httpx as _httpx
 
-    required_names = [context["lhs_label"]] + [t["label"] for t in context["rhs_terms"]]
-
     prompt = (
-        "You are a regulatory reporting assistant. Using ONLY the verified facts "
-        "below (never invent numbers, names, locations, or which side is larger), "
-        "write exactly one short plain-text sentence telling the user what to "
-        "review and revalidate.\n\n"
+        "Below is a VERIFIED, AUTHORITATIVE set of facts about one failed regulatory "
+        "validation check. Every number, label, relationship, and rounding detail has "
+        "already been computed and confirmed correct by deterministic code — none of it "
+        "is your job to calculate, re-derive, or second-guess. Your only job is to "
+        "explain these exact facts in natural, clear business language, the way a "
+        "knowledgeable colleague would say it out loud — not by filling in a template. "
+        "Vary your sentence structure and wording each time; do not reuse a fixed phrasing.\n\n"
+        f"VERIFIED FACTS (authoritative — do not recalculate, reinterpret, or add to these):\n"
         f"{_json.dumps(context, indent=2, ensure_ascii=False)}\n\n"
-        "Return ONLY a single-line JSON object: "
-        '{"fix": "one sentence telling the user what to review and revalidate, '
-        'using the business names above, never V1/V2/V3"}. No other text.'
+        "STRICT GROUNDING RULES — breaking any of these makes your answer unusable:\n"
+        "1. Quote 'lhs_label' and every 'rhs_terms[].label' EXACTLY as spelled above in "
+        "   your explanation — do not paraphrase, shorten, reorder, or substitute a "
+        "   synonym for any of them.\n"
+        "2. 'relationship_meaning' states which side is ACTUALLY larger (or that they are "
+        "   equal) — this is ground truth. Never write a sentence that contradicts it, "
+        "   e.g. never say one side 'exceeded' or is 'higher than' the other if "
+        "   relationship_meaning says they are equal.\n"
+        "3. Never invent a business field, section, report, or database name that is not "
+        "   explicitly present above.\n"
+        "4. Never state a number (value, difference, rounding amount) other than exactly "
+        "   what is given above — do not round, estimate, or restate it differently.\n"
+        "5. Never refer to any field as V1, V2, V3, etc. — always use its given label.\n"
+        "6. Do not mention internal rule IDs, XBRL, formulas, or technical syntax.\n\n"
+        "Write exactly two natural sentences:\n"
+        "  explanation — what was checked, the actual values, and how the condition "
+        "failed (or note it passed, if relationship and operator agree) — specific to "
+        "this case, phrased naturally.\n"
+        "  fix — one sentence telling the user what to review and revalidate.\n\n"
+        'Return ONLY a single-line JSON object: {"explanation": "...", "fix": "..."}. '
+        "No other text, no markdown, no code fences."
     )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Suggest a corrective action for a validation mismatch in plain business language using only the given facts. Never invent values or locations. Never state which value is larger — that is not your role. Never use V1, V2, V3."},
+            {
+                "role": "system",
+                "content": (
+                    "You explain already-verified regulatory validation results in natural "
+                    "business language. Every fact you are given is authoritative ground "
+                    "truth, already computed by deterministic code — you never calculate, "
+                    "recalculate, or infer a number or a relationship yourself, you only "
+                    "phrase what you're told. Quote given business labels exactly, never "
+                    "paraphrase them. Never use V1, V2, V3. Never contradict the given "
+                    "relationship. Write naturally, not from a fixed template."
+                ),
+            },
             {"role": "user", "content": prompt},
         ],
         "stream": False,
         "keep_alive": keep_alive,
-        "options": {"temperature": 0.0, "num_predict": 120},
+        "options": {"temperature": 0.2, "num_predict": 220},
     }
     try:
         with _httpx.Client(timeout=timeout) as client:
@@ -888,19 +969,13 @@ def explain_generic_context_via_llm(
         content = resp.json()["message"]["content"].strip()
         content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.MULTILINE).strip()
         parsed = _json.loads(content)
+        explanation = (parsed.get("explanation") or "").strip()
         fix = (parsed.get("fix") or "").strip()
-        if not fix:
+        if not explanation or not fix:
             return None
-        lowered = fix.lower()
-        if not all(name.lower() in lowered for name in required_names if name):
+        if not _llm_output_is_grounded(explanation, fix, context):
             return None
-        if re.search(r"\bv\d+\b", lowered):
-            return None
-        if context.get("relationship") == "lhs_equal" and re.search(
-            r"\bexceed|exceeds|exceeded|is greater|is lower|is higher|is less than\b", lowered
-        ):
-            return None
-        return {"fix": fix}
+        return {"explanation": explanation, "fix": fix}
     except Exception as exc:
         logger.warning("[formula_error_generic] LLM phrasing failed/rejected: %s", exc)
         return None
@@ -971,12 +1046,18 @@ def explain_generic_formula_errors(rules: list[dict], form_id: str = "") -> list
     ]
 
 
-def explain_generic_formula_error_file(html_path: str, form_id: str = "", max_rules: int = _MAX_EXPLAIN_GENERIC) -> list[dict]:
+def explain_generic_formula_error_file(
+    html_path: str, form_id: str = "", max_rules: int = _MAX_EXPLAIN_GENERIC, offset: int = 0,
+) -> list[dict]:
     """Top-level entry point: parse the non-backtracking HTML shape, then
-    explain up to max_rules rules. What the router calls for any return
-    that isn't in the 4000-series range."""
+    explain one max_rules-sized batch starting at *offset*. What the router
+    calls for any return that isn't in the 4000-series range.
+
+    offset=0 (the default) reproduces the exact previous behavior — the
+    first max_rules rules — so this is purely additive for batching."""
     rules = parse_generic_formula_errors(html_path)
-    trimmed = rules[:max_rules]
+    offset = max(0, int(offset or 0))
+    trimmed = rules[offset:offset + max_rules]
     explained = explain_generic_formula_errors(trimmed, form_id=form_id)
     for rule in explained:
         rule["_error_category"] = "formula_error"

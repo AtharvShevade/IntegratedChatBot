@@ -168,7 +168,12 @@ export default function App() {
   ])
 
   // ── Helper: push an assistant result into the message list ───────────────
-const _pushResult = (result) => {
+// *extra* merges additional fields onto the pushed message — used by
+// handleExplainCategory to carry batching context (which category/file/
+// form/report this explain-result batch belongs to) so an "Explain Next
+// Errors" button rendered on this message can re-request the next batch
+// without the backend needing to echo those identifiers back.
+const _pushResult = (result, extra = {}) => {
   const isTerminal = _TERMINAL_TYPES.has(result.result_type)
   const jobId = result.job_id ?? result.jobId ?? result.job?.id ?? null
 
@@ -217,7 +222,8 @@ const _pushResult = (result) => {
 
     // IMPORTANT FIX
     errorDetails: result.error_details || [],
-    jobId: jobId
+    jobId: jobId,
+    ...extra,
   }
 
   setMessages((prev) => [...prev, resultMsg])
@@ -516,14 +522,25 @@ const pollForErrors = (jobId) => {
     }
   }
 
-  // ── Explain a single error category (Formula / XBRL Schema / Dimension) ──
-  const handleExplainCategory = async (category, errorFilePath, formId = null, reportName = null) => {
+  // ── Explain a single error category (Formula / XBRL Schema) ───────────────
+  // offset (default 0) is 0 for the initial "Explain X Errors" button click
+  // (always starts the batch sequence fresh for this file+category) and is
+  // set explicitly when called from the "Explain Next Errors" button
+  // rendered on a previous batch's result message (see MessageBubble.jsx),
+  // continuing from where that batch left off — never re-requesting
+  // already-explained errors.
+  const handleExplainCategory = async (category, errorFilePath, formId = null, reportName = null, offset = 0) => {
     if (isLoading) return
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId })
-      _pushResult(result)
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, offset })
+      _pushResult(result, {
+        batchCategory: category,
+        batchErrorFilePath: errorFilePath,
+        batchFormId: formId,
+        batchReportName: reportName,
+      })
     } catch (err) {
       if (err.name === 'AbortError') return
       setMessages((prev) => [

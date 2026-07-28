@@ -172,6 +172,38 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
   )
 }
 
+// ── ExplainNextErrorsButton ───────────────────────────────────────────────────
+// Rendered under a batch's result once the backend reports more unexplained
+// errors remain (data.has_more). Re-requests the SAME category+file at
+// nextOffset — the backend never re-explains errors already covered by an
+// earlier batch, so clicking this can never repeat a previously-shown error.
+function ExplainNextErrorsButton({ category, errorFilePath, formId, reportName, nextOffset, onExplainCategory }) {
+  const [loading, setLoading] = useState(false)
+  const meta = _SUMMARY_CAT_META[category] || { icon: '⚙', label: category }
+
+  const handleClick = async () => {
+    if (loading) return
+    setLoading(true)
+    try {
+      await onExplainCategory?.(category, errorFilePath, formId, reportName, nextOffset)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="explain-next-errors-wrap">
+      <button
+        className={`explain-cat-btn ${meta.cls || ''}`}
+        onClick={handleClick}
+        disabled={loading}
+      >
+        {loading ? <><span className="btn-spinner" /> Generating…</> : <>{meta.icon} Explain Next Errors</>}
+      </button>
+    </div>
+  )
+}
+
 // ── Formula error explanation: structured card rendering ─────────────────────
 // The backend explanation is one markdown string with a known, consistent
 // shape (title / paragraph / bullet stats / bullet locations / fix) built by
@@ -646,6 +678,7 @@ export default function MessageBubble({
   feedbackQuery, feedbackIntent,
   onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback,
   onExplainCategory,
+  batchCategory, batchErrorFilePath, batchFormId, batchReportName,
   allowedActions,
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -818,10 +851,14 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
       )
     }
     if (isFailed && errorCategoryCounts) {
-      // 4000-series reports can explain every category. Other returns only
-      // have a working non-backtracking explain flow for formula errors so
-      // far (backend/tools/formula_error_generic.py) — xbrl_schema and
-      // dimensional still show as counts-only until their own flows exist.
+      // 4000-series reports can explain formula_error and xbrl_schema.
+      // dimensional has no explanation logic implemented (informational
+      // count only — see backend/tools/report_lookup.py's dimensional
+      // branch), so its button is never shown for any report type; the
+      // count chip still renders (ErrorSummaryPanel shows counts for every
+      // active category regardless of explainableCategories). Other
+      // (non-4000-series) returns only have a working non-backtracking
+      // explain flow for formula errors so far (backend/tools/formula_error_generic.py).
       return (
         <ErrorSummaryPanel
           counts={errorCategoryCounts}
@@ -830,7 +867,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
           onExplainCategory={onExplainCategory}
           formId={data?.form_id}
           reportName={data?.report_name}
-          explainableCategories={is4000Series ? _CAT_ORDER : ['formula_error']}
+          explainableCategories={is4000Series ? ['formula_error', 'xbrl_schema'] : ['formula_error']}
         />
       )
     }
@@ -936,6 +973,21 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
 
         {/* Error panel or download button */}
         {!isUser && resultType !== 'ask_previous' && errorPanel}
+
+        {/* "Explain Next Errors" — shown only while more unexplained errors
+            remain in this category+file (data.has_more from the backend's
+            explain-category response); continues from data.next_offset so
+            already-explained errors are never re-requested. */}
+        {!isUser && resultType === 'final' && data?.has_more && batchCategory && (
+          <ExplainNextErrorsButton
+            category={batchCategory}
+            errorFilePath={batchErrorFilePath}
+            formId={batchFormId}
+            reportName={batchReportName}
+            nextOffset={data?.next_offset ?? 0}
+            onExplainCategory={onExplainCategory}
+          />
+        )}
       </div>
 
       {isUser && <div className="avatar user-avatar">You</div>}

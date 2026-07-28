@@ -3672,15 +3672,20 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
     )
 
     # ── FORMULA_ERROR ──────────────────────────────────────────────────────────
+    # Count is the number of DISTINCT validation rules, not the sum of their
+    # occurrence counts — a rule that fails 149 times is still one rule.
+    # rules[] is already grouped one-dict-per-rule (each with its own
+    # "instances" list for the occurrences), so len(rules) IS that count;
+    # the per-rule occurrence count is unaffected and still surfaces inside
+    # each rule's own explanation ("failed for N reporting instances").
     try:
         if form_id and not _is_4000_series(form_id):
             from backend.tools.formula_error_generic import parse_generic_formula_errors
             rules = parse_generic_formula_errors(error_file_path)
         else:
             rules = parse_formula_errors(error_file_path)
-        total = sum(r.get("error_count", len(r.get("instances", []))) for r in rules)
-        if total:
-            result["formula_error"] = total
+        if rules:
+            result["formula_error"] = len(rules)
     except Exception as exc:
         logger.warning("[count_errors_by_category] formula parse failed: %s", exc)
 
@@ -3709,13 +3714,30 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
         logger.warning("[count_errors_by_category] dimensional parse failed: %s", exc)
 
     # ── XBRL_SCHEMA_ERROR ──────────────────────────────────────────────────────
+    # Same "unique rule, not occurrence" principle as formula errors. Not
+    # every schema-error file has a rule-identifying field though (the
+    # directMsg/iDeal SPECIFICATION_ERROR format has none at all — see
+    # _parse_direct_msg_entries) — so entries are grouped by the best
+    # available identifier (rule name, then assertion label, then title),
+    # and any entry with none of those still counts as its own occurrence
+    # (identical to today's behavior for that format — nothing to collapse
+    # without a grouping key, so no regression there).
     try:
         schema_errors = parse_backtrack_html_errors(error_file_path)
-        xbrl_schema_count = sum(
-            1 for e in schema_errors
+        xbrl_schema_entries = [
+            e for e in schema_errors
             if (e.get("errorType") or "").strip().upper().replace(" ", "_").replace("-", "_")
             in ("XBRL_SCHEMA", "XBRL_SCHEMA_ERROR")
-        )
+        ]
+        rule_keys: set[str] = set()
+        unkeyed = 0
+        for e in xbrl_schema_entries:
+            key = (e.get("rule") or e.get("assertionLabel") or e.get("title") or "").strip().lower()
+            if key:
+                rule_keys.add(key)
+            else:
+                unkeyed += 1
+        xbrl_schema_count = len(rule_keys) + unkeyed
         if xbrl_schema_count:
             result["xbrl_schema"] = xbrl_schema_count
     except Exception as exc:
@@ -3729,13 +3751,14 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
 # SECTION 7: ON-DEMAND EXPLAIN BY CATEGORY
 # ══════════════════════════════════════════════════════════════════════════════
 
-_MAX_EXPLAIN = 5
+_MAX_EXPLAIN = 3  # batch size — formula_error and xbrl_schema are explained this many at a time
 
 
 def explain_errors_by_category(
-    error_file_path: str, category: str, form_id: str = ""
+    error_file_path: str, category: str, form_id: str = "", offset: int = 0
 ) -> list[dict]:
-    """Parse and explain up to _MAX_EXPLAIN errors with full context and root-cause linking.
+    """Parse and explain one _MAX_EXPLAIN-sized batch, starting at *offset*,
+    with full context and root-cause linking.
 
     Parameters
     ----------
@@ -3746,6 +3769,14 @@ def explain_errors_by_category(
     form_id : str, optional
         Passed through to explain_formula_errors for 4000-series taxonomy-
         JSON enrichment. Ignored for other categories.
+    offset : int, optional
+        How many errors (in this category) have already been explained in
+        earlier batches — this call explains errors[offset:offset+_MAX_EXPLAIN].
+        Defaults to 0, i.e. the first batch — existing callers that don't
+        pass this keep their exact current behavior other than the batch
+        size itself (5 -> 3, an intentional, separate change).
+        Ignored for "dimensional" (no on-demand explanation exists for that
+        category — parsing/counting only).
 
     Returns
     -------
@@ -3761,8 +3792,11 @@ def explain_errors_by_category(
         logger.warning("[explain_errors_by_category] unsupported category: %s", category)
         return []
 
+    offset = max(0, int(offset or 0))
+
     logger.info(
-        "[explain_errors_by_category] START category=%s path=%s", category, error_file_path
+        "[explain_errors_by_category] START category=%s path=%s offset=%d",
+        category, error_file_path, offset,
     )
     start = time.perf_counter()
 
@@ -3779,7 +3813,7 @@ def explain_errors_by_category(
             if form_id and not _is_4000_series(form_id):
                 from backend.tools.formula_error_generic import explain_generic_formula_error_file
                 explained = explain_generic_formula_error_file(
-                    error_file_path, form_id=form_id, max_rules=_MAX_EXPLAIN,
+                    error_file_path, form_id=form_id, max_rules=_MAX_EXPLAIN, offset=offset,
                 )
                 logger.info(
                     "[explain_errors_by_category] generic-formula done rules=%d elapsed=%.3fs form_id=%s",
@@ -3788,7 +3822,7 @@ def explain_errors_by_category(
                 return explained
 
             raw_rules = parse_formula_errors(error_file_path)
-            trimmed   = raw_rules[:_MAX_EXPLAIN]
+            trimmed   = raw_rules[offset:offset + _MAX_EXPLAIN]
             enriched  = enrich_formula_errors(trimmed)
             explained = explain_formula_errors(enriched, form_id=form_id)
             for rule in explained:
@@ -3800,6 +3834,11 @@ def explain_errors_by_category(
             return explained
 
         elif category == "dimensional":
+            # No on-demand explanation for this category — informational
+            # count/parsing only (see count_errors_by_category). offset is
+            # deliberately not applied here; this branch is unreachable from
+            # the UI (the "Explain Dimension Errors" button is hidden) but is
+            # left byte-for-byte as-is for any direct caller.
             errors    = parse_dimensional_html_errors(error_file_path)
             trimmed   = errors[:_MAX_EXPLAIN]
             explained = explain_dimensional_errors(trimmed)
@@ -3818,7 +3857,7 @@ def explain_errors_by_category(
                 e for e in errors
                 if (e.get("errorType") or "").strip().upper() in _XBRL_SCHEMA_LABELS
             ]
-            trimmed = (xbrl_only or errors)[:_MAX_EXPLAIN]
+            trimmed = (xbrl_only or errors)[offset:offset + _MAX_EXPLAIN]
 
             # Root-cause analysis: parse other categories for downstream linkage
             try:
@@ -3845,11 +3884,11 @@ def explain_errors_by_category(
 
 
 def explain_errors_by_category_for_form(
-    error_file_path: str, category: str, form_id: str = ""
+    error_file_path: str, category: str, form_id: str = "", offset: int = 0
 ) -> list[dict]:
     """Like explain_errors_by_category but applies 4000-series tag for xbrl_schema
     and passes form_id through for formula_error taxonomy-JSON enrichment."""
-    results = explain_errors_by_category(error_file_path, category, form_id=form_id)
+    results = explain_errors_by_category(error_file_path, category, form_id=form_id, offset=offset)
 
     if category == "xbrl_schema" and form_id:
         return_id    = _get_return_id_for_form(form_id)

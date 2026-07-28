@@ -276,11 +276,12 @@ export async function transcribeAudio(audioBlob, opts = {}) {
  * @returns {Promise<object>} - ChatResponse-shaped object with error_details populated.
  */
 export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null, opts = {}) {
-  const { signal, requestId } = opts
+  const { signal, requestId, offset } = opts
   const body = { error_file_path: errorFilePath, category }
   if (formId)     body.form_id     = formId
   if (reportName) body.report_name = reportName
   if (requestId)  body.request_id  = requestId
+  if (offset)     body.offset      = offset
   // Use the same BASE_URL as sendMessage — relies on Vite proxy in dev,
   // VITE_API_BASE_URL in production. Do NOT use a hardcoded localhost fallback
   // here (unlike the polling fetch in App.jsx which correctly uses port 8001).

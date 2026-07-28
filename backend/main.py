@@ -348,6 +348,7 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             category=request.category,
             form_id=request.form_id,
             report_name=request.report_name,
+            offset=request.offset,
         ))
         elapsed = time.monotonic() - start
         logger.info(

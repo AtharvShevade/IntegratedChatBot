@@ -1703,6 +1703,7 @@ html, body, #root {
   cursor: pointer;
   transition: opacity .15s;
 }
+.explain-next-errors-wrap { margin-top: 10px; }
 .explain-cat-btn:hover  { opacity: .85; }
 .explain-cat-btn:active { opacity: .7; }
 .explain-cat-btn.formula   { background: #6a0dad; color: #fff; }
@@ -1862,8 +1863,8 @@ html, body, #root {
    only — dimensional/xbrl_schema panels keep the base styling above. */
 
 .formula-error-card {
-  background: #fff;
-  border: 1px solid #e5e0ec;
+  background: #f1f0f5;
+  border: 1px solid #b8afc9;
   border-radius: 10px;
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
@@ -1923,8 +1924,8 @@ html, body, #root {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 10px 16px;
-  background: #f8f8fb;
-  border: 1px solid #ececf0;
+  background: #eaeaf1;
+  border: 1px solid #adadc2;
   border-radius: 8px;
   padding: 12px 16px;
 }
@@ -1952,8 +1953,8 @@ html, body, #root {
 }
 
 .formula-error-location {
-  background: #f8f8fb;
-  border: 1px solid #ececf0;
+  background: #eaeaf1;
+  border: 1px solid #adadc2;
   border-radius: 8px;
   padding: 10px 16px;
 }
@@ -1994,8 +1995,8 @@ html, body, #root {
 }
 
 .formula-error-fix {
-  background: #eef8f0;
-  border: 1px solid #cdeccf;
+  background: #cdecd3;
+  border: 1px solid #6ec47f;
   border-left: 3px solid #2e9e46;
   border-radius: 8px;
   padding: 10px 16px;

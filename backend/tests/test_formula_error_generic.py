@@ -562,6 +562,37 @@ class TestParseGenericFormulaErrors:
         assert g.parse_generic_formula_errors(r"C:\nonexistent\file.html") == []
 
 
+class TestExplainGenericFormulaErrorFileOffset:
+    """explain_generic_formula_error_file's offset param — added for the
+    "batch of 3, never repeat" UI improvement. offset=0 (default) must
+    reproduce the exact previous behavior."""
+
+    def _rules(self, n):
+        return [
+            {"rule_name": f"Rule{i}", "formula_expression": "$V1 = $V2",
+             "instances": [{"business_message": "", "variables": []}]}
+            for i in range(n)
+        ]
+
+    def test_default_offset_returns_first_batch(self, monkeypatch):
+        monkeypatch.setattr(g, "parse_generic_formula_errors", lambda path: self._rules(5))
+        monkeypatch.setattr(g, "explain_generic_formula_errors", lambda rules, form_id="": rules)
+        result = g.explain_generic_formula_error_file("dummy.html", max_rules=3)
+        assert [r["rule_name"] for r in result] == ["Rule0", "Rule1", "Rule2"]
+
+    def test_offset_continues_without_repeating(self, monkeypatch):
+        monkeypatch.setattr(g, "parse_generic_formula_errors", lambda path: self._rules(5))
+        monkeypatch.setattr(g, "explain_generic_formula_errors", lambda rules, form_id="": rules)
+        result = g.explain_generic_formula_error_file("dummy.html", max_rules=3, offset=3)
+        assert [r["rule_name"] for r in result] == ["Rule3", "Rule4"]
+
+    def test_offset_past_end_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(g, "parse_generic_formula_errors", lambda path: self._rules(3))
+        monkeypatch.setattr(g, "explain_generic_formula_errors", lambda rules, form_id="": rules)
+        result = g.explain_generic_formula_error_file("dummy.html", max_rules=3, offset=3)
+        assert result == []
+
+
 # ── 8. Routing helper sanity (does not touch report_lookup.py's own logic) ─
 
 class TestRoutingHelperUsed:
@@ -667,37 +698,108 @@ class TestFixSentenceWordingContract:
         assert "determine which value requires correction" in s
 
 
-# ── 11. LLM can no longer override the condition sentence ─────────────────
+# ── 11. LLM explanation is used when grounded, rejected when it contradicts
+#        the verified relationship — the guarantee now lives in the
+#        grounding check (_llm_output_is_grounded), not in the renderer
+#        refusing to use 'explanation' at all.
 
-class TestLlmCannotOverrideExplanation:
-    def test_llm_text_only_affects_fix_line_not_condition_sentence(self):
-        """Even if a caller passes an 'explanation' key (stale/legacy shape),
-        the rendered condition sentence must remain the deterministic one —
-        this is the core guarantee the reported bug required."""
+class TestLlmExplanationUsedWhenGrounded:
+    def test_renderer_uses_llm_explanation_when_provided(self):
+        """render_generic_formula_explanation trusts llm_text as-is — by
+        the time it gets here (via the real pipeline) it has already
+        passed _llm_output_is_grounded. This is the intentional dynamic
+        behavior: a correctly-grounded LLM sentence DOES replace the
+        deterministic one."""
+        rule = _rule(
+            "TermLoans", "$V1 > $V2",
+            [_var("V1", "TermLoansSanctioned", "500"), _var("V2", "TermLoansDisbursed", "100")],
+            business_message='"Sanctioned > Disbursed" do not tally.',
+        )
+        llm_text = {
+            "explanation": "Term Loans Sanctioned comes in well above Term Loans Disbursed here, so this check passes as expected.",
+            "fix": "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate.",
+        }
+        text = g.render_generic_formula_explanation(rule, llm_text=llm_text)
+        assert "Term Loans Sanctioned comes in well above Term Loans Disbursed" in text
+        assert "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate." in text
+
+    def test_renderer_falls_back_to_deterministic_when_llm_text_is_none(self):
+        """The safety net: whenever llm_text is None (LLM unreachable, or
+        its wording failed grounding validation upstream), both sentences
+        must fall back to the fully deterministic templates."""
         rule = _rule(
             "TermLoans", "$V1 > $V2",
             [_var("V1", "TermLoansSanctioned", "0"), _var("V2", "TermLoansDisbursed", "0")],
             business_message='"Sanctioned > Disbursed" do not tally.',
         )
-        llm_text = {
-            "explanation": "Term Loans Sanctioned exceeded Term Loans Disbursed.",  # wrong on purpose
-            "fix": "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate.",
-        }
-        text = g.render_generic_formula_explanation(rule, llm_text=llm_text)
-        assert "exceeded" not in text
-        assert "both values are equal" in text  # deterministic sentence still won
-        assert "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate." in text  # fix DID apply
+        text = g.render_generic_formula_explanation(rule, llm_text=None)
+        assert "both values are equal" in text
+        assert "confirm whether the equality is expected" in text
 
-    def test_llm_fix_rejected_when_it_contradicts_equal_relationship(self):
-        context = {
-            "lhs_label": "LHS", "rhs_terms": [{"label": "RHS", "value": "0"}],
-            "relationship": "lhs_equal",
+
+class TestLlmOutputGroundingValidation:
+    """_llm_output_is_grounded is the actual guarantee against the reported
+    bug now — it runs BEFORE llm_text ever reaches the renderer, so a
+    contradicting sentence never gets the chance to be used at all."""
+
+    def _context(self, relationship="lhs_equal"):
+        return {
+            "lhs_label": "Term Loans Sanctioned",
+            "rhs_terms": [{"label": "Term Loans Disbursed", "value": "0"}],
+            "relationship": relationship,
         }
-        # Simulate what explain_generic_context_via_llm's validation must catch
-        # by exercising the same guard condition directly.
-        import re as _re
-        lowered = "lhs exceeded rhs, please review."
-        assert _re.search(r"\bexceed|exceeds|exceeded|is greater|is lower|is higher|is less than\b", lowered)
+
+    def test_rejects_exceeded_claim_when_relationship_is_equal(self):
+        ctx = self._context("lhs_equal")
+        explanation = "Term Loans Sanctioned exceeded Term Loans Disbursed."
+        fix = "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate."
+        assert g._llm_output_is_grounded(explanation, fix, ctx) is False
+
+    def test_accepts_correctly_grounded_equal_case(self):
+        ctx = self._context("lhs_equal")
+        explanation = "Term Loans Sanctioned and Term Loans Disbursed are reported at the same amount here."
+        fix = "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate."
+        assert g._llm_output_is_grounded(explanation, fix, ctx) is True
+
+    def test_rejects_missing_required_label(self):
+        ctx = self._context("lhs_greater")
+        explanation = "The reported figure looks fine to me."
+        fix = "Please double check the numbers."
+        assert g._llm_output_is_grounded(explanation, fix, ctx) is False
+
+    def test_rejects_v_notation(self):
+        ctx = self._context("lhs_greater")
+        explanation = "V1 is greater than V2 (Term Loans Sanctioned, Term Loans Disbursed)."
+        fix = "Review Term Loans Sanctioned and Term Loans Disbursed."
+        assert g._llm_output_is_grounded(explanation, fix, ctx) is False
+
+    def test_accepts_correctly_grounded_greater_case(self):
+        ctx = self._context("lhs_greater")
+        explanation = "Term Loans Sanctioned is meaningfully higher than Term Loans Disbursed in this case."
+        fix = "Review Term Loans Sanctioned and Term Loans Disbursed, then revalidate."
+        assert g._llm_output_is_grounded(explanation, fix, ctx) is True
+
+
+class TestBuildGenericLlmContextExcludesRuleName:
+    def test_context_never_includes_rule_name(self):
+        """rule_name is deliberately excluded from what reaches the LLM —
+        it's an internal identifier that prior testing showed models
+        latching onto instead of the actual field labels."""
+        rule = _rule(
+            "Sec-4ChgInAQ-RecOfNPAs-VeryLongInternalRuleName", "$V1 = $V2",
+            [_var("V1", "LoansAdvancesOutstanding", "100"), _var("V2", "AmountOutstanding", "100")],
+        )
+        context = g.build_generic_llm_context(rule)
+        assert "rule_name" not in context
+
+    def test_context_includes_plain_english_relationship_meaning(self):
+        rule = _rule(
+            "Sec4VsSec2", "$V1 = $V2",
+            [_var("V1", "LoansAdvancesOutstanding", "100"), _var("V2", "AmountOutstanding", "100")],
+        )
+        context = g.build_generic_llm_context(rule)
+        assert "relationship_meaning" in context
+        assert "EQUAL" in context["relationship_meaning"]
 
 
 # ── 12. Confirm 4000-series behavior is unaffected ─────────────────────────

@@ -77,6 +77,7 @@ class ExplainCategoryRequest(BaseModel):
     form_id:         Optional[str] = Field(None, max_length=64)
     report_name:     Optional[str] = Field(None, max_length=256)
     request_id:      Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
+    offset:          int = Field(0, ge=0)  # how many errors in this category are already explained (batching)
 
 
 class FeedbackRequest(BaseModel):
