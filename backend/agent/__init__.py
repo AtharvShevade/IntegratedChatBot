@@ -3000,6 +3000,22 @@ def _handle_schedule(
     should run). It is optional here — free-text/guided callers rarely supply
     it up front — and _finalize_schedule will ask for it if missing.
     """
+    # ── Auth: check BEFORE any report-name resolution/disambiguation — same
+    # reasoning and permission as _handle_generate above. The check in
+    # _finalize_schedule remains as the backstop for staged-turn callers.
+    if login_id:
+        from backend.services.auth_service import can_generate_instance as _chk_create
+        if not _chk_create(login_id):
+            logger.warning(
+                "[AUTH_DENY] schedule_report: login_id=%r lacks Instance Generation permission (pre-resolution)",
+                login_id,
+            )
+            return _build(
+                intent="schedule_report", report_name=None,
+                response_text="Sorry, you do not have access to schedule report generation.",
+                result_type="error",
+            )
+
     if not report_ident:
         return _build(
             intent="schedule_report",
@@ -3137,7 +3153,7 @@ async def _find_new_instance_log_id(
     a row whose Id wasn't already present before the call can be the one
     this call created.
     """
-    for attempt in range(3):
+    for attempt in range(8):
         if attempt:
             await asyncio.sleep(1.0)
         rows = _matching_instance_log_rows(form_id, reporting_date, login_id)
@@ -3372,6 +3388,24 @@ async def _handle_generate(
     login_id: str | None = None,
 ) -> dict[str, Any]:
     """Entry point for generate_instance intent from the normal (non-staged) flow."""
+    # ── Auth: check BEFORE any report-name resolution/disambiguation so a
+    # user without Instance Generation permission is told immediately,
+    # instead of being walked through name/date prompts first. The check in
+    # _finalize_generation remains as the backstop for staged-turn callers
+    # (e.g. _handle_gen_date) that reach it without passing through here.
+    if login_id:
+        from backend.services.auth_service import can_generate_instance as _chk_create
+        if not _chk_create(login_id):
+            logger.warning(
+                "[AUTH_DENY] generate_instance: login_id=%r lacks Instance Generation permission (pre-resolution)",
+                login_id,
+            )
+            return _build(
+                intent="generate_instance", report_name=None,
+                response_text="Sorry, you do not have access to generate report instances.",
+                result_type="error",
+            )
+
     matches = find_matching_reports(report_name)
     original_matches = matches
     if allowed_form_ids is not None:
