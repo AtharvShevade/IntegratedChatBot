@@ -647,139 +647,28 @@ def parse_dimensional_html_errors(html_path: str) -> list[dict]:
     return errors
 
 
-def explain_dimensional_errors(errors: list[dict]) -> list[dict]:
+def explain_dimensional_errors(
+    errors: list[dict], form_id: str = "", error_file_path: str = "",
+) -> list[dict]:
     """
-    Explain dimensional errors one-at-a-time.
-    Prompts are strictly evidence-based — no inference of duplicate context,
-    date format issues, missing members, or taxonomy expectations unless the
-    parsed validator message explicitly states them.
+    Explain dimensional errors using taxonomy-aware, evidence-based analysis
+    (backend.tools.dimension_taxonomy) — deterministic, no LLM involved, so
+    it never guesses at a dimension/member the repo data doesn't support.
+
+    form_id / error_file_path are optional so any existing caller that only
+    passes `errors` keeps working unchanged (both simply mean "no taxonomy
+    cross-reference available", which degrades to the generic-but-accurate
+    fallback template — same behavior as before this function had any
+    taxonomy awareness).
     """
-    import json as _json
-    import httpx as _httpx
- 
+    from backend.tools.dimension_taxonomy import explain_dimensional_errors_taxonomy_aware
+
     if not errors:
         return errors
- 
-    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "180"))
-    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
- 
-    results: list[dict] = []
- 
-    for err in errors:
-        # ------------------------------------------------------------------
-        # Build the payload from ONLY what the parser extracted.
-        # We deliberately EXCLUDE is_duplicate_context and typed_dim_value
-        # as they lead the LLM to infer causes not stated by the validator.
-        # The raw_message IS included because it is the verbatim validator text.
-        # ------------------------------------------------------------------
-        raw_msg = err.get("raw_message", "")
-        # Strip section refs so the model sees the actual message text
-        clean_raw = re.sub(r'^[\d\.]+\s*\[[^\]]*\]\s*:\s*', '', raw_msg).strip() if raw_msg else ""
- 
-        payload: dict = {}
- 
-        if err.get("error_class"):
-            payload["error_class"] = err["error_class"]
-        if err.get("section_ref"):
-            payload["section_ref"] = err["section_ref"]
-        if err.get("concept"):
-            payload["concept"] = err["concept"]
-        if err.get("value"):
-            payload["reported_value"] = err["value"]
-        if err.get("context_label"):
-            payload["context_description"] = err["context_label"]
-        elif err.get("context"):
-            payload["context_description"] = err["context"]
-        if err.get("dimension"):
-            payload["dimension"] = err["dimension"]
-        if err.get("error_code"):
-            payload["error_code"] = err["error_code"]
-        if err.get("line_no"):
-            payload["line_number"] = err["line_no"]
-        # Include the verbatim validator message — this is the only factual anchor
-        if clean_raw:
-            payload["validator_message"] = clean_raw
- 
-        payload_json = _json.dumps(payload, indent=2, ensure_ascii=False)
- 
-        prompt = (
-            "You are a regulatory XBRL reporting assistant. "
-            "Your task is to explain a dimensional validation error to a business user.\n\n"
-            "The validation error details are provided as JSON below. "
-            "These fields are the ONLY source of truth you have.\n\n"
-            f"{payload_json}\n\n"
-            "Write ONE plain-English paragraph (maximum 70 words) explaining this error.\n\n"
-            "ABSOLUTE RULES — any violation makes the explanation wrong and harmful:\n"
-            "1. Use ONLY the fields present in the JSON. Do not infer or assume anything "
-            "   that is not explicitly stated in the JSON.\n"
-            "2. If 'validator_message' is present, it is the verbatim text from the validator. "
-            "   Base your explanation on it. Do not paraphrase it in a way that adds meaning.\n"
-            "3. If 'concept' is present, name it. If absent, do NOT guess a concept name.\n"
-            "4. If 'reported_value' is present, quote it exactly. If absent, do NOT invent a value.\n"
-            "5. If 'dimension' is present, mention it by name. Do NOT assume which dimension "
-            "   is wrong if it is not in the JSON.\n"
-            "6. Do NOT state that the context is a duplicate unless the validator_message "
-            "   explicitly says 'duplicate'.\n"
-            "7. Do NOT state that a date format is wrong unless the validator_message "
-            "   explicitly says the date format is invalid.\n"
-            "8. Do NOT state that a member is missing or incorrect unless the validator_message "
-            "   explicitly says so.\n"
-            "9. Do NOT use phrases like 'it appears', 'seems', 'may be', 'possibly', "
-            "   'likely', or 'probably'.\n"
-            "10. Do NOT mention 'XBRL', 'taxonomy', 'schema', 'cvc-', or technical codes.\n"
-            "11. If the validator message says 'invalid combination of dimensions and members', "
-            "    say exactly that — do NOT speculate on which dimension or member is wrong.\n"
-            "12. If the validator message says 'does not match the typeDomainRef', say that "
-            "    the value does not match the definition — do NOT assume the cause.\n"
-            "13. End with exactly: 'The report cannot be submitted until this is corrected.'\n"
-            "14. One paragraph only. No bullet points. No markdown.\n\n"
-            "Return only the explanation paragraph."
-        )
- 
-        explanation = ""
-        try:
-            api_payload = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a regulatory reporting assistant. "
-                            "Explain validation errors using ONLY the JSON fields provided. "
-                            "NEVER infer causes, duplicate contexts, date format problems, "
-                            "missing members, or taxonomy expectations unless the "
-                            "validator_message field explicitly states them. "
-                            "Return one plain-text paragraph. No markdown. No preamble."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "keep_alive": keep_alive,
-                "options": {"temperature": 0.0, "num_predict": 200},
-            }
-            with _httpx.Client(timeout=timeout) as client:
-                resp = client.post(f"{ollama_base}/api/chat", json=api_payload)
-                resp.raise_for_status()
-            explanation = resp.json()["message"]["content"].strip()
-            logger.debug(
-                "[DIM_LLM] concept=%r explanation=%r",
-                err.get("concept", ""),
-                explanation[:80],
-            )
-        except Exception as exc:
-            logger.warning("[DIM_LLM] LLM failed: %s — using fallback", exc)
- 
-        if not explanation or len(explanation) < 20:
-            explanation = _fallback(err)
- 
-        merged = dict(err)
-        merged["explanation"] = explanation
-        results.append(merged)
- 
-    return results
+
+    return explain_dimensional_errors_taxonomy_aware(
+        errors, form_id=form_id, error_file_path=error_file_path,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3768,7 +3657,8 @@ def explain_errors_by_category(
         One of "formula_error", "xbrl_schema", "dimensional".
     form_id : str, optional
         Passed through to explain_formula_errors for 4000-series taxonomy-
-        JSON enrichment. Ignored for other categories.
+        JSON enrichment, and to explain_dimensional_errors for taxonomy-aware
+        dimension-error explanation. Ignored for "xbrl_schema".
     offset : int, optional
         How many errors (in this category) have already been explained in
         earlier batches — this call explains errors[offset:offset+_MAX_EXPLAIN].
@@ -3834,14 +3724,16 @@ def explain_errors_by_category(
             return explained
 
         elif category == "dimensional":
-            # No on-demand explanation for this category — informational
-            # count/parsing only (see count_errors_by_category). offset is
-            # deliberately not applied here; this branch is unreachable from
-            # the UI (the "Explain Dimension Errors" button is hidden) but is
-            # left byte-for-byte as-is for any direct caller.
+            # Taxonomy-aware explanation (backend.tools.dimension_taxonomy),
+            # deterministic — see explain_dimensional_errors's docstring.
+            # offset is applied the same way as the formula_error branch
+            # above, so "Explain Next Errors" advances through the list
+            # instead of re-returning the first batch every time.
             errors    = parse_dimensional_html_errors(error_file_path)
-            trimmed   = errors[:_MAX_EXPLAIN]
-            explained = explain_dimensional_errors(trimmed)
+            trimmed   = errors[offset:offset + _MAX_EXPLAIN]
+            explained = explain_dimensional_errors(
+                trimmed, form_id=form_id, error_file_path=error_file_path,
+            )
             for err in explained:
                 err["_error_category"] = "dimensional"
             logger.info(
@@ -3887,7 +3779,8 @@ def explain_errors_by_category_for_form(
     error_file_path: str, category: str, form_id: str = "", offset: int = 0
 ) -> list[dict]:
     """Like explain_errors_by_category but applies 4000-series tag for xbrl_schema
-    and passes form_id through for formula_error taxonomy-JSON enrichment."""
+    and passes form_id through for formula_error and dimensional taxonomy-JSON
+    enrichment."""
     results = explain_errors_by_category(error_file_path, category, form_id=form_id, offset=offset)
 
     if category == "xbrl_schema" and form_id:

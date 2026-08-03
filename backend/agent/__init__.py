@@ -2293,8 +2293,15 @@ async def _run_comparison(
         if session_id:
             _session_context.pop(session_id, None)
         try:
-            facts_a = load_xbrl_facts(inst_a["full_path"])
-            facts_b = load_xbrl_facts(inst_b["full_path"])
+            # Arelle parsing is blocking CPU/IO work — run both loads in
+            # worker threads (not inline on the event loop) so a slow
+            # taxonomy load doesn't stall every other concurrent request.
+            # The two are independent, so load them concurrently rather
+            # than one after the other.
+            facts_a, facts_b = await asyncio.gather(
+                asyncio.to_thread(load_xbrl_facts, inst_a["full_path"]),
+                asyncio.to_thread(load_xbrl_facts, inst_b["full_path"]),
+            )
         except ImportError as exc:
             return _build(intent="compare_reports", report_name=name,
                           response_text="Unable to perform the comparison right now. Please try again.", result_type="error")
@@ -2372,8 +2379,12 @@ async def _run_comparison(
         _session_context.pop(session_id, None)
 
     try:
-        facts_a = load_xbrl_facts(inst_a["full_path"])
-        facts_b = load_xbrl_facts(inst_b["full_path"])
+        # See the identical block above: keep Arelle's blocking parse off
+        # the event loop, and load both instances concurrently.
+        facts_a, facts_b = await asyncio.gather(
+            asyncio.to_thread(load_xbrl_facts, inst_a["full_path"]),
+            asyncio.to_thread(load_xbrl_facts, inst_b["full_path"]),
+        )
     except ImportError as exc:
         return _build(
             intent="compare_reports", report_name=name,
@@ -3106,14 +3117,25 @@ def _matching_instance_log_rows(
     from backend.db_qa.xml_store import XMLStore
 
     if not config.app_db_base_path():
+        logger.warning(
+            "[INSTANCE_LOG_PATH] config.app_db_base_path() is empty — "
+            "cannot look up instance log rows (BASE_REPO_PATH/tenant root unresolved?)"
+        )
         return []
+    resolved_path = config.instance_log_xml_path()
     store = XMLStore(config.app_db_base_path())
-    return [
-        l for l in store.instance_log()
+    all_rows = store.instance_log()
+    matches = [
+        l for l in all_rows
         if l.get("FormId", "") == str(form_id)
         and l.get("ReportingDate", "").strip().lower() == reporting_date.strip().lower()
         and (not login_id or l.get("UserId", "") == login_id)
     ]
+    logger.debug(
+        "[INSTANCE_LOG_PATH] path=%s total_rows=%d matching_rows=%d form_id=%s reporting_date=%s",
+        resolved_path, len(all_rows), len(matches), form_id, reporting_date,
+    )
+    return matches
 
 
 def _parse_dtc(dtc: str):
@@ -3153,10 +3175,22 @@ async def _find_new_instance_log_id(
     a row whose Id wasn't already present before the call can be the one
     this call created.
     """
+    from backend import config
+    resolved_path = config.instance_log_xml_path()
+    logger.info(
+        "[INSTANCE_LOG_PATH] polling path=%s form_id=%s reporting_date=%s before_ids=%d "
+        "(this is the exact file Python reads — compare against wherever the .NET "
+        "generation service is configured to write XML_InstanceLog.xml if the "
+        "Request ID never appears)",
+        resolved_path, form_id, reporting_date, len(before_ids),
+    )
+    first_seen_total: int | None = None
     for attempt in range(8):
         if attempt:
             await asyncio.sleep(1.0)
         rows = _matching_instance_log_rows(form_id, reporting_date, login_id)
+        if first_seen_total is None:
+            first_seen_total = len(rows)
         new_rows = [r for r in rows if r.get("Id") and r["Id"] not in before_ids]
         if not new_rows:
             continue
@@ -3168,6 +3202,16 @@ async def _find_new_instance_log_id(
         from datetime import datetime as _datetime
         new_rows.sort(key=lambda r: _parse_dtc(r.get("DTC", "")) or _datetime.min, reverse=True)
         return new_rows[0]["Id"]
+
+    last_total = len(_matching_instance_log_rows(form_id, reporting_date, login_id))
+    logger.warning(
+        "[INSTANCE_LOG_PATH] gave up after 8 attempts (~7s) — path=%s "
+        "matching_rows_first_seen=%s matching_rows_last_seen=%s. If these two "
+        "counts are EQUAL, no new row ever appeared in this file during the "
+        "retry window — check whether the .NET generation service is writing "
+        "XML_InstanceLog.xml to a DIFFERENT path than the one logged above.",
+        resolved_path, first_seen_total, last_total,
+    )
     return None
 
 

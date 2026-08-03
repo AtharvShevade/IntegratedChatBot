@@ -1024,8 +1024,21 @@ def explain_one_generic_rule(
 def explain_generic_formula_errors(rules: list[dict], form_id: str = "") -> list[dict]:
     """Batch entry point — mirrors explain_formula_errors' signature so the
     router can call either flow interchangeably, but is otherwise a fully
-    separate implementation."""
+    separate implementation.
+
+    Runs the (already-batched, e.g. 3-at-a-time) rules' LLM phrasing
+    concurrently through a bounded ThreadPoolExecutor — the same
+    OLLAMA_MAX_CONCURRENCY-gated pattern explain_formula_errors uses for the
+    4000-series path, reused here rather than reinvented. executor.map
+    preserves input order regardless of completion order, so no re-sorting
+    is needed. explain_one_generic_rule never raises (it has its own
+    try/except falling back to a deterministic template), so one rule's
+    Ollama failure can never drop or block the others in the batch.
+    """
     import os as _os
+
+    if not rules:
+        return []
 
     taxonomy = None
     if form_id:
@@ -1039,11 +1052,22 @@ def explain_generic_formula_errors(rules: list[dict], form_id: str = "") -> list
     model       = _os.getenv("OLLAMA_MODEL", "llama3.1:latest")
     timeout     = float(_os.getenv("OLLAMA_TIMEOUT", "180"))
     keep_alive  = _os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+    try:
+        max_concurrency = int(_os.getenv("OLLAMA_MAX_CONCURRENCY", "2"))
+    except ValueError:
+        max_concurrency = 2
+    max_concurrency = max(1, max_concurrency)
 
-    return [
-        explain_one_generic_rule(rule, taxonomy, ollama_base, model, timeout, keep_alive)
-        for rule in rules
-    ]
+    def _worker(rule: dict) -> dict:
+        return explain_one_generic_rule(rule, taxonomy, ollama_base, model, timeout, keep_alive)
+
+    max_workers = max(1, min(max_concurrency, len(rules)))
+    if max_workers == 1:
+        return [_worker(rule) for rule in rules]
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(_worker, rules))
 
 
 def explain_generic_formula_error_file(

@@ -417,6 +417,42 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
 }
 
 // ── DimensionalErrorPanel ─────────────────────────────────────────────────────
+// The explanation string is always "**Label:** content" blocks separated by
+// blank lines (see backend/tools/dimension_taxonomy.py's _render_template) —
+// parsed into real labeled sections here (icon + color-coded left border per
+// label) rather than left to generic markdown rendering, so the structure
+// and bolding are guaranteed regardless of markdown-renderer quirks.
+const _DIM_SECTION_META = {
+  'Dimension Error':        { icon: '📐', cls: 'dim-sec-title' },
+  'What is wrong':          { icon: '⚠️', cls: 'dim-sec-wrong' },
+  'What should be checked': { icon: '🔍', cls: 'dim-sec-check' },
+  'Reported value':         { icon: '🔢', cls: 'dim-sec-value' },
+  'Context':                { icon: '📍', cls: 'dim-sec-context' },
+}
+
+function _parseDimensionSections(text) {
+  if (!text) return null
+  const re = /\*\*([^*]+?):\*\*\s*([\s\S]*?)(?=\n\n\*\*[^*]+?:\*\*|$)/g
+  const sections = []
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const label = m[1].trim()
+    const content = m[2].trim()
+    if (label && content) sections.push({ label, content })
+  }
+  return sections.length ? sections : null
+}
+
+// Renders `code` spans inline without pulling in a full markdown parser for
+// this one case — content only ever contains plain text plus backtick spans.
+function _renderInlineCode(text, keyPrefix) {
+  return text.split('`').map((part, i) =>
+    i % 2 === 1
+      ? <code key={`${keyPrefix}-${i}`}>{part}</code>
+      : <React.Fragment key={`${keyPrefix}-${i}`}>{part}</React.Fragment>
+  )
+}
+
 function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
   if (!details || details.length === 0) return null
   const color = _catMeta('dimensional').color
@@ -432,11 +468,29 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
           <span className="error-section-count">{details.length}</span>
         </div>
         <ol className="dimensional-error-list">
-          {details.map((err, i) => (
+          {details.map((err, i) => {
+            const sections = _parseDimensionSections(err.explanation)
+            return (
             <li key={i} className="dimensional-error-item">
-              <div className="dimensional-error-explanation">
-                {err.explanation || `Dimensional error detected for concept '${err.concept || 'unknown'}'.`}
-              </div>
+              {sections ? (
+                <div className="dimensional-error-sections">
+                  {sections.map((sec, si) => {
+                    const meta = _DIM_SECTION_META[sec.label] || { icon: '•', cls: 'dim-sec-generic' }
+                    return (
+                      <div key={si} className={`dim-sec ${meta.cls}`}>
+                        <span className="dim-sec-label">{meta.icon} {sec.label}:</span>{' '}
+                        <span className="dim-sec-content">{_renderInlineCode(sec.content, `s${i}-${si}`)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="dimensional-error-explanation error-explanation-markdown">
+                  <ReactMarkdown>
+                    {err.explanation || `Dimensional error detected for concept '${err.concept || 'unknown'}'.`}
+                  </ReactMarkdown>
+                </div>
+              )}
               {(err.concept || err.value || err.context) && (
                 <div className="dimensional-error-meta">
                   {err.concept && <span className="dim-meta-chip">concept: {err.concept}</span>}
@@ -449,7 +503,8 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
                 </div>
               )}
             </li>
-          ))}
+            )
+          })}
         </ol>
         {downloadUrl && (
           <div className="error-details-actions">
@@ -851,14 +906,13 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
       )
     }
     if (isFailed && errorCategoryCounts) {
-      // 4000-series reports can explain formula_error and xbrl_schema.
-      // dimensional has no explanation logic implemented (informational
-      // count only — see backend/tools/report_lookup.py's dimensional
-      // branch), so its button is never shown for any report type; the
-      // count chip still renders (ErrorSummaryPanel shows counts for every
-      // active category regardless of explainableCategories). Other
-      // (non-4000-series) returns only have a working non-backtracking
-      // explain flow for formula errors so far (backend/tools/formula_error_generic.py).
+      // 4000-series reports can explain formula_error, xbrl_schema, and
+      // dimensional. Non-4000-series returns use a separate non-backtracking
+      // explain flow for formula errors (backend/tools/formula_error_generic.py)
+      // and have no xbrl_schema explainer, but dimensional is form_id-keyed,
+      // not 4000-series-specific (backend/tools/dimension_taxonomy.py via
+      // report_lookup.py's dimensional branch), so it's enabled for every
+      // return whose error file actually has dimension errors.
       return (
         <ErrorSummaryPanel
           counts={errorCategoryCounts}
@@ -867,7 +921,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
           onExplainCategory={onExplainCategory}
           formId={data?.form_id}
           reportName={data?.report_name}
-          explainableCategories={is4000Series ? ['formula_error', 'xbrl_schema'] : ['formula_error']}
+          explainableCategories={is4000Series ? ['formula_error', 'xbrl_schema', 'dimensional'] : ['formula_error', 'dimensional']}
         />
       )
     }

@@ -1,14 +1,15 @@
 """Tests for the three error-summary/explanation UI/UX improvements:
 
-1. Dimension Errors are informational only (no on-demand explanation) — the
-   "Explain Dimension Errors" button is a frontend-only concern
-   (frontend/src/components/MessageBubble.jsx's explainableCategories no
-   longer includes 'dimensional' for any report type). There is no JS test
-   harness in this repo (no jest/vitest configured) to automate a UI
-   assertion for that, so this file covers the backend side: the
-   dimensional parsing/counting path is untouched, and
-   explain_errors_by_category's dimensional branch still works exactly as
-   before if called directly (it's just unreachable from the UI now).
+1. Dimension Errors now have a real, taxonomy-aware on-demand explanation
+   (backend/tools/dimension_taxonomy.py — see test_dimension_taxonomy.py for
+   its dedicated tests) and the "Explain Dimension Errors" button is shown
+   for 4000-series reports (frontend/src/components/MessageBubble.jsx's
+   explainableCategories includes 'dimensional' for that report type).
+   There is no JS test harness in this repo (no jest/vitest configured) to
+   automate a UI assertion for that, so this file covers the backend side:
+   the dimensional parsing/counting path is untouched, and
+   explain_errors_by_category's dimensional branch preserves its batching
+   semantics (offset has no effect) exactly as before.
 
 2. Formula and XBRL/Specification errors are explained in batches of
    exactly 3, offset-based, never re-explaining an already-covered range.
@@ -238,16 +239,20 @@ class TestXbrlSchemaBatching:
 
 
 class TestDimensionalUnaffected:
-    def test_dimensional_branch_ignores_offset_unchanged(self, monkeypatch, dummy_html_file):
-        """No on-demand dimension explanation is implemented — this branch
-        is only reachable via a direct function call now (the UI button is
-        gone), and must behave exactly as it always has."""
+    def test_dimensional_branch_applies_offset(self, monkeypatch, dummy_html_file):
+        """Dimension-error explanation is taxonomy-aware (see
+        backend.tools.dimension_taxonomy) and, now that the "Explain
+        Dimension Errors" button is wired up in the UI, batching must behave
+        the same as the formula_error branch: offset advances through the
+        error list instead of always re-explaining the first batch."""
         errors = [{"id": i} for i in range(5)]
         monkeypatch.setattr(rl, "parse_dimensional_html_errors", lambda path: errors)
-        monkeypatch.setattr(rl, "explain_dimensional_errors", lambda trimmed: trimmed)
+        monkeypatch.setattr(rl, "explain_dimensional_errors", lambda trimmed, **kwargs: trimmed)
         result_offset_0 = rl.explain_errors_by_category(dummy_html_file, "dimensional", offset=0)
         result_offset_2 = rl.explain_errors_by_category(dummy_html_file, "dimensional", offset=2)
-        assert result_offset_0 == result_offset_2  # offset has no effect here, by design
+        assert result_offset_0 != result_offset_2
+        assert [e["id"] for e in result_offset_0] == [0, 1, 2]
+        assert [e["id"] for e in result_offset_2] == [2, 3, 4]
 
 
 # ── 3. explain_category_for_report: has_more / next_offset / total_count ──

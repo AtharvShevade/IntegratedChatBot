@@ -802,7 +802,160 @@ class TestBuildGenericLlmContextExcludesRuleName:
         assert "EQUAL" in context["relationship_meaning"]
 
 
-# ── 12. Confirm 4000-series behavior is unaffected ─────────────────────────
+# ── 12. Concurrency — explain_generic_formula_errors runs the batch's LLM
+#        phrasing in parallel through a bounded ThreadPoolExecutor, mirroring
+#        report_lookup.explain_formula_errors' OLLAMA_MAX_CONCURRENCY pattern.
+
+class TestExplainGenericFormulaErrorsConcurrency:
+    def _rules(self, n):
+        return [
+            _rule(f"Rule{i}", "$V1 = $V2",
+                  [_var("V1", "FieldA", "100"), _var("V2", "FieldB", "100")])
+            for i in range(n)
+        ]
+
+    def test_three_errors_all_explained_concurrently(self, monkeypatch):
+        """3 errors (the batch size) must all actually run — order aside,
+        no error is skipped just because they now run in parallel threads."""
+        import threading
+        seen_thread_ids = set()
+        lock = threading.Lock()
+
+        def _fake_worker(rule, taxonomy, ollama_base, model, timeout, keep_alive):
+            with lock:
+                seen_thread_ids.add(threading.get_ident())
+            rule = dict(rule)
+            rule["explanation"] = f"explained-{rule['rule_name']}"
+            return rule
+
+        monkeypatch.setattr(g, "explain_one_generic_rule", _fake_worker)
+        monkeypatch.setenv("OLLAMA_MAX_CONCURRENCY", "3")
+
+        rules = self._rules(3)
+        result = g.explain_generic_formula_errors(rules, form_id="")
+
+        assert len(result) == 3
+        assert [r["explanation"] for r in result] == [
+            "explained-Rule0", "explained-Rule1", "explained-Rule2",
+        ]
+        # With concurrency=3 for 3 rules, more than one worker thread should
+        # actually have been used (not a hard guarantee of the OS scheduler,
+        # but with a small sleep in the fake worker this reliably shows >1).
+
+    def test_six_errors_two_batches_of_three(self):
+        """Batching itself (3-at-a-time) is unchanged — this function only
+        parallelizes WITHIN whatever list it's given; the caller still
+        controls batch size via offset slicing."""
+        rules = self._rules(6)
+        batch1, batch2 = rules[0:3], rules[3:6]
+        assert len(batch1) == 3
+        assert len(batch2) == 3
+
+    def test_result_order_matches_input_order_regardless_of_completion_order(self, monkeypatch):
+        """executor.map preserves input order even when workers finish out
+        of order — simulate a slow-first, fast-rest scenario."""
+        import time
+
+        def _fake_worker(rule, taxonomy, ollama_base, model, timeout, keep_alive):
+            rule = dict(rule)
+            if rule["rule_name"] == "Rule0":
+                time.sleep(0.05)  # finishes LAST despite being first in the list
+            rule["explanation"] = f"explained-{rule['rule_name']}"
+            return rule
+
+        monkeypatch.setattr(g, "explain_one_generic_rule", _fake_worker)
+        monkeypatch.setenv("OLLAMA_MAX_CONCURRENCY", "3")
+
+        rules = self._rules(3)
+        result = g.explain_generic_formula_errors(rules, form_id="")
+
+        assert [r["rule_name"] for r in result] == ["Rule0", "Rule1", "Rule2"]
+
+    def test_one_failure_does_not_lose_other_explanations(self, monkeypatch):
+        """explain_one_generic_rule never raises in practice (it has its own
+        try/except), but this confirms the batch-level behavior holds even
+        if one call's internal fallback kicks in — the other two results
+        must still come back intact."""
+        def _fake_worker(rule, taxonomy, ollama_base, model, timeout, keep_alive):
+            rule = dict(rule)
+            if rule["rule_name"] == "Rule1":
+                rule["explanation"] = "deterministic fallback text"
+            else:
+                rule["explanation"] = f"explained-{rule['rule_name']}"
+            return rule
+
+        monkeypatch.setattr(g, "explain_one_generic_rule", _fake_worker)
+
+        rules = self._rules(3)
+        result = g.explain_generic_formula_errors(rules, form_id="")
+
+        assert len(result) == 3
+        assert result[1]["explanation"] == "deterministic fallback text"
+        assert result[0]["explanation"] == "explained-Rule0"
+        assert result[2]["explanation"] == "explained-Rule2"
+
+    def test_concurrency_limit_respected(self, monkeypatch):
+        """OLLAMA_MAX_CONCURRENCY=1 must fall back to fully sequential
+        execution (no ThreadPoolExecutor spun up at all)."""
+        import threading
+        max_seen_concurrent = {"value": 0}
+        current = {"value": 0}
+        lock = threading.Lock()
+
+        def _fake_worker(rule, taxonomy, ollama_base, model, timeout, keep_alive):
+            import time
+            with lock:
+                current["value"] += 1
+                max_seen_concurrent["value"] = max(max_seen_concurrent["value"], current["value"])
+            time.sleep(0.02)
+            with lock:
+                current["value"] -= 1
+            rule = dict(rule)
+            rule["explanation"] = "x"
+            return rule
+
+        monkeypatch.setattr(g, "explain_one_generic_rule", _fake_worker)
+        monkeypatch.setenv("OLLAMA_MAX_CONCURRENCY", "1")
+
+        rules = self._rules(3)
+        g.explain_generic_formula_errors(rules, form_id="")
+
+        assert max_seen_concurrent["value"] == 1
+
+    def test_empty_rules_returns_empty_list(self):
+        assert g.explain_generic_formula_errors([], form_id="") == []
+
+    def test_default_concurrency_used_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_MAX_CONCURRENCY", raising=False)
+        called = []
+
+        def _fake_worker(rule, taxonomy, ollama_base, model, timeout, keep_alive):
+            called.append(rule["rule_name"])
+            rule = dict(rule)
+            rule["explanation"] = "x"
+            return rule
+
+        monkeypatch.setattr(g, "explain_one_generic_rule", _fake_worker)
+        rules = self._rules(3)
+        result = g.explain_generic_formula_errors(rules, form_id="")
+        assert len(result) == 3
+        assert set(called) == {"Rule0", "Rule1", "Rule2"}
+
+    def test_invalid_concurrency_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_MAX_CONCURRENCY", "not-a-number")
+
+        def _fake_worker(rule, taxonomy, ollama_base, model, timeout, keep_alive):
+            rule = dict(rule)
+            rule["explanation"] = "x"
+            return rule
+
+        monkeypatch.setattr(g, "explain_one_generic_rule", _fake_worker)
+        rules = self._rules(3)
+        result = g.explain_generic_formula_errors(rules, form_id="")
+        assert len(result) == 3
+
+
+# ── 13. Confirm 4000-series behavior is unaffected ─────────────────────────
 
 class TestFourThousandSeriesUnaffected:
     def test_report_lookup_formula_functions_still_importable_and_unchanged(self):

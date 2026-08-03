@@ -1409,119 +1409,128 @@ html, body, #root {
 }
 
 /* ── Dimensional Error Panel ─────────────────────────────────── */
-/* ─────────────────────────────────────────────
-   DIMENSIONAL ERROR PANEL
-───────────────────────────────────────────── */
-
-/* ─────────────────────────────────────────────
-   DIMENSIONAL ERROR PANEL
-───────────────────────────────────────────── */
-
-.dimensional-error-panel {
-  margin-top: 10px;
-  background: #1e1f26;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 10px;
-  padding: 16px;
-}
+/* Renders inside the same light .error-section-group card every other
+   error category (formula/xbrl_schema) uses — colors below are chosen for
+   a WHITE card background. (Previously this assumed a dark #1e1f26 wrapper
+   via a `.dimensional-error-panel` class that nothing in MessageBubble.jsx
+   actually applies, so near-white text rendered on the real light card
+   behind it and was unreadable — see App.5.5.css for the same fix; kept
+   identical here for parity between the two app versions.) */
 
 .dimensional-error-list {
-  margin: 12px 0;
-  padding-left: 24px;
+  margin: 0;
+  padding: 10px 12px 10px 30px;
+  background: #ececec;
+  border-radius: 8px;
 }
 
 .dimensional-error-item {
-  margin-bottom: 18px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding: 12px 4px;
+  background: transparent;
+  border-bottom: 1px solid #000;
 }
 
 .dimensional-error-item:last-child {
   border-bottom: none;
-  margin-bottom: 0;
 }
 
 .dimensional-error-explanation {
-  color: #f1f5f9;
-  font-size: 15px;
-  line-height: 1.7;
-  font-weight: 500;
+  color: #2c2c2c;
+  font-size: 0.9em;
+  line-height: 1.6;
 }
+
+/* Structured "**Label:** content" sections — each label bold + color-coded
+   with a matching left accent bar, and a subtle hover so the card reads as
+   an interactive breakdown rather than one flat paragraph. */
+.dimensional-error-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dim-sec {
+  padding: 7px 10px;
+  border-radius: 0 6px 6px 0;
+  border-left: 3px solid var(--dim-sec-color, #ccc);
+  background: rgba(0, 0, 0, 0.015);
+  font-size: 0.88em;
+  line-height: 1.55;
+  transition: background 0.15s ease;
+}
+
+.dim-sec:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dim-sec-label {
+  font-weight: 700;
+  color: var(--dim-sec-color, #333);
+}
+
+.dim-sec-content {
+  color: #2c2c2c;
+}
+
+.dim-sec-content code {
+  font-family: Consolas, monospace;
+  font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #1f2937;
+}
+
+.dim-sec-title    { --dim-sec-color: #2980b9; }
+.dim-sec-wrong    { --dim-sec-color: #d97706; }
+.dim-sec-check    { --dim-sec-color: #2563eb; }
+.dim-sec-value    { --dim-sec-color: #16a34a; }
+.dim-sec-context  { --dim-sec-color: #7c3aed; }
+.dim-sec-generic  { --dim-sec-color: #666; }
 
 .dimensional-error-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
-/* Concept Chip */
+/* Concept chip */
 .dim-meta-chip {
   display: inline-flex;
   align-items: center;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.12);
-  color: #c084fc;
-  font-size: 12px;
-  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 10px;
+  background: #f3e8ff;
+  border: 1px solid rgba(124, 58, 237, 0.18);
+  color: #7c3aed;
+  font-size: 0.78em;
+  font-weight: 600;
   font-family: Consolas, monospace;
 }
 
-/* Value Chip */
+/* Value chip */
 .dim-meta-chip:nth-child(2) {
-  color: #4ade80;
+  background: #dcfce7;
+  border-color: rgba(22, 163, 74, 0.18);
+  color: #16a34a;
 }
 
-/* Context Chip */
+/* Context chip */
 .dim-meta-context {
-  color: #60a5fa;
+  background: #dbeafe;
+  border-color: rgba(37, 99, 235, 0.18);
+  color: #2563eb;
   max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dimensional-error-panel .error-table-info-heading {
-  color: #a78bfa;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  margin-bottom: 16px;
-}
-
-.dimensional-error-panel .error-details-actions {
-  margin-top: 18px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* Download Button */
-
-.dimensional-error-panel .error-details-dl-btn {
-  background: #2563eb;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  padding: 10px 18px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.dimensional-error-panel .error-details-dl-btn:hover {
-  background: #1d4ed8;
-}
-
-/* Numbers */
-
 .dimensional-error-list li::marker {
-  color: #c084fc;
+  color: #7c3aed;
   font-weight: 700;
-  font-size: 18px;
+  font-size: 1em;
 }
 
 
@@ -1911,21 +1920,11 @@ html, body, #root {
   cursor: pointer;
 }
 .error-details-dl-btn:hover { background: #2d3561; }
- 
-/* ── Dimensional panel ───────────────────────────────────────────────────── */
-.dimensional-error-panel { margin-top: 10px; }
-.dimensional-error-list  { list-style: none; padding: 0; margin: 0; }
-.dimensional-error-item  { padding: 10px 14px; border-top: 1px solid #f0f0f0; background: #fff; }
-.dimensional-error-explanation { font-size: 0.88em; color: #2c2c2c; margin-bottom: 6px; }
-.dimensional-error-meta  { display: flex; flex-wrap: wrap; gap: 6px; }
-.dim-meta-chip {
-  font-size: 0.75em;
-  background: #eef2ff;
-  color: #1a206e;
-  border-radius: 10px;
-  padding: 2px 8px;
-}
-.dim-meta-context { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Dimensional panel styling lives in the single definition above (search
+   "Dimensional Error Panel") — this used to be a duplicate that redefined
+   the same classes with different values, which is exactly what caused the
+   original readability bug. Do not re-add a second definition here. */
 
 .error-panel-wrapper {
   margin-top: 10px;
@@ -2089,19 +2088,6 @@ html, body, #root {
   cursor: pointer;
 }
 .error-details-dl-btn:hover { background: #2d3561; }
-.dimensional-error-panel { margin-top: 10px; }
-.dimensional-error-list  { list-style: none; padding: 0; margin: 0; }
-.dimensional-error-item  { padding: 10px 14px; border-top: 1px solid #f0f0f0; background: #fff; }
-.dimensional-error-explanation { font-size: 0.88em; color: #2c2c2c; margin-bottom: 6px; }
-.dimensional-error-meta  { display: flex; flex-wrap: wrap; gap: 6px; }
-.dim-meta-chip {
-  font-size: 0.75em;
-  background: #eef2ff;
-  color: #1a206e;
-  border-radius: 10px;
-  padding: 2px 8px;
-}
-.dim-meta-context { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Error Summary Panel ─────────────────────────────────────────────────── */
 .error-summary-panel {

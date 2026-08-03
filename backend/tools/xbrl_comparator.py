@@ -396,14 +396,70 @@ def _configure_arelle_taxonomy(cntlr, file_path: str) -> None:
         skipped,
     )
 
+_XBRL_FACTS_CACHE_MAX_ENTRIES = int(os.getenv("XBRL_FACTS_CACHE_MAX_ENTRIES", "50"))
+_XBRL_FACTS_CACHE_TTL_SEC     = float(os.getenv("XBRL_FACTS_CACHE_TTL_SEC", "600"))
+
+# Per-file-path cache of already-parsed facts, reusing report_lookup's
+# existing mtime+TTL _TTLCache (same invalidation semantics already relied
+# on elsewhere) rather than inventing a second caching mechanism. Bounded to
+# _XBRL_FACTS_CACHE_MAX_ENTRIES via simple LRU eviction on top, since unlike
+# Returns.xml/instance_log (a handful of fixed paths) every generated report
+# instance is its own file — an unbounded per-path cache would grow forever.
+# Global, not per-tenant/user: the cached value is just parsed XBRL facts
+# for a given file on disk, not scoped to who asked for it, so sharing it
+# across requests carries no cross-tenant data-leak risk (the file itself
+# is only reachable after the caller's own instance/auth lookup resolved
+# its path). A single lock around the ordered-dict bookkeeping (not held
+# during the actual Arelle parse) keeps concurrent to_thread callers safe.
+import threading as _threading
+from collections import OrderedDict as _OrderedDict
+
+_xbrl_facts_caches: "_OrderedDict[str, object]" = _OrderedDict()
+_xbrl_facts_cache_lock = _threading.Lock()
+
+
+def _xbrl_facts_cache_for(path: str):
+    from backend.tools.report_lookup import _TTLCache
+    with _xbrl_facts_cache_lock:
+        cache = _xbrl_facts_caches.get(path)
+        if cache is not None:
+            _xbrl_facts_caches.move_to_end(path)
+            return cache
+        cache = _TTLCache(ttl=_XBRL_FACTS_CACHE_TTL_SEC, file_path=path)
+        _xbrl_facts_caches[path] = cache
+        if len(_xbrl_facts_caches) > _XBRL_FACTS_CACHE_MAX_ENTRIES:
+            _xbrl_facts_caches.popitem(last=False)
+        return cache
+
+
 def load_xbrl_facts(file_path: str) -> list[dict]:
-    """Load an XBRL instance file and return extracted facts.
+    """Load an XBRL instance file and return extracted facts (cached).
 
     Tries Arelle first (partial taxonomy tolerated); falls back to direct XML
     parsing only when Arelle returns 0 facts or raises an exception.
     Returns list of dicts: {concept, period_type, period_end, value_str, value_num, unit}
     Raises ImportError if arelle-release is not installed.
+
+    Cached in-process per file path (see _xbrl_facts_cache_for), invalidated
+    automatically if the file's mtime changes, bounded by
+    XBRL_FACTS_CACHE_MAX_ENTRIES/XBRL_FACTS_CACHE_TTL_SEC — repeated
+    comparisons of the same instance pair skip re-parsing entirely. Only a
+    successful, non-empty result is cached; a failed/ImportError call is
+    never cached (the exception propagates before any cache write), so a
+    transient failure can't poison future lookups.
     """
+    cache = _xbrl_facts_cache_for(file_path)
+    cached = cache.get()
+    if cached is not None:
+        return cached
+    facts = _load_xbrl_facts_uncached(file_path)
+    cache.set(facts, cache_empty=False)
+    return facts
+
+
+def _load_xbrl_facts_uncached(file_path: str) -> list[dict]:
+    """The actual Arelle/XML-fallback parse — unchanged body of what used
+    to be load_xbrl_facts itself, now wrapped by the cache above."""
     fname = os.path.basename(file_path)
     _t0 = time.monotonic()
     try:
@@ -1322,8 +1378,13 @@ async def generate_llm_summary(
     model      = os.getenv("OLLAMA_COMPARE_MODEL", "llama3.1:latest")   # dedicated compare/summary model
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE",    "30m")
     # Short timeout: summary is decorative - must not block the comparison result.
-    # Override via OLLAMA_SUMMARY_TIMEOUT; default 8 s.
-    timeout    = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "240"))
+    # Override via OLLAMA_SUMMARY_TIMEOUT; default 8 s. (The default previously
+    # said 240 here, contradicting this comment — generate_llm_summary already
+    # catches any timeout/error and returns "" so the table is shown either
+    # way, but it's awaited synchronously in _run_comparison before the
+    # response is built, so a slow/hung Ollama call was blocking the whole
+    # comparison response for up to 240s for what is meant to be optional.)
+    timeout    = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "8"))
 
     chat_payload = {
         "model":      model,
