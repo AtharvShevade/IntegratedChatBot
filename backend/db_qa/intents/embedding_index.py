@@ -60,7 +60,7 @@ CONFIDENT_SCORE = 0.85
 # consistent with more than one intent.
 AMBIGUOUS_MARGIN = 0.05
 
-TOP_K = 3
+TOP_K = 5
 
 
 def build_index() -> None:
@@ -108,14 +108,21 @@ def _load_index():
     return _INDEX_CACHE["index"], _INDEX_CACHE["meta"]
 
 
-def search_intent(query: str, k: int = TOP_K) -> list[tuple[Intent, float, str]]:
-    """Return up to *k* (Intent, cosine_score, matched_exemplar_text)
-    tuples, sorted by descending score, filtered to score >= MIN_SCORE.
+def _search_dedup(query: str, k: int, min_score: float | None) -> list[tuple[Intent, float, str]]:
+    """Shared FAISS search for search_intent()/search_intent_relaxed().
 
-    Returns [] if the index hasn't been built yet (logged as a warning,
-    not raised — callers should treat this the same as "no match" and
-    fall through to the next tier, since a missing index is a deploy/
-    setup gap, not a per-query error).
+    Deduplicated BY INTENT, keeping only the best-scoring exemplar hit per
+    intent, before truncating to *k* — without this, a single intent with
+    several similar exemplars can occupy multiple candidate slots and crowd
+    out a genuinely relevant intent before it ever reaches LLM disambiguation
+    (observed directly: "Which reports can my department file?" returned
+    returns_submittable_by_dept in BOTH of its top-2 non-top1 slots, leaving
+    no room for the correct intent at k=3).
+
+    To dedup meaningfully we must look further into the ranking than just the
+    final k — fetch max(k*4, 20) raw hits (FAISS returns them sorted by
+    descending similarity for IndexFlatIP, so the first occurrence of a given
+    intent in that raw list is always its best-scored one).
     """
     from backend.sql_agent.vectorizer import embed_query
     import numpy as np
@@ -126,20 +133,55 @@ def search_intent(query: str, k: int = TOP_K) -> list[tuple[Intent, float, str]]
         logger.warning("%s", exc)
         return []
 
-    effective_k = min(k, len(meta))
-    if effective_k == 0:
+    if len(meta) == 0:
         return []
 
+    raw_k = min(len(meta), max(k * 4, 20))
     q_vec = np.array([embed_query(query)]).astype("float32")
-    distances, indices = index.search(q_vec, effective_k)
+    distances, indices = index.search(q_vec, raw_k)
 
     results: list[tuple[Intent, float, str]] = []
+    seen: set[Intent] = set()
     for dist, idx in zip(distances[0], indices[0]):
-        if idx == -1 or dist < MIN_SCORE:
+        if idx == -1:
+            continue
+        if min_score is not None and dist < min_score:
             continue
         record = meta[idx]
-        results.append((Intent(record["intent"]), float(dist), record["text"]))
+        intent = Intent(record["intent"])
+        if intent in seen:
+            continue
+        seen.add(intent)
+        results.append((intent, float(dist), record["text"]))
+        if len(results) >= k:
+            break
     return results
+
+
+def search_intent(query: str, k: int = TOP_K) -> list[tuple[Intent, float, str]]:
+    """Return up to *k* (Intent, cosine_score, matched_exemplar_text) tuples,
+    one per distinct intent, sorted by descending score, filtered to
+    score >= MIN_SCORE.
+
+    Returns [] if the index hasn't been built yet (logged as a warning,
+    not raised — callers should treat this the same as "no match" and
+    fall through to the next tier, since a missing index is a deploy/
+    setup gap, not a per-query error).
+    """
+    return _search_dedup(query, k, MIN_SCORE)
+
+
+def search_intent_relaxed(query: str, k: int = TOP_K) -> list[tuple[Intent, float, str]]:
+    """Same as search_intent(), but WITHOUT the MIN_SCORE floor.
+
+    For candidate-gathering only, when the strict search found nothing at
+    all — MIN_SCORE still governs whether classify_by_embedding() treats a
+    query as "confident"/"ambiguous" vs. out of scope; this just gives a
+    caller (e.g. a module-scoped widening of LLM disambiguation) something
+    to offer the LLM instead of nothing, for queries that are recognisably
+    close to a known intent but too far to pass the floor.
+    """
+    return _search_dedup(query, k, None)
 
 
 def classify_by_embedding(query: str) -> dict:

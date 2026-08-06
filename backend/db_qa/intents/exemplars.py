@@ -91,6 +91,20 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What department am I in?",
         "What is the email address of the Finance department?",
         "What is the department ID of Compliance?",
+        "What is the Department ID of my department?",
+        # Real-world paraphrases: different vocabulary ("team", "assigned",
+        # "belong"), not just reworded synonyms of the same words — the
+        # embedding tier needs these words actually present in an exemplar to
+        # rank the right intent highly; before adding these, "Which team am I
+        # assigned to?" scored 0.831 (ambiguous) and "Where am I assigned?"
+        # 0.811, both against "What department am I in?" as nearest neighbour.
+        "What department do I belong to?",
+        "Which team am I assigned to?",
+        "Can you tell me my department?",
+        "Show my department.",
+        "Where am I assigned?",
+        "Which department do I work in?",
+        "Tell me which department I'm part of.",
     ],
     Intent.DEPARTMENT_RETURNS: [
         "Which XBRL returns does my department have access to?",
@@ -98,6 +112,15 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "How many returns does my department have access to?",
         "Which XBRL returns are assigned to the Treasury department?",
         "How many XBRL returns does the Compliance department have access to?",
+        "Which Non-XBRL returns are assigned to the Treasury department?",
+        "How many Non-XBRL returns does the Compliance department have access to?",
+        "Which returns can my department access?",
+        "Show all returns assigned to my department.",
+        "What returns are available for my department?",
+        "List my department's assigned returns.",
+        "Which reports can my department file?",
+        "Which returns can the Treasury department access?",
+        "What returns are assigned to the Compliance department?",
     ],
     Intent.DEPARTMENTS_WITH_RETURN_ACCESS: [
         "Which departments have access to return CIMS_ROR?",
@@ -317,10 +340,23 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which returns are accessible by all departments?",
         "Which department has access to the most returns?",
     ],
+    # Deliberately kept narrow to a personal ACCESS-SUMMARY/TOTAL framing —
+    # distinct from DEPARTMENT_RETURNS' department-scoped LISTING framing
+    # (self or a named department, XBRL/Non-XBRL filterable). The two used to
+    # share a near-duplicate exemplar ("Which returns does my department have
+    # access to?", removed from here), which meant they were actively
+    # competing for the same phrasing space — both intents appeared in each
+    # other's top-3 candidates for the same test queries. Narrowing this list
+    # to the "summary/total" framing its other two exemplars already
+    # established (rather than differentiating DEPARTMENT_RETURNS instead)
+    # keeps the department-scoped listing intent as the one place that owns
+    # "returns my department can access/file/is assigned" — matching how the
+    # brief itself treats every such paraphrase as one intent.
     Intent.MY_RETURN_ACCESS: [
-        "Which returns does my department have access to?",
         "What is the complete list of returns I can work with?",
         "How many returns can I access in total?",
+        "What returns am I entitled to access?",
+        "Give me a full count of the returns I'm allowed to use.",
     ],
     Intent.DEPT_FULL_RETURN_LIST: [
         "What is the complete list of returns for the Treasury department?",

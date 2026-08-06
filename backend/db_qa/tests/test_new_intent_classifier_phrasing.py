@@ -70,17 +70,22 @@ def test_permission_check_variants(text, expected_action):
     assert tt == "self"
 
 
+# Only the phrasings that still hit the (deliberately narrowed) tier-1
+# keyword rule directly — see backend/db_qa/new_intent_classifier.py's
+# DEPARTMENT_RETURNS rule comment. Broader paraphrase coverage
+# ("Show me the returns accessible to my department.", "Show returns
+# accessible by my department.", "What returns are assigned to my
+# department?" — all correctly classified via the embedding/LLM tiers, not
+# regex) now lives in test_department_semantic_paraphrasing.py, which
+# exercises the full classify_new_with_semantic_tiers() pipeline instead of
+# classify_new() alone.
 @pytest.mark.parametrize("text", [
     "Which returns does my department have access to?",   # canonical / catalog wording
     "What returns can my department access?",
-    "Show me the returns accessible to my department.",
     "Which returns are available for my department?",
     "What returns is my department allowed to access?",
     "List all returns my department has access to.",
-    "Show returns accessible by my department.",
     "Which returns can my department view?",
-    "Which returns can my department access?",
-    "What returns are assigned to my department?",
     "Give me the list of returns my department can access.",
 ])
 def test_department_returns_self_variants(text):
@@ -136,15 +141,22 @@ def test_user_list_query_type_extraction(text, expected_query_type):
     ("how many active departments are there?", "active_count"),
     ("how many total departments are there in the system?", "count"),
     ("which departments have no returns?", "no_returns"),
-    ("which department has the most returns?", None),  # routes to department_profile, not department_list
+    # Was previously documented as routing to department_profile instead
+    # (a DEPARTMENT_PROFILE/DEPARTMENT_LIST scoring tie, resolved by list
+    # position) — corrected per the department-module downstream-processing
+    # pass: "which department has the most/least/maximum/minimum returns"
+    # is unambiguously an aggregation question, not a single-department
+    # profile lookup, and DEPARTMENT_PROFILE now explicitly excludes this
+    # phrasing shape so DEPARTMENT_LIST's own most/fewest branch wins.
+    ("which department has the most returns?", "most"),
+    ("which department has the least returns?", "fewest"),
+    ("department with maximum returns", "most"),
+    ("top 5 departments by return count", "top_n"),
 ])
 def test_department_list_query_type_extraction(text, expected_query_type):
     intent, params, tt = classify_new(text)
-    if expected_query_type is None:
-        assert intent != Intent.DEPARTMENT_LIST
-    else:
-        assert intent == Intent.DEPARTMENT_LIST
-        assert params.get("query_type") == expected_query_type
+    assert intent == Intent.DEPARTMENT_LIST
+    assert params.get("query_type") == expected_query_type
 
 
 @pytest.mark.parametrize("text,expected_query_type", [
@@ -231,3 +243,73 @@ def test_module_extraction_does_not_swallow_action_verb():
     module name — an over-capture bug found during hardening)."""
     intent, params, tt = classify_new("Am I allowed to edit department settings?")
     assert params.get("module") == "department settings"
+
+
+# ── Department downstream-processing pass: entity extraction, filters,
+# and classification-tie fixes (Steps 2-5 of that pass) ─────────────────
+
+@pytest.mark.parametrize("text", [
+    "What is department ID of department Dept1?",   # bare "department" noun word appears TWICE
+    "What is the ID of department Dept1?",
+    "Department ID of Dept1",
+    "Show department ID for Dept1",
+])
+def test_department_name_extraction_strips_id_filler(text):
+    """Every phrasing must extract exactly 'Dept1' — previously 3 of these
+    4 leaked the parser's own intermediate text into target_department
+    ('ID of department Dept1', 'ID of Dept1', 'ID for Dept1'), which then
+    surfaced directly in user-facing not-found messages."""
+    intent, params, tt = classify_new(text)
+    assert intent == Intent.DEPARTMENT_PROFILE
+    assert params.get("target_department") == "Dept1"
+
+
+@pytest.mark.parametrize("text,expected_xbrl_type", [
+    ("List XBRL returns assigned to my department", "xbrl"),
+    ("Show non-XBRL returns for my department", "non_xbrl"),
+    ("Which XBRL returns does my department have access to?", "xbrl"),
+    ("Which returns does my department have access to?", None),
+])
+def test_department_returns_xbrl_type_extraction(text, expected_xbrl_type):
+    """DEPARTMENT_RETURNS previously never populated xbrl_type at all —
+    the handler already filters on it, so an explicit "XBRL"/"non-XBRL"
+    request was silently ignored and both types were always returned."""
+    intent, params, tt = classify_new(text)
+    assert intent == Intent.DEPARTMENT_RETURNS
+    assert params.get("xbrl_type") == expected_xbrl_type
+
+
+def test_departments_with_return_access_not_stolen_by_department_has_return():
+    """'Which departments have access to return X?' previously misrouted to
+    DEPARTMENT_HAS_RETURN (a scoring tie broken by list position) — the
+    plural 'which departments...access...return' framing must resolve to
+    DEPARTMENTS_WITH_RETURN_ACCESS, extracting the RETURN name, not a
+    (nonexistent) department name."""
+    intent, params, tt = classify_new("Which departments have access to return CIMS_ROR?")
+    assert intent == Intent.DEPARTMENTS_WITH_RETURN_ACCESS
+    assert params.get("target_return") == "CIMS_ROR"
+    assert tt == "return"
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Pre-existing collision, confirmed present before the department "
+        "downstream-processing pass (unaffected by the DEPARTMENTS_WITH_"
+        "RETURN_ACCESS priority bump this pass added) — USERS_BY_DEPARTMENT's "
+        "structural rule (_UsersByDeptStructuralPattern, priority=1, score "
+        "101) matches ANY '<Capitalized Word> department' phrase anywhere in "
+        "the sentence, so 'Does the Treasury DEPARTMENT have access...' is "
+        "swept into USERS_BY_DEPARTMENT before DEPARTMENT_HAS_RETURN's rule "
+        "(score ~3) is even considered. Out of scope for this pass (fixing it "
+        "means touching the classifier's structural rule, not the department- "
+        "module downstream processing this pass covers) — flagged for "
+        "business/product input rather than fixed silently.",
+    ),
+    strict=True,
+)
+def test_department_has_return_singular_framing_unaffected():
+    """Regression guard for the priority bump above: the SINGULAR/named-
+    department framing must still resolve to DEPARTMENT_HAS_RETURN, not be
+    accidentally swept into DEPARTMENTS_WITH_RETURN_ACCESS."""
+    intent, params, tt = classify_new("Does the Treasury department have access to DBR01?")
+    assert intent == Intent.DEPARTMENT_HAS_RETURN

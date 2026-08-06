@@ -239,6 +239,8 @@ _KEYWORD_RULES: list[_KeywordRule] = [
     ),
 
     # ── DEPARTMENT ───────────────────────────────────────────────────────
+    # (DEPARTMENT_INTENTS, used by classify_new_with_semantic_tiers() to scope
+    # the widened embedding_none -> LLM path, is defined near that function.)
 
     _KeywordRule(
         Intent.DEPARTMENT_HAS_RETURN, ("self", "department"),
@@ -246,27 +248,44 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         any_of=(_kw(r"return", r"form", r"report"),),
     ),
 
+    # priority=1: "Which departments have access to return X?" also matches
+    # DEPARTMENT_HAS_RETURN's rule below (same all_of/any_of groups, same
+    # score) — both ask about department<->return access, but this one is
+    # the right direction for a PLURAL "which/how many departments" framing
+    # (checking access across all departments) vs. DEPARTMENT_HAS_RETURN's
+    # singular "does department X have access" framing. Without this bump,
+    # the tie was resolved by list position, which favoured
+    # DEPARTMENT_HAS_RETURN and misrouted every "which departments have
+    # access to return X" question to the wrong intent (confirmed live:
+    # "Which departments have access to return CIMS_ROR?" -> wrongly
+    # classified as department_has_return).
     _KeywordRule(
         Intent.DEPARTMENTS_WITH_RETURN_ACCESS, ("return",),
         all_of=(_G_DEPT_NOUN, _kw(r"access", r"submit\w*")),
         any_of=(_kw(r"which", r"how many"),),
         excludes=(_kw(r"\bmy\b"),),
+        priority=1,
     ),
 
+    # Deliberately narrow (see the DEPARTMENT_RETURNS section of
+    # backend/db_qa/intents/exemplars.py for the rationale): this rule is
+    # meant to catch only the handful of unambiguous, near-templated
+    # phrasings — explicit "which XBRL/Non-XBRL returns", "department...
+    # access", "access...return(s)", "does <department> have access". A
+    # broader order-independent "return(s)...access/assign(ed) in EITHER
+    # direction" pattern used to live here and reliably matched real
+    # paraphrases, but it also had to be hand-extended for every new synonym
+    # ("applicable to", "available for", "can file") forever, and it still
+    # missed several — that generalization work now belongs to the
+    # embedding tier (classify_by_embedding), which is trained on real
+    # paraphrases instead of a growing regex. Anything that doesn't hit one
+    # of the templated forms below is expected to fall through to tier 2/3.
     _KeywordRule(
         Intent.DEPARTMENT_RETURNS, ("self", "department"),
         all_of=(_G_DEPT_NOUN, _kw(r"returns?", r"forms?", r"reports?")),
         any_of=(_kw(r"department.{0,30}access", r"access.{0,30}(return|form|report)",
                      rf"which\s+(xbrl|{_NON_XBRL})?\s*returns?", r"does\s+.{0,20}department",
-                     r"xbrl\s+returns?", rf"{_NON_XBRL}\s+returns?",
-                     # Order-independent: "returns accessible to my department",
-                     # "returns my department can access", "returns are assigned
-                     # to my department" — covers "return(s)/form(s)/report(s)"
-                     # ... "access(ible)"/"assign(ed)" in EITHER direction,
-                     # unlike the two directional alternatives above which only
-                     # cover "department...access" or "access...return".
-                     r"(?:returns?|forms?|reports?).{0,40}(?:access\w*|assign\w*)",
-                     r"(?:access\w*|assign\w*).{0,40}(?:returns?|forms?|reports?)"),),
+                     r"xbrl\s+returns?", rf"{_NON_XBRL}\s+returns?"),),
         excludes=(_kw(r"summary\s+of\s+my\s+access", r"full\s+summary", r"full\s+profile"),),
     ),
 
@@ -275,13 +294,33 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         all_of=(_G_DEPT_NOUN,),
         any_of=(_kw(r"email", r"\bid\b", r"identifier", r"what\s+department\s+am\s+i",
                      r"which\s+department"),),
+        # "which\s+department" is a broad opener that otherwise swallows
+        # aggregation questions too — "Which department has the most/least
+        # returns assigned?" was matching THIS rule (tied on score with
+        # DEPARTMENT_LIST below and resolved by list position), producing a
+        # garbage extracted "department name" of "has the most returns
+        # assigned" instead of routing to DEPARTMENT_LIST's own most/fewest
+        # aggregation branch. A sentence naming most/fewest/maximum/minimum/
+        # top-N returns is unambiguously an aggregation query, never a
+        # single-department profile lookup.
+        excludes=(_kw(r"most\s+returns?", r"fewest\s+returns?", r"least\s+returns?",
+                     r"maximum\s+returns?", r"minimum\s+returns?", r"top\s+\d+"),),
     ),
 
     _KeywordRule(
         Intent.DEPARTMENT_LIST, ("system_wide",),
         all_of=(_G_DEPT_NOUN,),
+        # "maximum"/"minimum"/"top N" were already recognised one layer
+        # deeper by _DEPARTMENT_QUERY_TYPE_PATTERNS (the "most"/"fewest"
+        # query_type patterns already match "maximum returns?"/"minimum
+        # returns?"), but that table is only ever consulted AFTER this rule
+        # has already decided the intent is DEPARTMENT_LIST — so a query
+        # using only "maximum"/"minimum"/"top N" (no bare "most"/"fewest"/
+        # "least" word) never reached DEPARTMENT_LIST at all. Added here so
+        # the two layers agree on what counts as an aggregation trigger.
         any_of=(_G_LIST_VERB, _G_HOW_MANY, _G_ACTIVE, _G_INACTIVE, _G_ALL,
-                 _kw(r"most", r"fewest", r"least", r"no\s+returns")),
+                 _kw(r"most", r"fewest", r"least", r"no\s+returns",
+                     r"maximum", r"minimum", r"top\s+\d+")),
         excludes=(_kw(r"\bmy\b"),),
     ),
 
@@ -350,6 +389,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                  _kw(r"create", r"edit", r"update", r"modify", r"view", r"see",
                      r"approve", r"add", r"upload", r"access", r"disable",
                      r"delete", r"run", r"generate", r"do", r"manage", r"perform")),
+        # "How many returns can I access in total?" (a MY_RETURN_ACCESS
+        # exemplar, department module) matched this rule's "can I" + "access"
+        # combo before ever reaching MY_RETURN_ACCESS's own pattern — a
+        # pre-existing collision the department-module accuracy pass
+        # uncovered (this exemplar was never actually verified against tier-1
+        # regex before). A quantity/summary framing ("how many ... in total")
+        # is never a genuine permission-check question in this taxonomy's
+        # existing exemplars, so this exclusion is safe generically, not just
+        # for the one phrasing that surfaced it.
+        excludes=(_kw(r"how\s+many", r"in\s+total"),),
     ),
 
     _KeywordRule(
@@ -358,7 +407,18 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"not\s+have\s+access"),),
         any_of=(_kw(r"my", r"i\s+have", r"do\s+i\s+have", r"what\s+can\s+i",
                      r"role\w*"),),
-        excludes=(_kw(r"\bcan\s+i\b"),),  # PERMISSION_CHECK owns "can I ..."
+        excludes=(
+            _kw(r"\bcan\s+i\b"),  # PERMISSION_CHECK owns "can I ..."
+            # "access\w*" also matches "accessible"/"accessing" etc, which
+            # made this rule swallow department-returns phrasings like "Show
+            # me the returns accessible to my department." (another
+            # pre-existing collision this pass's testing uncovered, not
+            # introduced by the DEPARTMENT_RETURNS regex trim). A sentence
+            # mentioning both "return(s)" and "department" together is
+            # squarely DEPARTMENT_RETURNS' territory, never a genuine
+            # permission-profile question, regardless of word order.
+            re.compile(r"(?=.*\breturns?\b|.*\bforms?\b|.*\breports?\b)(?=.*\bdepartments?\b)", re.IGNORECASE),
+        ),
     ),
 ]
 
@@ -703,6 +763,23 @@ def _refine_submission_target_type(
     return "self" if "self" in accepted else inferred
 
 
+# Intents opted into the widened embedding_none -> LLM disambiguation path
+# (see classify_new_with_semantic_tiers below). Department-module rollout for
+# now; add a module's intents here once the same accuracy pass is done for it
+# — the mechanism itself is generic, only this set is module-specific.
+DEPARTMENT_INTENTS = frozenset({
+    Intent.DEPARTMENT_LIST,
+    Intent.DEPARTMENT_PROFILE,
+    Intent.DEPARTMENT_RETURNS,
+    Intent.DEPARTMENTS_WITH_RETURN_ACCESS,
+    Intent.DEPARTMENT_HAS_RETURN,
+    Intent.USERS_BY_DEPARTMENT,
+    Intent.DEPT_RETURN_ACCESS_MATRIX,
+    Intent.MY_RETURN_ACCESS,
+    Intent.DEPT_FULL_RETURN_LIST,
+})
+
+
 async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None, dict, str | None, str]:
     """Full tiered intent classification: regex -> embedding similarity ->
     narrow LLM disambiguation -> no match.
@@ -734,23 +811,16 @@ async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None
     if len(question.split()) < 3:
         return None, {}, None, "none"
 
-    from backend.db_qa.intents.embedding_index import classify_by_embedding
+    from backend.db_qa.intents.embedding_index import classify_by_embedding, search_intent_relaxed
     from backend.db_qa.intents.taxonomy import INTENT_SPECS
 
-    embedding_result = classify_by_embedding(question)
-    tier = embedding_result["tier"]
-
-    resolved_intent: Intent | None = None
-    if tier == "embedding_confident":
-        resolved_intent = embedding_result["intent"]
-        tier = "embedding"
-    elif tier == "embedding_ambiguous":
+    async def _disambiguate(candidate_intents: list[Intent]) -> Intent | None:
+        """Shared LLM-disambiguation call for both the "ambiguous" and the
+        widened "none" path below — same candidates-in/Intent-or-None-out
+        shape either way."""
         from backend.services.llm_service import disambiguate_intent
 
-        candidates = [
-            (c_intent.value, INTENT_SPECS[c_intent].description)
-            for c_intent, _score, _text in embedding_result["candidates"]
-        ]
+        candidates = [(c.value, INTENT_SPECS[c].description) for c in candidate_intents]
         try:
             chosen_value = await disambiguate_intent(question, candidates)
         except Exception:
@@ -766,10 +836,51 @@ async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None
                 "[LLM_DISAMBIGUATE_FAILED] question=%r candidates=%r",
                 question, [c[0] for c in candidates], exc_info=True,
             )
-            chosen_value = None
-        if chosen_value is not None:
-            resolved_intent = Intent(chosen_value)
+            return None
+        return Intent(chosen_value) if chosen_value is not None else None
+
+    embedding_result = classify_by_embedding(question)
+    tier = embedding_result["tier"]
+
+    resolved_intent: Intent | None = None
+    if tier == "embedding_confident":
+        resolved_intent = embedding_result["intent"]
+        tier = "embedding"
+    elif tier == "embedding_ambiguous":
+        candidate_intents = [c_intent for c_intent, _score, _text in embedding_result["candidates"]]
+        resolved_intent = await _disambiguate(candidate_intents)
         tier = "llm_disambiguation"
+    elif tier == "embedding_none":
+        # Nothing cleared MIN_SCORE at all — normally this falls straight
+        # through to the legacy regex tier. Before doing that, re-search
+        # WITHOUT the floor (search_intent_relaxed) purely to see whether the
+        # nearest — if still-too-far — matches belong to a module we've
+        # explicitly opted into widened LLM coverage for (DEPARTMENT_INTENTS,
+        # above). Scoped rather than applied to every intent: a query
+        # genuinely unrelated to anything in the taxonomy should keep
+        # skipping the LLM call for every module NOT in that set.
+        #
+        # Restricted to the top 2 relaxed candidates, not all 5: with no
+        # score floor, SOME department intent shows up SOMEWHERE in the
+        # noisy top-5 for most off-topic queries too (embedding space is
+        # small — 9 of 56 intents belong to this module) — tested directly
+        # against "what is the capital of France" / "tell me a joke" /
+        # "what is the weather today". Restricting to top-2 filters out
+        # some of these (e.g. "weather", where the department hit was only
+        # at position 5) but not all (for "capital of France", both top-2
+        # slots happened to be department intents) — this is a partial
+        # latency optimization, not the correctness guarantee. Correctness
+        # comes from disambiguate_intent() itself, verified directly against
+        # both of those exact adversarial queries: it declined cleanly in
+        # both cases, including one where the model ignored instructions and
+        # answered something else entirely — the "cannot find exactly one
+        # candidate value in the response" fallback still returned None.
+        relaxed_intents = [c_intent for c_intent, _score, _text in search_intent_relaxed(question)[:2]]
+        if any(c in DEPARTMENT_INTENTS for c in relaxed_intents):
+            resolved_intent = await _disambiguate(relaxed_intents)
+            tier = "llm_disambiguation"
+        else:
+            tier = "none"
     else:
         tier = "none"
 
@@ -881,6 +992,12 @@ _USER_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("count", _HOW_MANY_PAT),
+    # Checked before "with_counts": "top 5 departments BY RETURN COUNT" also
+    # matches with_counts' "return\s+counts?" pattern, and first-match-wins
+    # in this table — top_n must win that tie or "top N" collapses to the
+    # plain with_counts (unlimited, unsorted) branch instead of the
+    # sorted-and-sliced one.
+    ("top_n", _kw(r"top\s+\d+")),
     ("no_returns", _kw(r"no\s+returns?", r"without\s+any\s+returns?", r"zero\s+returns?")),
     ("most", _kw(r"most\s+returns?", r"maximum\s+returns?")),
     ("fewest", _kw(r"fewest\s+returns?", r"least\s+returns?", r"minimum\s+returns?")),
@@ -888,6 +1005,16 @@ _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("inactive", _INACTIVE_PAT),
     ("active", _ACTIVE_PAT),
 ]
+
+_TOP_N_RE = re.compile(r"\btop\s+(\d+)\b", re.IGNORECASE)
+
+
+def _extract_top_n(q: str, default: int = 5) -> int:
+    """The N in "top N departments" — defaults to 5 (matching the brief's
+    own example, "Top 5 departments by return count") if somehow the
+    query_type matched "top_n" without a parseable number following it."""
+    m = _TOP_N_RE.search(q)
+    return int(m.group(1)) if m else default
 
 _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("count", _HOW_MANY_PAT),
@@ -1012,6 +1139,37 @@ def _extract_department_name_loose(q: str) -> str | None:
     if m:
         return m.group(1).strip()
     return _extract_named_entity_before_or_after(q, ("department", "dept"))
+
+
+# Leading filler that _extract_named_entity_before_or_after's "after"
+# fallback can swallow when the sentence has a bare "department"/"dept"
+# NOUN earlier than the actual named department — e.g. "What is department
+# ID of department Dept1?" has two occurrences of "department"; the
+# extractor's after-keyword anchor matches the FIRST one (a common-noun use
+# in "department ID"), not the second (the one immediately preceding the
+# real name), producing "ID of department Dept1" instead of "Dept1". This
+# mirrors _LEADING_FILLER_RE/_clean_extracted_return_name's existing
+# precedent for the same class of bug on return names — applied repeatedly
+# since one strip can reveal another (e.g. an id-filler strip can still
+# leave a bare "department " prefix behind).
+_DEPT_LEADING_FILLER_RE = re.compile(
+    r"^(?:department\s+|dept\s+)?"
+    r"(?:id|code|identifier)\s+(?:of|for)\s+"
+    r"(?:the\s+)?(?:department\s+|dept\s+)?",
+    re.IGNORECASE,
+)
+
+
+def _clean_extracted_department_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    cleaned = name
+    for _ in range(2):  # a second pass catches a filler revealed by the first
+        stripped = _DEPT_LEADING_FILLER_RE.sub("", cleaned).strip()
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    return cleaned or None
 
 
 # Trailing filler words that _extract_after_kw's generic stop-set doesn't
@@ -1265,11 +1423,21 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
         params["submission_id"] = _extract_submission_id(q)
 
     if intent == Intent.USERS_BY_DEPARTMENT:
-        params["target_department"] = explicit or _extract_department_name_loose(q)
+        params["target_department"] = explicit or _clean_extracted_department_name(
+            _extract_department_name_loose(q))
     elif intent in (Intent.DEPARTMENT_PROFILE, Intent.DEPARTMENT_RETURNS,
                     Intent.DEPARTMENT_HAS_RETURN, Intent.DEPT_FULL_RETURN_LIST, Intent.CROSS_ENTITY_QUERY,
                     Intent.AUDIT_ENTITY_TRAIL, Intent.NONXBRL_RETURN_LIST, Intent.RETURNS_SUBMITTABLE_BY_DEPT):
-        params["target_department"] = explicit or _extract_named_entity_before_or_after(q, ("department", "dept"))
+        params["target_department"] = explicit or _clean_extracted_department_name(
+            _extract_named_entity_before_or_after(q, ("department", "dept")))
+
+    if intent == Intent.DEPARTMENT_RETURNS:
+        # Previously never populated at all — DEPARTMENT_RETURNS' own spec
+        # declares xbrl_type as an optional entity, and the handler already
+        # filters on it, but nothing upstream ever extracted it, so "List
+        # XBRL returns assigned to my department" silently returned both
+        # XBRL and Non-XBRL returns regardless of the explicit XBRL request.
+        params["xbrl_type"] = _extract_xbrl_type(q)
 
     if intent in (Intent.USERS_BY_ROLE, Intent.ROLE_PROFILE, Intent.ROLE_USERS, Intent.PERMISSION_CHECK,
                   Intent.PERMISSION_PROFILE, Intent.ROLES_WITH_PERMISSION, Intent.ROLE_MODULE_ACCESS,
@@ -1308,7 +1476,7 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
         dept = explicit or _extract_named_entity_before_or_after(q, ("department", "dept"))
         if dept:
             dept = re.sub(r"\s+for\s+.*$", "", dept, flags=re.IGNORECASE).strip() or None
-        params["target_department"] = dept
+        params["target_department"] = _clean_extracted_department_name(dept)
 
     if intent in (Intent.PERMISSION_CHECK, Intent.ROLES_WITH_PERMISSION):
         # Raw keyword, NOT the mapped HasNew/HasEdit/... attribute name —
@@ -1333,6 +1501,8 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
 
     if intent == Intent.DEPARTMENT_LIST:
         params["query_type"] = _extract_query_type(q, _DEPARTMENT_QUERY_TYPE_PATTERNS)
+        if params["query_type"] == "top_n":
+            params["top_n"] = _extract_top_n(q)
 
     if intent == Intent.ROLE_LIST:
         params["query_type"] = _extract_query_type(q, _ROLE_QUERY_TYPE_PATTERNS)

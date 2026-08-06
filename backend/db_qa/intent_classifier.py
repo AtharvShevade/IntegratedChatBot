@@ -155,6 +155,18 @@ _RULES: list[tuple[str, list[re.Pattern], object]] = [
         r"\bwho\s+am\s+i\b",
         r"\bmy\s+user\s+(info|data|record)\b"),
 
+    # MY_DEPT_RETURNS is registered BEFORE MY_DEPARTMENT (this is
+    # first-match-wins by list order): MY_DEPARTMENT's bare
+    # `\bmy\s+(department|dept)\b` is a strict subset of MY_DEPT_RETURNS'
+    # department+return patterns, so with the old ordering any "my
+    # department...returns" question that fell through tiers 1-3 to this
+    # legacy tier was always wrongly caught here instead — confirmed live
+    # with "give me list of returns applicable to my department?".
+    _mk("MY_DEPT_RETURNS",
+        r"\bmy\s+(department|dept).*(return|form|report)\b",
+        r"\b(return|form|report).*\bmy\s+(department|dept)\b",
+        r"\bwhich\s+returns?\s+(can\s+i|i\s+can|am\s+i\s+able)\b"),
+
     _mk("MY_DEPARTMENT",
         r"\bmy\s+(department|dept)\b",
         r"\bwhich\s+department\s+(am\s+i|i\s+belong|i\s+am)"),
@@ -188,11 +200,6 @@ _RULES: list[tuple[str, list[re.Pattern], object]] = [
         r"\bwhat\s+can\s+i\s+(do|access|see|create|edit|approve)\b",
         r"\bcan\s+i\s+(create|edit|view|see|approve|add|update)\b",
         r"\bdo\s+i\s+have\s+(access|permission|right)\b"),
-
-    _mk("MY_DEPT_RETURNS",
-        r"\bmy\s+(department|dept).*(return|form|report)\b",
-        r"\b(return|form|report).*\bmy\s+(department|dept)\b",
-        r"\bwhich\s+returns?\s+(can\s+i|i\s+can|am\s+i\s+able)\b"),
 
     _mk("MY_SUBMISSIONS",
         r"\bmy\s+(submission|instance|filing|report|upload)\b",

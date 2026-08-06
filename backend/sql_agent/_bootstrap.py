@@ -100,16 +100,34 @@ def ensure() -> None:
         )
 
     # ── .env files, in precedence order ──────────────────────────────────────
-    # 1. The chatbot's own .env. Normally already loaded by
-    #    backend.main/version_config; done again here (override=False, so it
-    #    never clobbers anything) so standalone entry points like
-    #    `python -m backend.db_qa.intents.embedding_index` also get credentials
-    #    without importing the whole FastAPI app.
+    # 1. The chatbot's own .env — read into a LOCAL dict via dotenv_values(),
+    #    never written into the real process environment. This module only
+    #    ever needs a handful of keys from it (ORACLE_*, OLLAMA_BASE_URL,
+    #    SQL_*, below); a plain load_dotenv(override=False) used to sit here
+    #    instead, and it silently set EVERY OTHER key in that file too —
+    #    REQUIRE_AUTH, AUTHORIZATION_ENABLED, CORS_ORIGINS, etc. — for the
+    #    rest of the process, with no corresponding entry in _saved_env to
+    #    revert. Harmless in the real app (main.py already loads the same
+    #    .env at startup, before anything else runs), but a real hazard for
+    #    any test process where this module's ensure() is the FIRST thing to
+    #    touch .env at all: it would permanently flip those flags for every
+    #    test that runs afterward in the same process, regardless of module.
+    #    (Confirmed directly: a test exercising this module's embedding path
+    #    made REQUIRE_AUTH visible to unrelated backend.agent tests later in
+    #    the same pytest run, which had never observed a "true" value before
+    #    because nothing upstream of them had loaded .env yet.)
+    chatbot_env: dict = {}
     try:
-        from dotenv import load_dotenv
-        load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
+        from dotenv import dotenv_values
+        chatbot_env = {k: v for k, v in dotenv_values(os.path.join(PROJECT_ROOT, ".env")).items() if v is not None}
     except Exception as exc:                      # pragma: no cover - optional
         logger.debug("[SQL_AGENT] .env load skipped: %s", exc)
+
+    def _chatbot_env(name: str) -> str | None:
+        """Real environment wins; the chatbot .env file is only a fallback —
+        same precedence as everywhere else in this module, and still never
+        writes to os.environ itself."""
+        return os.environ.get(name) or chatbot_env.get(name)
 
     # 2. sql_agent/.env — the agent's OWN settings file, and authoritative for
     #    the keys it defines. It has to override, not defer, because the two
@@ -133,7 +151,10 @@ def ensure() -> None:
         for key, value in agent_env.items():
             _setenv(key, value, override=True)
 
-    env = os.environ.get
+    # Real env / sql_agent/.env (already applied above via _setenv, so already
+    # in os.environ) still wins; the chatbot .env dict is consulted only as a
+    # fallback, and only through this function — never written to os.environ.
+    env = _chatbot_env
 
     # ── Retrieval artefacts + DDL ────────────────────────────────────────────
     # The agent's own EMBEDDING_DIR values are relative to ITS repo root, but the

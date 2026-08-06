@@ -68,7 +68,6 @@
         "How many Non-XBRL returns does department [other department name] have access to?",
         "Which departments have access to return [return name]?",
         "How many departments have access to return [return name]?",
-        "What is the email address of department [department name]?",
         "How many departments are there in total?",
         "Which department has the most returns assigned?",
         "Which department has the fewest returns assigned?",
@@ -82,7 +81,7 @@
         "Which Non-XBRL returns does my department have access to?",
         "How many returns does my department have access to?",
         "Does my department have access to return [return name]?",
-        "What is the email address of my department?"
+        "What is the Department ID of my department?"
       ]
     },
 

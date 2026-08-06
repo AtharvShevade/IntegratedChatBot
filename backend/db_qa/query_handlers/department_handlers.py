@@ -15,6 +15,38 @@ def _not_found(intent: str, label: str, msg: str) -> dict:
     return _result(intent, label, [], msg)
 
 
+_UNDERSTAND_FAILURE_MSG = "Sorry, I couldn't understand your request. Could you rephrase it?"
+
+
+def _department_not_found(intent: str, label: str, scope: dict, entities: dict) -> dict:
+    """Shared not-found response for every handler that resolves a target
+    department. Two genuinely different situations, both of which used to
+    produce the same confusing message built from whatever the entity
+    extractor happened to capture (e.g. "'ID of department dept1' department
+    could not be found." when extraction mis-parsed the sentence, or "''
+    department could not be found." when nothing was extracted at all) —
+    internal parser output should never reach the user:
+
+      1. Nothing was extracted (empty/whitespace-only target_department) —
+         this means the QUESTION itself wasn't understood, not that a real
+         department name came back empty-handed. Ask the user to rephrase
+         rather than reporting a not-found on a blank name.
+      2. A real name WAS extracted but no such department exists — report
+         exactly that name, quoted, and nothing else.
+
+    Self-scoped lookups ("my department") are a different failure mode
+    entirely (the caller's own department couldn't be resolved from
+    XML_User.xml — a data/session issue, not a user-input issue) and keep
+    their own message.
+    """
+    if scope.get("target_type") == "self":
+        return _not_found(intent, label, "Your department could not be found.")
+    name = (entities.get("target_department") or "").strip()
+    if not name:
+        return _not_found(intent, label, _UNDERSTAND_FAILURE_MSG)
+    return _not_found(intent, label, f"Department '{name}' was not found.")
+
+
 def _return_counts_for_dept(store: XMLStore, dept: dict) -> tuple[int, int]:
     form_ids = {f.strip() for f in dept.get("Forms", "").split("|") if f.strip()}
     nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
@@ -58,11 +90,18 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
     elif query_type == "inactive":
         rows = [d for d in depts if not is_active_status(d.get("Status"))]
         label, summary = "Inactive Departments", f"There are {len(rows)} inactive departments."
-    elif query_type in ("most", "fewest", "no_returns", "with_counts"):
+    elif query_type in ("most", "fewest", "no_returns", "with_counts", "top_n"):
+        # Split XBRL/Non-XBRL counts, not just a combined total — added so
+        # a "list departments with return count" table can show both
+        # breakdowns (previously only TotalReturnCount was kept, so the
+        # per-type counts _return_counts_for_dept already computes were
+        # silently thrown away here).
         enriched = []
         for d in depts:
             xbrl, nx = _return_counts_for_dept(store, d)
             row = dict(d)
+            row["XbrlReturnCount"] = xbrl
+            row["NonXbrlReturnCount"] = nx
             row["TotalReturnCount"] = xbrl + nx
             enriched.append(row)
         if query_type == "no_returns":
@@ -80,6 +119,14 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
             label = "Department With Fewest Returns"
             summary = (f"'{rows[0].get('Name')}' has the fewest returns assigned ({rows[0]['TotalReturnCount']})."
                        if rows else "No departments found.")
+        elif query_type == "top_n":
+            n = entities.get("top_n") or 5
+            enriched.sort(key=lambda d: d["TotalReturnCount"], reverse=True)
+            rows = enriched[:n]
+            label = f"Top {n} Departments By Return Count"
+            summary = (f"Top {len(rows)} department(s) by return count: " +
+                       ", ".join(f"{r.get('Name')} ({r['TotalReturnCount']})" for r in rows) + "."
+                       if rows else "No departments found.")
         else:  # with_counts
             rows = enriched
             label, summary = "All Departments (With Return Counts)", f"There are {len(rows)} departments."
@@ -93,15 +140,19 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
 def handle_department_profile(scope: dict, entities: dict, store: XMLStore) -> dict:
     dept = _resolve_target_department(store, scope, entities)
     if not dept:
-        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
-        return _not_found("department_profile", "Department Profile", f"{who} department could not be found.")
+        return _department_not_found("department_profile", "Department Profile", scope, entities)
     dept_id = get_attr(dept, "DeptId", "Id", default="")
     user_count = sum(1 for u in store.users() if get_attr(u, "DepartmentId", "DeptId") == dept_id)
+    xbrl_count, non_xbrl_count = _return_counts_for_dept(store, dept)
     enriched = dict(dept)
     enriched["UserCount"] = user_count
+    enriched["XbrlReturnCount"] = xbrl_count
+    enriched["NonXbrlReturnCount"] = non_xbrl_count
+    enriched["TotalReturnCount"] = xbrl_count + non_xbrl_count
     label = "My Department" if scope["target_type"] == "self" else f"Department: {dept.get('Name')}"
     return _result("department_profile", label, [enriched],
-                   f"Department '{dept.get('Name')}' (id {dept_id}) has {user_count} user(s).")
+                   f"Department '{dept.get('Name')}' (id {dept_id}) has {user_count} user(s) and "
+                   f"{xbrl_count + non_xbrl_count} return(s) assigned ({xbrl_count} XBRL, {non_xbrl_count} non-XBRL).")
 
 
 def _return_access_row(ret: dict) -> dict:
@@ -126,8 +177,7 @@ def _return_access_row(ret: dict) -> dict:
 def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> dict:
     dept = _resolve_target_department(store, scope, entities)
     if not dept:
-        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
-        return _not_found("department_returns", "Department Returns", f"{who} department could not be found.")
+        return _department_not_found("department_returns", "Department Returns", scope, entities)
 
     # dept.get(...) may list the same code more than once (e.g.
     # "2014|2033|...|2033") — harmless here since xbrl/non_xbrl are built by
@@ -151,11 +201,21 @@ def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> d
     dept_name = dept.get("Name", "")
     who_phrase = "Your department" if scope["target_type"] == "self" else f"Department '{dept_name}'"
     label = "Returns Accessible To Your Department" if scope["target_type"] == "self" else f"Returns of {dept_name}"
-    total = len(xbrl) + len(non_xbrl)
-    if total == 0:
+    if xbrl_type == "xbrl":
+        label += " (XBRL)"
+    elif xbrl_type == "non_xbrl":
+        label += " (Non-XBRL)"
+
+    if xbrl_type == "xbrl":
+        summary = (f"{who_phrase} has access to {len(xbrl)} XBRL return(s)." if xbrl
+                    else f"{who_phrase} does not currently have access to any XBRL returns.")
+    elif xbrl_type == "non_xbrl":
+        summary = (f"{who_phrase} has access to {len(non_xbrl)} non-XBRL return(s)." if non_xbrl
+                    else f"{who_phrase} does not currently have access to any non-XBRL returns.")
+    elif len(xbrl) + len(non_xbrl) == 0:
         summary = f"{who_phrase} does not currently have access to any returns."
     else:
-        summary = f"{who_phrase} has access to {len(xbrl)} XBRL and {len(non_xbrl)} non-XBRL return(s) ({total} total)."
+        summary = f"{who_phrase} has access to {len(xbrl)} XBRL and {len(non_xbrl)} non-XBRL return(s) ({len(xbrl) + len(non_xbrl)} total)."
     return _result("department_returns", label, records, summary,
                    dept_name=dept_name, xbrl_count=len(xbrl), non_xbrl_count=len(non_xbrl))
 
@@ -181,8 +241,7 @@ def handle_departments_with_return_access(scope: dict, entities: dict, store: XM
 def handle_department_has_return(scope: dict, entities: dict, store: XMLStore) -> dict:
     dept = _resolve_target_department(store, scope, entities)
     if not dept:
-        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
-        return _not_found("department_has_return", "Department Return Access", f"{who} department could not be found.")
+        return _department_not_found("department_has_return", "Department Return Access", scope, entities)
     target = entities.get("target_return", "")
     # enforce_department_auth=False: this answers "does department Y have
     # access to X" — a return outside the ASKING user's own allowed set is

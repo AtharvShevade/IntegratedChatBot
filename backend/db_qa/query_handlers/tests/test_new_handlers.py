@@ -121,6 +121,240 @@ def test_department_returns_return_id_falls_back_to_code_when_unset():
     assert r["records"] == [{"ReturnCode": "2030", "ReturnLabel": "CIMS_RAQ", "ReturnId": "2030"}]
 
 
+# ── Department-module accuracy pass: the 5 department intents that had
+# zero handler-level coverage before this pass — department_profile,
+# departments_with_return_access, department_has_return, my_return_access
+# (return_handlers.py), dept_full_return_list (return_handlers.py). Fixture
+# facts, read directly from the real 5.5 tree: ADMIN_LOGIN (iris810) belongs
+# to "Dept 1" (DeptId 100), whose Forms include return code "2029"
+# (name "CIMS_ROR"); "Test2" is a different department whose Forms include
+# return code "1002" (name "FormA") — neither return appears in the other
+# department's list, so these are genuine positive/negative cases, not
+# coincidental overlaps. resolve_named_return() (used by these handlers)
+# matches by NAME, not by the raw Forms code — "target_return" below must
+# be the return's Name attribute.
+
+@_need_5_5
+def test_department_profile_self(store):
+    scope = _scoped(ADMIN_LOGIN, "department_profile", {"target_type": "self"})
+    r = qh.dispatch2("department_profile", scope, {"target_type": "self"}, store)
+    assert r["found"] is True
+    assert r["records"][0]["Name"] == "Dept 1"
+    assert "UserCount" in r["records"][0]
+
+
+@_need_5_5
+def test_department_profile_named(store):
+    scope = _scoped(ADMIN_LOGIN, "department_profile", {"target_type": "department"})
+    r = qh.dispatch2(
+        "department_profile", scope,
+        {"target_type": "department", "target_department": "Test2"}, store,
+    )
+    assert r["found"] is True
+    assert r["records"][0]["Name"] == "Test2"
+
+
+def test_department_profile_not_found():
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        r = department_handlers.handle_department_profile({"target_type": "self"}, {}, None)
+    assert r["found"] is False
+    assert "could not be found" in r["summary"]
+
+
+@_need_5_5
+def test_departments_with_return_access(store):
+    scope = _scoped(ADMIN_LOGIN, "departments_with_return_access", {"target_type": "return"})
+    r = qh.dispatch2(
+        "departments_with_return_access", scope,
+        {"target_type": "return", "target_return": "CIMS_ROR"}, store,
+    )
+    assert r["found"] is True
+    names = [d.get("Name") for d in r["records"]]
+    assert "Dept 1" in names
+    assert "Test2" not in names
+
+
+@_need_5_5
+def test_department_has_return_true(store):
+    scope = _scoped(ADMIN_LOGIN, "department_has_return", {"target_type": "self"})
+    r = qh.dispatch2(
+        "department_has_return", scope,
+        {"target_type": "self", "target_return": "CIMS_ROR"}, store,
+    )
+    assert r["records"][0]["HasAccess"] is True
+
+
+@_need_5_5
+def test_department_has_return_false(store):
+    scope = _scoped(ADMIN_LOGIN, "department_has_return", {"target_type": "self"})
+    r = qh.dispatch2(
+        "department_has_return", scope,
+        {"target_type": "self", "target_return": "FormA"}, store,
+    )
+    assert r["records"][0]["HasAccess"] is False
+
+
+def test_department_has_return_dept_not_found():
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        r = department_handlers.handle_department_has_return(
+            {"target_type": "self"}, {"target_return": "2029"}, None,
+        )
+    assert r["found"] is False
+    assert "could not be found" in r["summary"]
+
+
+# ── Department downstream-processing pass: user-facing error messages,
+# XBRL/Non-XBRL filtering, department_profile counts, top_n aggregation ──
+
+@pytest.mark.parametrize("handler_name,extra_entities", [
+    ("handle_department_profile", {}),
+    ("handle_department_returns", {}),
+    ("handle_department_has_return", {"target_return": "CIMS_ROR"}),
+])
+def test_department_not_found_message_never_leaks_parser_output(handler_name, extra_entities):
+    """A real (if nonexistent) extracted name is shown verbatim and ONLY
+    that name — never wrapped in the parser's own intermediate text."""
+    handler = getattr(department_handlers, handler_name)
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        entities = {"target_department": "ID of department Ghost", **extra_entities}
+        r = handler({"target_type": "department"}, entities, None)
+    assert r["found"] is False
+    # The bug this guards: the raw, unclean parser output leaking straight
+    # into the message ("'ID of department Ghost' department could not be
+    # found."). This test intentionally passes an already-dirty value (as
+    # if entity-extraction cleaning were somehow bypassed) to prove the
+    # HANDLER itself never echoes it — the handler only ever uses the
+    # cleaned target_department value it was actually given, verbatim, with
+    # no further "department could not be found" wrapping of that raw text.
+    assert r["summary"] == "Department 'ID of department Ghost' was not found."
+
+
+@pytest.mark.parametrize("handler_name,extra_entities", [
+    ("handle_department_profile", {}),
+    ("handle_department_returns", {}),
+])
+def test_department_not_found_message_empty_extraction_asks_to_rephrase(handler_name, extra_entities):
+    """Nothing was extracted at all (empty target_department) -> a friendly
+    'please rephrase', never '\"\" department could not be found.'"""
+    handler = getattr(department_handlers, handler_name)
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        r = handler({"target_type": "department"}, {"target_department": "", **extra_entities}, None)
+    assert r["found"] is False
+    assert r["summary"] == "Sorry, I couldn't understand your request. Could you rephrase it?"
+
+
+def test_department_not_found_message_self_scope_unaffected():
+    """Self-scoped resolution failures keep their own distinct message —
+    this is a data/session issue, not a user-input parsing issue."""
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        r = department_handlers.handle_department_profile({"target_type": "self"}, {}, None)
+    assert r["summary"] == "Your department could not be found."
+
+
+def test_department_returns_xbrl_filter_respected():
+    """XBRL-only and Non-XBRL-only requests must return ONLY that type,
+    not both regardless of the filter (the xbrl_type param previously
+    never reached this handler from the classifier at all)."""
+    class _FakeStore:
+        def returns(self):
+            return [{"Id": "1", "Name": "X1", "ReturnId": "R1"}]
+        def non_xbrl_returns(self):
+            return [{"Id": "2", "Name": "NX1", "ReturnId": ""}]
+        def enrich_return(self, ret):
+            return dict(ret)
+
+    dept = {"Name": "Dept", "Forms": "1", "NXForms": "2"}
+    with patch.object(department_handlers, "_resolve_target_department", return_value=dept):
+        r_xbrl = department_handlers.handle_department_returns(
+            {"target_type": "self"}, {"xbrl_type": "xbrl"}, _FakeStore(),
+        )
+        r_nx = department_handlers.handle_department_returns(
+            {"target_type": "self"}, {"xbrl_type": "non_xbrl"}, _FakeStore(),
+        )
+    assert [rec["ReturnLabel"] for rec in r_xbrl["records"]] == ["X1"]
+    assert [rec["ReturnLabel"] for rec in r_nx["records"]] == ["NX1"]
+
+
+@_need_5_5
+def test_department_profile_includes_return_counts(store):
+    """department_profile's record must include the XBRL/Non-XBRL/Total
+    return-count breakdown, not just UserCount — and must never include
+    the raw pipe-delimited Forms/NXForms strings."""
+    scope = _scoped(ADMIN_LOGIN, "department_profile", {"target_type": "self"})
+    r = qh.dispatch2("department_profile", scope, {"target_type": "self"}, store)
+    rec = r["records"][0]
+    assert {"XbrlReturnCount", "NonXbrlReturnCount", "TotalReturnCount", "UserCount"} <= set(rec.keys())
+    assert rec["TotalReturnCount"] == rec["XbrlReturnCount"] + rec["NonXbrlReturnCount"]
+
+
+@_need_5_5
+def test_department_list_top_n(store):
+    scope = _scoped(ADMIN_LOGIN, "department_list", {"target_type": "system_wide"})
+    r = qh.dispatch2(
+        "department_list", scope,
+        {"target_type": "system_wide", "query_type": "top_n", "top_n": 3}, store,
+    )
+    assert r["found"] is True
+    assert len(r["records"]) == 3
+    counts = [rec["TotalReturnCount"] for rec in r["records"]]
+    assert counts == sorted(counts, reverse=True)
+
+
+@_need_5_5
+def test_department_list_most_includes_split_counts(store):
+    scope = _scoped(ADMIN_LOGIN, "department_list", {"target_type": "system_wide"})
+    r = qh.dispatch2(
+        "department_list", scope,
+        {"target_type": "system_wide", "query_type": "most"}, store,
+    )
+    rec = r["records"][0]
+    assert {"XbrlReturnCount", "NonXbrlReturnCount", "TotalReturnCount"} <= set(rec.keys())
+    assert rec["TotalReturnCount"] == rec["XbrlReturnCount"] + rec["NonXbrlReturnCount"]
+
+
+def test_department_table_never_shows_raw_forms_pipe_strings():
+    """The frontend table renderer shows every non-skipped key verbatim —
+    Forms/NXForms are raw pipe-delimited return-code strings off
+    Department.xml (e.g. "2014|2033|1032|...") and must never reach it,
+    now that department_profile/department_list expose proper
+    XbrlReturnCount/NonXbrlReturnCount/TotalReturnCount fields instead."""
+    from backend.agent.db_qa_router import _build_db_qa_data
+
+    dept_record = {
+        "Name": "Dept 1", "Status": "true", "Forms": "2014|2033|1032",
+        "NXForms": "5001|5002", "UserCount": 20, "XbrlReturnCount": 2,
+        "NonXbrlReturnCount": 2, "TotalReturnCount": 4,
+    }
+    data = _build_db_qa_data(
+        {"records": [dept_record], "label": "My Department", "summary": "..."},
+        intent="department_profile",
+    )
+    assert "Forms" not in data["cols"]
+    assert "NXForms" not in data["cols"]
+    assert "TotalReturnCount" in data["cols"]
+
+
+@_need_5_5
+def test_my_return_access_true(store):
+    scope = _scoped(ADMIN_LOGIN, "my_return_access", {"target_type": "self"})
+    r = qh.dispatch2(
+        "my_return_access", scope,
+        {"target_type": "self", "target_return": "CIMS_ROR"}, store,
+    )
+    assert r["records"][0]["HasAccess"] is True
+
+
+@_need_5_5
+def test_dept_full_return_list(store):
+    scope = _scoped(ADMIN_LOGIN, "dept_full_return_list", {"target_type": "department"})
+    r = qh.dispatch2(
+        "dept_full_return_list", scope,
+        {"target_type": "department", "target_department": "Test2"}, store,
+    )
+    assert r["found"] is True
+    assert any(rec.get("Id") == "1002" for rec in r["records"])
+
+
 @_need_5_5
 def test_role_profile_self(store):
     scope = _scoped(ADMIN_LOGIN, "role_profile", {"target_type": "self"})

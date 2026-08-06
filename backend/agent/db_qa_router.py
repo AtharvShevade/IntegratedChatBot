@@ -253,11 +253,22 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "Remark":           "Remark",
     "ReportingDate":    "Reporting Date",
     "GeneratedOn":      "Generated On",
+    "Email":            "Email",
+    "UserCount":        "User Count",
+    "XbrlReturnCount":  "XBRL Returns",
+    "NonXbrlReturnCount": "Non-XBRL Returns",
+    "TotalReturnCount": "Total Returns",
 }
 
 _SKIP_FIELDS: frozenset[str] = frozenset({
     "RoleId", "DeptId", "DepartmentId", "OptionId",
     "FormId", "PeriodId", "Password", "PasswordHash",
+    # Raw pipe-delimited return-code lists off Department.xml (e.g.
+    # "2014|2033|1032|..."). Never meant for display — department handlers
+    # already expand these into proper return rows / XbrlReturnCount /
+    # NonXbrlReturnCount / TotalReturnCount, so showing the raw string too
+    # just leaks internal storage format alongside the real answer.
+    "Forms", "NXForms",
 })
 
 def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
@@ -274,13 +285,14 @@ def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
     return _SKIP_FIELDS
 
 _PRIORITY_COLS: list[str] = [
-    "Name", "LoginId", "EmailId", "MobileNo",
+    "Name", "LoginId", "EmailId", "Email", "MobileNo",
     "DeptName", "RoleName", "Status", "LastLoginDT",
     "ReturnName", "ReturnCode", "ReturnLabel", "ReturnId", "PeriodName",
     "OptionName", "MenuName", "AccessType",
     "UserName", "AuditDateTime", "AuditType", "Remark",
     "StatusLabel", "CreatedDate", "FailedLoginCount",
     "Frequency", "ExpectedDate", "Filed", "FiledOn",
+    "UserCount", "XbrlReturnCount", "NonXbrlReturnCount", "TotalReturnCount",
 ]
 
 _COUNT_KEYS: frozenset[str] = frozenset({"total", "active", "inactive"})
