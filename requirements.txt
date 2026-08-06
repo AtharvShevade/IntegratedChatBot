@@ -51,6 +51,8 @@ arelle-release                  # Arelle XBRL toolkit
 pandas>=2.0.0                  # variance DataFrame / CSV export (optional)
 
 # ── SQL Agent (FAISS vector search + BGE embeddings) ────────────────────────
+# Drives the vendored agent under sql_agent/, reached via backend/sql_agent/.
+# See sql_agent/requirements.txt for its own (superset) list.
 
 sentence-transformers==2.7.0
 faiss-cpu>=1.7.4
@@ -58,6 +60,8 @@ scipy
 scikit-learn
 tqdm
 regex
+requests>=2.31.0                # sync Ollama calls in sql_generator / selector
+PyYAML>=6.0                     # semantic_layer.yaml (declared joins + metrics)
 
 # ── XML / Parsing Utilities ──────────────────────────────────────────────────
 

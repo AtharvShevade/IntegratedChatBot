@@ -123,7 +123,11 @@ SCHEDULER_QUEUE_XML_PATH: str = scheduler_queue_xml_path()
 APP_DB_BASE_PATH: str = app_db_base_path()
 
 # ---------------------------------------------------------------------------
-# SQL Agent — FAISS index output directory
+# SQL Agent — FAISS index directory
+# ---------------------------------------------------------------------------
+# The agent resolves its own artefact paths from EMBEDDING_DIR (see
+# backend/sql_agent/_bootstrap.py); this stays only as the historical name and
+# now points at the same scoped folder rather than the retired output/ one.
 # ---------------------------------------------------------------------------
 
 _PROJECT_ROOT: str = os.path.dirname(
@@ -131,8 +135,10 @@ _PROJECT_ROOT: str = os.path.dirname(
 )
 
 FAISS_OUTPUT_DIR: str = os.getenv(
-    "FAISS_OUTPUT_DIR",
-    os.path.join(_PROJECT_ROOT, "sql_agent", "output"),
+    "EMBEDDING_DIR",
+    os.path.join(
+        _PROJECT_ROOT, "sql_agent", "embedding_building", "cims_raq_quarterly"
+    ),
 )
 
 # ---------------------------------------------------------------------------

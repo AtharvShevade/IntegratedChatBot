@@ -95,10 +95,10 @@ SARVAM_API_KEY = "your_sarvam_key"       # only needed for voice input
 Run **once** before starting the API (and again whenever `data/schema.sql` changes):
 
 ```bash
-python main.py
+python embedding_building/main.py
 ```
 
-This parses `data/schema.sql`, generates descriptions, embeds all tables/columns, and writes the FAISS indexes to `output/`.
+This parses `data/schema.sql`, generates descriptions, embeds all tables/columns, and writes the FAISS indexes to `embedding_building/output/`.
 
 ### 5. Start the API server
 
@@ -129,27 +129,31 @@ Open [http://localhost:5173](http://localhost:5173).
 │       ├── query.py        POST /api/query
 │       ├── voice.py        POST /api/voice
 │       └── health.py       GET  /api/health
-├── src/                    Core pipeline
+├── src/                    Core pipeline (serving-time, used by the API)
 │   ├── config.py           All settings (DB, LLM, embedding)
+│   ├── vectorizer.py       Embedding model wrapper + FAISS helpers (shared)
+│   ├── retriever.py        RRF-fused semantic retrieval (reads embedding_building/output/)
+│   ├── sql_generator.py    LLM prompt builder + SQL validator
+│   ├── executor.py         Oracle query execution
+│   ├── description_fetcher.py  Row-label fetch (build) + row-label search (serve)
+│   └── speech.py           Microphone recording (CLI mode)
+├── embedding_building/     Everything related to (re)building the vector store
+│   ├── extract_schema.py   Pulls DDL from Oracle -> data/schema.sql
 │   ├── parser.py           Parses CREATE TABLE DDL from schema.sql
 │   ├── generators.py       Token-expansion description generator
 │   ├── formatter.py        Builds schema.json and vector records
-│   ├── vectorizer.py       FAISS index builder (bge-large-en)
-│   ├── retriever.py        RRF-fused semantic retrieval
-│   ├── sql_generator.py    LLM prompt builder + SQL validator
-│   ├── executor.py         Oracle query execution
-│   ├── description_fetcher.py  Row-label value fetcher
-│   └── speech.py           Microphone recording (CLI mode)
+│   ├── main.py             Index builder entry point (run this to (re)build)
+│   ├── add_return_schema.py  Incrementally add tables without a full rebuild
+│   ├── show.py             Debug helper — dumps table_meta.pkl
+│   └── output/             Generated artifacts (rebuilt by main.py)
+│       ├── schema.json
+│       ├── description_samples.json
+│       ├── *.faiss         FAISS vector indexes (git-ignored)
+│       └── *.pkl           Index metadata (git-ignored)
 ├── data/
 │   ├── schema.sql          Oracle DDL for all CIMS tables
 │   └── .json-formatted     Human-readable column label mappings
-├── output/                 Generated artifacts (rebuilt by main.py)
-│   ├── schema.json
-│   ├── description_samples.json
-│   ├── *.faiss             FAISS vector indexes (git-ignored)
-│   └── *.pkl               Index metadata (git-ignored)
 ├── frontend/               React + Vite + Tailwind CSS UI
-├── main.py                 Index builder entry point
 └── requirements.txt
 ```
 
@@ -193,7 +197,7 @@ Open [http://localhost:5173](http://localhost:5173).
 Whenever you update `data/schema.sql` or `data/.json-formatted`, rebuild the indexes:
 
 ```bash
-python main.py
+python embedding_building/main.py
 ```
 
 ---

@@ -1,5 +1,13 @@
-from typing import Any, List
+# backend/sql_agent/utils.py
+#
+# Row serialisation for the JSON response. Vendored from the agent's own
+# api/utils.py (whose FastAPI layer this project's backend replaces) rather than
+# imported from it, so nothing in backend/ depends on that discarded API package.
+
+from __future__ import annotations
+
 from decimal import Decimal
+from typing import Any, List
 
 
 def serialize_rows(rows: list) -> List[List[Any]]:

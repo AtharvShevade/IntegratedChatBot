@@ -45,11 +45,17 @@ logs/
 .coverage
 htmlcov/
 
-# ── sql_agent generated outputs (binary indexes + sensitive schema data) ──────
-sql_agent/output/*.faiss
-sql_agent/output/*.pkl
-sql_agent/output/schema.json
-sql_agent/output/description_samples.json
+# ── sql_agent (vendored SQL agent checkout) ───────────────────────────────────
+# Its own nested git metadata — the agent is a clone, not a submodule, so this
+# keeps the outer repo from seeing it.
+sql_agent/.git/
+# Measurement baselines / ad-hoc reports; nothing in the pipeline reads them.
+sql_agent/scratch/
+# Hallucination logs written at generation time when SQL stays invalid.
+sql_agent/eval/results/
+# Sensitive extracted schema data. NOTE: the FAISS indexes and schema.json under
+# embedding_building/ are deliberately NOT ignored — the chatbot reads them at
+# runtime (EMBEDDING_DIR) and they are rebuilt only via embedding_building/.
 sql_agent/data/.json-formatted/
 
 # ── db_qa intent-exemplar embedding index (generated — rebuild via

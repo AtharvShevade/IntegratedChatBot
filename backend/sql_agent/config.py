@@ -1,75 +1,65 @@
-# config.py — SQL agent settings, read entirely from environment variables.
-# All values that were previously hardcoded in sql_agent/src/config.py are
-# now controlled via .env so credentials are never committed to source control.
+# backend/sql_agent/config.py
+#
+# Re-exports the vendored agent's settings (sql_agent/src/config.py, populated
+# from this project's .env by _bootstrap) under the import path the chatbot has
+# always used: `backend.sql_agent.config`.
+#
+# It also re-derives the individual artefact paths (TABLE_INDEX_PATH & co). The
+# new agent resolves those inline from config.EMBEDDING_DIR instead of exporting
+# constants, but backend/main.py's startup warm-up still wants them by name, and
+# naming them here keeps that call site readable.
 
 from __future__ import annotations
 
 import os
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-_HERE         = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_HERE))   # IntegratedChatBot/
+from backend.sql_agent import _bootstrap
 
-# Directory containing schema.sql and .json-formatted mapping file.
-SQL_AGENT_DATA_DIR: str = os.path.join(_PROJECT_ROOT, "sql_agent", "data")
+_bootstrap.ensure()
 
-# Directory where main.py writes FAISS indexes and schema artifacts.
-# Defaults to <project_root>/sql_agent/output so the gitignore rules
-# already in place continue to work without any change.
-FAISS_OUTPUT_DIR: str = os.getenv(
-    "FAISS_OUTPUT_DIR",
-    os.path.join(_PROJECT_ROOT, "sql_agent", "output"),
+from src.config import (                                        # noqa: E402
+    BUSINESS_SEMANTICS_LEVEL,
+    CONTEXT_PIPELINE,
+    DB_HOST,
+    DB_MAX_ROWS,
+    DB_PASSWORD,
+    DB_PORT,
+    DB_SERVICE,
+    DB_USER,
+    EMBED_MODEL,
+    EMBEDDING_DIR,
+    MODEL_PROFILES,
+    OLLAMA_KEEP_ALIVE,
+    OLLAMA_MODEL,
+    OLLAMA_NUM_CTX,
+    OLLAMA_URL,
+    QUERY_PREFIX,
+    SELECTOR_MODEL,
+    SHORTLIST_K,
+    TOP_K_COLUMNS,
+    TOP_K_TABLES,
 )
+import src.config as _src_config                                # noqa: E402
 
-# ── Derived artifact paths (use these instead of hardcoded "output/...") ──────
-TABLE_INDEX_PATH    = os.path.join(FAISS_OUTPUT_DIR, "table_index.faiss")
-TABLE_META_PATH     = os.path.join(FAISS_OUTPUT_DIR, "table_meta.pkl")
-COLUMN_INDEX_PATH   = os.path.join(FAISS_OUTPUT_DIR, "column_index.faiss")
-COLUMN_META_PATH    = os.path.join(FAISS_OUTPUT_DIR, "column_meta.pkl")
-ROW_LABEL_INDEX_PATH = os.path.join(FAISS_OUTPUT_DIR, "row_label_index.faiss")
-ROW_LABEL_META_PATH  = os.path.join(FAISS_OUTPUT_DIR, "row_label_meta.pkl")
-SCHEMA_JSON_PATH    = os.path.join(FAISS_OUTPUT_DIR, "schema.json")
-DESC_SAMPLES_PATH   = os.path.join(FAISS_OUTPUT_DIR, "description_samples.json")
-COLUMN_TYPES_PATH   = os.path.join(FAISS_OUTPUT_DIR, "column_types.json")
+# The live settings module. Read mutable settings through this (the agent's own
+# modules read `config.EMBEDDING_DIR` at call time on purpose) rather than
+# relying on the constants imported above, which are snapshots.
+SRC_CONFIG = _src_config
 
-# ── Embedding model ────────────────────────────────────────────────────────────
-EMBED_MODEL  = os.getenv("SQL_EMBED_MODEL",  "BAAI/bge-large-en")
-QUERY_PREFIX = os.getenv(
-    "SQL_QUERY_PREFIX",
-    "Represent this sentence for searching relevant passages: ",
-)
+# ── Derived artefact paths ───────────────────────────────────────────────────
+TABLE_INDEX_PATH     = os.path.join(EMBEDDING_DIR, "table_index.faiss")
+TABLE_META_PATH      = os.path.join(EMBEDDING_DIR, "table_meta.pkl")
+COLUMN_INDEX_PATH    = os.path.join(EMBEDDING_DIR, "column_index.faiss")
+COLUMN_META_PATH     = os.path.join(EMBEDDING_DIR, "column_meta.pkl")
+ROW_LABEL_INDEX_PATH = os.path.join(EMBEDDING_DIR, "row_label_index.faiss")
+ROW_LABEL_META_PATH  = os.path.join(EMBEDDING_DIR, "row_label_meta.pkl")
+QA_INDEX_PATH        = os.path.join(EMBEDDING_DIR, "qa_index.faiss")
+QA_META_PATH         = os.path.join(EMBEDDING_DIR, "qa_meta.pkl")
+SCHEMA_JSON_PATH     = os.path.join(EMBEDDING_DIR, "schema.json")
+DESC_SAMPLES_PATH    = os.path.join(EMBEDDING_DIR, "description_samples.json")
 
-# ── FAISS retrieval settings ───────────────────────────────────────────────────
-TOP_K_TABLES  = int(os.getenv("SQL_TOP_K_TABLES",  "5"))
-TOP_K_COLUMNS = int(os.getenv("SQL_TOP_K_COLUMNS", "5"))
+# Kept for the old name; the agent no longer writes a separate output/ folder.
+FAISS_OUTPUT_DIR = EMBEDDING_DIR
 
-# ── Ollama settings ────────────────────────────────────────────────────────────
-_ollama_base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_URL   = f"{_ollama_base}/api/generate"
-OLLAMA_MODEL = os.getenv("SQL_OLLAMA_MODEL", os.getenv("OLLAMA_MODEL", "mistral"))
-
-# ── Oracle DB connection settings ──────────────────────────────────────────────
-# Use individual ORACLE_HOST / ORACLE_PORT / ORACLE_SERVICE env vars.
-# If ORACLE_HOST is not set we fall back to parsing the existing ORACLE_DSN
-# format  "host:port/service"  already present in .env.example.
-def _parse_dsn(dsn: str):
-    """Parse 'host:port/service' → (host, port, service)."""
-    try:
-        host_port, service = dsn.split("/", 1)
-        host, port = host_port.rsplit(":", 1)
-        return host.strip(), int(port.strip()), service.strip()
-    except Exception:
-        return "localhost", 1521, "XE"
-
-_dsn = os.getenv("ORACLE_DSN", "localhost:1521/XE")
-_default_host, _default_port, _default_service = _parse_dsn(_dsn)
-
-DB_HOST    = os.getenv("ORACLE_HOST",    _default_host)
-DB_PORT    = int(os.getenv("ORACLE_PORT", str(_default_port)))
-DB_SERVICE = os.getenv("ORACLE_SERVICE", _default_service)
-DB_USER    = os.getenv("ORACLE_USER",    "")
-DB_PASSWORD = os.getenv("ORACLE_PASSWORD", "")
-DB_MAX_ROWS = int(os.getenv("ORACLE_MAX_ROWS", "100"))
-
-# ── Sarvam AI ─────────────────────────────────────────────────────────────────
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+# Checked-in Oracle DDL — the column-type source for the generated prompt.
+DDL_SCHEMA_PATH = _bootstrap.DDL_SCHEMA_PATH

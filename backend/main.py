@@ -68,16 +68,20 @@ async def lifespan(app: FastAPI):
 
             try:
                 from backend.sql_agent.retriever import search
+                from backend.sql_agent.vectorizer import embed_query
                 from backend.sql_agent.config import (
                     TABLE_INDEX_PATH, TABLE_META_PATH,
                     COLUMN_INDEX_PATH, COLUMN_META_PATH,
                 )
                 import os as _os
+                # search() takes a pre-computed query embedding, not a query
+                # string — embedding once here also warms the encoder itself.
+                _warm_vec = embed_query("warmup")
                 if _os.path.exists(TABLE_INDEX_PATH):
-                    search(TABLE_INDEX_PATH, TABLE_META_PATH, "warmup", k=1)
+                    search(TABLE_INDEX_PATH, TABLE_META_PATH, _warm_vec, k=1)
                     logger.info("Table FAISS index loaded")
                 if _os.path.exists(COLUMN_INDEX_PATH):
-                    search(COLUMN_INDEX_PATH, COLUMN_META_PATH, "warmup", k=1)
+                    search(COLUMN_INDEX_PATH, COLUMN_META_PATH, _warm_vec, k=1)
                     logger.info("Column FAISS index loaded")
             except Exception as exc:
                 logger.warning("FAISS warm-up failed: %s", exc)

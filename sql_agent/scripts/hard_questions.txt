@@ -1,0 +1,92 @@
+# Hard test questions for the SQL agent, built from the live CIMS_RAQ(Quarterly)
+# schema. Each block states what the question is probing and what a correct
+# answer must contain, so a reviewer can judge the SQL without knowing the return.
+#
+# Run:  python -m scripts.verify_live --file scripts/hard_questions.txt
+# Lines starting with # are comments; blank lines are ignored.
+
+# ── 1. Vertical tables: must filter a row label, never SUM across labels ──────
+# Correct: WHERE RISK_CATEGORY = '1. Standard #'  (note the trailing '#')
+What is the outstanding amount for standard assets, domestic?
+# Correct: the total row 'All Industries (A to S)', NOT SUM(TL_EXP)
+Give me the total credit exposure across all industries
+# Trap: "total" here means the pre-aggregated total ROW, not an aggregate
+Total gross NPA at end of period for all industries
+# Trap: an aggregate IS legitimate here (across RDATE), so SUM must not be banned outright
+Show gross NPA at end of period for mining and quarrying over the last 4 quarters
+
+# ── 2. Three different DOM/OVE conventions in one schema ─────────────────────
+# sec2_part_a uses _DOM and _O  (NOT _OVE) — a model that assumes _OVE invents a column
+Outstanding amount for doubtful assets, domestic versus overseas
+# sec9_sensec_partb genuinely uses _DOM and _OVE
+Total exposure to commercial real estate, domestic and overseas combined
+# sec2_part_b uses DOMESTIC / OVERSEAS / GLOBAL as plain column names
+Movement of NPA provisions during the period, global
+# Trap: "combined" must be (X_DOM + X_O), not a second table or an invented TOTAL_ column
+Combined domestic and overseas provision made for losses by risk category
+
+# ── 3. Row labels that are long, punctuated, or near-duplicates ──────────────
+# Exact literal is long and parenthesised; any paraphrase returns zero rows
+Loans and advances outstanding at end of period, domestic
+# 'C. Reductions during the Period (April to Date)' vs 'C1. On account of Write Offs'
+# vs 'C2. Others' — three labels sharing a prefix
+How much of the NPA provision reduction was due to write-offs?
+# Near-duplicate labels across two tables (sec2_part_b and sec3_part_b both have A./B./C.)
+Amount of restructured standard advances at the beginning of the financial year
+# Dirty data: sec3_part_b contains a junk label 'Abcd'. The model must not pick it.
+Show all movement categories for restructured standard advances
+
+# ── 4. Time resolution (Indian FY: Q1 = Apr-Jun) ─────────────────────────────
+# No period mentioned -> must use RDATE = (SELECT MAX(RDATE) FROM <table>)
+Outstanding amount by risk category
+# Relative period -> must resolve to a real range, never a hardcoded guess
+Provision made for losses in the last two quarters
+# FY quarter, not calendar quarter
+Gross NPA for Q1 FY24
+# Trend -> RDATE in SELECT and GROUP BY, ORDER BY RDATE
+Trend of total loan assets over time
+# Trap: bare '2024-03-31' must be wrapped in TO_DATE, or ORA-01861 at execution
+Outstanding amount as of 31 March 2024
+
+# ── 5. Joins: the allow-list must hold ───────────────────────────────────────
+# DECLARED sibling pair (sec1 part A + part B) — this join should be ALLOWED
+Compare loan assets in part A with other interest bearing assets in part B for the same period
+# NOT declared — must refuse to join and answer from one table instead
+Show risk category outstanding amounts alongside the section 10 exposure details
+# Historically triggered the fabricated '..._fk' join — must now stay single-table
+show total loan from cims raq
+# Historically triggered the fabricated '.id' join
+give me risk exposure for domestic
+
+# ── 6. Table selection: topically similar tables must not be conflated ───────
+# sec2_part_a (risk category) vs sec2_part_a_npa (NPA only) vs sec2_part_a_memo
+Provision held against non-performing assets by risk category
+# sec8_ind_brkup (industry) vs sec8_infra_brkup (infrastructure) vs sec8_sec_credit
+Credit exposure to the infrastructure sector
+# sec1 part A (domestic) vs part C (overseas) — one word decides the table
+Loan assets classification for overseas operations
+# Newly added tables with no Excel description and no QA pairs — pure retrieval
+Show the general information section of this return
+Who are the signatories for the latest reporting period?
+
+# ── 7. Aggregation and ranking ───────────────────────────────────────────────
+Top 5 industries by gross NPA at end of period
+Which industry has the highest write-offs?
+Rank risk categories by provision made for losses, domestic
+# Ratio the model must compute rather than find as a column
+What percentage of total exposure is impaired for commercial real estate?
+
+# ── 8. Ambiguous / unanswerable — the RIGHT answer may be a refusal ──────────
+# No such data in this return; must not fabricate a plausible table
+What is the bank's CRAR and tier 1 capital ratio?
+# Ambiguous: which "exposure"? Should ask, or pick one and be explicit
+Show me the exposure
+# Terse but legitimate — currently blocked by MIN_QUERY_LENGTH = 20 characters
+gross NPA Q1 FY24
+# Cross-return: this index holds Quarterly only, Monthly tables are not loaded
+Compare the monthly and quarterly gross NPA figures
+
+# ── 9. Hidden dimension: TYPEID exists on sec8/sec9 and nothing documents it ──
+# If TYPEID splits the data, an unfiltered query silently double-counts
+Total funded exposure for residential mortgages
+Industry-wise breakup of standard funded advances

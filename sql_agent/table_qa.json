@@ -1,0 +1,2179 @@
+[
+  {
+    "table_name": "CIMS_RAQ_M_GEN_INFO",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "GeneralInformation",
+    "table_description": "General Information - Return name, return code, reporting institution, bank code, address, reporting period, frequency, audit/validation status, bank category and tool/version details.",
+    "in_db": true,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "VALUE",
+        "column_description": "Value"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show the general information section of the annual RAQ return",
+        "sql": "SELECT * FROM CIMS_RAQ_M_GEN_INFO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_GEN_INFO)"
+      },
+      {
+        "question": "What bank code is reported in the CIMS RAQ annual return general info?",
+        "sql": "SELECT VALUE FROM CIMS_RAQ_M_GEN_INFO WHERE DESCRIPTION = 'Bank Code' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_GEN_INFO)"
+      },
+      {
+        "question": "Get the reporting period and frequency from the annual return header",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_GEN_INFO WHERE DESCRIPTION IN ('Reporting Period','Frequency') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_GEN_INFO)"
+      },
+      {
+        "question": "List all general info key-value pairs for a given bank and reporting date",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_GEN_INFO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_GEN_INFO)"
+      },
+      {
+        "question": "What is the return name and return code for CIMS RAQ Annual?",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_GEN_INFO WHERE DESCRIPTION IN ('Return Name','Return Code') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_GEN_INFO)"
+      },
+      {
+        "question": "Fetch the bank category and audit/validation status of the annual return",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_GEN_INFO WHERE DESCRIPTION IN ('Bank Category','Audit Status','Validation Status') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_GEN_INFO)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SIGN_INFO",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "AuthorisedSignatory",
+    "table_description": "Authorised Signatory - Name, designation, mobile no., landline no., e-mail id, place and date of the authorised signatory.",
+    "in_db": true,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "VALUE",
+        "column_description": "Value"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Who is the authorised signatory for the annual RAQ return?",
+        "sql": "SELECT VALUE FROM CIMS_RAQ_M_SIGN_INFO WHERE DESCRIPTION = 'Name' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SIGN_INFO)"
+      },
+      {
+        "question": "Show the designation and email id of the signatory",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_SIGN_INFO WHERE DESCRIPTION IN ('Designation','E-mail ID') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SIGN_INFO)"
+      },
+      {
+        "question": "Get mobile and landline number of the authorised signatory for a bank",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_SIGN_INFO WHERE DESCRIPTION IN ('Mobile No','Landline No') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SIGN_INFO)"
+      },
+      {
+        "question": "What place and date was the annual return signed at?",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_SIGN_INFO WHERE DESCRIPTION IN ('Place','Date') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SIGN_INFO)"
+      },
+      {
+        "question": "List all signatory information fields for the annual return",
+        "sql": "SELECT * FROM CIMS_RAQ_M_SIGN_INFO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SIGN_INFO)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC1_PART_A_DOM",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec1PortfolioAnalysis - Part A",
+    "table_description": "Section 1: Portfolio Analysis (By delinquency in Interest Payment). Part A - Loans and Advances - including bill credit - Domestic Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "PERIOD_DELINQUENCY",
+        "column_description": "Period of Delinquency"
+      },
+      {
+        "column_name": "TERM_LOAN",
+        "column_description": "Term Loans"
+      },
+      {
+        "column_name": "CASH_CR_OVERDRAFT_DEMAND_LOAN",
+        "column_description": "Cash Credits, Overdrafts and Demand Loans"
+      },
+      {
+        "column_name": "BILLS_PURCHASE_DISCOUNT",
+        "column_description": "Bills Purchased and Discounted"
+      },
+      {
+        "column_name": "LOAN_ADVANCE_BANK",
+        "column_description": "Loans and Advances to Banks"
+      },
+      {
+        "column_name": "TOTAL_LOAN_ASSETS",
+        "column_description": "Total Loan Assets"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show domestic loans and advances by delinquency period for the annual return",
+        "sql": "SELECT PERIOD_DELINQUENCY, TOTAL_LOAN_ASSETS FROM CIMS_RAQ_M_SEC1_PART_A_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_A_DOM)"
+      },
+      {
+        "question": "What is the total loan assets figure for domestic operations under Section 1 Part A?",
+        "sql": "SELECT SUM(TOTAL_LOAN_ASSETS) FROM CIMS_RAQ_M_SEC1_PART_A_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_A_DOM)"
+      },
+      {
+        "question": "Get term loans and cash credit/overdraft amounts by delinquency bucket, domestic portfolio",
+        "sql": "SELECT PERIOD_DELINQUENCY, TERM_LOAN, CASH_CR_OVERDRAFT_DEMAND_LOAN FROM CIMS_RAQ_M_SEC1_PART_A_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_A_DOM)"
+      },
+      {
+        "question": "List bills purchased and discounted for domestic loans and advances portfolio",
+        "sql": "SELECT PERIOD_DELINQUENCY, BILLS_PURCHASE_DISCOUNT FROM CIMS_RAQ_M_SEC1_PART_A_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_A_DOM)"
+      },
+      {
+        "question": "How much loans and advances to banks are overdue in the domestic portfolio analysis section?",
+        "sql": "SELECT PERIOD_DELINQUENCY, LOAN_ADVANCE_BANK FROM CIMS_RAQ_M_SEC1_PART_A_DOM WHERE PERIOD_DELINQUENCY != 'Current' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_A_DOM)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC1_PART_B_DOM",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec1PortfolioAnalysis - Part B",
+    "table_description": "Section 1: Portfolio Analysis (By delinquency in Interest Payment). Part B - Other Interest Bearing Assets (OIBA) - Domestic Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "PERIOD_DELINQUENCY",
+        "column_description": "Period of Delinquency"
+      },
+      {
+        "column_name": "COMMERCIAL_PAPER",
+        "column_description": "Commercial Paper"
+      },
+      {
+        "column_name": "NOTE_BONDS_CORPORATE",
+        "column_description": "Notes and Bonds of Corporates"
+      },
+      {
+        "column_name": "INTER_BANK_ASSETS",
+        "column_description": "Inter-bank Assets"
+      },
+      {
+        "column_name": "LEASE_EASE_RECEIVABLE",
+        "column_description": "Lease Receivables"
+      },
+      {
+        "column_name": "OTHERS",
+        "column_description": "Others"
+      },
+      {
+        "column_name": "TOTAL_OIBA",
+        "column_description": "Total OIBA"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show Other Interest Bearing Assets (OIBA) by delinquency period for domestic operations",
+        "sql": "SELECT PERIOD_DELINQUENCY, TOTAL_OIBA FROM CIMS_RAQ_M_SEC1_PART_B_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_B_DOM)"
+      },
+      {
+        "question": "What is the commercial paper exposure under OIBA domestic in the annual return?",
+        "sql": "SELECT PERIOD_DELINQUENCY, COMMERCIAL_PAPER FROM CIMS_RAQ_M_SEC1_PART_B_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_B_DOM)"
+      },
+      {
+        "question": "Get inter-bank assets and lease receivables from Section 1 Part B",
+        "sql": "SELECT INTER_BANK_ASSETS, LEASE_EASE_RECEIVABLE FROM CIMS_RAQ_M_SEC1_PART_B_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_B_DOM)"
+      },
+      {
+        "question": "Total OIBA for the current period, domestic operations",
+        "sql": "SELECT TOTAL_OIBA FROM CIMS_RAQ_M_SEC1_PART_B_DOM WHERE PERIOD_DELINQUENCY = 'Current' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_B_DOM)"
+      },
+      {
+        "question": "List notes and bonds of corporates held as OIBA, domestic portfolio",
+        "sql": "SELECT PERIOD_DELINQUENCY, NOTE_BONDS_CORPORATE FROM CIMS_RAQ_M_SEC1_PART_B_DOM WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_B_DOM)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec1PortfolioAnalysis - Govt Paper Footnote",
+    "table_description": "Section 1: Portfolio Analysis. Footnote - Government paper excluded from OIBA Part B 'Current' row (Treasury Bills, GOI Securities, State Govt securities) with total.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "VALUE",
+        "column_description": "Value"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "What government paper is excluded from OIBA current row in the annual return?",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER)"
+      },
+      {
+        "question": "Show Treasury Bills and GOI Securities excluded from Section 1 OIBA",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER WHERE DESCRIPTION IN ('Treasury Bills','GOI Securities') AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER)"
+      },
+      {
+        "question": "Get total government paper excluded from OIBA for a bank",
+        "sql": "SELECT VALUE FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER WHERE DESCRIPTION = 'Total' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER)"
+      },
+      {
+        "question": "List state government securities excluded from OIBA current row",
+        "sql": "SELECT VALUE FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER WHERE DESCRIPTION = 'State Govt. Securities' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_EXC_GOVT_PAPER)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC1_PART_C_O",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec1PortfolioAnalysis - Part C",
+    "table_description": "Section 1: Portfolio Analysis (By delinquency in Interest Payment). Part C - Loans and Advances - including bill credit - Overseas Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "PERIOD_DELINQUENCY",
+        "column_description": "Period of Delinquency"
+      },
+      {
+        "column_name": "TERM_LOAN",
+        "column_description": "Term Loans"
+      },
+      {
+        "column_name": "CASH_CR_OVERDRAFT_DEMAND_LOAN",
+        "column_description": "Cash Credits, Overdrafts and Demand Loans"
+      },
+      {
+        "column_name": "BILLS_PURCHASE_DISCOUNT",
+        "column_description": "Bills Purchased and Discounted"
+      },
+      {
+        "column_name": "LOAN_ADVANCE_BANK",
+        "column_description": "Loans and Advances to Banks"
+      },
+      {
+        "column_name": "TOTAL_LOAN_ASSETS",
+        "column_description": "Total Loan Assets"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show overseas loans and advances by delinquency period, annual return",
+        "sql": "SELECT PERIOD_DELINQUENCY, TOTAL_LOAN_ASSETS FROM CIMS_RAQ_M_SEC1_PART_C_O WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_C_O)"
+      },
+      {
+        "question": "What is the total loan assets for overseas operations under Section 1 Part C?",
+        "sql": "SELECT SUM(TOTAL_LOAN_ASSETS) FROM CIMS_RAQ_M_SEC1_PART_C_O WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_C_O)"
+      },
+      {
+        "question": "Get term loans overdue beyond current for overseas portfolio",
+        "sql": "SELECT PERIOD_DELINQUENCY, TERM_LOAN FROM CIMS_RAQ_M_SEC1_PART_C_O WHERE PERIOD_DELINQUENCY != 'Current' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_C_O)"
+      },
+      {
+        "question": "List bills purchased and discounted for overseas loans",
+        "sql": "SELECT BILLS_PURCHASE_DISCOUNT FROM CIMS_RAQ_M_SEC1_PART_C_O WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_C_O)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC1_PART_D_O",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec1PortfolioAnalysis - Part D",
+    "table_description": "Section 1: Portfolio Analysis (By delinquency in Interest Payment). Part D - Other Interest Bearing Assets (OIBA) - Overseas Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "PERIOD_DELINQUENCY",
+        "column_description": "Period of Delinquency"
+      },
+      {
+        "column_name": "COMMERCIAL_PAPER",
+        "column_description": "Commercial Paper"
+      },
+      {
+        "column_name": "NOTE_BONDS_CORPORATE",
+        "column_description": "Notes and Bonds of Corporates"
+      },
+      {
+        "column_name": "INTER_BANK_ASSETS",
+        "column_description": "Inter-bank Assets"
+      },
+      {
+        "column_name": "OTHERS",
+        "column_description": "Others"
+      },
+      {
+        "column_name": "TOTAL_OIBA",
+        "column_description": "Total OIBA"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show OIBA for overseas operations by delinquency period",
+        "sql": "SELECT PERIOD_DELINQUENCY, TOTAL_OIBA FROM CIMS_RAQ_M_SEC1_PART_D_O WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_D_O)"
+      },
+      {
+        "question": "What is the commercial paper and inter-bank assets under overseas OIBA?",
+        "sql": "SELECT COMMERCIAL_PAPER, INTER_BANK_ASSETS FROM CIMS_RAQ_M_SEC1_PART_D_O WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_D_O)"
+      },
+      {
+        "question": "Total OIBA overseas operations for current reporting period",
+        "sql": "SELECT TOTAL_OIBA FROM CIMS_RAQ_M_SEC1_PART_D_O WHERE PERIOD_DELINQUENCY = 'Current' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_D_O)"
+      },
+      {
+        "question": "List notes and bonds of corporates in overseas OIBA portfolio",
+        "sql": "SELECT NOTE_BONDS_CORPORATE FROM CIMS_RAQ_M_SEC1_PART_D_O WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC1_PART_D_O)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC2_PART_A",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec2PartA - Part A",
+    "table_description": "Section 2: Classification of Risk Assets (By degree of risk and value impairment). Part A - Loans & Advances (including Bill Credit), Domestic and Overseas Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "RISK_CATEGORY",
+        "column_description": "Risk Category"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT_DOM",
+        "column_description": "Outstanding Amount (Domestic Operations)"
+      },
+      {
+        "column_name": "PER_TO_TOTAL_DOM",
+        "column_description": "% to Total (Domestic Operations)"
+      },
+      {
+        "column_name": "PROVISION_MADE_LOSSES_DOM",
+        "column_description": "Provision made for possible losses (Domestic Operations)"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT_O",
+        "column_description": "Outstanding Amount (Overseas Operations)"
+      },
+      {
+        "column_name": "PER_TO_TOTAL_O",
+        "column_description": "% to Total (Overseas Operations)"
+      },
+      {
+        "column_name": "PROVISION_MADE_LOSSES_O",
+        "column_description": "Provision made for possible losses (Overseas Operations)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show classification of risk assets by risk category for the annual return",
+        "sql": "SELECT RISK_CATEGORY, OUTSTANDING_AMT_DOM, OUTSTANDING_AMT_O FROM CIMS_RAQ_M_SEC2_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A)"
+      },
+      {
+        "question": "What is the outstanding amount and provision made for NPA risk category, domestic operations?",
+        "sql": "SELECT OUTSTANDING_AMT_DOM, PROVISION_MADE_LOSSES_DOM FROM CIMS_RAQ_M_SEC2_PART_A WHERE RISK_CATEGORY = 'NPA' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A)"
+      },
+      {
+        "question": "Get the percentage to total loans for each risk category, overseas operations",
+        "sql": "SELECT RISK_CATEGORY, PER_TO_TOTAL_O FROM CIMS_RAQ_M_SEC2_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A)"
+      },
+      {
+        "question": "List provisions made for possible losses across all risk categories",
+        "sql": "SELECT RISK_CATEGORY, PROVISION_MADE_LOSSES_DOM, PROVISION_MADE_LOSSES_O FROM CIMS_RAQ_M_SEC2_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A)"
+      },
+      {
+        "question": "Total standard assets outstanding, domestic vs overseas operations",
+        "sql": "SELECT OUTSTANDING_AMT_DOM, OUTSTANDING_AMT_O FROM CIMS_RAQ_M_SEC2_PART_A WHERE RISK_CATEGORY = 'Standard' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC2_PART_A_NPA",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec2PartA - NPA Netting",
+    "table_description": "Section 2: Classification of Risk Assets. Part A NPA breakup - Netting Items for NPAs and Net NPAs, Domestic and Overseas Operations outstanding amounts.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "RISK_CATEGORY",
+        "column_description": "Risk Category"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT_DOM",
+        "column_description": "Outstanding Amount (Domestic Operations)"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT_O",
+        "column_description": "Outstanding Amount (Overseas Operations)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show netting items for NPAs and net NPA amounts for the annual return",
+        "sql": "SELECT RISK_CATEGORY, OUTSTANDING_AMT_DOM, OUTSTANDING_AMT_O FROM CIMS_RAQ_M_SEC2_PART_A_NPA WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A_NPA)"
+      },
+      {
+        "question": "What is the net NPA outstanding for domestic operations?",
+        "sql": "SELECT OUTSTANDING_AMT_DOM FROM CIMS_RAQ_M_SEC2_PART_A_NPA WHERE RISK_CATEGORY = 'Net NPA' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A_NPA)"
+      },
+      {
+        "question": "Get netting items reducing gross NPA, overseas operations",
+        "sql": "SELECT RISK_CATEGORY, OUTSTANDING_AMT_O FROM CIMS_RAQ_M_SEC2_PART_A_NPA WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A_NPA)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC2_PART_A_MEMO",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec2PartA - Memorandum",
+    "table_description": "Section 2: Classification of Risk Assets. Part A Memorandum items - loans/advances to Government or carrying Government guarantee which are non-performing, and interest not recognised thereon.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "MEMORANDUM_ITEM",
+        "column_description": "Memorandum Item"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT_DOM",
+        "column_description": "Outstanding Amount (Domestic Operations)"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT_O",
+        "column_description": "Outstanding Amount (Overseas Operations)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show memorandum items for government guaranteed non-performing advances",
+        "sql": "SELECT MEMORANDUM_ITEM, OUTSTANDING_AMT_DOM FROM CIMS_RAQ_M_SEC2_PART_A_MEMO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A_MEMO)"
+      },
+      {
+        "question": "What is the interest not recognised on government guaranteed NPAs, overseas operations?",
+        "sql": "SELECT OUTSTANDING_AMT_O FROM CIMS_RAQ_M_SEC2_PART_A_MEMO WHERE MEMORANDUM_ITEM LIKE '%Interest not recognised%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A_MEMO)"
+      },
+      {
+        "question": "List memorandum items for loans to government carrying government guarantee",
+        "sql": "SELECT MEMORANDUM_ITEM, OUTSTANDING_AMT_DOM, OUTSTANDING_AMT_O FROM CIMS_RAQ_M_SEC2_PART_A_MEMO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_A_MEMO)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC2_PART_C",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Section2PartB - Part C",
+    "table_description": "Section 2: Classification of Risk Assets. Part C - Other Risk Assets and Exposures (on-balance sheet items 1-5 and off-balance sheet items 6-8), Domestic and Overseas Operations, classified by Standard/Sub-Standard/Doubtful/Loss.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "ITEM",
+        "column_description": "Item"
+      },
+      {
+        "column_name": "STANDARD_DOM",
+        "column_description": "Standard (Domestic Operations)"
+      },
+      {
+        "column_name": "SUBSTANDARD_DOM",
+        "column_description": "Sub-Standard (Domestic Operations)"
+      },
+      {
+        "column_name": "DOUBTFUL_DOM",
+        "column_description": "Doubtful (Domestic Operations)"
+      },
+      {
+        "column_name": "LOSS_DOM",
+        "column_description": "Loss (Domestic Operations)"
+      },
+      {
+        "column_name": "TOTAL_DOM",
+        "column_description": "Total (Domestic Operations)"
+      },
+      {
+        "column_name": "STANDARD_O",
+        "column_description": "Standard (Overseas Operations)"
+      },
+      {
+        "column_name": "SUBSTANDARD_O",
+        "column_description": "Sub-Standard (Overseas Operations)"
+      },
+      {
+        "column_name": "DOUBTFUL_O",
+        "column_description": "Doubtful (Overseas Operations)"
+      },
+      {
+        "column_name": "LOSS_O",
+        "column_description": "Loss (Overseas Operations)"
+      },
+      {
+        "column_name": "TOTAL_O",
+        "column_description": "Total (Overseas Operations)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show other risk assets and off-balance sheet exposures classified by asset quality",
+        "sql": "SELECT ITEM, TOTAL_DOM, TOTAL_O FROM CIMS_RAQ_M_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_C)"
+      },
+      {
+        "question": "What is the doubtful classification amount for off-balance sheet items, domestic operations?",
+        "sql": "SELECT ITEM, DOUBTFUL_DOM FROM CIMS_RAQ_M_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_C)"
+      },
+      {
+        "question": "Get standard vs loss classification for each other risk asset item, overseas operations",
+        "sql": "SELECT ITEM, STANDARD_O, LOSS_O FROM CIMS_RAQ_M_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_C)"
+      },
+      {
+        "question": "List sub-standard other risk assets for both domestic and overseas operations",
+        "sql": "SELECT ITEM, SUBSTANDARD_DOM, SUBSTANDARD_O FROM CIMS_RAQ_M_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC2_PART_C)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC3_PART_A",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-3-RestAdv - Part A",
+    "table_description": "Section 3: Restructuring of Advances. Part A - Restructuring of Advances by Category (Standard, Sub-standard, Doubtful, Loss), reporting number of borrowers, amount and sacrifice on diminution, for Domestic and Overseas Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "CATEGORY",
+        "column_description": "Restructured Loans and Advances Retained as (Category)"
+      },
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Item (Number of borrowers / Amount / Sacrifice on diminution)"
+      },
+      {
+        "column_name": "ACC_RES_DOM",
+        "column_description": "Accounts Restructured (during the year) - Domestic Operations"
+      },
+      {
+        "column_name": "ACC_RES_CDR_DOM",
+        "column_description": "of which through CDR - Domestic Operations"
+      },
+      {
+        "column_name": "OUT_ACC_RES_DOM",
+        "column_description": "Accounts Restructured Outstanding at year end - Domestic Operations"
+      },
+      {
+        "column_name": "OUT_ACC_RES_CDR_DOM",
+        "column_description": "of which through CDR outstanding - Domestic Operations"
+      },
+      {
+        "column_name": "ACC_SLIP_DOM",
+        "column_description": "Restructured Accounts Slipped to NPAs (during the year) - Domestic Operations"
+      },
+      {
+        "column_name": "OUT_ACC_SLIP_DOM",
+        "column_description": "Restructured Accounts Slipped to NPAs Outstanding - Domestic Operations"
+      },
+      {
+        "column_name": "ACC_RES_OS",
+        "column_description": "Accounts Restructured (during the year) - Overseas Operations"
+      },
+      {
+        "column_name": "ACC_RES_CDR_OS",
+        "column_description": "of which through CDR - Overseas Operations"
+      },
+      {
+        "column_name": "OUT_ACC_RES_OS",
+        "column_description": "Accounts Restructured Outstanding at year end - Overseas Operations"
+      },
+      {
+        "column_name": "OUT_ACC_RES_CDR_OS",
+        "column_description": "of which through CDR outstanding - Overseas Operations"
+      },
+      {
+        "column_name": "ACC_SLIP_OS",
+        "column_description": "Restructured Accounts Slipped to NPAs (during the year) - Overseas Operations"
+      },
+      {
+        "column_name": "OUT_ACC_SLIP_OS",
+        "column_description": "Restructured Accounts Slipped to NPAs Outstanding - Overseas Operations"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show restructured advances by category for the annual return",
+        "sql": "SELECT CATEGORY, DESCRIPTION, OUT_ACC_RES_DOM FROM CIMS_RAQ_M_SEC3_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_A)"
+      },
+      {
+        "question": "How many restructured standard accounts slipped to NPA during the year, domestic operations?",
+        "sql": "SELECT CATEGORY, ACC_SLIP_DOM FROM CIMS_RAQ_M_SEC3_PART_A WHERE CATEGORY = 'Standard' AND DESCRIPTION = 'Number of borrowers' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_A)"
+      },
+      {
+        "question": "Get amount restructured through CDR mechanism, domestic and overseas",
+        "sql": "SELECT ACC_RES_CDR_DOM, ACC_RES_CDR_OS FROM CIMS_RAQ_M_SEC3_PART_A WHERE DESCRIPTION = 'Amount' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_A)"
+      },
+      {
+        "question": "What is the outstanding restructured advances amount at year end for sub-standard category?",
+        "sql": "SELECT OUT_ACC_RES_DOM, OUT_ACC_RES_OS FROM CIMS_RAQ_M_SEC3_PART_A WHERE CATEGORY = 'Sub-standard' AND DESCRIPTION = 'Amount' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_A)"
+      },
+      {
+        "question": "List sacrifice on diminution in fair value for restructured loans by category",
+        "sql": "SELECT CATEGORY, ACC_RES_DOM FROM CIMS_RAQ_M_SEC3_PART_A WHERE DESCRIPTION = 'Sacrifice on diminution' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_A)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC3_PART_B",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-3-RestAdv - Part B",
+    "table_description": "Section 3: Restructuring of Advances. Part B - movement of restructured standard loans and advances (Domestic, Overseas and Global).",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "MOVEMENT_RESTRUCTURE_STD_LA",
+        "column_description": "Movement of Restructured Standard Loans and Advances"
+      },
+      {
+        "column_name": "DOMESTIC",
+        "column_description": "Domestic"
+      },
+      {
+        "column_name": "OVERSEAS",
+        "column_description": "Overseas"
+      },
+      {
+        "column_name": "GLOBAL",
+        "column_description": "Global"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      },
+      {
+        "column_name": "TYPE_ID",
+        "column_description": "TYPEID"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show movement of restructured standard loans and advances for the year",
+        "sql": "SELECT MOVEMENT_RESTRUCTURE_STD_LA, GLOBAL FROM CIMS_RAQ_M_SEC3_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_B)"
+      },
+      {
+        "question": "What is the opening balance of restructured standard advances, domestic operations?",
+        "sql": "SELECT DOMESTIC FROM CIMS_RAQ_M_SEC3_PART_B WHERE MOVEMENT_RESTRUCTURE_STD_LA = 'Opening Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_B)"
+      },
+      {
+        "question": "Get fresh restructuring during the year added to standard restructured advances, global",
+        "sql": "SELECT GLOBAL FROM CIMS_RAQ_M_SEC3_PART_B WHERE MOVEMENT_RESTRUCTURE_STD_LA LIKE '%Fresh restructuring%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_B)"
+      },
+      {
+        "question": "List closing balance of restructured standard loans, overseas operations",
+        "sql": "SELECT OVERSEAS FROM CIMS_RAQ_M_SEC3_PART_B WHERE MOVEMENT_RESTRUCTURE_STD_LA = 'Closing Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC3_PART_B)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC4_PART_A",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec4ChgInAQRecOfNPAs - Part A",
+    "table_description": "Section 4: Change in Asset Quality Profile and Recoveries of NPAs. Part A - Movement in Loans and Advances during the period (during the year), Domestic and Overseas Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "MOVEMENT_FROM",
+        "column_description": "Movement from"
+      },
+      {
+        "column_name": "STANDARD_DOM",
+        "column_description": "Standard (Domestic Operations)"
+      },
+      {
+        "column_name": "SUBSTANDARD_DOM",
+        "column_description": "Sub-standard (Domestic Operations)"
+      },
+      {
+        "column_name": "DOUBTFUL_DOM",
+        "column_description": "Doubtful (Domestic Operations)"
+      },
+      {
+        "column_name": "LOSS_DOM",
+        "column_description": "Loss (Domestic Operations)"
+      },
+      {
+        "column_name": "TOTAL_DOM",
+        "column_description": "Total (Domestic Operations)"
+      },
+      {
+        "column_name": "STANDARD_O",
+        "column_description": "Standard (Overseas Operations)"
+      },
+      {
+        "column_name": "SUBSTANDARD_O",
+        "column_description": "Sub-standard (Overseas Operations)"
+      },
+      {
+        "column_name": "DOUBTFUL_O",
+        "column_description": "Doubtful (Overseas Operations)"
+      },
+      {
+        "column_name": "LOSS_O",
+        "column_description": "Loss (Overseas Operations)"
+      },
+      {
+        "column_name": "TOTAL_O",
+        "column_description": "Total (Overseas Operations)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show movement in loans and advances during the year by asset classification",
+        "sql": "SELECT MOVEMENT_FROM, TOTAL_DOM, TOTAL_O FROM CIMS_RAQ_M_SEC4_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_A)"
+      },
+      {
+        "question": "What loans moved from standard to sub-standard, domestic operations, during the year?",
+        "sql": "SELECT SUBSTANDARD_DOM FROM CIMS_RAQ_M_SEC4_PART_A WHERE MOVEMENT_FROM = 'Standard' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_A)"
+      },
+      {
+        "question": "Get doubtful loans movement for overseas operations",
+        "sql": "SELECT MOVEMENT_FROM, DOUBTFUL_O FROM CIMS_RAQ_M_SEC4_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_A)"
+      },
+      {
+        "question": "List loss classification totals across domestic and overseas operations",
+        "sql": "SELECT LOSS_DOM, LOSS_O FROM CIMS_RAQ_M_SEC4_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_A)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC4_PART_B",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec4ChgInAQRecOfNPAs - Part B",
+    "table_description": "Section 4: Change in Asset Quality Profile and Recoveries of NPAs. Part B - Change in NPAs Profile during the Period (during the year), by asset classification, Domestic and Overseas Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "MOVEMENT_FROM",
+        "column_description": "Items"
+      },
+      {
+        "column_name": "SUBSTANDARD_DOM",
+        "column_description": "Sub-Standard (Domestic Operations)"
+      },
+      {
+        "column_name": "DOUBTFUL_DOM",
+        "column_description": "Doubtful (Domestic Operations)"
+      },
+      {
+        "column_name": "LOSS_DOM",
+        "column_description": "Loss (Domestic Operations)"
+      },
+      {
+        "column_name": "TOTAL_DOM",
+        "column_description": "Total (Domestic Operations)"
+      },
+      {
+        "column_name": "SUBSTANDARD_O",
+        "column_description": "Sub-Standard (Overseas Operations)"
+      },
+      {
+        "column_name": "DOUBTFUL_O",
+        "column_description": "Doubtful (Overseas Operations)"
+      },
+      {
+        "column_name": "LOSS_O",
+        "column_description": "Loss (Overseas Operations)"
+      },
+      {
+        "column_name": "TOTAL_O",
+        "column_description": "Total (Overseas Operations)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show change in NPA profile during the year for the annual return",
+        "sql": "SELECT MOVEMENT_FROM, TOTAL_DOM FROM CIMS_RAQ_M_SEC4_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_B)"
+      },
+      {
+        "question": "What is the closing balance of doubtful NPAs, domestic operations?",
+        "sql": "SELECT DOUBTFUL_DOM FROM CIMS_RAQ_M_SEC4_PART_B WHERE MOVEMENT_FROM = 'Closing Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_B)"
+      },
+      {
+        "question": "Get fresh accretion to NPAs during the year, overseas operations",
+        "sql": "SELECT SUBSTANDARD_O FROM CIMS_RAQ_M_SEC4_PART_B WHERE MOVEMENT_FROM LIKE '%Additions%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_B)"
+      },
+      {
+        "question": "List total NPAs by classification, domestic and overseas",
+        "sql": "SELECT MOVEMENT_FROM, TOTAL_DOM, TOTAL_O FROM CIMS_RAQ_M_SEC4_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_B)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC4_PART_C",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec4ChgInAQRecOfNPAs - Part C",
+    "table_description": "Section 4: Change in Asset Quality Profile and Recoveries of NPAs. Part C - Movement in Technical/Prudential Write-offs/Advances under Collection Account during the Period (during the year), Domestic, Overseas and Global.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "DOMESTIC",
+        "column_description": "Domestic"
+      },
+      {
+        "column_name": "OVERSEAS",
+        "column_description": "Overseas"
+      },
+      {
+        "column_name": "GLODAL",
+        "column_description": "Global"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show movement in technical/prudential write-offs during the year",
+        "sql": "SELECT DESCRIPTION, GLODAL FROM CIMS_RAQ_M_SEC4_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_C)"
+      },
+      {
+        "question": "What is the opening balance of technical write-offs, domestic operations?",
+        "sql": "SELECT DOMESTIC FROM CIMS_RAQ_M_SEC4_PART_C WHERE DESCRIPTION = 'Opening Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_C)"
+      },
+      {
+        "question": "Get recoveries made against technical write-offs during the year, overseas",
+        "sql": "SELECT OVERSEAS FROM CIMS_RAQ_M_SEC4_PART_C WHERE DESCRIPTION LIKE '%Recoveries%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_C)"
+      },
+      {
+        "question": "List closing balance of advances under collection account, global operations",
+        "sql": "SELECT GLODAL FROM CIMS_RAQ_M_SEC4_PART_C WHERE DESCRIPTION = 'Closing Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_C)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC4_PART_D",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec4ChgInAQRecOfNPAs - Part D",
+    "table_description": "Section 4: Change in Asset Quality Profile and Recoveries of NPAs. Part D - Recoveries of NPAs through SARFAESI, DRT and Lok Adalat (Position as at end of the Year) - Domestic Operations, reporting number of cases and amount.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "NO_OF_CASE",
+        "column_description": "No. of Cases"
+      },
+      {
+        "column_name": "AMOUNT",
+        "column_description": "Amount"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show recoveries of NPAs through SARFAESI, DRT and Lok Adalat for the annual return",
+        "sql": "SELECT DESCRIPTION, NO_OF_CASE, AMOUNT FROM CIMS_RAQ_M_SEC4_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_D)"
+      },
+      {
+        "question": "How many cases and what amount was recovered through SARFAESI during the year?",
+        "sql": "SELECT NO_OF_CASE, AMOUNT FROM CIMS_RAQ_M_SEC4_PART_D WHERE DESCRIPTION = 'SARFAESI' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_D)"
+      },
+      {
+        "question": "What amount was recovered through Lok Adalat, domestic operations?",
+        "sql": "SELECT AMOUNT FROM CIMS_RAQ_M_SEC4_PART_D WHERE DESCRIPTION = 'Lok Adalat' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_D)"
+      },
+      {
+        "question": "Get number of DRT recovery cases for the year",
+        "sql": "SELECT NO_OF_CASE FROM CIMS_RAQ_M_SEC4_PART_D WHERE DESCRIPTION = 'DRT' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC4_PART_D)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC5_TOP_CR",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec5TopImpCredits",
+    "table_description": "Section 5: Top Defaulters (Global Operations). Top Impaired Credits - detail of each defaulter including PAN, name, date of sanction, risk classification and exposure/provision amounts.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "SR_NO",
+        "column_description": "Sr No"
+      },
+      {
+        "column_name": "PAN_DEFAULTER",
+        "column_description": "PAN Number Of Defaulter"
+      },
+      {
+        "column_name": "NAME_DEFAULTER",
+        "column_description": "Name Of Defaulter"
+      },
+      {
+        "column_name": "DATE_SANCTION",
+        "column_description": "Date Of Sanction (YYYY-MM-DD)"
+      },
+      {
+        "column_name": "RISK_CLASSIFICATION",
+        "column_description": "Risk Classification"
+      },
+      {
+        "column_name": "FUND_CR_EXP",
+        "column_description": "Funded Credit Exposure"
+      },
+      {
+        "column_name": "NONFUND_CR_EXP",
+        "column_description": "Non-Funded Credit Exposure"
+      },
+      {
+        "column_name": "TOTAL_CR_EXP",
+        "column_description": "Total Credit Exposure"
+      },
+      {
+        "column_name": "LOSS_PRO_HELD",
+        "column_description": "Loss Provisions held"
+      },
+      {
+        "column_name": "INTR_ARREARS",
+        "column_description": "Interest in Arrears"
+      },
+      {
+        "column_name": "TOTAL_INV_EXP_IF",
+        "column_description": "Total Investment Exposure, if any"
+      },
+      {
+        "column_name": "TOTAL_EXP",
+        "column_description": "Total Exposure"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show the top impaired credits / top defaulters list for the annual return",
+        "sql": "SELECT NAME_DEFAULTER, TOTAL_EXP FROM CIMS_RAQ_M_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR) ORDER BY TOTAL_EXP DESC"
+      },
+      {
+        "question": "Who are the top 10 defaulters by total exposure this year?",
+        "sql": "SELECT NAME_DEFAULTER, PAN_DEFAULTER, TOTAL_EXP FROM CIMS_RAQ_M_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR) ORDER BY TOTAL_EXP DESC FETCH FIRST 10 ROWS ONLY"
+      },
+      {
+        "question": "What is the loss provision held against a defaulter identified by PAN?",
+        "sql": "SELECT NAME_DEFAULTER, LOSS_PRO_HELD FROM CIMS_RAQ_M_SEC5_TOP_CR WHERE PAN_DEFAULTER = 'ABCDE1234F' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR)"
+      },
+      {
+        "question": "Get funded and non-funded credit exposure for top impaired credits, risk classification doubtful",
+        "sql": "SELECT NAME_DEFAULTER, FUND_CR_EXP, NONFUND_CR_EXP FROM CIMS_RAQ_M_SEC5_TOP_CR WHERE RISK_CLASSIFICATION = 'Doubtful' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR)"
+      },
+      {
+        "question": "List interest in arrears for all top defaulters reported this year",
+        "sql": "SELECT NAME_DEFAULTER, INTR_ARREARS FROM CIMS_RAQ_M_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR)"
+      },
+      {
+        "question": "Find defaulters sanctioned in a given year with total exposure above a threshold",
+        "sql": "SELECT NAME_DEFAULTER, DATE_SANCTION, TOTAL_EXP FROM CIMS_RAQ_M_SEC5_TOP_CR WHERE TOTAL_EXP > 100000000 AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC5_TOP_CR_TL",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec5TopImpCredits - Total",
+    "table_description": "Section 5: Top Defaulters (Global Operations). Top Impaired Credits - Total row aggregating exposure and provision amounts across all reported defaulters.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "FUND_CR_EXP",
+        "column_description": "Funded Credit Exposure"
+      },
+      {
+        "column_name": "NONFUND_CR_EXP",
+        "column_description": "Non-Funded Credit Exposure"
+      },
+      {
+        "column_name": "TOTAL_CR_EXP",
+        "column_description": "Total Credit Exposure"
+      },
+      {
+        "column_name": "LOSS_PRO_HELD",
+        "column_description": "Loss Provisions held"
+      },
+      {
+        "column_name": "INTR_ARREARS",
+        "column_description": "Interest in Arrears"
+      },
+      {
+        "column_name": "TOTAL_INV_EXP_IF",
+        "column_description": "Total Investment Exposure, if any"
+      },
+      {
+        "column_name": "TOTAL_EXP",
+        "column_description": "Total Exposure"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "What is the total exposure across all top impaired credits reported for the year?",
+        "sql": "SELECT TOTAL_EXP FROM CIMS_RAQ_M_SEC5_TOP_CR_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR_TL)"
+      },
+      {
+        "question": "Show aggregate loss provisions held for all top defaulters",
+        "sql": "SELECT LOSS_PRO_HELD FROM CIMS_RAQ_M_SEC5_TOP_CR_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR_TL)"
+      },
+      {
+        "question": "Get total funded and non-funded credit exposure summed across top defaulters",
+        "sql": "SELECT FUND_CR_EXP, NONFUND_CR_EXP FROM CIMS_RAQ_M_SEC5_TOP_CR_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC5_TOP_CR_TL)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC6_PART_A",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec6InvestQlty - Part A",
+    "table_description": "Section 6: Investment Quality. Part A - Quality of Investment Portfolio (Domestic / Overseas / Global Operation), Book Value and Market Value by investment category.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "CATEGORY_INVESTMENT_DOM_OPR",
+        "column_description": "Category of Investment"
+      },
+      {
+        "column_name": "HELD_MATURITY_BV",
+        "column_description": "Book Value Held to Maturity"
+      },
+      {
+        "column_name": "AVAIL_FR_SALE_BV",
+        "column_description": "Book Value Available for Sale"
+      },
+      {
+        "column_name": "HELD_FR_TRADING_BV",
+        "column_description": "Book Value Held for Trading"
+      },
+      {
+        "column_name": "TOTAL_BV",
+        "column_description": "Book Value Total"
+      },
+      {
+        "column_name": "HELD_MATURITY_MV",
+        "column_description": "Market Value Held to Maturity"
+      },
+      {
+        "column_name": "AVAIL_FR_SALE_MV",
+        "column_description": "Market Value Available for Sale"
+      },
+      {
+        "column_name": "HELD_FR_TRADING_MV",
+        "column_description": "Market Value Held for Trading"
+      },
+      {
+        "column_name": "TOTAL_MV",
+        "column_description": "Market Value Total"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show quality of investment portfolio by book value and market value for the annual return",
+        "sql": "SELECT CATEGORY_INVESTMENT_DOM_OPR, TOTAL_BV, TOTAL_MV FROM CIMS_RAQ_M_SEC6_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_A)"
+      },
+      {
+        "question": "What is the book value of investments held to maturity?",
+        "sql": "SELECT CATEGORY_INVESTMENT_DOM_OPR, HELD_MATURITY_BV FROM CIMS_RAQ_M_SEC6_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_A)"
+      },
+      {
+        "question": "Get market value of investments available for sale, by category",
+        "sql": "SELECT CATEGORY_INVESTMENT_DOM_OPR, AVAIL_FR_SALE_MV FROM CIMS_RAQ_M_SEC6_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_A)"
+      },
+      {
+        "question": "Compare book value and market value held for trading across investment categories",
+        "sql": "SELECT CATEGORY_INVESTMENT_DOM_OPR, HELD_FR_TRADING_BV, HELD_FR_TRADING_MV FROM CIMS_RAQ_M_SEC6_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_A)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC6_PART_B",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec6InvestQlty - Part B",
+    "table_description": "Section 6: Investment Quality. Part B - Shifting of Investments during the period (Domestic), reporting amount and total provisions on account of shifting, for the current year.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "ITEM",
+        "column_description": "Item (category of shift, e.g. HTM to AFS)"
+      },
+      {
+        "column_name": "AMT_CR_QTR",
+        "column_description": "Amount - Current Period"
+      },
+      {
+        "column_name": "AMT_CR_YR",
+        "column_description": "Amount - Current Year"
+      },
+      {
+        "column_name": "TOTAL_CR_QTR",
+        "column_description": "Total Provisions on Account of Shifting - Current Period"
+      },
+      {
+        "column_name": "TOTAL_CR_YR",
+        "column_description": "Total Provisions on Account of Shifting - Current Year"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show shifting of investments during the year, domestic operations",
+        "sql": "SELECT ITEM, AMT_CR_YR FROM CIMS_RAQ_M_SEC6_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_B)"
+      },
+      {
+        "question": "What provisions were made on account of shifting investments from HTM to AFS?",
+        "sql": "SELECT TOTAL_CR_YR FROM CIMS_RAQ_M_SEC6_PART_B WHERE ITEM LIKE '%HTM to AFS%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_B)"
+      },
+      {
+        "question": "Get total amount shifted between investment categories for the current year",
+        "sql": "SELECT ITEM, AMT_CR_YR, TOTAL_CR_YR FROM CIMS_RAQ_M_SEC6_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_B)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC6_PART_C",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec6NonSLR",
+    "table_description": "Section 6: Non-SLR Securities. Part C - Other Details of Non-SLR Securities/Investments (Domestic Operations), by category and item, with rating-wise, category-wise and private-placement holdings, total NPA and total provision held.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "CATEGORY",
+        "column_description": "Category of Securities"
+      },
+      {
+        "column_name": "ITEM",
+        "column_description": "Item"
+      },
+      {
+        "column_name": "TL_HLD_RATE",
+        "column_description": "Rating-Wise Details of Total Holdings - Rated"
+      },
+      {
+        "column_name": "TL_HLD_UNRATE",
+        "column_description": "Rating-Wise Details of Total Holdings - Unrated"
+      },
+      {
+        "column_name": "TL_HLD_BRWR",
+        "column_description": "Category-Wise Details - Borrowers"
+      },
+      {
+        "column_name": "TL_HLD_NONBRWR",
+        "column_description": "Category-Wise Details - Non-Borrowers"
+      },
+      {
+        "column_name": "AATPP_RATE",
+        "column_description": "Amount Acquired Through Private Placement - Rated"
+      },
+      {
+        "column_name": "AATPP_UNRATE",
+        "column_description": "Amount Acquired Through Private Placement - Unrated"
+      },
+      {
+        "column_name": "TOTAL_NPA",
+        "column_description": "Total NPA"
+      },
+      {
+        "column_name": "TOTAL_PRO_HELD",
+        "column_description": "Total Provision Held"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show non-SLR securities details by category for the annual return",
+        "sql": "SELECT CATEGORY, ITEM, TOTAL_NPA FROM CIMS_RAQ_M_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_C)"
+      },
+      {
+        "question": "What are the rated vs unrated holdings of non-SLR securities?",
+        "sql": "SELECT CATEGORY, TL_HLD_RATE, TL_HLD_UNRATE FROM CIMS_RAQ_M_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_C)"
+      },
+      {
+        "question": "Get amount acquired through private placement of non-SLR securities, rated",
+        "sql": "SELECT CATEGORY, AATPP_RATE FROM CIMS_RAQ_M_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_C)"
+      },
+      {
+        "question": "What is the total provision held against non-SLR securities NPAs?",
+        "sql": "SELECT SUM(TOTAL_PRO_HELD) FROM CIMS_RAQ_M_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_C)"
+      },
+      {
+        "question": "List non-SLR securities holdings from borrowers vs non-borrowers",
+        "sql": "SELECT CATEGORY, TL_HLD_BRWR, TL_HLD_NONBRWR FROM CIMS_RAQ_M_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_C)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC6_PART_D",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec6NonSLR - Part D",
+    "table_description": "Section 6: Non-SLR Securities. Part D - Movement in Provisions for NPIs during the year, Domestic, Overseas and Global.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "DOMESTIC",
+        "column_description": "Domestic"
+      },
+      {
+        "column_name": "OVERSEAS",
+        "column_description": "Overseas"
+      },
+      {
+        "column_name": "GLOBAL",
+        "column_description": "Global"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show movement in provisions for non-performing investments during the year",
+        "sql": "SELECT DESCRIPTION, GLOBAL FROM CIMS_RAQ_M_SEC6_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_D)"
+      },
+      {
+        "question": "What is the opening balance of NPI provisions, domestic operations?",
+        "sql": "SELECT DOMESTIC FROM CIMS_RAQ_M_SEC6_PART_D WHERE DESCRIPTION = 'Opening Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_D)"
+      },
+      {
+        "question": "Get closing balance of provisions for non-performing investments, global",
+        "sql": "SELECT GLOBAL FROM CIMS_RAQ_M_SEC6_PART_D WHERE DESCRIPTION = 'Closing Balance' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC6_PART_D)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC7_EXP_CR",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec7ExportCredit",
+    "table_description": "Section 7: Export Credit. Total disbursements during the year and balance outstanding at year end, split by pre-shipment and post-shipment credit types.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DISBURSH_PRE_RUP_CR",
+        "column_description": "Disbursement during the year - Pre Shipment Rupee Credit"
+      },
+      {
+        "column_name": "DISBURSH_PRE_PCFC",
+        "column_description": "Disbursement during the year - Pre Shipment PCFC"
+      },
+      {
+        "column_name": "DISBURSH_PRE_TOTAL",
+        "column_description": "Disbursement during the year - Pre Shipment Total"
+      },
+      {
+        "column_name": "DISBURSH_POST_RUP_CR",
+        "column_description": "Disbursement during the year - Post Shipment Rupee Credit"
+      },
+      {
+        "column_name": "DISBURSH_POST_EBR",
+        "column_description": "Disbursement during the year - Post Shipment EBR"
+      },
+      {
+        "column_name": "DISBURSH_POST_TOTAL",
+        "column_description": "Disbursement during the year - Post Shipment Total"
+      },
+      {
+        "column_name": "DISBURSH_TOTAL",
+        "column_description": "Disbursement during the year - Total"
+      },
+      {
+        "column_name": "BAL_OUT_PRE_TOTAL",
+        "column_description": "Balance outstanding at year end - Pre Shipment Total"
+      },
+      {
+        "column_name": "BAL_OUT_POST_TOTAL",
+        "column_description": "Balance outstanding at year end - Post Shipment Total"
+      },
+      {
+        "column_name": "BAL_OUT_TOTAL",
+        "column_description": "Balance outstanding at year end - Total"
+      },
+      {
+        "column_name": "NO_GOLD_CARD_ISSUED",
+        "column_description": "No. of Gold Cards issued"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show total export credit disbursements and balance outstanding for the year",
+        "sql": "SELECT DISBURSH_TOTAL, BAL_OUT_TOTAL FROM CIMS_RAQ_M_SEC7_EXP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC7_EXP_CR)"
+      },
+      {
+        "question": "What is the pre-shipment export credit disbursement during the year?",
+        "sql": "SELECT DISBURSH_PRE_TOTAL FROM CIMS_RAQ_M_SEC7_EXP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC7_EXP_CR)"
+      },
+      {
+        "question": "Get post-shipment export credit balance outstanding at year end",
+        "sql": "SELECT BAL_OUT_POST_TOTAL FROM CIMS_RAQ_M_SEC7_EXP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC7_EXP_CR)"
+      },
+      {
+        "question": "How many gold cards have been issued to exporters this year?",
+        "sql": "SELECT NO_GOLD_CARD_ISSUED FROM CIMS_RAQ_M_SEC7_EXP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC7_EXP_CR)"
+      },
+      {
+        "question": "Compare rupee credit vs PCFC disbursement under pre-shipment export credit",
+        "sql": "SELECT DISBURSH_PRE_RUP_CR, DISBURSH_PRE_PCFC FROM CIMS_RAQ_M_SEC7_EXP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC7_EXP_CR)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC8_SEC_CREDIT",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec8SectoralCredit",
+    "table_description": "Section 8: Sectoral Credit. Quality of Loan Assets - Sectoral Analysis, covering credit exposure (funded, non-funded, investment), NPA movement, write-offs and restructuring by sector, Domestic and Overseas/Global Operations.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "ITEM",
+        "column_description": "Item"
+      },
+      {
+        "column_name": "TL_F_CR_EXP",
+        "column_description": "Total Funded Credit Exposure"
+      },
+      {
+        "column_name": "TL_NF_CR_EXP",
+        "column_description": "Total Non-funded Credit Exposure"
+      },
+      {
+        "column_name": "TL_EXP",
+        "column_description": "Total Exposure"
+      },
+      {
+        "column_name": "GROSS_NPA_BEG",
+        "column_description": "Gross NPAs at beginning of the Year"
+      },
+      {
+        "column_name": "GROSS_NPA_END",
+        "column_description": "Gross NPAs at end of the period"
+      },
+      {
+        "column_name": "WRITE_OFFS",
+        "column_description": "Write-offs (during the year)"
+      },
+      {
+        "column_name": "RESTRUCTURED_STAND_ADV",
+        "column_description": "Restructured Standard Advances - Outstanding"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      },
+      {
+        "column_name": "TYPEID",
+        "column_description": "TYPEID"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show sectoral credit exposure and NPA movement for the annual return",
+        "sql": "SELECT ITEM, TL_EXP, GROSS_NPA_END FROM CIMS_RAQ_M_SEC8_SEC_CREDIT WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT)"
+      },
+      {
+        "question": "What is the gross NPA at the beginning and end of the year for a given sector?",
+        "sql": "SELECT ITEM, GROSS_NPA_BEG, GROSS_NPA_END FROM CIMS_RAQ_M_SEC8_SEC_CREDIT WHERE ITEM = '2. Industry (2.1 to 2.4)' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT)"
+      },
+      {
+        "question": "Get total funded and non-funded credit exposure by sector",
+        "sql": "SELECT ITEM, TL_F_CR_EXP, TL_NF_CR_EXP FROM CIMS_RAQ_M_SEC8_SEC_CREDIT WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT)"
+      },
+      {
+        "question": "How much was written off during the year, sector-wise?",
+        "sql": "SELECT ITEM, WRITE_OFFS FROM CIMS_RAQ_M_SEC8_SEC_CREDIT WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT)"
+      },
+      {
+        "question": "List restructured standard advances outstanding by sector",
+        "sql": "SELECT ITEM, RESTRUCTURED_STAND_ADV FROM CIMS_RAQ_M_SEC8_SEC_CREDIT WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC8_SEC_CREDIT_1",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec8SectoralCredit - Summary",
+    "table_description": "Section 8: Sectoral Credit. Summary items - Priority Sector Lending (PSL) shortfall investments, Adjusted Net Bank Credit (ANBC), PSLC Certificate Sold/Bought and Priority Sector Lending as % of ANBC.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "VALUE",
+        "column_description": "Value"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "What is the Adjusted Net Bank Credit (ANBC) reported for the year?",
+        "sql": "SELECT VALUE FROM CIMS_RAQ_M_SEC8_SEC_CREDIT_1 WHERE DESCRIPTION = 'ANBC' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT_1)"
+      },
+      {
+        "question": "Show Priority Sector Lending as a percentage of ANBC",
+        "sql": "SELECT VALUE FROM CIMS_RAQ_M_SEC8_SEC_CREDIT_1 WHERE DESCRIPTION LIKE '%Priority Sector Lending%ANBC%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT_1)"
+      },
+      {
+        "question": "Get PSLC certificates sold and bought during the year",
+        "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_M_SEC8_SEC_CREDIT_1 WHERE DESCRIPTION LIKE '%PSLC%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_SEC_CREDIT_1)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC8_IND_BRKUP",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-8ndustryBreakup",
+    "table_description": "Section 8: Sectoral Credit. Industry Breakup (Domestic Operations) - credit exposure, NPA movement, write-offs and restructuring by industry.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "INDUSTRY_NAME",
+        "column_description": "Industry Name"
+      },
+      {
+        "column_name": "TL_F_CR_EXP",
+        "column_description": "Total Funded Credit Exposure"
+      },
+      {
+        "column_name": "TL_NF_CR_EXP",
+        "column_description": "Total Non-funded Credit Exposure"
+      },
+      {
+        "column_name": "TL_EXP",
+        "column_description": "Total Exposure"
+      },
+      {
+        "column_name": "GROSS_NPA_END",
+        "column_description": "Gross NPAs at end of the period"
+      },
+      {
+        "column_name": "WRITE_OFFS",
+        "column_description": "Write-offs (during the year)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      },
+      {
+        "column_name": "TYPEID",
+        "column_description": "TYPEID"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show industry-wise credit exposure and NPA for the annual return",
+        "sql": "SELECT INDUSTRY_NAME, TL_EXP, GROSS_NPA_END FROM CIMS_RAQ_M_SEC8_IND_BRKUP WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_IND_BRKUP)"
+      },
+      {
+        "question": "What is the total exposure to the textile industry?",
+        "sql": "SELECT TL_EXP FROM CIMS_RAQ_M_SEC8_IND_BRKUP WHERE INDUSTRY_NAME = 'Textiles' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_IND_BRKUP)"
+      },
+      {
+        "question": "Get gross NPA by industry name, domestic operations",
+        "sql": "SELECT INDUSTRY_NAME, GROSS_NPA_END FROM CIMS_RAQ_M_SEC8_IND_BRKUP WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_IND_BRKUP) ORDER BY GROSS_NPA_END DESC"
+      },
+      {
+        "question": "List industries with write-offs during the year",
+        "sql": "SELECT INDUSTRY_NAME, WRITE_OFFS FROM CIMS_RAQ_M_SEC8_IND_BRKUP WHERE WRITE_OFFS > 0 AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_IND_BRKUP)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC8_INFRA_BRKUP",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-8ndustryBreakup - Infrastructure",
+    "table_description": "Section 8: Sectoral Credit. Infrastructure Breakup (Domestic Operations) - credit exposure, NPA movement, write-offs and restructuring by infrastructure sub-sector.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "INDUSTRY_NAME",
+        "column_description": "Industry Name"
+      },
+      {
+        "column_name": "TL_F_CR_EXP",
+        "column_description": "Total Funded Credit Exposure"
+      },
+      {
+        "column_name": "TL_NF_CR_EXP",
+        "column_description": "Total Non-funded Credit Exposure"
+      },
+      {
+        "column_name": "TL_EXP",
+        "column_description": "Total Exposure"
+      },
+      {
+        "column_name": "GROSS_NPA_END",
+        "column_description": "Gross NPAs at end of the period"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      },
+      {
+        "column_name": "TYPEID",
+        "column_description": "TYPEID"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show infrastructure sub-sector credit exposure for the annual return",
+        "sql": "SELECT INDUSTRY_NAME, TL_EXP FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP)"
+      },
+      {
+        "question": "What is the exposure to the power sub-sector within infrastructure?",
+        "sql": "SELECT TL_EXP FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP WHERE INDUSTRY_NAME = 'Power' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP)"
+      },
+      {
+        "question": "Get gross NPA for roads sub-sector under infrastructure breakup",
+        "sql": "SELECT GROSS_NPA_END FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP WHERE INDUSTRY_NAME = 'Roads' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP)"
+      },
+      {
+        "question": "List all infrastructure sub-sectors with their total credit exposure",
+        "sql": "SELECT INDUSTRY_NAME, TL_EXP FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC8_INFRA_BRKUP) ORDER BY TL_EXP DESC"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC9_SENSEC_PARTA",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec9SensitiveSector - Part A",
+    "table_description": "Section 9: Sensitivity/Securitization - Sensitive Sector Part A. Exposures to Capital Market (fund-based, non-fund-based and investments), Domestic and Overseas Operations, with exposure, gross amount outstanding and amount impaired.",
+    "in_db": true,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Category"
+      },
+      {
+        "column_name": "EXPOSURE_DOM",
+        "column_description": "Exposure (Domestic Operation)"
+      },
+      {
+        "column_name": "GROSS_AMT_OS_DOM",
+        "column_description": "Gross Amount Outstanding (Domestic Operation)"
+      },
+      {
+        "column_name": "OF_WHICH_IMPAIRED_DOM",
+        "column_description": "of which Impaired (Domestic Operation)"
+      },
+      {
+        "column_name": "EXPOSURE_OVE",
+        "column_description": "Exposure (Overseas Operation)"
+      },
+      {
+        "column_name": "GROSS_AMT_OS_OVE",
+        "column_description": "Gross Amount Outstanding (Overseas Operation)"
+      },
+      {
+        "column_name": "OF_WHICH_IMPAIRED_OVE",
+        "column_description": "of which Impaired (Overseas Operation)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      },
+      {
+        "column_name": "TYPE_ID",
+        "column_description": "TYPEID"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show exposure to capital market by category for the annual return",
+        "sql": "SELECT DESCRIPTION, EXPOSURE_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA)"
+      },
+      {
+        "question": "What is the gross amount outstanding for capital market exposure, domestic operations?",
+        "sql": "SELECT DESCRIPTION, GROSS_AMT_OS_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA)"
+      },
+      {
+        "question": "Get impaired capital market exposure for overseas operations",
+        "sql": "SELECT DESCRIPTION, OF_WHICH_IMPAIRED_OVE FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA)"
+      },
+      {
+        "question": "List total capital market exposure, domestic vs overseas",
+        "sql": "SELECT DESCRIPTION, EXPOSURE_DOM, EXPOSURE_OVE FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA)"
+      },
+      {
+        "question": "How much fund-based exposure to capital market does the bank have?",
+        "sql": "SELECT EXPOSURE_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA WHERE DESCRIPTION LIKE '%Fund based%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec9SensitiveSector - Part A (Backup)",
+    "table_description": "Section 9: Sensitivity/Securitization - Sensitive Sector Part A backup record set, mirroring capital market exposure details for reconciliation/history purposes.",
+    "in_db": true,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Category"
+      },
+      {
+        "column_name": "EXPOSURE_DOM",
+        "column_description": "Exposure (Domestic Operation)"
+      },
+      {
+        "column_name": "GROSS_AMT_OS_DOM",
+        "column_description": "Gross Amount Outstanding (Domestic Operation)"
+      },
+      {
+        "column_name": "OF_WHICH_IMPAIRED_DOM",
+        "column_description": "of which Impaired (Domestic Operation)"
+      },
+      {
+        "column_name": "EXPOSURE_OVE",
+        "column_description": "Exposure (Overseas Operation)"
+      },
+      {
+        "column_name": "GROSS_AMT_OS_OVE",
+        "column_description": "Gross Amount Outstanding (Overseas Operation)"
+      },
+      {
+        "column_name": "OF_WHICH_IMPAIRED_OVE",
+        "column_description": "of which Impaired (Overseas Operation)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      },
+      {
+        "column_name": "TYPE_ID",
+        "column_description": "TYPEID"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show the backup record of capital market exposure for Section 9 Part A",
+        "sql": "SELECT DESCRIPTION, EXPOSURE_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK)"
+      },
+      {
+        "question": "Compare backup vs primary capital market exposure amounts for reconciliation",
+        "sql": "SELECT DESCRIPTION, GROSS_AMT_OS_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK)"
+      },
+      {
+        "question": "Get impaired amount from the Section 9 Part A backup table",
+        "sql": "SELECT OF_WHICH_IMPAIRED_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTA_BK)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC9_SENSEC_PARTB",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec9SensitiveSector - Part B",
+    "table_description": "Section 9: Sensitivity/Securitization - Sensitive Sector Part B. Exposure to Real Estate Sector (Total Credit and Total Investment, Direct and Indirect), Domestic and Overseas Operations, with total exposure, amount outstanding funded, restructured standard, impaired, and slippage from total standard.",
+    "in_db": true,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Category"
+      },
+      {
+        "column_name": "TOT_EXPO_DOM",
+        "column_description": "Total Exposure (Domestic Operation)"
+      },
+      {
+        "column_name": "AMT_OS_FUNDED_DOM",
+        "column_description": "Amount Outstanding Funded (Domestic Operation)"
+      },
+      {
+        "column_name": "RESTRU_STD_DOM",
+        "column_description": "Restructured Standard Advances (Domestic Operation)"
+      },
+      {
+        "column_name": "IMPAIRED_DOM",
+        "column_description": "Impaired (Domestic Operation)"
+      },
+      {
+        "column_name": "SLIPPAGE_DOM",
+        "column_description": "Slippage from Total Standard (Domestic Operation)"
+      },
+      {
+        "column_name": "TOT_EXPO_OVE",
+        "column_description": "Total Exposure (Overseas Operation)"
+      },
+      {
+        "column_name": "AMT_OS_FUNDED_OVE",
+        "column_description": "Amount Outstanding Funded (Overseas Operation)"
+      },
+      {
+        "column_name": "RESTRU_STD_OVE",
+        "column_description": "Restructured Standard Advances (Overseas Operation)"
+      },
+      {
+        "column_name": "IMPAIRED_OVE",
+        "column_description": "Impaired (Overseas Operation)"
+      },
+      {
+        "column_name": "SLIPPAGE_OVE",
+        "column_description": "Slippage from Total Standard (Overseas Operation)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "TYPEID",
+        "column_description": "TYPEID"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show exposure to the real estate sector for the annual return",
+        "sql": "SELECT DESCRIPTION, TOT_EXPO_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB)"
+      },
+      {
+        "question": "What is the direct real estate exposure, domestic operations?",
+        "sql": "SELECT TOT_EXPO_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB WHERE DESCRIPTION LIKE '%Direct%' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB)"
+      },
+      {
+        "question": "Get impaired real estate exposure for overseas operations",
+        "sql": "SELECT IMPAIRED_OVE FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB)"
+      },
+      {
+        "question": "List total credit and total investment exposure to real estate sector",
+        "sql": "SELECT DESCRIPTION, TOT_EXPO_DOM, TOT_EXPO_OVE FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec9SensitiveSector - Part B (Backup)",
+    "table_description": "Section 9: Sensitivity/Securitization - Sensitive Sector Part B backup record set, mirroring real estate sector exposure details for reconciliation/history purposes.",
+    "in_db": true,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Category"
+      },
+      {
+        "column_name": "TOT_EXPO_DOM",
+        "column_description": "Total Exposure (Domestic Operation)"
+      },
+      {
+        "column_name": "AMT_OS_FUNDED_DOM",
+        "column_description": "Amount Outstanding Funded (Domestic Operation)"
+      },
+      {
+        "column_name": "RESTRU_STD_DOM",
+        "column_description": "Restructured Standard Advances (Domestic Operation)"
+      },
+      {
+        "column_name": "IMPAIRED_DOM",
+        "column_description": "Impaired (Domestic Operation)"
+      },
+      {
+        "column_name": "SLIPPAGE_DOM",
+        "column_description": "Slippage from Total Standard (Domestic Operation)"
+      },
+      {
+        "column_name": "TOT_EXPO_OVE",
+        "column_description": "Total Exposure (Overseas Operation)"
+      },
+      {
+        "column_name": "AMT_OS_FUNDED_OVE",
+        "column_description": "Amount Outstanding Funded (Overseas Operation)"
+      },
+      {
+        "column_name": "RESTRU_STD_OVE",
+        "column_description": "Restructured Standard Advances (Overseas Operation)"
+      },
+      {
+        "column_name": "IMPAIRED_OVE",
+        "column_description": "Impaired (Overseas Operation)"
+      },
+      {
+        "column_name": "SLIPPAGE_OVE",
+        "column_description": "Slippage from Total Standard (Overseas Operation)"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "TYPEID",
+        "column_description": "TYPEID"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show the backup record for real estate sector exposure, Section 9 Part B",
+        "sql": "SELECT DESCRIPTION, TOT_EXPO_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup)"
+      },
+      {
+        "question": "Compare backup real estate exposure figures against the primary Part B table",
+        "sql": "SELECT DESCRIPTION, AMT_OS_FUNDED_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup)"
+      },
+      {
+        "question": "Get real estate impaired exposure from the Part B backup table",
+        "sql": "SELECT IMPAIRED_DOM FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC9_SENSEC_PARTB_bckup)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC10_MFI_SHG",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-10-MFIsSHGsetc",
+    "table_description": "Section 10: Exposure to MFIs/SHGs and Micro/Small/Medium Enterprises (Domestic Operations) - outstanding credit exposure and NPA by borrower category.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "CATEGORY",
+        "column_description": "Category (MFI/SHG/Micro/Small/Medium Enterprise)"
+      },
+      {
+        "column_name": "OUTSTANDING_AMT",
+        "column_description": "Outstanding Amount"
+      },
+      {
+        "column_name": "GROSS_NPA",
+        "column_description": "Gross NPA"
+      },
+      {
+        "column_name": "NO_OF_ACCOUNTS",
+        "column_description": "Number of Accounts"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show exposure to MFIs and SHGs for the annual return",
+        "sql": "SELECT CATEGORY, OUTSTANDING_AMT FROM CIMS_RAQ_M_SEC10_MFI_SHG WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC10_MFI_SHG)"
+      },
+      {
+        "question": "What is the outstanding credit to Micro and Small Enterprises?",
+        "sql": "SELECT OUTSTANDING_AMT FROM CIMS_RAQ_M_SEC10_MFI_SHG WHERE CATEGORY = 'Micro Enterprises' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC10_MFI_SHG)"
+      },
+      {
+        "question": "Get gross NPA for exposure to Self Help Groups (SHGs)",
+        "sql": "SELECT GROSS_NPA FROM CIMS_RAQ_M_SEC10_MFI_SHG WHERE CATEGORY = 'SHG' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC10_MFI_SHG)"
+      },
+      {
+        "question": "List number of accounts under MFI/SHG/MSME exposure category-wise",
+        "sql": "SELECT CATEGORY, NO_OF_ACCOUNTS FROM CIMS_RAQ_M_SEC10_MFI_SHG WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC10_MFI_SHG)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC11_COUNTRY_RISK",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-11-CountryRisk",
+    "table_description": "Section 11: Country Risk Exposure (Global Operation) - net funded exposure and provisions held, by country risk category (Insignificant, Low, Moderate, High, Very High, Restricted, Off-credit).",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "RISK_CATEGORY",
+        "column_description": "Country Risk Category"
+      },
+      {
+        "column_name": "NET_FUNDED_EXPOSURE",
+        "column_description": "Net Funded Exposure"
+      },
+      {
+        "column_name": "PROVISION_HELD",
+        "column_description": "Provision Held"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "Show country risk exposure by risk category for the annual return",
+        "sql": "SELECT RISK_CATEGORY, NET_FUNDED_EXPOSURE FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK)"
+      },
+      {
+        "question": "What is the provision held against 'High' country risk category exposure?",
+        "sql": "SELECT PROVISION_HELD FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK WHERE RISK_CATEGORY = 'High' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK)"
+      },
+      {
+        "question": "Get net funded exposure to 'Very High' risk countries",
+        "sql": "SELECT NET_FUNDED_EXPOSURE FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK WHERE RISK_CATEGORY = 'Very High' AND RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK)"
+      },
+      {
+        "question": "List all country risk categories with their exposure and provisions",
+        "sql": "SELECT RISK_CATEGORY, NET_FUNDED_EXPOSURE, PROVISION_HELD FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK)"
+      }
+    ]
+  },
+  {
+    "table_name": "CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL",
+    "return_name": "CIMS_RAQ(Annual)",
+    "section": "Sec-11-CountryRisk - Total",
+    "table_description": "Section 11: Country Risk Exposure (Global Operation) - Total row aggregating net funded exposure and provisions held across all country risk categories.",
+    "in_db": false,
+    "columns": [
+      {
+        "column_name": "DESCRIPTION",
+        "column_description": "Description"
+      },
+      {
+        "column_name": "NET_FUNDED_EXPOSURE",
+        "column_description": "Net Funded Exposure"
+      },
+      {
+        "column_name": "PROVISION_HELD",
+        "column_description": "Provision Held"
+      },
+      {
+        "column_name": "CODE",
+        "column_description": "CODE"
+      },
+      {
+        "column_name": "RDATE",
+        "column_description": "RDATE"
+      }
+    ],
+    "qa_pairs": [
+      {
+        "question": "What is the total country risk exposure across all categories for the year?",
+        "sql": "SELECT NET_FUNDED_EXPOSURE FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL)"
+      },
+      {
+        "question": "Show total provision held for country risk exposure",
+        "sql": "SELECT PROVISION_HELD FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL)"
+      },
+      {
+        "question": "Get the aggregated net funded exposure to all countries, global operations",
+        "sql": "SELECT NET_FUNDED_EXPOSURE FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_M_SEC11_COUNTRY_RISK_TL)"
+      }
+    ]
+  }
+]

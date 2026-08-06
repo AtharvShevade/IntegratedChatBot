@@ -1,82 +1,23 @@
-from functools import lru_cache
-from sentence_transformers import SentenceTransformer
-import numpy as np
-import faiss
-import pickle
-from backend.sql_agent.config import EMBED_MODEL, QUERY_PREFIX
+# backend/sql_agent/vectorizer.py
+#
+# Re-export of the vendored agent's embedding helpers under the import path the
+# chatbot uses. backend/db_qa/intents/embedding_index.py deliberately reuses this
+# module's single SentenceTransformer instance instead of loading a second copy
+# of BGE-large into memory, and backend/main.py imports it at startup purely to
+# pay the model-load cost before the first request.
 
-model = SentenceTransformer(EMBED_MODEL)
+from __future__ import annotations
 
+from backend.sql_agent import _bootstrap
 
-def embed_documents(texts):
-    vectors = model.encode(
-        texts,
-        normalize_embeddings=True,
-        batch_size=32,
-        show_progress_bar=True,
-    )
-    return np.array(vectors, dtype="float32")
+_bootstrap.ensure()
 
-
-@lru_cache(maxsize=64)
-def _embed_query_cached(prefixed_query: str):
-    # Returned array is cached — callers must not mutate it in place.
-    vec = model.encode([prefixed_query], normalize_embeddings=True)[0]
-    vec.setflags(write=False)
-    return vec
-
-
-def embed_query(query):
-    # get_relevant_schema() calls this up to 4x per user query (table/column/
-    # label search, twice on near-identical text) — caching avoids re-running
-    # the embedding model redundantly on the same string within one request.
-    return _embed_query_cached(QUERY_PREFIX + query)
-
-
-def build_faiss_index(vectors):
-    vectors = np.array(vectors, dtype="float32")
-
-    if len(vectors.shape) == 1:
-        raise ValueError("Embedding output is 1D — check input texts")
-
-    dim = vectors.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(vectors)
-    return index
-
-
-def save_index(index, meta, index_path, meta_path):
-    faiss.write_index(index, index_path)
-    with open(meta_path, "wb") as f:
-        pickle.dump(meta, f)
-
-
-def build_row_label_index(samples: dict):
-    """
-    Build a FAISS index over every distinct row-label value fetched from the DB.
-
-    Parameters
-    ----------
-    samples : dict
-        Output of description_fetcher.fetch_and_save():
-        { table_name: { col_name: [val1, val2, ...] } }
-
-    Returns
-    -------
-    (index, records) — index is a faiss.Index; records is list of dicts
-    { table, column, value } in the same order as the indexed vectors.
-    """
-    records = []
-    texts   = []
-    for table, col_map in samples.items():
-        for col, values in col_map.items():
-            for val in values:
-                records.append({"table": table, "column": col, "value": val})
-                texts.append(f"{table} {col} {val}")
-
-    if not texts:
-        return None, []
-
-    vectors = embed_documents(texts)
-    index   = build_faiss_index(vectors)
-    return index, records
+from src.vectorizer import (                                     # noqa: E402,F401
+    build_faiss_index,
+    build_row_label_index,
+    embed_documents,
+    embed_query,
+    model,
+    normalize_text,
+    save_index,
+)
