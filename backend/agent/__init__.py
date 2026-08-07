@@ -28,6 +28,7 @@ from backend.llm_extractor import (
 )
 from backend.services.llm_service import chat_response, classify_conversational_intent
 from backend import version_config
+from backend import config as _config
 from backend.tools.instance_generator import (
     call_generate_api,
     call_generate_api_v6,
@@ -329,6 +330,20 @@ _SCHED_STEMS  = ['sche']
 _CMP_STEMS    = ['compar', 'varian']   # compare*, comparative*, comparison*, variance*
 _CMP_FUZZY_KWS = ['compare', 'comparative', 'comparison', 'variance', 'contrast']
 
+# "created"/"creation" stem-match the 'crea' prefix in _GEN_STEMS, so a db_qa
+# identity question like "who created my account" was fuzzy-matching
+# _fuzzy_has_generate() and getting misrouted into the report-generation flow
+# (self-test: doc/INTENT_GAP_ANALYSIS.md, "who created my account" → asked
+# for a reporting date to generate an unrelated report). This should already
+# be caught earlier by STEP2's db_qa USER_FIELD "who created my" rule — this
+# is a defence-in-depth guard for whenever that rule doesn't fire (a
+# rephrasing it doesn't cover, or db_qa disabled) so a 'created' stem-match
+# alone can't win without an actual generate/instance-creation verb nearby.
+_CREATED_NOT_GENERATE_RE = re.compile(
+    r'\bwho\s+creat\w*\b|\bcreat\w*\s+(by|my)\b|\baccount\s+creat\w*\b',
+    re.I,
+)
+
 
 def _fuzzy_has_status(text: str) -> bool:
     """True if any word in text fuzzy-matches or stem-matches a status keyword."""
@@ -349,6 +364,10 @@ def _fuzzy_has_generate(text: str) -> bool:
     """True if any word in text fuzzy-matches or stem-matches a generate keyword."""
     if _GEN_KW_RE.search(text):
         return True
+    # See _CREATED_NOT_GENERATE_RE above — an identity/authorship question
+    # about "who created my account" must not win on the 'crea' stem alone.
+    if _CREATED_NOT_GENERATE_RE.search(text):
+        return False
     words = re.findall(r'[a-zA-Z]{3,}', text.lower())
     for w in words:
         if any(w.startswith(s) for s in _GEN_STEMS):
@@ -1141,7 +1160,14 @@ async def decide(
                 user_id=final_user_id,
                 role_id=final_role_id,
                 beautify=True,
-                model="phi3:mini",
+                # Was hardcoded to "phi3:mini" here, silently ignoring the
+                # configured APP_DB_BEAUTIFY_MODEL env var entirely — phi3:mini
+                # isn't even installed on this deployment's remote Ollama
+                # proxy (see .env comment / doc/INTENT_GAP_ANALYSIS.md), so
+                # beautify would degrade to raw output the moment
+                # APP_DB_ENABLE_BEAUTIFY is turned on, no matter what the env
+                # var said. Reading the configured value instead.
+                model=_config.APP_DB_BEAUTIFY_MODEL,
                 login_id=login_id,
             )
 
@@ -1716,7 +1742,10 @@ async def decide(
                     user_id=final_user_id,
                     role_id=final_role_id,
                     beautify=True,
-                    model="phi3:mini",
+                    # See the comment on the other handle_db_qa_query() call
+                    # above — this was also hardcoded to "phi3:mini",
+                    # bypassing APP_DB_BEAUTIFY_MODEL.
+                    model=_config.APP_DB_BEAUTIFY_MODEL,
                     login_id=login_id,
                 )
                 # A partial return name (e.g. "cims") can match many returns —

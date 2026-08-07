@@ -22,6 +22,15 @@ OLLAMA_EXTRACT_MODEL: str   = os.getenv("OLLAMA_EXTRACT_MODEL", "phi3:mini")    
 OLLAMA_MODEL:         str   = os.getenv("OLLAMA_MODEL",         "phi3:mini")       # conversational fallback
 REQUEST_TIMEOUT:      float = float(os.getenv("OLLAMA_TIMEOUT",          "180"))   # 180 s for chat/summary calls
 EXTRACT_TIMEOUT:      float = float(os.getenv("OLLAMA_EXTRACT_TIMEOUT",  "30"))    # 30 s for fast intent extraction
+# _call_ollama() backs disambiguate_intent/classify_conversational_intent/chat_response
+# — the "I didn't understand / let me answer generally" fallback path a plain-worded
+# question (e.g. "am i an admin", "show my last 5 logins") falls into whenever the
+# db_qa regex/keyword classifier misses. Self-test (doc/INTENT_GAP_ANALYSIS.md) found
+# these calls hanging 60s+ because they inherited REQUEST_TIMEOUT (300s in this env's
+# .env). CHAT_FALLBACK_TIMEOUT caps just this path so a miss fails fast with a helpful
+# message instead of hanging the whole request — independent of REQUEST_TIMEOUT, which
+# stays long for calls that legitimately need it (comparative summaries, etc.).
+CHAT_FALLBACK_TIMEOUT: float = float(os.getenv("OLLAMA_CHAT_FALLBACK_TIMEOUT", "12"))
 
 # Keep models resident in memory between requests — avoids 60-80 s cold-start penalty.
 _KEEP_ALIVE: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
@@ -206,11 +215,13 @@ async def _call_ollama(
     }
 
     logger.debug(
-        "[LLM_CALL] model=%s endpoint=%s/api/chat prompt_len=%d keep_alive=%s",
-        OLLAMA_MODEL, OLLAMA_BASE_URL, len(prompt), _KEEP_ALIVE,
+        "[LLM_CALL] model=%s endpoint=%s/api/chat prompt_len=%d keep_alive=%s timeout=%.0fs",
+        OLLAMA_MODEL, OLLAMA_BASE_URL, len(prompt), _KEEP_ALIVE, CHAT_FALLBACK_TIMEOUT,
     )
     _t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    # CHAT_FALLBACK_TIMEOUT (not REQUEST_TIMEOUT) — see its definition above for why
+    # this call in particular needs a short leash.
+    async with httpx.AsyncClient(timeout=CHAT_FALLBACK_TIMEOUT) as client:
         resp = await client.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json=payload,

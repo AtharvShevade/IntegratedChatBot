@@ -576,10 +576,42 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\bnext\s+period[\s-]?end\b"),
     _mk(Intent.RETURN_PROFILE, ("return",),
         r"\btaxonomy\s+(version|does)\b", r"\bxsd\s+path\b",
-        r"\bdue\s+days?\s+.*submission\s+of\s+return\b", r"\balternate\s+name\s+for\s+return\b"),
+        r"\bdue\s+days?\s+.*submission\s+of\s+return\b", r"\balternate\s+name\s+for\s+return\b",
+        # Existence check for a named return — "is there a return called X",
+        # "is X a return", "does return X exist" — previously unhandled
+        # entirely (fell through to SQL Agent / LLM fallback; see
+        # doc/INTENT_GAP_ANALYSIS.md, gap "RETURN_LIST/RETURN_PROFILE not
+        # matched for casual existence phrasing"). Deliberately loose on the
+        # return-name side (captured by the entity extractor downstream from
+        # the whole message, same as other RETURN_PROFILE phrasings) —
+        # this pattern only needs to recognise the QUESTION shape.
+        r"\bis\s+there\s+a\s+returns?\s+(called|named)\b",
+        r"\bdoes\s+(a\s+|the\s+)?returns?\b.{0,30}\bexist\b",
+        r"\bis\b.{0,30}\ba\s+returns?\b"),
     _mk(Intent.RETURN_LIST, ("self", "system_wide"),
         r"\ball\s+(the\s+)?xbrl\s+returns?\b", r"\bhow\s+many\s+xbrl\s+returns?\b",
-        r"\bwhich\s+xbrl\s+returns?\s+(are|is)\b", r"\bcims-enabled\s+returns?\b"),
+        r"\bwhich\s+xbrl\s+returns?\s+(are|is)\b",
+        # "CIMS-enabled returns" (hyphenated, order-fixed) — original pattern,
+        # kept for backward compatibility with anything already relying on it.
+        r"\bcims-enabled\s+returns?\b",
+        # Word-order-tolerant variants: a real user is at least as likely to
+        # say "returns are CIMS enabled" / "returns that are CIMS enabled"
+        # as the hyphenated noun-phrase form above. Self-test
+        # (doc/INTENT_GAP_ANALYSIS.md) found "which returns are CIMS
+        # enabled" falling through to the SQL Agent because only the
+        # noun-phrase order was covered.
+        r"\breturns?\b.{0,25}\bcims[\s-]?enabled\b",
+        r"\bcims[\s-]?enabled\b.{0,25}\breturns?\b",
+        # Generic casual catch-all — "tell me abt returns pls", "tell me
+        # stuff about returns", "gimme info on returns" — self-test found
+        # RETURN_LIST had no rule at all for an unqualified, informally-
+        # phrased "tell me about returns"-shaped question; it isn't asking
+        # for a specific return (that's RETURN_PROFILE, which requires a
+        # named target) so it lands on the general list. Deliberately
+        # generic word choices ("tell", "about"/"abt") tolerate filler
+        # ("me", "pls", "u") since those aren't part of the pattern at all.
+        r"\btell\s+me\b.{0,20}\b(abt|about)\s+returns?\b",
+        r"\b(info|information)\s+(on|about|abt)\s+returns?\b"),
     _mk(Intent.NONXBRL_RETURN_PROFILE, ("self", "return"),
         rf"\bbase\s+(file\s+)?template\s+for\s+{_NON_XBRL}\b", r"\bjob\s+processing\s+id\b"),
     _mk(Intent.NONXBRL_RETURN_LIST, ("self", "department", "system_wide"),
