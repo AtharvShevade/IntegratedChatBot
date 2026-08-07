@@ -170,8 +170,9 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         optional_entities=("target_department",),
     ),
     Intent.DEPARTMENT_RETURNS: IntentSpec(
-        "XBRL/non-XBRL returns (and counts) accessible to self's or a "
-        "named department",
+        "A plain informational list/count of the XBRL/non-XBRL returns "
+        "already assigned/applicable to self's or a named department — "
+        "NOT a permission or can-submit question",
         target_types=("self", "department"),
         optional_entities=("target_department", "xbrl_type"),
     ),
@@ -301,8 +302,12 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         optional_entities=("target_return", "detail_type"),
     ),
     Intent.RETURNS_SUBMITTABLE_BY_DEPT: IntentSpec(
-        "Which XBRL returns can self or a named department submit; which "
-        "departments can submit a named return (e.g. DPSS09, DBR01)",
+        "A permission/capability check phrased with 'can submit'/'can "
+        "generate'/'can create' — whether self or a named department has "
+        "the ability to submit specific return(s), or which departments "
+        "can submit a named return (e.g. DPSS09, DBR01). If the question "
+        "is just asking what returns are assigned/applicable/available "
+        "(no 'can' framing), that's DEPARTMENT_RETURNS instead",
         target_types=("self", "department", "return"),
         optional_entities=("target_department", "target_return"),
     ),

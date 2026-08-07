@@ -309,6 +309,78 @@ async def disambiguate_intent(user_message: str, candidates: list[tuple[str, str
     return None
 
 
+_ACTION_NORMALIZE_CANDIDATES: list[tuple[str, str]] = [
+    ("create", "creating or adding new records (e.g. generate, raise, file, submit-new)"),
+    ("edit", "editing or updating existing records (e.g. modify, change, amend)"),
+    ("view", "viewing or reading records (e.g. see, look at, check)"),
+    ("approve", "approving or authorizing records (e.g. sign off, authorize)"),
+]
+
+
+async def normalize_action_word(raw_action: str) -> str | None:
+    """Map an unrecognized permission-action verb (e.g. "generate") onto one
+    of the four canonical HasNew/HasEdit/HasView/HasApprove verbs, for use
+    when role_handlers._ACTION_MAP's fixed synonym list misses.
+
+    Mirrors disambiguate_intent()'s narrow-candidate pattern — small local
+    model, short candidate list, "none" allowed. Returns the canonical raw
+    verb ("create"/"edit"/"view"/"approve" — role_handlers._ACTION_MAP maps
+    that to the XML attribute itself, same as the regex path), or None if
+    the model declines or the call fails.
+    """
+    if not raw_action:
+        return None
+
+    valid_values = {v for v, _ in _ACTION_NORMALIZE_CANDIDATES}
+    options_block = "\n".join(f'  "{v}" — {d}' for v, d in _ACTION_NORMALIZE_CANDIDATES)
+    system = (
+        "You are a narrow permission-verb normalizer. Map the user's action word to "
+        "ONE of these canonical permission categories:\n"
+        f"{options_block}\n"
+        '  "none" — does not clearly map to any of the above\n\n'
+        "Respond with EXACTLY ONE of the option values shown above (in quotes), or \"none\". "
+        "Output ONLY that value, no explanation, no punctuation, no extra text."
+    )
+
+    content = None
+    for attempt in range(2):
+        try:
+            content = await _call_ollama(prompt=raw_action, system=system, model=OLLAMA_EXTRACT_MODEL)
+            break
+        except Exception:
+            # _call_ollama shares CHAT_FALLBACK_TIMEOUT (12s) with the
+            # chat-fallback path above, which is deliberately aggressive
+            # to avoid a genuinely off-topic query hanging the whole
+            # request. For this narrow, well-defined single-word
+            # classification, an occasional remote-proxy hiccup shouldn't
+            # permanently sink the result the way it should for chat
+            # fallback — one retry before giving up, same "None means
+            # decline/unavailable, caller falls back to the regex-miss
+            # message" contract either way.
+            logger.warning(
+                "[LLM_ACTION_NORMALIZE_FAILED] raw_action=%r attempt=%d",
+                raw_action, attempt, exc_info=True,
+            )
+    if content is None:
+        return None
+
+    normalized = content.strip().strip('"').strip()
+    if normalized in valid_values:
+        return normalized
+    if normalized == "none" or normalized.lower().startswith("none"):
+        return None
+
+    found = [v for v in valid_values if re.search(rf"\b{re.escape(v)}\b", normalized)]
+    if len(found) == 1:
+        return found[0]
+
+    logger.warning(
+        "[LLM_ACTION_NORMALIZE_UNEXPECTED] raw_action=%r response=%r normalized=%r",
+        raw_action, content, normalized,
+    )
+    return None
+
+
 async def classify_conversational_intent(user_message: str, history: list[dict] | None = None) -> str:
     content = await _call_ollama(
         prompt=user_message,

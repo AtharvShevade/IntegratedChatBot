@@ -1,6 +1,9 @@
 """New-taxonomy handlers — ROLE, ROLE_ACCESS, USER_LEVEL categories."""
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+
 from collections import Counter
 
 from backend.db_qa.versions.loader import build_index
@@ -12,6 +15,49 @@ _ACTION_MAP: dict[str, str] = {
     "view": "HasView", "see": "HasView", "read": "HasView",
     "approve": "HasApprove", "approval": "HasApprove",
 }
+
+
+_ATTR_TO_CANONICAL_WORD = {"HasNew": "create", "HasEdit": "edit", "HasView": "view", "HasApprove": "approve"}
+
+
+def _resolve_action_attr(action_word: str, raw_query: str = "") -> str:
+    """Look up the raw action verb in _ACTION_MAP; on a miss, fall back to
+    the LLM normalizer (backend.services.llm_service.normalize_action_word)
+    to catch verbs the fixed keyword list doesn't know (e.g. "generate" for
+    "create"). dispatch2()/these handlers are all plain sync — this bridges
+    the one async LLM call synchronously rather than threading async/await
+    through dispatch2 and its ~30 direct test call sites.
+
+    action_word is usually already "" here, not the literal unrecognized
+    word: new_intent_classifier._extract_raw_action_word only recognizes
+    the same fixed canonical verb list, so an unknown verb comes back None
+    and gets stripped before reaching this handler — raw_query (the full
+    user question, passed through as entities["raw_query"]) is what
+    actually carries the unrecognized verb for the LLM to work with.
+
+    Returns "" (same as a regex miss) if the LLM also declines or errors.
+    """
+    attr = _ACTION_MAP.get(action_word.lower(), "")
+    if attr:
+        return attr
+    if not action_word and not raw_query:
+        return ""
+    from backend.services.llm_service import normalize_action_word
+    canonical = _run_coro_sync(normalize_action_word(raw_query or action_word))
+    return _ACTION_MAP.get(canonical or "", "")
+
+
+def _run_coro_sync(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # A loop is already running in this thread (e.g. dispatch2() called
+    # synchronously from inside agent/__init__.py's async decide()) —
+    # asyncio.run() would raise "already running", so run the coroutine on
+    # its own loop in a throwaway thread instead.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -143,7 +189,7 @@ def handle_permission_check(scope: dict, entities: dict, store: XMLStore) -> dic
         who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_role', '')}'"
         return _not_found("permission_check", "Permission Check", f"{who} role could not be found.")
     action_word = entities.get("action", "")
-    attr = _ACTION_MAP.get(action_word.lower(), "")
+    attr = _resolve_action_attr(action_word, entities.get("raw_query", ""))
     if not attr:
         return _not_found("permission_check", "Permission Check", f"Unrecognized action {action_word!r}.")
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
@@ -156,14 +202,18 @@ def handle_permission_check(scope: dict, entities: dict, store: XMLStore) -> dic
     who_phrase = "You" if scope["target_type"] == "self" else role.get("Name", "")
     can = "can" if allowed else "cannot"
     module_phrase = f" on {module}" if module else ""
-    return _result("permission_check", f"Permission Check: {action_word}{module_phrase}",
-                   allowed, f"{who_phrase} {can} {action_word}{module_phrase}.",
-                   action=action_word, module=module, count=len(allowed))
+    # action_word is "" when attr was only resolved via the LLM raw_query
+    # fallback (see _resolve_action_attr) — use the canonical verb for
+    # display in that case so the summary doesn't read "You can ."
+    display_word = action_word or _ATTR_TO_CANONICAL_WORD.get(attr, action_word)
+    return _result("permission_check", f"Permission Check: {display_word}{module_phrase}",
+                   allowed, f"{who_phrase} {can} {display_word}{module_phrase}.",
+                   action=display_word, module=module, count=len(allowed))
 
 
 def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -> dict:
     action_word = entities.get("action", "")
-    attr = _ACTION_MAP.get(action_word.lower(), "")
+    attr = _resolve_action_attr(action_word, entities.get("raw_query", ""))
     if not attr:
         return _not_found("roles_with_permission", "Roles With Permission", f"Unrecognized action {action_word!r}.")
     module = entities.get("module", "")
@@ -186,8 +236,9 @@ def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -
             seen.add(rid)
             unique.append(r)
     module_phrase = f" on {module}" if module else ""
-    return _result("roles_with_permission", f"Roles That Can {action_word}{module_phrase}",
-                   unique, f"{len(unique)} role(s) can {action_word}{module_phrase}.", count=len(unique))
+    display_word = action_word or _ATTR_TO_CANONICAL_WORD.get(attr, action_word)
+    return _result("roles_with_permission", f"Roles That Can {display_word}{module_phrase}",
+                   unique, f"{len(unique)} role(s) can {display_word}{module_phrase}.", count=len(unique))
 
 
 def handle_role_module_access(scope: dict, entities: dict, store: XMLStore) -> dict:

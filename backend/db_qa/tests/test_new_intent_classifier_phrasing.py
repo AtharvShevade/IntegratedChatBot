@@ -238,11 +238,17 @@ def test_data_preparation_permission_check_matches():
 
 
 def test_module_extraction_does_not_swallow_action_verb():
-    """'edit department settings' must extract module='department settings',
-    not 'edit department settings' (the action verb bleeding into the
-    module name — an over-capture bug found during hardening)."""
+    """'edit department settings' must extract a module value that does NOT
+    include the action verb — not 'edit department settings' (the action
+    verb bleeding into the module name, an over-capture bug found during
+    hardening). Asserts 'department', not the literal 'department settings'
+    phrase: no module named "Department Settings" exists in the real
+    XML_RoleAccess OptionName data (only "Departments" does — see
+    _MODULE_SYNONYMS in new_intent_classifier.py), so the old literal
+    capture could never have matched anything downstream in
+    role_handlers.py's `module.lower() in OptionName.lower()` filter."""
     intent, params, tt = classify_new("Am I allowed to edit department settings?")
-    assert params.get("module") == "department settings"
+    assert params.get("module") == "department"
 
 
 # ── Department downstream-processing pass: entity extraction, filters,
