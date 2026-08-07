@@ -260,6 +260,137 @@ Several `gen_awaiting_date`/`sched_awaiting_rpt_date` responses contain a litera
 3. Fix the mojibake bullet character in date-format hint messages.
 4. This round's model comparison closes the model-quality question for THIS failure class — no further model testing needed here. If a future round finds a genuinely LLM-comprehension-limited failure (the model picks the wrong intent, not just a downstream regex issue), that would be the case to re-open model comparison for.
 
+---
+
+## Round 4: the semantic embedding tier was never active — and a richer exemplar set
+
+### The big finding
+
+`backend/db_qa/intents/embedding_index.py` implements a **second classification tier**, designed specifically to catch phrasing the first-tier regex classifiers miss: it embeds the user's question and finds the nearest-neighbor match against a curated set of example phrasings per intent (`backend/db_qa/intents/exemplars.py`, already existed — 337 phrasings across all 56 intents). This is exactly the safety net that should have caught many of the casual-phrasing gaps found in Rounds 1-3.
+
+**It had never been built.** Every single log file from this entire session (91 occurrences across `2026-08-06.log` and `2026-08-07.log`) shows:
+```
+WARNING | backend.db_qa.intents.embedding_index:search_intent | Intent exemplar index not found at ...\intent_exemplar_index.faiss — run `python -m backend.db_qa.intents.embedding_index` to build it.
+```
+This means every fix applied in Rounds 1-2 was a regex patch layered on top of a completely dormant semantic tier. Building it — a one-command, zero-code-change operation — was the highest-leverage action available.
+
+### The user supplied a much richer exemplar source
+
+`backend/db_qa/app_db_questions_augmented.json` (949 questions across 16 categories, saved to that path) is a heavily paraphrase-augmented version of the catalog `exemplars.py` was originally derived from — for every base question it adds "Can you tell me...", "Please provide...", "I need to know...", "Am I allowed to...", "Do I have permission to..." variants. These are structurally identical to real failing queries from earlier rounds (e.g. "hey can u tell me abt returns pls" ≈ "Can you tell me about returns").
+
+Gap quantified: `exemplars.py` had **18 of 56 intents** flagged as "thin coverage" (<4 exemplars) in its own code comments. The augmented JSON had substantive material for nearly all of them.
+
+### What was done
+
+1. Added targeted exemplars (pulled from the augmented JSON, not mechanically dumped — a few structurally distinct phrasings per intent, matching the file's own stated design philosophy of favoring quality over repetition for nearest-neighbor matching) to all 18 thin-coverage intents, plus `ROLE_MODULE_ACCESS`, `RETURN_PROFILE`, `SUBMISSION_STATUS`, and `DEPT_RETURN_ACCESS_MATRIX` specifically targeting phrasings that failed in Rounds 1-3. `exemplars.py` grew from 337 → 374 phrasings; **0 intents remain thin-coverage** (down from 18).
+2. Built the index for the first time: `python -m backend.db_qa.intents.embedding_index` → `intent_exemplar_index.faiss` (374 vectors). Confirmed on the next backend startup: `Intent exemplar FAISS index loaded` (first time this log line has ever appeared).
+3. While testing, found a **precise, different root cause** for "what access does the checker role have" (failing since Round 1, always assumed to be a missing db_qa rule): `_STATUS_STEMS = ['stat', 'chec', 'prog', 'deta', 'info']` in `backend/agent/__init__.py` matches any word starting with `'chec'` as a status-check signal — but **"Checker" is a real role name** in this domain's Maker-Checker workflow. The query was being hijacked into the report-status fast-path at STEP1, before ever reaching db_qa or the embedding tier at all. Fixed by excluding "checker"/"checkers" from that stem match.
+4. **Process hygiene finding**: while iterating on `.env` and restarting the dev server repeatedly this session, **12 zombie Python processes** had silently accumulated (visible via `Get-Process python` — none from a single clean launch, spanning timestamps back to the morning). `uvicorn --reload`'s parent/child process model on Windows doesn't reliably die when the wrong PID is targeted for `taskkill`, so repeated ad-hoc restarts leaked workers instead of replacing them — meaning **some earlier test results in this session may have hit stale, pre-fix worker processes** rather than the current code. All zombies were killed and a single clean instance confirmed (`Get-NetTCPConnection -LocalPort 8001` showing exactly one owning PID) before this round's numbers were captured. If you restart the dev server manually, verify old workers actually died the same way.
+
+### Verified results (single clean process, embedding tier active)
+
+| Question | Before (Round 1-3) | After (Round 4) | What changed |
+|---|---|---|---|
+| "what access does the checker role have" | 30.6s, misrouted to `get_status`/`generate_instance`, every round | **520ms**, routes to db_qa (`roles_with_permission`) | Root-caused and fixed the `_STATUS_STEMS` false positive — was never a missing db_qa rule |
+| "whats dpss 09 about" | 42-60s, `unknown` | **6.9s**, correctly classified `return_profile` | Embedding tier now catches it; remaining ~7s is the entity extractor failing to parse "dpss 09" (with a space) as "DPSS09" — a separate, smaller gap |
+| "did my last submission go through" | 9-15s, `unknown` | **1.9s**, correctly classified `submission_status` | Embedding tier match; asks for a submission ID since none was given — correct behavior |
+
+### Remaining gap after this round, precisely scoped
+
+- **"what access does the checker role have"** now reaches db_qa but lands on the wrong sibling intent (`roles_with_permission` instead of `role_module_access`) and fails entity extraction ("Unrecognized action ''"). This is a much smaller, more precise problem than the original catastrophic misroute — a regex/embedding specificity tie-break between two similar intents, not a routing failure.
+- **"am i an admin", "show my last 5 logins", "how many times have i failed to login"** are still slow (~10-40s) — these specific phrasings weren't in this round's targeted exemplar additions (scoped to the 18 thin intents + the Round 1-3 failures actively traced). They're the natural next candidates: add "Am I an admin?"-shaped and "show my last N logins"-shaped exemplars to `ROLE_PROFILE`/`USER_FIELD` and rebuild the index.
+- **"which returns can i submit"** measured 12.9s in this round vs. ~450ms in earlier rounds — likely first-request-after-restart model warm-up cost rather than a regression (the exemplar/index changes don't touch this intent's regex path), but flagged here rather than silently assumed benign.
+
+### Recommended next round
+
+1. Add exemplars for the still-slow self-referential questions above (`ROLE_PROFILE`: "am I an admin", "is my account an admin account"; `USER_FIELD`: "show my last N logins", "how many times have I failed to login") and rebuild the index.
+2. Resolve the `roles_with_permission` vs. `role_module_access` tie-break for "what access does ROLE have" phrasing — likely needs the regex tier's rule ordering adjusted, or a distinguishing exemplar added to `role_module_access` that embeds closer than any `roles_with_permission` exemplar.
+3. Fix the entity extractor to normalize "dpss 09" (with a space) to "DPSS09" before return-name lookup — affects any spaced-out alphanumeric return code, not just this one case.
+4. **Operational note for whoever runs this locally next**: always launch `dev_server.py` with the venv's Python explicitly (`.venv\Scripts\python.exe dev_server.py`), and after any restart, verify exactly one process holds port 8001 (`Get-NetTCPConnection -LocalPort 8001 | Select OwningProcess -Unique`) before trusting timing measurements — this session's zombie-process issue would otherwise reproduce.
+5. Consider periodically re-running `python -m backend.db_qa.intents.embedding_index` as part of a deploy/setup checklist — it is a **manual, offline step** with no automatic trigger, so any future exemplar edits (including this round's) silently do nothing until someone remembers to rebuild the index.
+
+---
+
+## Round 5: answer-quality audit against verified ground truth
+
+Every prior round judged success mainly by "did it classify the intent and respond quickly." This round instead pulled **real ground truth** directly from the XML data (`D:\Repo5.5\Database\XML_Role.xml`, `XML_Dept.xml`, `Returns.xml`) and checked whether the chatbot's actual answer content was correct — not just fast or well-routed.
+
+Ground truth confirmed: 18 roles (Admin User, Tester, Business Analyst, Team Lead, QA analyst, CEO [inactive], etc. — **no role named "Checker" actually exists** in this test data, worth remembering when judging that earlier fix), 6 departments (only "USER" is active), 281 XBRL returns including `DBR01` and `CIMS_CB_OSS3`.
+
+### Bugs found by comparing answers to ground truth
+
+| Question | Answer given | Verdict |
+|---|---|---|
+| "can I create new users" | Routed to `generate_instance` → "I couldn't find any report matching 'users'" | **Wrong subsystem entirely.** Fixed this round (see below). |
+| "is there a role called Tester in the system" | "No role named 'Tester in the system' was found." | **False negative** — Tester is a real, active role. Fixed this round (see below). |
+| "what is the status of my submission ID 1" | Routed to `get_status` → "I found 4 matching reports [report names containing '1']..." | **Wrong subsystem.** "status" is the single most natural word for this question, and it always wins STEP1's report-workflow gate over db_qa's `SUBMISSION_STATUS`/`SUBMISSION_LIST`/`SUBMISSION_DETAIL` family. **Not yet fixed — flagged as the most severe remaining gap, see below.** |
+| "give me the full profile for DBR01" | `user_profile` → "Profile for iris810." (ignores DBR01 entirely) | **Still broken**, same bug as Round 1. "profile" is overloaded between `USER_PROFILE` and `RETURN_PROFILE`; the exemplar added in Round 4 used "full details" not "full profile" and didn't close the gap. |
+| "is my department currently active" | `db_my_department` → "My Department \| \| Department: TusharTestLocal" | **Malformed answer** — doesn't address active/inactive at all, and has stray `|` characters (a formatting/markdown leak into plain text). |
+| "what is the bank name configured in the system" | "Bank details: RBI � Indian." | Content plausible but the recurring **mojibake** bug (Round 3) is still present. |
+| "what is my user level" / "what permissions does the Tester role have" / "how many non-xbrl returns..." / "which returns does my department have access to" / "how many active users are there" | All correct, well-formed, fast | ✅ Good quality — confirms the system does work well for a large share of well-posed questions. |
+
+### Fixes applied this round
+
+**1. "can I create new users" and the broader "can I / am I allowed to / do I have permission to" pattern.** Root cause: identical class of bug to the earlier "who created my account" fix — `_GEN_STEMS` contains `'crea'`, so "create" wins `_fuzzy_has_generate()` even though "Can I create new users?" is **already a `PERMISSION_CHECK` exemplar in `exemplars.py`** — it never got the chance to reach db_qa or the embedding tier because STEP1's report-workflow gate claimed it first. Added `_PERMISSION_QUESTION_RE` (matches a leading "can/could I", "am/are I allowed to", "do I have permission to") to `backend/agent/__init__.py`, applied to both `_fuzzy_has_generate()` and `_fuzzy_has_schedule()` (the same ambiguity applies to "can I schedule..." questions). **Verified: now routes correctly to `permission_check`** (small residual issue — the answer text "You can create." is truncated, dropping "new users" from the description; not fixed this round).
+
+**2. Entity extraction swallowing trailing filler with no `?` present.** Root cause: `_extract_after_kw()` (`backend/db_qa/intent_classifier.py`, shared by many intents) only stops capturing at `?`, "is", "has", "and", or end-of-string. A real user question with no trailing `?` — "is there a role called Tester **in the system**" — fell through to the end-of-string branch and captured the whole trailing phrase as if it were part of the role name. Fixed by stripping a well-known, never-part-of-a-real-name trailing phrase (`"in the system"` / `"in the application"` / `"in the app"`) from the captured group, rather than loosening the shared terminator set itself (which many other intents' extraction also depends on — a narrow fix was safer than a broad one). **Verified: now correctly answers "Yes, role 'Tester' exists."**
+
+### Process note (again)
+
+Restarting the dev server this round hit a ~40s LLM warm-up delay against the remote Ollama proxy (slower than the usual ~10s) — not a bug, just a reminder that `/health` won't respond until the full FastAPI `lifespan` startup (including the LLM ping) completes. Confirmed the fixes only after polling until the server was genuinely ready, not from a premature health check.
+
+### Remaining gaps after this round, in priority order (#1 fixed same round, see below)
+
+1. ~~**"status of my submission" is likely unreachable**~~ **FIXED.** `_fuzzy_has_status()` was winning on the word "status" before db_qa's `SUBMISSION_STATUS`/`SUBMISSION_LIST`/`SUBMISSION_DETAIL` intents ever got a turn — this affected every natural phrasing of "what's the status of my submission/filing" across the whole `INSTANCE_LOG` category, not just one test question. Fixed the same way `MONTHLY_FILING_STATUS` was already special-cased in the code: added a `_has_submission_status` pre-check (reusing the same `classify_new()` call already made for the monthly-status check, so no added cost) to `backend/agent/__init__.py`'s `_has_workflow` gate. **Verified**: "what is the status of my submission ID 1" → `submission_status`, "Submission '1' not found." (correct — no such submission exists); "which of my submissions are pending approval" → `submission_list`, "Found 1 submission record(s)." Regression-checked: ordinary report-status questions ("whats the status of my raq report") still correctly route to `get_status`, unaffected.
+2. ~~**"profile" ambiguity between `USER_PROFILE` and `RETURN_PROFILE`**~~ **FIXED.** Two layers, both fixed: (a) `USER_PROFILE`'s keyword rule matched bare "profile" unconditionally, so it always won the classification tier before `RETURN_PROFILE`'s (lower-priority) literal patterns ever got a chance — added an `excludes` clause (mirroring `USER_FIELD`'s existing precedent) for the literal word "return"/"filing" or a return-code-shaped token (letters + 2+ digits, e.g. "DBR01"). (b) Even once classification was fixed, entity extraction still failed for phrasings with no "return"/"form"/"report" anchor word at all — added `_extract_return_name_generic()` (`backend/db_qa/new_intent_classifier.py`), which tries "profile for/of" anchors, then falls back to a bare return-code-shaped regex scan (handles "whats dpss 09 about", where the code appears *before* the only anchor word "about" — direction `_extract_after_kw` can't handle). **Verified**: "give me the full profile for DBR01" → "Details for return 'DBR01'."; "whats dpss 09 about" → "Details for return 'DPSS09_ATM_Transactions_Decline'." (correctly fuzzy-resolved). Regression-checked: "what is my role" and "who am i" still correctly route to `role_profile`/`user_profile`.
+3. ~~**`db_my_department`'s answer formatting**~~ **FIXED — but the original diagnosis was wrong, and the real bug was different.** The "stray `|` characters" reported in Round 5 turned out to be an artifact of this session's own test-display code (`.replace(chr(10), ' | ')` used to compact multi-line output for readability) — not a real bug in the app's output. Re-tracing "is my department currently active" fresh (via `check_new_taxonomy_intent_full` directly) found the actual issue: the embedding tier correctly flagged this question as ambiguous between `department_profile` and `department_list`, but the LLM disambiguation tie-break sometimes picked the wrong one — producing "There are 1 active departments." (a system-wide count) instead of an answer about the caller's own department. Fixed by adding a direct regex rule to `DEPARTMENT_PROFILE` in `backend/db_qa/new_intent_classifier.py` ("my department...active", "is my department") so this phrasing no longer depends on an unreliable LLM tie-break at all. **Verified**: now correctly routes to `department_profile` and answers about "TusharTestLocal" (the caller's actual department), not a system-wide count. Regression-checked: "what department am i in" unaffected. Residual, smaller nicety not fixed: the response's one-line text summary doesn't explicitly echo the word "active"/"inactive" (the `Status` field is present in the underlying record for the table view, just not phrased into the sentence).
+4. ~~**Mojibake**~~ **NOT A BUG — closed.** Inspected the raw response bytes directly: `d[0]='—'` — the correct em-dash codepoint. The `�` seen in every prior round was this session's own git-bash/Windows-console terminal failing to *display* that character, not the API sending anything wrong. No code change made; flagged in Rounds 3 and 5 as a real bug in error, corrected here.
+5. **"You can create." for `permission_check`** — traced and **not a truncation bug either**. The handler (`backend/db_qa/query_handlers/role_handlers.py::handle_permission_check`) only ever tracks a fixed action (create/edit/view/approve) against a *module* (e.g. "Balance Sheet") — "new users" isn't a module in this schema, it's the object of the CREATE action for the User entity specifically, which this permission model has no slot to represent at all. The response is accurately describing what the system actually checked (generic create-permission), just without an object to echo back. Fixing the *wording* to feel complete would require adding real entity-extraction for the action's object noun — a feature addition, not a bug fix — so left as a documented design characteristic rather than patched with a cosmetic string change that wouldn't reflect what the system actually knows.
+
+---
+
+## Round 6: generalized fix for the whole class of stem-collision bugs, plus an XML data-access review
+
+### More improvement found: the "checker"/"created" bug was one instance of a whole class
+
+Rounds 5-6 each fixed one specific word colliding with a report-workflow stem (`'chec'` matching "Checker", `'crea'` matching "create"). Audited the remaining stems (`_GEN_STEMS`, `_STATUS_STEMS`, `_SCHED_STEMS`) against real English words a user would plausibly type and found **more of the same class**, confirmed live:
+
+| Query | Before | Cause |
+|---|---|---|
+| "give me the details of my role" | `_fuzzy_has_status` = True (wrongly) | `'deta'` stem matches "details" — a deliberate status synonym, but "details of my role" is a legitimate `ROLE_PROFILE` question |
+| "is there a role called Executive" | `_fuzzy_has_generate` = True (wrongly) | `'exec'` stem matches "Executive" — deliberately added to catch "execute the report", collides with any role/word starting "Exec-" |
+
+Rather than patch these two words individually (the same whack-a-mole pattern as before, which doesn't scale — more collisions will keep surfacing as real users type real words), **generalized the fix**: the code already had two one-off special cases doing exactly the right thing (`MONTHLY_FILING_STATUS`, then `SUBMISSION_*`, each added independently as discovered in earlier rounds) — both probed `classify_new()` (the confident, structural regex tier) and excluded a match from the fuzzy workflow gate. Replaced both narrow checks with one general one: **any** confident `classify_new()` match now excludes the query from `_has_workflow`, not just the two previously-special-cased intents.
+
+**Verified safe**: `classify_new()` stays silent (`None`) on every genuine report-workflow phrasing tested ("what is the status of my raq report", "generate the DBR01 report", "schedule DBR01...", "check status for cims filing") — so trusting its match doesn't risk misrouting real report-workflow requests. **Verified fixed**: both new collision cases now route correctly (`role_profile`, `role_list`), and both previously-special-cased intents (`SUBMISSION_STATUS`, `MONTHLY_FILING_STATUS`) still work identically under the generalized check — confirmed via live re-test, zero regression.
+
+This closes the *general* version of a bug class that's been found and re-found three separate times this session (Checker, created, details/Executive) — future stem collisions in this same family should now self-resolve without another patch, as long as the colliding phrasing also happens to match some db_qa shape (which is the common case — a colliding word is usually colliding because it's part of a legitimate db_qa question).
+
+### XML data-access review
+
+Read through `backend/db_qa/xml_store.py`, `backend/db_qa/versions/loader.py`, and `backend/tools/report_lookup.py`'s caching to answer "how do we access all our XML files."
+
+**What's solid:**
+- **Security-by-default field allowlisting**: `EntitySpec.attribute_map` only ever reads the specific raw XML attributes it declares — credential fields (`Password`, `RefreshToken`, etc.) are structurally impossible to leak into a loaded row because they're simply never listed, not filtered after the fact.
+- **Auto-invalidating cache, not a dumb one-time read**: both `xml_store.py` and `report_lookup.py`'s `_TTLCache` re-check the file's on-disk mtime and reload automatically on change — a report/return edited on disk is picked up on the next request without a backend restart.
+- **BOM/encoding tolerance and graceful degradation**: a malformed or missing XML file logs a warning and returns `[]` rather than crashing the whole request.
+- **Per-tenant cache keying** (`report_lookup.py`'s caches are path-keyed, not global) — correctly avoids one 6.0 tenant's data leaking into another's cache in a multi-tenant deployment.
+
+**One real finding — duplicated parsing logic, not a live bug:** `Returns.xml` (and likely other files) is independently parsed by **two separate code paths** — `backend/db_qa/versions/v5_5_schema.py`/`xml_store.py` (used by db_qa) and `backend/tools/report_lookup.py` (used by the report-workflow tools). Both do correct mtime-based invalidation, so this isn't a staleness bug — but it is a maintenance-surface duplication: a parsing fix (encoding edge case, a new attribute name variant) applied to one path has to be remembered and re-applied to the other, or the two subsystems' answers about the same file can silently drift apart over time. Not fixed this round (a real refactor, not a quick patch) — flagged for whoever owns this codebase long-term to consider unifying onto one loader.
+
+**Why two paths exist in the first place — traced via git history, not guessed:**
+
+| Date | Commit | What happened |
+|---|---|---|
+| 2026-05-20 | `6e71e8a` "first commit" | `backend/tools/xml_loader.py` and `backend/tools/report_lookup.py` land together as part of the **original** report generate/status/schedule/compare feature — the app's core purpose from day one. |
+| 2026-05-28 (8 days later) | `640875e` "integrating general_qa" | `backend/db_qa/xml_store.py` is added as a **separate, subsequent feature** — the natural-language "Application Database Q&A" capability — merged in as its own branch of work. |
+
+`xml_loader.py`'s own header comment states the original intent explicitly: *"Reusable, safe XML file loader for repository-sourced files. All callers that need to parse Returns.xml or XML_InstanceLog should use `load_xml_tree()` so error handling is consistent across the codebase."* That guideline was never followed by the later `db_qa` work — when the Q&A feature was added a week later, it needed something `report_lookup.py` was never designed for: a declarative, multi-entity loader covering 16 different XML sources (Users, Departments, Roles, RoleAccess, Periods, UserLevels, Segments, Bank Details, Audit, ErrorLog, and more), with a security-first attribute allowlist (`EntitySpec`) that `report_lookup.py` never needed since it wasn't reading credential-adjacent files. `report_lookup.py` by contrast is narrow and deep — tightly coupled to report-generation-specific domain logic like status-code interpretation (`_SUCCESS_STATUSES`, `_FAILED_STATUSES`) that has nothing to do with, say, looking up a user's email.
+
+So the split reflects two genuinely different shapes of need (narrow+deep vs. broad+shallow), not pure oversight — but it does mean `Returns.xml` specifically ends up parsed by both, for different purposes (checking a report's generation status vs. answering "which returns can I access").
+
+**Decision: not merging these for now.** Documented here for whoever revisits this later — unifying would mean either generalizing `xml_loader.py` to `db_qa`'s security/multi-entity requirements, or moving `report_lookup.py`'s status logic on top of `xml_store.py`'s rows. A real design decision, not a quick refactor — deliberately left alone this round.
+
 ## Test artifacts
 Raw JSONL responses saved at the repo root, for reproducing or extending this analysis:
 - `results_selftest.jsonl` — Round 1, batch 1 (27 questions), before any fixes
@@ -267,3 +398,6 @@ Raw JSONL responses saved at the repo root, for reproducing or extending this an
 - `results_selftest_round2.jsonl` — Round 2, all 52 questions combined, after fixes #1-#5 above (note: 3 rows for "show returns with formula validation enabled" / "show returns due in more than 30 days" / "which returns are CIMS enabled" are missing from this file due to a shell-argv-length quirk in the test harness itself, not a backend issue — their live results are recorded in the "Verified before/after" table above instead)
 - `complex_baseline.jsonl` — Round 3, 30 report/return/schedule/time questions against the baseline model config
 - `model_14b.jsonl` / `model_gptoss.jsonl` — Round 3, the 8 hardest-failing questions re-run against `qwen2.5:14b-instruct` and `gpt-oss:20b-cloud` respectively, for the model-comparison study
+- `results_selftest_round4_embedding.jsonl` — Round 4, all 52 questions re-run after building the embedding index and fixing the `_STATUS_STEMS` false positive
+- `backend/db_qa/app_db_questions_augmented.json` — the user-supplied richer exemplar source used to fill 18 thin-coverage intents this round (not raw test output, but the input data for the exemplar work)
+- `coverage_results.jsonl` — Round 5, 20 category-spanning questions using real, ground-truth-verified entities, used for the answer-quality audit

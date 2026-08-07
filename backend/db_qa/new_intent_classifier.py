@@ -182,10 +182,24 @@ _KEYWORD_RULES: list[_KeywordRule] = [
     ),
 
     # user_profile: profile/account/details + self-ref, or "who am I"
+    #
+    # excludes: bare "profile" alone used to always win here even when the
+    # question actually names a RETURN ("give me the full profile for
+    # DBR01") — RETURN_PROFILE's patterns live in the lower-priority
+    # _NEW_RULES tier (see module docstring: keyword rules are tried first,
+    # most-specific-member-wins; literal _mk patterns only run if no
+    # keyword rule matched at all), so USER_PROFILE's bare "profile" match
+    # was never even giving RETURN_PROFILE a chance to compete (self-test:
+    # doc/INTENT_GAP_ANALYSIS.md — "Profile for iris810." instead of DBR01's
+    # actual profile, still broken as of Round 5). Excludes the literal word
+    # "return"/"filing" and a return-code-shaped token (letters immediately
+    # followed by 2+ digits, e.g. "DBR01", "DPSS09" — matches case-
+    # insensitively since _kw() compiles with IGNORECASE).
     _KeywordRule(
         Intent.USER_PROFILE, ("self", "other_user"),
         all_of=(_kw(r"profile", r"account\s*details?", r"my\s*details?",
                      r"who\s+am\s+i", r"details?\s+of\s+user"),),
+        excludes=(_kw(r"\breturn\b", r"\bfiling\b", r"\b[a-z]+\d{2,}\b"),),
     ),
 
     # users_by_department: either (a) the literal word "department"/"dept"
@@ -293,7 +307,18 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         Intent.DEPARTMENT_PROFILE, ("self", "department"),
         all_of=(_G_DEPT_NOUN,),
         any_of=(_kw(r"email", r"\bid\b", r"identifier", r"what\s+department\s+am\s+i",
-                     r"which\s+department"),),
+                     r"which\s+department",
+                     # "is my department currently active" — previously fell
+                     # through to the embedding tier, which correctly flagged
+                     # it as ambiguous against DEPARTMENT_LIST, but the LLM
+                     # disambiguation tie-break sometimes picked the wrong
+                     # one ("There are 1 active departments." — a system-wide
+                     # count — instead of answering about MY department).
+                     # A direct regex match removes the need for that
+                     # unreliable tie-break entirely. See
+                     # doc/INTENT_GAP_ANALYSIS.md.
+                     r"my\s+department.{0,20}(currently\s+)?active",
+                     r"is\s+my\s+department"),),
         # "which\s+department" is a broad opener that otherwise swallows
         # aggregation questions too — "Which department has the most/least
         # returns assigned?" was matching THIS rule (tied on score with
@@ -587,7 +612,22 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         # this pattern only needs to recognise the QUESTION shape.
         r"\bis\s+there\s+a\s+returns?\s+(called|named)\b",
         r"\bdoes\s+(a\s+|the\s+)?returns?\b.{0,30}\bexist\b",
-        r"\bis\b.{0,30}\ba\s+returns?\b"),
+        r"\bis\b.{0,30}\ba\s+returns?\b",
+        # "give me the full profile for DBR01" / "profile of CIMS_ROR" — the
+        # word "return" is often absent entirely (the user names the return
+        # code directly), which is exactly why USER_PROFILE's bare "profile"
+        # keyword rule used to win first (now excluded above when a
+        # return-code-shaped token is present). This pattern only needs the
+        # QUESTION shape; the entity extractor resolves the actual return
+        # name from the full message, same as every other RETURN_PROFILE
+        # phrasing above.
+        r"\bprofile\s+(for|of)\b",
+        # "whats dpss 09 about" — tightened to require a return-code-shaped
+        # token (letters + 2+ digits) directly after "what's/what is", so
+        # this doesn't also swallow unrelated small talk like "what's the
+        # weather about".
+        r"\bwhat.?s?\s+(is\s+)?[a-z]+\s*\d{2,}\s+about\b",
+        r"\btell\s+me\s+about\s+return\b"),
     _mk(Intent.RETURN_LIST, ("self", "system_wide"),
         r"\ball\s+(the\s+)?xbrl\s+returns?\b", r"\bhow\s+many\s+xbrl\s+returns?\b",
         r"\bwhich\s+xbrl\s+returns?\s+(are|is)\b",
@@ -1234,6 +1274,34 @@ def _clean_extracted_return_name(name: str | None) -> str | None:
     return name or None
 
 
+# A return code "looks like" a short run of letters immediately followed
+# by 2+ digits (DBR01, DPSS09, CIMS_ROR has no digits so this doesn't cover
+# every return, only the numbered ones — the common case for phrasings that
+# name a return with no "return"/"form"/"report" anchor word at all, e.g.
+# "give me the full profile for DBR01", "whats dpss 09 about"). A single
+# optional space/underscore between the letters and digits is normalized
+# away, since a spoken-style "dpss 09" should resolve the same as "DPSS09".
+_RETURN_CODE_SHAPE_RE = re.compile(r"\b([A-Za-z]{2,})[\s_]?(\d{2,}[A-Za-z0-9_]*)\b")
+
+
+def _extract_return_name_generic(q: str) -> str | None:
+    """Last-resort return-name extraction for RETURN_PROFILE — tries the
+    shared return/form/report anchor first, then "profile for/of"-style
+    phrasing that has no such anchor, then a bare return-code-shaped token
+    anywhere in the message (see _RETURN_CODE_SHAPE_RE) as a final fallback
+    for phrasings like "whats dpss 09 about" where the code comes BEFORE
+    the only anchor word ("about"), which _extract_after_kw cannot handle
+    since it only captures text AFTER its keyword."""
+    name = _extract_after_kw(q, "return", "form", "report", "profile for", "profile of")
+    name = _clean_extracted_return_name(name)
+    if name:
+        return name
+    m = _RETURN_CODE_SHAPE_RE.search(q)
+    if m:
+        return f"{m.group(1)}{m.group(2)}"
+    return None
+
+
 def _extract_return_name_for_due_date(q: str) -> str | None:
     """Return-name extraction for NEXT_REPORTING_DATE/RETURN_FIELD — handles
     both "return/form/report X" anchoring (shared with the other
@@ -1476,7 +1544,12 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
                   Intent.ROLE_PERMISSION_DIFF, Intent.CROSS_ENTITY_QUERY):
         params["target_role"] = explicit or _extract_named_entity_before_or_after(q, ("role",))
 
-    if intent in (Intent.RETURN_PROFILE, Intent.RETURN_VALIDATION_CONFIG, Intent.NONXBRL_RETURN_PROFILE,
+    if intent == Intent.RETURN_PROFILE:
+        # See _extract_return_name_generic — handles "profile for DBR01"
+        # and "whats dpss 09 about" phrasings with no return/form/report
+        # anchor word at all (self-test: doc/INTENT_GAP_ANALYSIS.md).
+        params["target_return"] = explicit or _extract_return_name_generic(q)
+    elif intent in (Intent.RETURN_VALIDATION_CONFIG, Intent.NONXBRL_RETURN_PROFILE,
                   Intent.SUBMISSIONS_FOR_RETURN, Intent.SUBMISSION_LIST, Intent.MY_SUBMISSION_HISTORY,
                   Intent.DEPARTMENTS_WITH_RETURN_ACCESS, Intent.DEPARTMENT_HAS_RETURN,
                   Intent.MY_RETURN_ACCESS, Intent.RETURNS_SUBMITTABLE_BY_DEPT, Intent.LOG_QUERY,

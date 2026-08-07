@@ -73,7 +73,22 @@ def _extract_after_kw(text: str, *keywords: str) -> str | None:
             re.IGNORECASE,
         )
         if m:
-            return m.group(1).strip()
+            candidate = m.group(1).strip()
+            # A query with no trailing "?" (real users often omit it) and no
+            # "is"/"has"/"and" terminator falls through to the "$" end-of-
+            # string branch, swallowing generic trailing filler into the
+            # name — e.g. "is there a role called Tester in the system"
+            # (no "?") extracted "Tester in the system" instead of "Tester",
+            # producing a false "role not found" against a role that
+            # genuinely exists (self-test: doc/INTENT_GAP_ANALYSIS.md).
+            # Strip this well-known, never-part-of-a-real-entity-name
+            # trailing phrase rather than loosening the shared terminator
+            # set itself, which many other intents' extraction also relies on.
+            candidate = re.sub(
+                r"\s+in\s+(the\s+)?(system|application|app)\s*$", "", candidate,
+                flags=re.IGNORECASE,
+            )
+            return candidate.strip()
     return None
 
 

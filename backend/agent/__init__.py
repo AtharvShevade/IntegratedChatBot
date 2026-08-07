@@ -344,7 +344,33 @@ _CREATED_NOT_GENERATE_RE = re.compile(
     re.I,
 )
 
+# "Can I create new users?" / "Am I allowed to approve submissions?" / "Do I
+# have permission to edit department settings?" are self-PERMISSION
+# questions (db_qa's PERMISSION_CHECK intent — already has this exact
+# phrasing as an exemplar in exemplars.py) but "create"/"approve"/"edit" all
+# stem/keyword-match _fuzzy_has_generate or _fuzzy_has_schedule, so STEP1's
+# report-workflow gate was winning before db_qa ever got a turn (self-test:
+# doc/INTENT_GAP_ANALYSIS.md — "can I create new users" was misrouted to
+# generate_instance, "I couldn't find any report matching 'users'"). A
+# leading "can/could I", "am/are I allowed to", or "do I have permission to"
+# is never itself a command to generate/schedule a report — it is always
+# someone asking what THEY are permitted to do.
+_PERMISSION_QUESTION_RE = re.compile(
+    r'^\s*(can|could)\s+i\s+\w+'
+    r'|\b(am|are)\s+i\s+allowed\s+to\b'
+    r'|\bdo\s+i\s+have\s+permission\s+to\b',
+    re.I,
+)
 
+
+# "checker"/"checkers" stem-match the 'chec' prefix in _STATUS_STEMS (meant
+# for "check"/"checking" as in "check status"), but Checker is a real ROLE
+# NAME in this domain's Maker-Checker workflow — "what access does the
+# checker role have" was hijacked into the report-status fast-path at STEP1,
+# short-circuiting before it ever reached db_qa/the embedding tier at all
+# (found via the embedding-index self-test round, doc/INTENT_GAP_ANALYSIS.md
+# — this was NOT a missing db_qa rule as earlier rounds assumed; the query
+# never got that far).
 def _fuzzy_has_status(text: str) -> bool:
     """True if any word in text fuzzy-matches or stem-matches a status keyword."""
     if _STATUS_KW_RE.search(text):
@@ -353,6 +379,8 @@ def _fuzzy_has_status(text: str) -> bool:
     for w in words:
         # Stem/prefix match: 'generating' starts with 'gene' → generate
         if any(w.startswith(s) for s in _STATUS_STEMS):
+            if w in ("checker", "checkers"):
+                continue
             return True
         # Fuzzy edit-distance match: catches transpositions/substitutions
         if _fuzz.extractOne(w, _STATUS_FUZZY_KWS, score_cutoff=_FUZZY_THRESHOLD):
@@ -368,6 +396,10 @@ def _fuzzy_has_generate(text: str) -> bool:
     # about "who created my account" must not win on the 'crea' stem alone.
     if _CREATED_NOT_GENERATE_RE.search(text):
         return False
+    # See _PERMISSION_QUESTION_RE above — "can I create new users" is a
+    # self-permission question, not a create-a-report-instance command.
+    if _PERMISSION_QUESTION_RE.search(text):
+        return False
     words = re.findall(r'[a-zA-Z]{3,}', text.lower())
     for w in words:
         if any(w.startswith(s) for s in _GEN_STEMS):
@@ -381,6 +413,10 @@ def _fuzzy_has_schedule(text: str) -> bool:
     """True if any word in text fuzzy-matches or stem-matches a schedule keyword."""
     if _SCHED_KW_RE.search(text):
         return True
+    # See _PERMISSION_QUESTION_RE above — "can I schedule this return" is a
+    # self-permission question, not a scheduling command.
+    if _PERMISSION_QUESTION_RE.search(text):
+        return False
     words = re.findall(r'[a-zA-Z]{4,}', text.lower())
     for w in words:
         if any(w.startswith(s) for s in _SCHED_STEMS):
@@ -1575,10 +1611,26 @@ async def decide(
         # only (classify_new, not the async semantic-tiers classifier) —
         # cheap and synchronous, matching _has_date_range's own cost profile
         # for this pre-STEP-1 gate.
-        _probe_monthly_intent, _, _ = classify_new(user_query)
-        _has_monthly_status = _probe_monthly_intent == _Intent.MONTHLY_FILING_STATUS
+        # GENERALIZED, was two one-off special cases (MONTHLY_FILING_STATUS,
+        # then SUBMISSION_*) added independently as each was discovered —
+        # doc/INTENT_GAP_ANALYSIS.md's ongoing audit kept finding MORE common
+        # words ("details", "info", "execute") that _fuzzy_has_status/
+        # _fuzzy_has_generate's short stems ('deta', 'info', 'exec', ...)
+        # deliberately match as status/generate synonyms, but which also
+        # legitimately appear in everyday db_qa phrasing ("details of my
+        # role", "is there a role called Executive") — one-off exclusions
+        # don't scale to every future collision. classify_new() is a
+        # confident, structural REGEX match (not a fuzzy/keyword heuristic
+        # like the _fuzzy_has_* functions below it) — verified it stays
+        # silent (None) on every genuine report-workflow phrasing tested
+        # ("what is the status of my raq report", "generate the DBR01
+        # report", "schedule DBR01...", etc.), so trusting ANY of its
+        # matches over the fuzzy workflow gate is safe, not just for the
+        # two intents previously special-cased one at a time.
+        _probe_db_qa_intent, _, _ = classify_new(user_query)
+        _looks_like_db_qa_shape = _probe_db_qa_intent is not None
 
-        _has_workflow = not _has_date_range and not _has_monthly_status and (
+        _has_workflow = not _has_date_range and not _looks_like_db_qa_shape and (
             _has_guid_status
             or _fuzzy_has_status(user_query)
             or _fuzzy_has_generate(user_query)

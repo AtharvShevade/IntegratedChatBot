@@ -65,15 +65,24 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which users belong to the Finance department?",
         "Which users are associated with department ID 12?",
         "Who works in the Compliance department?",
+        # From app_db_questions_augmented.json — casual/polite phrasing
+        # templates the regex classifier doesn't tolerate but the embedding
+        # tier should (see doc/INTENT_GAP_ANALYSIS.md).
+        "Can you show me which users belong to the Treasury department?",
+        "I need to know which users belong to the Finance department.",
     ],
     Intent.USERS_BY_ROLE: [
         "Which users are assigned the Admin User role?",
         "Which users have the Tester role?",
         "How many users have the Admin User role?",
+        "Can you show me which users are assigned the Auditor role?",
+        "I need to know which users are assigned the Tester role.",
     ],
     Intent.USERS_WITH_ROLES_AND_DEPARTMENTS: [
         "List all users along with their roles and departments.",
         "Show me every user with their role and department.",
+        "Can you list all users along with their roles and departments?",
+        "Give me a list of all users along with their roles and departments.",
     ],
 
     # ── DEPARTMENT ───────────────────────────────────────────────────────
@@ -125,10 +134,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
     Intent.DEPARTMENTS_WITH_RETURN_ACCESS: [
         "Which departments have access to return CIMS_ROR?",
         "How many departments have access to return DPSS09?",
+        "Can you show me which departments have access to return DPSS09?",
+        "I need to know which departments have access to return CIMS_RAQ.",
     ],
     Intent.DEPARTMENT_HAS_RETURN: [
         "Does my department have access to return CIMS_RAQ?",
         "Does the Treasury department have access to DBR01?",
+        "Can you confirm does my department have access to return CIMS_ROR?",
+        "Am I allowed to submit return DPSS09 through my department?",
     ],
 
     # ── ROLE ─────────────────────────────────────────────────────────────
@@ -152,10 +165,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
     Intent.ROLE_USERS: [
         "Which users are assigned the Tester role?",
         "Who has the Admin User role?",
+        "Can you show me which users are assigned the Auditor role?",
+        "I need to know which users are assigned the Checker role.",
     ],
     Intent.ROLE_PEER_COUNT: [
         "How many other users share the same role as me?",
         "How many people have my same role?",
+        "What is the total number of other users who share the same role as me?",
+        "Give me the count of other users who share the same role as me.",
     ],
 
     # ── ROLE_ACCESS ──────────────────────────────────────────────────────
@@ -206,10 +223,21 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What actions can role Tester perform on the notification module?",
         "Can role Auditor disable the maker-checker workflow?",
         "What actions can I perform on the notification module?",
+        # "What access does the checker role have" was found failing across
+        # every round of self-test in doc/INTENT_GAP_ANALYSIS.md — no
+        # exemplar or regex rule covered this exact "what access does ROLE
+        # have" shape (distinct from PERMISSION_PROFILE's "what permissions
+        # does ROLE have", which a real user treats as the same question but
+        # the two phrasings weren't linked).
+        "What access does the Checker role have?",
+        "What access does the Maker role have?",
+        "What can the Checker role do in this application?",
     ],
     Intent.ROLE_PERMISSION_DIFF: [
         "What is the difference in permissions between Admin User and Tester?",
         "How do the permissions of Auditor and Tester differ?",
+        "Can you tell me the difference in permissions between Maker and Checker?",
+        "Please provide the difference in permissions between Admin User and Auditor.",
     ],
 
     # ── USER_LEVEL ───────────────────────────────────────────────────────
@@ -225,6 +253,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What is my user level?",
         "What is the meaning of my user level?",
         "What is the level ID assigned to me?",
+        "Can you tell me the meaning of my user level (L1 / L2 / L3)?",
     ],
 
     # ── PERIOD ───────────────────────────────────────────────────────────
@@ -275,6 +304,12 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What is the alternate name for return CIMS_ROR?",
         "What are the namespace details for return CIMS_RAQ?",
         "Give me the full details of return CIMS_ROR.",
+        # "whats dpss 09 about" failed across Rounds 2-3 of self-test
+        # (doc/INTENT_GAP_ANALYSIS.md) — no exemplar covered this generic
+        # "what is/about a named return" shape at all.
+        "What is DPSS09 about?",
+        "What is the DBR01 return?",
+        "Tell me about return CIMS_ROR.",
     ],
     Intent.RETURN_FIELD: [
         "What is the return ID for CIMS_ROR?",
@@ -287,25 +322,31 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Does return CIMS_RAQ require formula validation?",
         "Does return CIMS_ROR use schema-calculation validation?",
         "Which returns have RBI validation enabled?",
+        "Can you show me which returns have RBI validation enabled?",
     ],
     Intent.RETURNS_SUBMITTABLE_BY_DEPT: [
         "Which departments can submit the DPSS09 return?",
         "Which departments can submit the DBR01 return?",
+        "Can you show me which departments can submit the DPSS09 return?",
+        "I need to know which departments can submit the DBR01 return.",
     ],
     Intent.NEXT_REPORTING_DATE: [
         "What is the next reporting date for return CIMS_ROR?",
         "When is return CIMS_RAQ due?",
         "When should I submit return CIMS_ROR next?",
+        "Can you tell me when is return DPSS09 due?",
     ],
     Intent.REPORTS_FILED_IN_RANGE: [
         "Show me all XBRL reports filed between 1-Jan-2026 and 31-Mar-2026",
         "Which returns were filed between January and March?",
         "Show all reports submitted between last month and today.",
+        "Display all submissions between 1-Jan-2026 and 31-Mar-2026.",
     ],
     Intent.REPORTS_UPCOMING_IN_RANGE: [
         "What XBRL reports are coming up between 1-Jan-2026 and 31-Mar-2026",
         "What non-XBRL returns are due between two dates?",
         "What returns are upcoming next month?",
+        "Can you show me which returns have upcoming due dates in the next 30 days?",
     ],
     Intent.MONTHLY_FILING_STATUS: [
         "What's my XBRL filing status for June 2025?",
@@ -339,6 +380,13 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which return is accessible by the maximum number of departments?",
         "Which returns are accessible by all departments?",
         "Which department has access to the most returns?",
+        # "which department has the most returns" was found misrouted to
+        # DEPARTMENT_PROFILE in Round 1-2 self-test (it tried to resolve
+        # "has the most returns" as a literal department name) — this
+        # exemplar set already covers the phrasing; the embedding tier
+        # being inactive until now is why it didn't help in practice.
+        "Which department has the most returns assigned?",
+        "Can you show me which department has access to the most returns?",
     ],
     # Deliberately kept narrow to a personal ACCESS-SUMMARY/TOTAL framing —
     # distinct from DEPARTMENT_RETURNS' department-scoped LISTING framing
@@ -361,12 +409,16 @@ EXEMPLARS: dict[Intent, list[str]] = {
     Intent.DEPT_FULL_RETURN_LIST: [
         "What is the complete list of returns for the Treasury department?",
         "Which Non-XBRL returns can the Compliance department access?",
+        "Can you tell me the complete list of returns for the Finance department?",
+        "Please provide the complete list of returns for department Compliance.",
     ],
 
     # ── INSTANCE_LOG ─────────────────────────────────────────────────────
     Intent.SUBMISSION_STATUS: [
         "What is the status of my submission ID 4021?",
         "What is the status of submission 4021 made by jsmith?",
+        "Can you tell me the status of my submission ID 4021?",
+        "Did my last submission go through?",
     ],
     Intent.SUBMISSION_LIST: [
         "Which of my submissions are pending approval?",
@@ -429,6 +481,8 @@ EXEMPLARS: dict[Intent, list[str]] = {
     Intent.MODULE_CHILDREN: [
         "What are the child modules under Data Management?",
         "What are the child modules under ETL/Workflow?",
+        "Can you tell me the child modules under the Business Analytics section?",
+        "Please provide the child modules under the Reports section.",
     ],
 
     # ── AUDIT_SECURITY ───────────────────────────────────────────────────
