@@ -500,6 +500,53 @@ class _RoleUsersStructuralPattern:
         return None
 
 
+# "which department has the MOST/FEWEST returns" is a RANKING over all
+# departments (DEPARTMENT_LIST's most/fewest query_type), never a question
+# about one named department or one named return. Every singular-department
+# rule matches these just as well on its dept+return(+access) groups, so each
+# needs the same exclude — and each used to carry its own hand-written
+# version, which is why they disagreed about which orders they covered.
+#
+# Real phrasings put the ranking word in three different places:
+#     "access to the most returns"      rank ... noun
+#     "most return access"              rank noun ... (noun-adjunct)
+#     "most returns assigned"           rank noun ...
+#     "highest number of returns"       rank ... of noun
+# Only the first was excluded everywhere, so "which department has most
+# return access" fell to DEPARTMENT_HAS_RETURN, whose after-"department"
+# extractor captured the auxiliary clause: "Department 'has most return' was
+# not found." Note the singular "return" — users write it both ways, and a
+# pattern ending in a bare "returns" silently misses half of them.
+# NB "least" is only ever a ranking word directly before the return noun —
+# "at LEAST one return" is a quantifier and must NOT be caught here.
+_MOST_WORDS = r"most|maximum|highest|largest|greatest|biggest"
+_FEWEST_WORDS = r"fewest|least|minimum|lowest|smallest"
+_RET_NOUN = r"returns?|forms?|filings?"
+
+
+def _rank_alts(rank_words: str) -> tuple[str, ...]:
+    """A department<->return RANKING phrase, in any of the word orders users
+    actually write. Built once so the routing excludes and the query_type
+    table below cannot drift apart: an exclude the query_type table doesn't
+    also recognise sends the question to DEPARTMENT_LIST and then answers it
+    with a plain unranked department listing."""
+    return (
+        rf"(?:{rank_words})\s+(?:{_RET_NOUN})",
+        rf"(?:{rank_words})\s+(?:number|count|amount)\s+of\s+(?:{_RET_NOUN})",
+        rf"(?:{_RET_NOUN})\s+(?:access|assigned|allocated|mapped)\b.{{0,15}}?"
+        rf"\b(?:{rank_words})",
+    )
+
+
+_DEPT_RANK_MOST = _kw(*_rank_alts(_MOST_WORDS))
+_DEPT_RANK_FEWEST = _kw(*_rank_alts(_FEWEST_WORDS))
+# "top 5 departments by return count" ranks without naming a rank word next
+# to the noun, so it stays a bare alternative.
+_DEPT_RETURN_RANKING = _kw(
+    *_rank_alts(rf"{_MOST_WORDS}|{_FEWEST_WORDS}"), r"top\s+\d+",
+)
+
+
 # ── USER keyword rules ──────────────────────────────────────────────────
 
 _KEYWORD_RULES: list[_KeywordRule] = [
@@ -615,7 +662,7 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"minimum\s+users?", r"maximum\s+users?",
                      r"smallest\s+role", r"largest\s+role", r"biggest\s+role",
                      r"least[\s-]?used\s+role",
-                     r"number\s+of\s+users\s+in\s+each",
+                     r"number\s+of\s+users?\s+in\s+each",
                      r"\bmy\s+role\b", r"share.{0,20}role", r"as\s+me\b",
                      # A question about MODULES/PERMISSIONS/CONTROL for a
                      # role (e.g. "which modules does the Admin User role
@@ -688,7 +735,7 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # reached ROLE_LIST, but a polite prefix ("Can you show me which role
         # has the most users?") adds a list-verb that tipped this rule ahead
         # of it, answering "There are 37 users in the system."
-        excludes=(_kw(r"\bmy\b", r"number\s+of\s+users\s+in\s+each",
+        excludes=(_kw(r"\bmy\b", r"number\s+of\s+users?\s+in\s+each",
                      r"most\s+users?", r"least\s+users?", r"fewest\s+users?",
                      r"maximum\s+users?", r"minimum\s+users?",
                      r"which\s+role\b", r"\brole\s+has\b",
@@ -704,6 +751,11 @@ _KEYWORD_RULES: list[_KeywordRule] = [
 
     _KeywordRule(
         Intent.DEPARTMENT_HAS_RETURN, ("self", "department"),
+        # See _DEPT_RETURN_RANKING: "which department has MOST RETURN ACCESS"
+        # is DEPARTMENT_LIST's ranking question, not "does department X have
+        # access to return Y" — without the exclude the after-"department"
+        # extractor captured the auxiliary clause and answered
+        # "Department 'has most return' was not found."
         all_of=(_G_DEPT_NOUN, _kw(r"access", r"have\s+access")),
         any_of=(_kw(r"return", r"form", r"report"),),
         # "every return"/"all returns" is a generic quantifier, not one
@@ -717,6 +769,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # for a whole return TYPE — DEPARTMENTS_WITH_RETURN_ACCESS' type-level
         # form — not "does department X have access to return Y".
         excludes=(_kw(r"every\s+returns?", r"all\s+returns?", r"any\s+returns?"),
+                  _DEPT_RETURN_RANKING,
+                  # "WHICH XBRL RETURN DOES my department have access to" is
+                  # the same LISTING question as its plural form, which
+                  # already routes to DEPARTMENT_RETURNS — an opening
+                  # "which/what/how many <type> return(s) does" names no
+                  # return, so there is nothing for this intent's
+                  # target_return extractor to find and it reported
+                  # "I couldn't find a return matching 'does my department'".
+                  re.compile(r"\b(?:which|what|how\s+many)\s+(?:xbrl\s+|non[\s-]?xbrl\s+)?"
+                             r"(?:returns?|forms?|reports?)\s+(?:does|do)\b", re.IGNORECASE),
                   re.compile(r"(?:which|what)\s+departments?.{0,40}(?:non[\s-]?xbrl|xbrl)\s+returns?", re.IGNORECASE)),
     ),
 
@@ -785,12 +847,10 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         #       -> DEPARTMENT_RETURNS. See _NamedDepartmentPattern for why
         #          the old capitalisation-gated exclude never fired.
         excludes=(_kw(r"\bmy\b",
-                     r"most\s+returns?", r"fewest\s+returns?", r"least\s+returns?",
-                     r"maximum\s+returns?", r"minimum\s+returns?",
-                     r"highest\s+number\s+of\s+returns?", r"lowest\s+number\s+of\s+returns?",
-                     r"access\s+to\s+(the\s+)?most\s+returns?",
-                     r"all\s+(the\s+)?returns?", r"every\s+returns?",
-                     r"top\s+\d+"),
+                     r"all\s+(the\s+)?returns?", r"every\s+returns?"),
+                  # Replaces five hand-written ranking alternatives that
+                  # covered only the "rank ... noun" word order.
+                  _DEPT_RETURN_RANKING,
                   _NamedDepartmentPattern()),
         priority=1,
     ),
@@ -838,11 +898,6 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # own return list.
         excludes=(_kw(r"summary\s+of\s+my\s+access", r"full\s+summary", r"full\s+profile",
                      r"accessible\s+by\s+(the\s+)?(maximum|most)", r"accessible\s+by\s+all\s+departments?",
-                     r"department\s+has\s+access\s+to\s+the\s+most\s+returns?",
-                     # "the" is optional in real phrasing, and
-                     # fewest/least is the same aggregation.
-                     r"access\s+to\s+(the\s+)?most\s+returns?",
-                     r"access\s+to\s+(the\s+)?(fewest|least)\s+returns?",
                      # "which department has access to ALL returns" asks which
                      # departments' access list covers EVERY return —
                      # DEPT_RETURN_ACCESS_MATRIX's coverage question, not one
@@ -852,6 +907,7 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"access\s+to\s+all\s+(the\s+)?returns?",
                      r"access\s+to\s+every\s+returns?",
                      r"overdue"),
+                  _DEPT_RETURN_RANKING,
                   # Same type-level carve-out as DEPARTMENT_HAS_RETURN above:
                   # a plural "which/what departments" framing asks which
                   # departments hold a TYPE of return, not for one named
@@ -884,9 +940,8 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # aggregation branch. A sentence naming most/fewest/maximum/minimum/
         # top-N returns is unambiguously an aggregation query, never a
         # single-department profile lookup.
-        excludes=(_kw(r"most\s+returns?", r"fewest\s+returns?", r"least\s+returns?",
-                     r"maximum\s+returns?", r"minimum\s+returns?", r"top\s+\d+",
-                     r"few\s+returns?", r"some\s+returns?", r"several\s+returns?",
+        excludes=(_DEPT_RETURN_RANKING,
+                  _kw(r"few\s+returns?", r"some\s+returns?", r"several\s+returns?",
                      # Same no-returns/ambiguous-quantity synonyms DEPARTMENT_LIST's
                      # own rule recognizes — a singular "which department has zero/
                      # no/without any returns" is exactly as much an aggregation
@@ -906,7 +961,17 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # capturing the auxiliary verb as the department name
                      # and answering "Department 'has' was not found."
                      r"access\s+to\s+all\s+(the\s+)?returns?",
-                     r"access\s+to\s+every\s+returns?"),),
+                     r"access\s+to\s+every\s+returns?"),
+                  # "which departmentS are active" already routes to
+                  # DEPARTMENT_LIST because this rule's "which\s+department"
+                  # trigger is \b-anchored and so never matches the plural.
+                  # The SINGULAR form of the same question does match it, and
+                  # the name extractor then read the predicate as a
+                  # department name: "Department 'are currently active' was
+                  # not found." A status predicate is never a name.
+                  re.compile(r"\b(?:which|what)\s+departments?\s+(?:is|are|was|were)\s+"
+                             r"(?:currently\s+)?(?:active|inactive|enabled|disabled)",
+                             re.IGNORECASE),),
     ),
 
     _KeywordRule(
@@ -921,6 +986,11 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # "least" word) never reached DEPARTMENT_LIST at all. Added here so
         # the two layers agree on what counts as an aggregation trigger.
         any_of=(_G_LIST_VERB, _G_HOW_MANY, _G_ACTIVE, _G_INACTIVE, _G_ALL,
+                 # The ranking excludes above are now wider than the bare
+                 # most/least words this group used to list, so a question
+                 # they reject ("...the HIGHEST number of returns") has to be
+                 # accepted here or it lands nowhere at all.
+                 _DEPT_RETURN_RANKING,
                  _kw(r"most", r"fewest", r"least", r"no\s+returns",
                      r"maximum", r"minimum", r"top\s+\d+",
                      r"few\s+returns?", r"some\s+returns?", r"several\s+returns?",
@@ -1020,7 +1090,7 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"minimum\s+users?", r"maximum\s+users?",
                      r"smallest\s+role", r"largest\s+role", r"biggest\s+role",
                      r"least[\s-]?used\s+role",
-                     r"number\s+of\s+users\s+in\s+each",
+                     r"number\s+of\s+users?\s+in\s+each",
                      r"\bmy\s+role\b", r"share.{0,20}role", r"as\s+me\b",
                      # A question about MODULES/PERMISSIONS/CONTROL for a
                      # role (e.g. "which modules does the Admin User role
@@ -1036,11 +1106,11 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         Intent.ROLE_LIST, ("system_wide",),
         all_of=(_G_ROLE_NOUN,),
         any_of=(_G_LIST_VERB, _G_HOW_MANY, _G_ACTIVE, _G_INACTIVE, _G_ALL,
-                 _kw(r"most\s+users", r"largest", r"biggest",
+                 _kw(r"most\s+users?", r"largest", r"biggest",
                      r"least\s+users?", r"fewest\s+users?", r"minimum\s+users?",
                      r"maximum\s+users?", r"smallest\s+role", r"least[\s-]?used\s+role",
                      r"is\s+there\s+a\s+role", r"exist\w*", r"valid\s+role",
-                     r"number\s+of\s+users\s+in\s+each")),
+                     r"number\s+of\s+users?\s+in\s+each")),
         # A specific NAMED role ("role Tester") means the question is about
         # THAT role (ROLE_MODULE_ACCESS/PERMISSION_PROFILE's territory, e.g.
         # "list all modules accessible to role Tester"), never a system-wide
@@ -1054,7 +1124,14 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # "Can you show me which modules does the Admin User role have full
         # control over?" was answered "There are 16 roles defined in the
         # system."
-        excludes=(_kw(r"\bmy\b", r"\bmodules?\b", r"full\s+control", r"permissions?"),
+        # "rights"/"access to" belong with modules/permissions/full control
+        # above: "Can you show me which roles have approval RIGHTS for the
+        # audit log?" is ROLE_MODULE_ACCESS, but the polite "show me" tipped
+        # this rule's list-verb group and answered "There are 16 roles
+        # defined in the system." The bare question (no "show me") was
+        # already correct, which is exactly why the catalogue didn't catch it.
+        excludes=(_kw(r"\bmy\b", r"\bmodules?\b", r"full\s+control", r"permissions?",
+                     r"rights", r"access\s+to"),
                   re.compile(r"\brole\s+[A-Z]\w*")),
     ),
 
@@ -1699,7 +1776,7 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\bwhich\s+returns?\s+(are|use|have)\b.{0,40}\b(cims|table\s+linkbase|istbl|large\s+validator|"
         r"formula\s+validation|schema[\s-]?calc\w*\s+validation|rbi\s+validation)\b",
         r"\ball\s+returns?\s+(along\s+with|with)\s+their\s+due\s+days?\s+and\s+frequenc\w*\b",
-        r"\breturns?\s+belong\w*\s+to\s+the\s+(dpss|dbs|dbr)\s+category\b",
+        r"\breturns?\s+belong\w*\s+to\s+(?:the\s+)?(dpss|dbs|dbr)\s+category\b",
         r"\bwhich\s+returns?\s+have\s+a\s+due\s+period\s+of\s+more\s+than\s+\d+\s+days?\b",
         r"\breturns?\s+(with\s+a\s+)?due\s+period\s+(of\s+)?(more|greater)\s+than\s+\d+\s+days?\b",
         r"\ball\s+returns?\s+and\s+their\s+next\s+three\s+upcoming\s+due\s+dates?\b",
@@ -1720,7 +1797,11 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\breturns?\s+am\s+i\s+(?:entitled|allowed)\s+to\s+access\b",
         r"\breturns?\s+i(?:'m|\s+am)\s+allowed\s+to\s+use\b"),
     _mk(Intent.DEPT_RETURN_ACCESS_MATRIX, ("system_wide",),
-        r"\breturn\s+.*accessible\s+by\s+the\s+(maximum|most)\b",
+        # "the" is optional in real phrasing ("accessible by maximum number
+        # of departments"); the two department-side excludes for this same
+        # question already treat it as optional, and requiring it here left
+        # the question matching no rule at all.
+        r"\breturn\s+.*accessible\s+by\s+(?:the\s+)?(maximum|most)\b",
         r"\breturns?\s+.*accessible\s+by\s+all\s+departments?\b",
         r"\bdepartment\s+has\s+access\s+to\s+the\s+most\s+returns?\b",
         # "which/how many departments have access to ALL returns" — the
@@ -2215,6 +2296,13 @@ _USER_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # Ranking is checked before "count", because "which department has the
+    # HIGHEST NUMBER OF returns" satisfies _HOW_MANY_PAT's "number of" too,
+    # and first-match-wins here — leaving the ranking word ignored and the
+    # question answered with a plain department count. (Same builder as the
+    # routing excludes; see _rank_alts.)
+    ("most", _DEPT_RANK_MOST),
+    ("fewest", _DEPT_RANK_FEWEST),
     ("count", _HOW_MANY_PAT),
     # Checked before "with_counts": "top 5 departments BY RETURN COUNT" also
     # matches with_counts' "return\s+counts?" pattern, and first-match-wins
@@ -2235,8 +2323,8 @@ _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     # single deterministic query, so it's flagged for the handler to ask
     # a clarification question instead of guessing what "few" means.
     ("ambiguous_quantity", _kw(r"\bfew\b", r"\bsome\b", r"\bseveral\b")),
-    ("most", _kw(r"most\s+returns?", r"maximum\s+returns?")),
-    ("fewest", _kw(r"fewest\s+returns?", r"least\s+returns?", r"minimum\s+returns?")),
+    # ("most"/"fewest" are matched at the top of this table, ahead of
+    # "count" — see the note there.)
     ("with_counts", _kw(r"return\s+counts?", r"with\s+their\s+return", r"assigned\s+return\s+counts?")),
     ("inactive", _INACTIVE_PAT),
     ("active", _ACTIVE_PAT),
@@ -2256,11 +2344,14 @@ _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("count", _HOW_MANY_PAT),
     ("exists", _kw(r"is\s+there\s+a\s+role", r"does\s+.*role.*exist", r"role.*exists?\b",
                     r"check\s+if.*role.*exists?", r"is\s+.*\s+a\s+valid\s+role")),
-    ("most_users", _kw(r"most\s+users", r"maximum\s+users?", r"largest", r"biggest")),
+    # "which role has the most USER" — users drop the plural as often as
+    # they keep it, and a pattern ending in a bare "users" silently loses
+    # half the phrasings (here it made the question unclassifiable).
+    ("most_users", _kw(r"most\s+users?", r"maximum\s+users?", r"largest", r"biggest")),
     ("least_users", _kw(r"least\s+users?", r"fewest\s+users?", r"minimum\s+users?",
                           r"smallest\s+role", r"least[\s-]?used\s+role",
                           r"role.{0,15}fewest", r"role.{0,15}used\s+by\s+the\s+fewest")),
-    ("with_counts", _kw(r"user\s+counts?", r"number\s+of\s+users\s+in\s+each")),
+    ("with_counts", _kw(r"user\s+counts?", r"number\s+of\s+users?\s+in\s+each")),
     ("inactive", _INACTIVE_PAT),
     ("active", _ACTIVE_PAT),
 ]

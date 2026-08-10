@@ -221,6 +221,90 @@ def test_what_modules_am_i_allowed_to_access_lists_modules(store):
 
 # ── password phrasings ───────────────────────────────────────────────────
 
+# ── the same question, retyped ───────────────────────────────────────────
+#
+# A catalogue question passing is weak evidence, because users retype it.
+# Everything below is a natural rewrite of a catalogue question that already
+# passed — each one used to change the answer. They were found by a
+# paraphrase-invariance sweep (1071 rewrites of the 285 working catalogue
+# questions across all six modules), not by reading the regexes.
+
+@_need_5_5
+@pytest.mark.parametrize("text,query_type", [
+    # The reported bug: noun-adjunct order ("most RETURN ACCESS") and the
+    # singular "return". Only "access to the most returns" was excluded from
+    # the singular-department rules, so this landed on DEPARTMENT_HAS_RETURN
+    # and answered "Department 'has most return' was not found."
+    ("which department has most return access ?", "most"),
+    ("which department has least return access", "fewest"),
+    ("which department has most return assigned?", "most"),
+    ("which department has fewest return assigned", "fewest"),
+    ("which department has most returns assigned", "most"),
+    ("which department has the highest number of returns", "most"),
+    ("which department has the lowest number of returns", "fewest"),
+])
+def test_department_return_ranking_is_word_order_and_plural_tolerant(text, query_type, store):
+    intent, params, _ = classify_new(text)
+    assert intent == Intent.DEPARTMENT_LIST, text
+    assert params.get("query_type") == query_type, text
+    _i, res = _answer(text, store)
+    assert len(res["records"]) == 1, text
+    assert "not found" not in res["summary"], text
+
+
+def test_at_least_one_is_a_quantifier_not_a_ranking():
+    """"least" only ranks immediately before the return noun — the exclude
+    must not swallow "at least one return"."""
+    from backend.db_qa.new_intent_classifier import _DEPT_RETURN_RANKING
+    assert not _DEPT_RETURN_RANKING.search("departments with at least one return")
+    assert _DEPT_RETURN_RANKING.search("the least returns")
+
+
+@_need_5_5
+@pytest.mark.parametrize("text,expected", [
+    # Singular noun. The plural form of each of these already worked, which
+    # is exactly why the catalogue never caught them.
+    ("Which department are currently active?", Intent.DEPARTMENT_LIST),
+    ("Which department is inactive?", Intent.DEPARTMENT_LIST),
+    ("Which XBRL return does my department have access to?", Intent.DEPARTMENT_RETURNS),
+    ("How many return does my department have access to?", Intent.DEPARTMENT_RETURNS),
+    ("Which role has the most user?", Intent.ROLE_LIST),
+    ("List all roles along with the number of user in each.", Intent.ROLE_LIST),
+    # Dropped article.
+    ("Which returns belong to DBS category?", Intent.RETURN_LIST),
+    ("Which return is accessible by maximum number of departments?",
+     Intent.DEPT_RETURN_ACCESS_MATRIX),
+    # Polite prefix — "show me" tipped ROLE_LIST's list-verb group and the
+    # answer became "There are 16 roles defined in the system."
+    ("Can you show me which roles have approval rights for the audit log?",
+     Intent.ROLE_MODULE_ACCESS),
+])
+def test_natural_rewrites_keep_the_same_answer(text, expected, store):
+    intent, res = _answer(text, store)
+    assert intent == expected, text
+    assert res["records"], text
+    assert "not found" not in res["summary"], text
+    assert "couldn't find" not in res["summary"], text
+
+
+@_need_5_5
+@pytest.mark.parametrize("text,expected", [
+    # Guards for the excludes added above — each names a specific entity and
+    # must stay on its own intent.
+    ("Does department Dept 1 have access to return CIMS_ROR?", Intent.DEPARTMENT_HAS_RETURN),
+    ("Which departments have access to return CIMS_ROR?", Intent.DEPARTMENTS_WITH_RETURN_ACCESS),
+    ("Which departments are currently active?", Intent.DEPARTMENT_LIST),
+    ("Which roles are active?", Intent.ROLE_LIST),
+    ("How many roles are there?", Intent.ROLE_LIST),
+    ("Which returns belong to the DBS category?", Intent.RETURN_LIST),
+    ("Which non-XBRL returns does my department have access to?", Intent.DEPARTMENT_RETURNS),
+])
+def test_the_new_excludes_do_not_steal_their_neighbours(text, expected, store):
+    intent, res = _answer(text, store)
+    assert intent == expected, text
+    assert res["records"], text
+
+
 @pytest.mark.parametrize("text", [
     "Which users have not updated their password recently?",
     "I need to know which users have not updated their password recently.",
