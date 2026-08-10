@@ -28,7 +28,7 @@ class ChatResponse(BaseModel):
     report_name: Optional[str] = None
     response_text: str = ""
     need_clarification: bool = False
-    result_type: str = ""  # final | variance_table | disambiguation | date_selection | error | ""
+    result_type: str = ""  # final | variance_table | disambiguation | date_selection | error | stopped | ""
     options: list[str] = []
     variance_data:    list[dict] = []
     variance_label_a: str        = ""

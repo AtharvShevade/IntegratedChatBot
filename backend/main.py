@@ -151,6 +151,22 @@ app = FastAPI(title="Report Assistant", version="3.0.0", lifespan=lifespan)
 # long-pole in every request path.
 _inflight_tasks: dict[str, asyncio.Task] = {}
 
+# request_ids that /stop has deliberately cancelled. Needed to tell a
+# user-initiated Stop apart from a CancelledError that means something else
+# entirely (server shutdown, client disconnect) — the two arrive at the
+# endpoint as the identical exception, but only the first should be turned
+# into a normal HTTP response. Swallowing the second would break shutdown.
+_stopped_request_ids: set[str] = set()
+
+
+class RequestStopped(Exception):
+    """The user pressed Stop and /stop cancelled this request's task.
+
+    Deliberately NOT a subclass of asyncio.CancelledError: the whole point is
+    that endpoints can catch this and return a clean response without also
+    catching (and thereby suppressing) genuine cancellation.
+    """
+
 
 async def _run_cancellable(request_id: str | None, coro):
     if not request_id:
@@ -159,8 +175,29 @@ async def _run_cancellable(request_id: str | None, coro):
     _inflight_tasks[request_id] = task
     try:
         return await task
+    except asyncio.CancelledError:
+        # Only the task WE created was cancelled, by /stop — this coroutine
+        # itself is not being cancelled, so converting the exception here
+        # suppresses nothing that should propagate. Any other CancelledError
+        # (shutdown, disconnect) leaves request_id absent from the set and is
+        # re-raised untouched.
+        if request_id in _stopped_request_ids:
+            raise RequestStopped from None
+        raise
     finally:
         _inflight_tasks.pop(request_id, None)
+        _stopped_request_ids.discard(request_id)
+
+
+def _stopped_response(intent: str = "stopped") -> ChatResponse:
+    """The response a stopped request returns instead of dropping the
+    connection. Plain and terminal — the frontend already rendered whatever
+    partial state it had; this just closes the request cleanly."""
+    return ChatResponse(
+        intent=intent,
+        result_type="stopped",
+        response_text="Request stopped.",
+    )
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
@@ -273,9 +310,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         if isinstance(result, ChatResponse):
             return result
         return ChatResponse(**result)
-    except asyncio.CancelledError:
+    except RequestStopped:
         logger.info("Chat request stopped by user: session=%s", request.session_id or "anonymous")
-        raise
+        return _stopped_response()
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         log_exception(
             logger,
@@ -318,9 +355,9 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
             elapsed, request.session_id or "anonymous",
         )
         return ChatResponse(**result)
-    except asyncio.CancelledError:
+    except RequestStopped:
         logger.info("Comparison request stopped by user: session=%s", request.session_id or "anonymous")
-        raise
+        return _stopped_response()
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         log_exception(
             logger,
@@ -360,9 +397,9 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             request.category, elapsed,
         )
         return ChatResponse(**result)
-    except asyncio.CancelledError:
+    except RequestStopped:
         logger.info("Explain-category request stopped by user: category=%s", request.category)
-        raise
+        return _stopped_response()
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         log_exception(
             logger,
@@ -444,6 +481,10 @@ async def stop_request(request: Request) -> dict:
     task = _inflight_tasks.get(request_id) if request_id else None
     stopped = False
     if task and not task.done():
+        # Record BEFORE cancelling: _run_cancellable reads this set to decide
+        # whether the CancelledError it is about to see is a user Stop (return
+        # a clean response) or something it must not swallow.
+        _stopped_request_ids.add(request_id)
         task.cancel()
         stopped = True
     logger.info("Stop requested: request_id=%s stopped=%s", request_id, stopped)
@@ -617,9 +658,9 @@ async def guided(request: ChatRequest) -> ChatResponse:
             result.get("result_type", "?"), elapsed, request.session_id,
         )
         return ChatResponse(**result)
-    except asyncio.CancelledError:
+    except RequestStopped:
         logger.info("Guided request stopped by user: session=%s", request.session_id)
-        raise
+        return _stopped_response()
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         logger.error(
             "[API_FAILURE] Ollama unreachable for /guided — %s", exc,
