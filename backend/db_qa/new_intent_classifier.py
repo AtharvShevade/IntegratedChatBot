@@ -1267,11 +1267,20 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         # of ... which I can generate") fell through to the SQL Agent
         # entirely instead of reaching this intent. Self-test:
         # "get me list of xbrl reports which i can generate".
-        rf"\bwhich\s+xbrl\s+returns?\s+can\s+i\s+{_RETURN_SUBMIT_VERBS}\b",
+        #
+        # The type word is OPTIONAL in every pattern: "which returns can I
+        # submit?" (no type) and "which Non-XBRL returns can I submit?" are
+        # the same question asked about a different slice, and both were
+        # falling through — the untyped one to the SQL agent, the non-XBRL
+        # one to NONXBRL_RETURN_LIST (right rows by luck, wrong intent).
+        # {_NON_XBRL} is matched explicitly rather than relying on
+        # "(xbrl\s+)?" because "\bxbrl" also matches inside "non-xbrl", so
+        # an optional-xbrl group alone would tag a non-XBRL question as XBRL.
+        rf"\bwhich\s+(?:{_NON_XBRL}\s+|xbrl\s+)?returns?\s+can\s+i\s+{_RETURN_SUBMIT_VERBS}\b",
         rf"\bwhich\s+departments?\s+can\s+{_RETURN_SUBMIT_VERBS}\b",
-        rf"\bxbrl\s+returns?\b.{{0,15}}\bi\s+can\s+{_RETURN_SUBMIT_VERBS}\b",
-        rf"\bxbrl\s+reports?\b.{{0,20}}\bi\s+can\s+{_RETURN_SUBMIT_VERBS}\b",
-        rf"\blist\s+of\s+xbrl\s+reports?\b.{{0,30}}\bi\s+can\s+{_RETURN_SUBMIT_VERBS}\b"),
+        rf"\b(?:{_NON_XBRL}\s+|xbrl\s+)?returns?\b.{{0,15}}\bi\s+can\s+{_RETURN_SUBMIT_VERBS}\b",
+        rf"\b(?:{_NON_XBRL}\s+|xbrl\s+)?reports?\b.{{0,20}}\bi\s+can\s+{_RETURN_SUBMIT_VERBS}\b",
+        rf"\blist\s+of\s+(?:{_NON_XBRL}\s+|xbrl\s+)?reports?\b.{{0,30}}\bi\s+can\s+{_RETURN_SUBMIT_VERBS}\b"),
     _mk(Intent.RETURN_VALIDATION_CONFIG, ("self", "system_wide"),
         r"\b(formula|schema|rbi)\s+validation\b", r"\bcross-report\s+validation\b",
         r"\bbusiness\s+rules?\s+for\b", r"\bvalidation\s+rules?\s+(apply|for)\b"),
@@ -1450,6 +1459,32 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     _mk(Intent.RETURN_LIST, ("self", "system_wide"),
         r"\ball\s+(the\s+)?xbrl\s+returns?\b", r"\bhow\s+many\s+xbrl\s+returns?\b",
         r"\bwhich\s+xbrl\s+returns?\s+(are|is)\b",
+        # Untyped counterparts — "list all returns", "how many returns are
+        # there in total". Every pattern here previously required the literal
+        # word "xbrl", so an unqualified question matched no rule at all and
+        # fell through to the SQL agent, even though "no type = both" is this
+        # module's stated contract (see _extract_xbrl_type).
+        #
+        # These cannot steal the non-XBRL phrasings even though this rule is
+        # checked before NONXBRL_RETURN_LIST: "(xbrl\s+)?" cannot consume the
+        # "non-" in "non-xbrl returns", so those still fall through to it.
+        # Safe to be this broad because RETURNS_BY_FREQUENCY,
+        # RETURNS_SUBMITTABLE_BY_DEPT and REPORTS_UPCOMING_IN_RANGE are all
+        # checked EARLIER in _NEW_RULES and take their own phrasings first.
+        # The department guard is essential: "Show all returns assigned to my
+        # department" is DEPARTMENT_RETURNS' question, and a bare "all
+        # returns" pattern claims it here first (this rule is tier-2 regex,
+        # which runs before the embedding tier that phrasing relies on).
+        # Only a scope-less catalogue request belongs to RETURN_LIST.
+        r"^(?!.*\b(departments?|dept|my|our)\b).*\ball\s+(the\s+)?(xbrl\s+)?returns?\b",
+        r"\bhow\s+many\s+(xbrl\s+)?returns?\s+(are\s+there|are\s+in|in\s+total|exist)\b",
+        # "which returns have no due days configured" — the XBRL and untyped
+        # forms matched nothing at all before. The non-XBRL form is left to
+        # NONXBRL_RETURN_LIST, which already answered it correctly and owns
+        # that intent's own reporting; the negative lookahead keeps this rule
+        # (checked earlier) from taking it over and renaming the intent.
+        r"^(?!.*non[\s-]?xbrl).*\breturns?\b.{0,25}\bno\s+due\s+days?\b",
+        r"^(?!.*non[\s-]?xbrl).*\breturns?\b.{0,25}\bwithout\s+due\s+days?\b",
         # "CIMS-enabled returns" (hyphenated, order-fixed) — original pattern,
         # kept for backward compatibility with anything already relying on it.
         r"\bcims-enabled\s+returns?\b",
@@ -2055,6 +2090,8 @@ _RETURN_LIST_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("large_validator", _kw(r"large\s+validator")),
     ("cims", _kw(r"cims[\s-]?enabled", r"use\s+cims\b", r"\bcims\b.{0,15}enabled")),
     ("istbl", _kw(r"table\s+linkbase", r"\bistbl\b", r"\btbl\b")),
+    ("no_due_days", _kw(r"no\s+due\s+days?", r"without\s+due\s+days?",
+                          r"due\s+days?\s+not\s+configured")),
     ("inactive", _INACTIVE_PAT),
     ("active", _ACTIVE_PAT),
 ]
@@ -2905,6 +2942,13 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
     if intent == Intent.RETURN_LIST:
         params["query_type"] = _extract_query_type(q, _RETURN_LIST_QUERY_TYPE_PATTERNS)
         params["category"] = _extract_return_category(q)
+        # The attribute filters below (CIMS-enabled, RBI validation, due
+        # period, ...) apply to non-XBRL returns just as much as XBRL ones,
+        # and this intent's patterns are broad enough to catch either
+        # ("which non-XBRL returns are CIMS enabled?"). Without the type the
+        # handler defaulted to the XBRL set and answered a non-XBRL question
+        # with XBRL data. None still means "both", per _extract_xbrl_type.
+        params["xbrl_type"] = _extract_xbrl_type(q)
         if params["query_type"] == "due_gt":
             params["threshold_days"] = _extract_due_gt_threshold(q)
 
@@ -2951,7 +2995,11 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
     # restrict name resolution to that type instead of matching across both
     # sets — these intents are shared by both modules, so without it a
     # non-XBRL question could resolve to a similarly-named XBRL return.
-    if intent in (Intent.NEXT_REPORTING_DATE, Intent.RETURN_FIELD, Intent.RETURN_PROFILE):
+    if intent in (Intent.NEXT_REPORTING_DATE, Intent.RETURN_FIELD, Intent.RETURN_PROFILE,
+                  # Its dept-scoped branch lists returns by type too ("which
+                  # Non-XBRL returns can I submit?"), not just resolves one
+                  # name — without the type it always answered XBRL-only.
+                  Intent.RETURNS_SUBMITTABLE_BY_DEPT):
         params["xbrl_type"] = _extract_xbrl_type(q)
 
     if intent == Intent.NEXT_REPORTING_DATE and re.search(r"\breporting\s+calendar\b", q, re.IGNORECASE):
@@ -3014,6 +3062,12 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
 
     if intent == Intent.RETURNS_BY_FREQUENCY:
         params["period_name"] = _extract_period(q) or _extract_period_name_loose(q)
+        # "what are the XBRL returns filed monthly?" vs "...the Non-XBRL
+        # returns filed monthly?" were returning identical combined results:
+        # the frequency was extracted but the TYPE never was, so the handler
+        # had nothing to filter on. The two filters are independent and must
+        # compose.
+        params["xbrl_type"] = _extract_xbrl_type(q)
 
     if intent == Intent.PERIOD_LOOKUP:
         params["query_type"] = _extract_query_type(q, _PERIOD_LOOKUP_QUERY_TYPE_PATTERNS)

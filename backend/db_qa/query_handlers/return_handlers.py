@@ -345,16 +345,25 @@ def handle_returns_by_frequency(scope: dict, entities: dict, store: XMLStore) ->
     period_id = get_attr(period, "Period_Id", "Id", default="")
 
     rets = [r for r in _all_period_returns(store) if get_attr(r, "PeriodId", "Period_Id", default="") == period_id]
+    # Frequency and TYPE are independent filters and must compose: "XBRL
+    # returns filed monthly" and "Non-XBRL returns filed monthly" are
+    # different questions. _all_period_returns() deliberately combines both
+    # sets (PERIOD_LIST/PERIOD_LOOKUP genuinely don't distinguish them), so
+    # the narrowing belongs here rather than in that helper.
+    xbrl_type = entities.get("xbrl_type")
+    rets = _filter_by_xbrl_type(store, rets, xbrl_type)
     if scope["target_type"] == "self":
         dept = _resolve_target_department(store, scope, entities)
-        if dept:
-            form_ids = {f.strip() for f in dept.get("Forms", "").split("|") if f.strip()}
-            nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
-            allowed = form_ids | nx_ids
+        allowed = _dept_allowed_return_ids(store, dept)
+        if allowed is not None:
             rets = [r for r in rets if r.get("Id") in allowed or r.get("ReturnId") in allowed]
     display_name = period.get("PeriodName", period_name)
-    label = f"{display_name} Returns" + (" (Mine)" if scope["target_type"] == "self" else "")
-    return _result("returns_by_frequency", label, rets, f"Found {len(rets)} {display_name} return(s).", count=len(rets))
+    type_word = _TYPE_WORD.get(xbrl_type, "")
+    label = f"{display_name} {type_word}Returns".replace("  ", " ") + (
+        " (Mine)" if scope["target_type"] == "self" else "")
+    return _result("returns_by_frequency", label, rets,
+                   f"Found {len(rets)} {display_name} {type_word}return(s).".replace("  ", " "),
+                   count=len(rets), xbrl_type=xbrl_type)
 
 
 # ── XBRL_RETURNS ─────────────────────────────────────────────────────────
@@ -362,13 +371,22 @@ def handle_returns_by_frequency(scope: dict, entities: dict, store: XMLStore) ->
 def handle_return_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     query_type = (entities.get("query_type") or "all").lower()
     category = entities.get("category", "")
-    returns = [store.enrich_return(r) for r in store.returns()]
+    # This intent's attribute filters (CIMS-enabled, RBI validation, table
+    # linkbase, due period, category) are properties of ANY return, not just
+    # XBRL ones, and its patterns match either type. Starting from
+    # store.returns() alone answered "which non-XBRL returns are CIMS
+    # enabled?" with the XBRL set, and answered every unqualified "which
+    # returns ..." as XBRL-only. None = both, per _extract_xbrl_type.
+    xbrl_type = entities.get("xbrl_type")
+    returns = [store.enrich_return(r) for r in _returns_of_type(store, xbrl_type)]
 
     if scope["target_type"] == "self":
         dept = _resolve_target_department(store, scope, entities)
-        if dept:
-            form_ids = {f.strip() for f in dept.get("Forms", "").split("|") if f.strip()}
-            returns = [r for r in returns if r.get("Id") in form_ids or r.get("ReturnId") in form_ids]
+        # Both access lists, then narrowed by type above — scoping to Forms
+        # (XBRL) alone dropped every non-XBRL return the caller can access.
+        allowed = _dept_allowed_return_ids(store, dept)
+        if allowed is not None:
+            returns = [r for r in returns if r.get("Id") in allowed or r.get("ReturnId") in allowed]
 
     if category:
         returns = [r for r in returns if category.lower() in (r.get("Name") or "").lower()
@@ -407,13 +425,21 @@ def handle_return_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     elif query_type == "due_gt":
         threshold = entities.get("threshold_days") or 21
         returns = [r for r in returns if _safe_int(r.get("DueDays")) > threshold]
+    elif query_type == "no_due_days":
+        returns = [r for r in returns if not (r.get("DueDays") or "").strip()]
 
-    label = "My XBRL Returns" if scope["target_type"] == "self" else "XBRL Returns"
+    # Labels must state the type actually answered — a "Non-XBRL" question
+    # headed "XBRL Returns" reads as the wrong answer even when the rows are
+    # right, and an unqualified one must not claim either type.
+    type_word = _TYPE_WORD.get(xbrl_type, "")
+    label = (f"My {type_word}Returns" if scope["target_type"] == "self"
+             else f"{type_word}Returns").replace("  ", " ")
     active_count = sum(1 for r in returns if (r.get("Status") or "").lower() == "true")
     _FILTER_LABELS = {
         "due_gt": ("Returns With Long Due Period",
                    f"{{n}} return(s) have a due period of more than {entities.get('threshold_days') or 21} day(s)."),
         "cims": ("CIMS-Enabled Returns", "{n} return(s) are CIMS-enabled."),
+        "no_due_days": ("Returns With No Due Days", "{n} return(s) have no due days configured."),
         "istbl": ("Table-Linkbase (IsTBL) Returns", "{n} return(s) use the table linkbase (IsTBL)."),
         "large_validator": ("Returns Using the Large Validator", "{n} return(s) use the large validator."),
         "rbi": ("Returns With RBI Validation", "{n} return(s) have RBI validation enabled."),
@@ -422,15 +448,22 @@ def handle_return_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     }
     if query_type in _FILTER_LABELS:
         filt_label, summary_tpl = _FILTER_LABELS[query_type]
+        if type_word:
+            filt_label = f"{type_word}{filt_label}"
         if category:
             filt_label = f"{filt_label} ({category.upper()})"
-        return _result("return_list", filt_label, returns, summary_tpl.format(n=len(returns)), count=len(returns))
+        summary = summary_tpl.format(n=len(returns))
+        if type_word:
+            summary = summary.replace("return(s)", f"{type_word}return(s)", 1)
+        return _result("return_list", filt_label, returns, summary,
+                       count=len(returns), xbrl_type=xbrl_type)
     if category and query_type in ("all", ""):
-        return _result("return_list", f"{category.upper()} Returns", returns,
-                       f"Found {len(returns)} return(s) in the {category.upper()} category.", count=len(returns))
+        return _result("return_list", f"{category.upper()} {type_word}Returns".replace("  ", " "), returns,
+                       f"Found {len(returns)} {type_word}return(s) in the {category.upper()} category.".replace("  ", " "),
+                       count=len(returns), xbrl_type=xbrl_type)
     return _result("return_list", label, returns,
-                   f"There are {len(returns)} XBRL returns ({active_count} active).",
-                   count=len(returns), active=active_count)
+                   f"There are {len(returns)} {type_word}returns ({active_count} active).".replace("  ", " "),
+                   count=len(returns), active=active_count, xbrl_type=xbrl_type)
 
 
 def handle_return_profile(scope: dict, entities: dict, store: XMLStore) -> dict:
@@ -595,10 +628,13 @@ def handle_returns_submittable_by_dept(scope: dict, entities: dict, store: XMLSt
         if early:
             return early
         ret_id, ret_code = ret.get("Id", ""), ret.get("ReturnId", "")
+        # A non-XBRL return is listed in the department's NXForms attribute,
+        # never in Forms — checking Forms alone returned "0 departments can
+        # submit this" for every non-XBRL return in the data.
         matches = []
         for d in store.departments():
-            form_ids = {f.strip() for f in d.get("Forms", "").split("|") if f.strip()}
-            if ret_id in form_ids or ret_code in form_ids:
+            allowed = _dept_allowed_return_ids(store, d) or set()
+            if ret_id in allowed or ret_code in allowed:
                 matches.append(d)
         return _result("returns_submittable_by_dept", f"Departments That Can Submit {ret.get('Name')}",
                        matches, f"{len(matches)} department(s) can submit '{ret.get('Name')}'.", count=len(matches))
@@ -607,11 +643,17 @@ def handle_returns_submittable_by_dept(scope: dict, entities: dict, store: XMLSt
     if not dept:
         who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_department', '')}'"
         return _not_found("returns_submittable_by_dept", "Submittable Returns", f"{who} department could not be found.")
-    form_ids = [f.strip() for f in dept.get("Forms", "").split("|") if f.strip()]
-    rets = [store.enrich_return(r) for r in store.returns() if r.get("Id") in form_ids or r.get("ReturnId") in form_ids]
+    # Same both-lists reasoning, then narrowed to whichever type the question
+    # named (None = both, per _extract_xbrl_type).
+    xbrl_type = entities.get("xbrl_type")
+    allowed = _dept_allowed_return_ids(store, dept) or set()
+    rets = [store.enrich_return(r) for r in _returns_of_type(store, xbrl_type)
+            if r.get("Id") in allowed or r.get("ReturnId") in allowed]
+    type_word = _TYPE_WORD.get(xbrl_type, "")
     who_phrase = "You can" if scope["target_type"] == "self" else f"Department '{dept.get('Name')}' can"
-    return _result("returns_submittable_by_dept", "Submittable XBRL Returns",
-                   rets, f"{who_phrase} submit {len(rets)} XBRL return(s).", count=len(rets))
+    return _result("returns_submittable_by_dept", f"Submittable {type_word}Returns".replace("  ", " "),
+                   rets, f"{who_phrase} submit {len(rets)} {type_word}return(s).".replace("  ", " "),
+                   count=len(rets), xbrl_type=xbrl_type)
 
 
 def _resolve_return_frequency_code(store: XMLStore, ret: dict) -> tuple[str, str]:
@@ -720,7 +762,31 @@ def handle_next_reporting_date(scope: dict, entities: dict, store: XMLStore) -> 
                    period_end=result["period_end"], due_date=result["due_date"])
 
 
+# Type word for labels/summaries. None -> "" so an unqualified question
+# reads "Found 12 Monthly return(s)." rather than claiming a type the user
+# never asked about.
+_TYPE_WORD: dict[str | None, str] = {"xbrl": "XBRL ", "non_xbrl": "Non-XBRL ", None: ""}
+
+
+def _returns_of_type(store: XMLStore, xbrl_type: str | None) -> list[dict]:
+    """The source return rows for *xbrl_type*, with None meaning BOTH sets.
+
+    Matches _extract_xbrl_type's documented contract ("None if the question
+    doesn't specify -- handlers treat None as both"). Handlers that start
+    from store.returns() alone silently answer every unqualified question
+    with XBRL-only data.
+    """
+    if xbrl_type == "xbrl":
+        return list(store.returns())
+    if xbrl_type == "non_xbrl":
+        return list(store.non_xbrl_returns())
+    return list(store.returns()) + list(store.non_xbrl_returns())
+
+
 def _filter_by_xbrl_type(store: XMLStore, returns: list[dict], xbrl_type: str | None) -> list[dict]:
+    # Matches on Id, not ReturnId: Id is disjoint across the two sets, while
+    # ReturnId collides for 2 rows in the real data -- keying on it would
+    # leak a return of the wrong type into a type-filtered answer.
     if xbrl_type == "xbrl":
         xbrl_ids = {r.get("Id", "") for r in store.returns()}
         return [r for r in returns if r.get("Id", "") in xbrl_ids]

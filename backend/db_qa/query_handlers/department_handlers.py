@@ -233,7 +233,7 @@ def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> d
                    dept_name=dept_name, xbrl_count=len(xbrl), non_xbrl_count=len(non_xbrl))
 
 
-def _handle_departments_with_type_access(xbrl_type: str, store: XMLStore, want_dept_id: bool) -> dict:
+def _handle_departments_with_type_access(xbrl_type: str | None, store: XMLStore, want_dept_id: bool) -> dict:
     """"Which departments can access non-XBRL returns?" — the type-level
     form of this intent: no single return is named, so the answer is every
     department holding at least one return of that TYPE.
@@ -244,31 +244,46 @@ def _handle_departments_with_type_access(xbrl_type: str, store: XMLStore, want_d
     generic phrase from target_return (see _clean_extracted_return_name)
     and flags the category as xbrl_type instead.
     """
-    label_phrase = "non-XBRL" if xbrl_type == "non_xbrl" else "XBRL"
-    attr = "NXForms" if xbrl_type == "non_xbrl" else "Forms"
+    # xbrl_type None = BOTH, matching _extract_xbrl_type's contract: "which
+    # departments can access returns?" with no type named previously fell to
+    # the named-return path with no name and answered "0 departments".
+    label_phrase = {"non_xbrl": "non-XBRL ", "xbrl": "XBRL "}.get(xbrl_type, "")
+    if xbrl_type == "non_xbrl":
+        attrs, rows = ("NXForms",), list(store.non_xbrl_returns())
+    elif xbrl_type == "xbrl":
+        attrs, rows = ("Forms",), list(store.returns())
+    else:
+        attrs, rows = ("Forms", "NXForms"), list(store.returns()) + list(store.non_xbrl_returns())
     # Membership is resolved against the real return rows of that type, not
     # just "the access list is non-empty" — a department's list can carry a
     # stale code for a return that no longer exists, which would otherwise
     # count as access to a return nobody can actually file.
-    type_ids = {v for r in (store.non_xbrl_returns() if xbrl_type == "non_xbrl" else store.returns())
-                for v in (r.get("Id", ""), r.get("ReturnId", "")) if v}
+    type_ids = {v for r in rows for v in (r.get("Id", ""), r.get("ReturnId", "")) if v}
     matches = []
     for d in store.departments():
-        ids = {f.strip() for f in (d.get(attr) or "").split("|") if f.strip()}
+        ids = {f.strip() for a in attrs for f in (d.get(a) or "").split("|") if f.strip()}
         if ids & type_ids:
             matches.append(d)
     return _result(
-        "departments_with_return_access", f"Departments With Access to {label_phrase} Returns",
-        matches, f"{len(matches)} department(s) have access to at least one {label_phrase} return."
-        if matches else f"No department currently has access to any {label_phrase} return.",
-        count=len(matches), show_dept_id=want_dept_id,
+        "departments_with_return_access", f"Departments With Access to {label_phrase}Returns".replace("  ", " "),
+        matches, f"{len(matches)} department(s) have access to at least one {label_phrase}return.".replace("  ", " ")
+        if matches else f"No department currently has access to any {label_phrase}return.".replace("  ", " "),
+        count=len(matches), show_dept_id=want_dept_id, xbrl_type=xbrl_type,
     )
 
 
 def handle_departments_with_return_access(scope: dict, entities: dict, store: XMLStore) -> dict:
     target = entities.get("target_return", "")
     xbrl_type = entities.get("xbrl_type")
-    if not target and xbrl_type in ("xbrl", "non_xbrl"):
+    if not target:
+        # No return NAMED at all -> this is the type-level form of the
+        # question ("which departments can access [XBRL|Non-XBRL] returns?").
+        # The untyped variant is included: it used to fall through to the
+        # named-return path with an empty name and answer "0 departments",
+        # even though the XBRL and Non-XBRL variants both answered fine.
+        # A name that was given but is unrecognised still reaches the
+        # resolver below (target is non-empty then), so this cannot swallow
+        # a genuine "return not found".
         return _handle_departments_with_type_access(
             xbrl_type, store, bool(entities.get("want_dept_id")))
     # enforce_department_auth=False: this is a cross-department AUDIT
