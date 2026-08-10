@@ -312,6 +312,50 @@ class _NamedRoleActionPattern:
         return None
 
 
+# Words that can sit next to "department"/"dept" without being its NAME.
+# _NOT_AN_ENTITY_NAME covers the question/auxiliary fillers; these are the
+# department-domain nouns and verbs that also legitimately follow the noun.
+_DEPT_FILLER_WORDS = frozenset({
+    "access", "accessible", "assigned", "assign", "submit", "submits",
+    "submitted", "name", "names", "email", "emails", "status", "profile",
+    "returns", "return", "forms", "form", "reports", "report", "users",
+    "user", "currently", "active", "inactive", "and", "or", "that", "wise",
+    "level", "details", "detail", "list", "lists", "was", "were", "be",
+    "been", "will", "would", "could", "should", "must", "may", "might",
+})
+
+
+class _NamedDepartmentPattern:
+    """Duck-typed like a compiled pattern. Matches a department referred to
+    by NAME — "department Dept1", "Dept1 department" — in either word order
+    and regardless of capitalisation.
+
+    Used as a DEPARTMENTS_WITH_RETURN_ACCESS exclude. That intent answers
+    "which departments have access to RETURN X" and only ever names a
+    return; a question naming a DEPARTMENT is asking the transpose ("which
+    returns does department X have?") and belongs to DEPARTMENT_RETURNS.
+
+    The previous exclude was `\\b(?i:department|dept)\\s+[A-Z]\\w*`, whose
+    inline (?i:) applies ONLY to the noun — the NAME half stayed
+    case-sensitive, so "assigned to department dept1" (how users actually
+    type it) never matched and the question was answered with a list of
+    departments instead of that department's returns.
+    """
+
+    _PATS = (
+        re.compile(r"\b(?:departments?|depts?)\s+([A-Za-z][A-Za-z0-9_.\-]*)", re.IGNORECASE),
+        re.compile(r"\b([A-Za-z][A-Za-z0-9_.\-]*)\s+(?:departments?|depts?)\b", re.IGNORECASE),
+    )
+
+    def search(self, q: str):
+        for pat in self._PATS:
+            for m in pat.finditer(q):
+                word = m.group(1).lower()
+                if word not in _NOT_AN_ENTITY_NAME and word not in _DEPT_FILLER_WORDS:
+                    return m
+        return None
+
+
 class _NamedRoleAccessPattern:
     """Duck-typed like a compiled pattern. Matches "<name> role(s) [have/
     has] access" — a role explicitly named, asking generically about its
@@ -498,6 +542,26 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         excludes=(_kw(r"\breturn\b", r"\bfiling\b", r"\b[a-z]+\d{2,}\b"),),
     ),
 
+    # users_with_roles_and_departments: users AND roles AND departments all
+    # named together — "list all users along with their roles and
+    # departments". The intent, its handler and its exemplars all existed,
+    # but no regex rule did, so tier-1 never produced it: USERS_BY_ROLE and
+    # USERS_BY_DEPARTMENT each matched on their own noun, found no role or
+    # department NAME to filter by, and answered "I couldn't understand your
+    # request" / "Please specify a department name."
+    #
+    # priority=1 because it is strictly more specific than either of those
+    # (it requires all three nouns), and the "along with / with their" phrasing
+    # is what distinguishes "users AND their role AND their department" from a
+    # question filtering users BY one of them.
+    _KeywordRule(
+        Intent.USERS_WITH_ROLES_AND_DEPARTMENTS, ("system_wide",),
+        all_of=(_G_USER_NOUN, _G_ROLE_NOUN, _G_DEPT_NOUN,
+                 _kw(r"along\s+with", r"with\s+their", r"and\s+their",
+                     r"together\s+with", r"including\s+their")),
+        priority=1,
+    ),
+
     # users_by_department: either (a) the literal word "department"/"dept"
     # is present alongside a user-noun, or (b) a structural "who
     # works/belongs in <Name>" / "<Name> department" / "users in <Name>"
@@ -582,7 +646,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # that have nothing to do with self-reference.
         excludes=(_kw(r"\bmost\b", r"\bleast\b", r"\bfewest\b", r"\blargest\b",
                      r"\bbiggest\b", r"\bsmallest\b", r"\bminimum\b", r"\bmaximum\b",
-                     r"\bmy\s+role\b", r"share.{0,20}role", r"as\s+me\b"),),
+                     r"\bmy\s+role\b", r"share.{0,20}role", r"as\s+me\b",
+                     # Same carve-out the non-structural USERS_BY_ROLE rule
+                     # already carries. "Which MODULES does the Admin User
+                     # role have FULL CONTROL over?" is ROLE_MODULE_ACCESS's
+                     # question, but the structural pattern sees "User" in
+                     # the role NAME "Admin User", reads it as the "<name>
+                     # users" shape, and wins on its priority bump — the
+                     # answer was a list of 14 users to a question about
+                     # modules.
+                     r"\bmodules?\b", r"permissions?", r"full\s+control"),),
         priority=1,
     ),
 
@@ -595,14 +668,34 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         all_of=(_G_USER_NOUN,),
         any_of=(_G_LIST_VERB, _G_HOW_MANY, _G_ACTIVE, _G_INACTIVE, _G_ALL,
                  _kw(r"never\s+logged\s*in", r"never\s+log\w*", r"duplicate\s+email",
-                     r"failed\s+log\w*", r"stale\s+password", r"not\s+updated\s+password")),
+                     r"failed\s+log\w*", r"stale\s+password",
+                     # "not updated THEIR password recently" / "when did I
+                     # last UPDATE MY PASSWORD" — the original literal
+                     # "not updated password" matched neither, so both
+                     # catalogue questions reached no rule at all.
+                     r"not\s+updated\s+(their\s+|his\s+|her\s+|the\s+)?password",
+                     r"password\s+not\s+updated",
+                     r"last\s+updated?\s+(my\s+|their\s+)?password",
+                     r"password\s+(was\s+)?last\s+(updated|changed)")),
         # "number of users in each" only ever describes a PER-ROLE (or
         # per-department) breakdown ("list all roles with the number of
         # users in each") — there's no "each" grouping for a flat list of
         # all users, so this can never be a genuine USER_LIST question;
         # without it, this rule tied on score with ROLE_LIST's own
         # "number of users in each" trigger and won by list position.
-        excludes=(_kw(r"\bmy\b", r"number\s+of\s+users\s+in\s+each"),),
+        # "which ROLE has the most users" is ROLE_LIST's aggregation, never a
+        # flat user listing. The bare "Which role has the most users?" already
+        # reached ROLE_LIST, but a polite prefix ("Can you show me which role
+        # has the most users?") adds a list-verb that tipped this rule ahead
+        # of it, answering "There are 37 users in the system."
+        excludes=(_kw(r"\bmy\b", r"number\s+of\s+users\s+in\s+each",
+                     r"most\s+users?", r"least\s+users?", r"fewest\s+users?",
+                     r"maximum\s+users?", r"minimum\s+users?",
+                     r"which\s+role\b", r"\brole\s+has\b",
+                     # "which MODULES does the Admin User role have full
+                     # control over" — the role NAME contains "User", which
+                     # is all this rule's user-noun group needs to match.
+                     r"\bmodules?\b", r"full\s+control", r"permissions?"),),
     ),
 
     # ── DEPARTMENT ───────────────────────────────────────────────────────
@@ -670,8 +763,35 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # return named at all), not "which departments have access to
         # RETURN X" — this rule's dept+access+which groups otherwise match
         # both equally.
-        excludes=(_kw(r"\bmy\b", r"access\s+to\s+the\s+most\s+returns?"),
-                  re.compile(r"\b(?i:department|dept)\s+[A-Z]\w*")),
+        #
+        # This intent answers exactly one question — "which departments have
+        # access to RETURN X" — but its dept+access+which groups match four
+        # other question shapes just as well, and its priority bump made it
+        # win every one of them. Each exclude below removes one of those:
+        #
+        #   "which department has the MOST/FEWEST returns assigned"
+        #       -> an aggregation over departments (DEPARTMENT_LIST /
+        #          DEPT_RETURN_ACCESS_MATRIX). Only the exact phrase
+        #          "access to the most returns" was excluded before, so
+        #          every other wording of the same question landed here and
+        #          was answered "14 departments have access to at least one
+        #          return" — a true statement about a question nobody asked.
+        #
+        #   "which department has access to ALL returns"
+        #       -> departments whose access list covers EVERY return, not
+        #          departments with at least one (DEPT_RETURN_ACCESS_MATRIX).
+        #
+        #   "which XBRL returns are assigned to department dept1"
+        #       -> DEPARTMENT_RETURNS. See _NamedDepartmentPattern for why
+        #          the old capitalisation-gated exclude never fired.
+        excludes=(_kw(r"\bmy\b",
+                     r"most\s+returns?", r"fewest\s+returns?", r"least\s+returns?",
+                     r"maximum\s+returns?", r"minimum\s+returns?",
+                     r"highest\s+number\s+of\s+returns?", r"lowest\s+number\s+of\s+returns?",
+                     r"access\s+to\s+(the\s+)?most\s+returns?",
+                     r"all\s+(the\s+)?returns?", r"every\s+returns?",
+                     r"top\s+\d+"),
+                  _NamedDepartmentPattern()),
         priority=1,
     ),
 
@@ -699,7 +819,12 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # relationship as available/accessible/mapped/linked/
                      # configured just as often as "assigned"/"access".
                      r"available\s+(for|to)", r"accessible\s+(by|to|for)",
-                     r"mapped\s+to", r"linked\s+to", r"configured\s+for"),),
+                     r"mapped\s+to", r"linked\s+to", r"configured\s+for",
+                     # "what returns are ASSIGNED TO department X" — the
+                     # relationship named from the other side again, and
+                     # "what" alongside the existing "which" opener.
+                     r"assigned\s+to", r"allocated\s+to",
+                     rf"what\s+(xbrl|{_NON_XBRL})?\s*returns?"),),
         # "accessible by the maximum/most" / "accessible by all departments"
         # / "department has access to the most returns" are DEPT_RETURN_
         # ACCESS_MATRIX's cross-department RANKING questions (system-wide,
@@ -714,6 +839,18 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         excludes=(_kw(r"summary\s+of\s+my\s+access", r"full\s+summary", r"full\s+profile",
                      r"accessible\s+by\s+(the\s+)?(maximum|most)", r"accessible\s+by\s+all\s+departments?",
                      r"department\s+has\s+access\s+to\s+the\s+most\s+returns?",
+                     # "the" is optional in real phrasing, and
+                     # fewest/least is the same aggregation.
+                     r"access\s+to\s+(the\s+)?most\s+returns?",
+                     r"access\s+to\s+(the\s+)?(fewest|least)\s+returns?",
+                     # "which department has access to ALL returns" asks which
+                     # departments' access list covers EVERY return —
+                     # DEPT_RETURN_ACCESS_MATRIX's coverage question, not one
+                     # named department's listing. Without this it landed here
+                     # and the after-"department" extractor captured the
+                     # auxiliary verb, reporting "Department 'has' was not found."
+                     r"access\s+to\s+all\s+(the\s+)?returns?",
+                     r"access\s+to\s+every\s+returns?",
                      r"overdue"),
                   # Same type-level carve-out as DEPARTMENT_HAS_RETURN above:
                   # a plural "which/what departments" framing asks which
@@ -761,7 +898,15 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"no\s+returns?", r"zero\s+returns?", r"without\s+any\s+returns?",
                      r"no\s+assigned\s+returns?",
                      r"don'?t\s+have\s+any\s+returns?", r"doesn'?t\s+have\s+any\s+returns?",
-                     r"do\s+not\s+have\s+any\s+returns?", r"does\s+not\s+have\s+any\s+returns?"),),
+                     r"do\s+not\s+have\s+any\s+returns?", r"does\s+not\s+have\s+any\s+returns?",
+                     # "which department has access to ALL returns" is a
+                     # coverage question over every department
+                     # (DEPT_RETURN_ACCESS_MATRIX), not a single department's
+                     # profile — this rule's "which department" opener was
+                     # capturing the auxiliary verb as the department name
+                     # and answering "Department 'has' was not found."
+                     r"access\s+to\s+all\s+(the\s+)?returns?",
+                     r"access\s+to\s+every\s+returns?"),),
     ),
 
     _KeywordRule(
@@ -804,6 +949,12 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"returns?\s+.{0,10}accessible\s+by\s+(the\s+)?(maximum|most)",
                      r"returns?\s+.{0,15}accessible\s+by\s+all\s+departments?",
                      r"(schedule|calendar)\s+for\s+return\b.{0,40}\bdepartments?\b",
+                     # "how many departments have access to ALL returns" asks
+                     # how many cover EVERY return, not how many departments
+                     # exist — this rule's _G_ALL/_G_HOW_MANY triggers were
+                     # answering with the plain department count.
+                     r"access\s+to\s+all\s+(the\s+)?returns?",
+                     r"access\s+to\s+every\s+returns?",
                      r"overdue"),),
     ),
 
@@ -898,7 +1049,13 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # specific rule for that phrasing. "is there a role CALLED X" is
         # exempt (lowercase "called", not a capitalized name right after
         # "role") since that idiom belongs to this rule's own exists branch.
-        excludes=(_kw(r"\bmy\b"), re.compile(r"\brole\s+[A-Z]\w*")),
+        # A question about MODULES/PERMISSIONS is never a plain role listing,
+        # even though "role" + a list-verb satisfies this rule's groups —
+        # "Can you show me which modules does the Admin User role have full
+        # control over?" was answered "There are 16 roles defined in the
+        # system."
+        excludes=(_kw(r"\bmy\b", r"\bmodules?\b", r"full\s+control", r"permissions?"),
+                  re.compile(r"\brole\s+[A-Z]\w*")),
     ),
 
     # ── ROLE_ACCESS ──────────────────────────────────────────────────────
@@ -952,7 +1109,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # "can" between) so genuine system-wide phrasing like "which roles
         # CAN create roles?" (role/roles separated from the verb by "can")
         # still reaches this rule.
-        excludes=(_kw(r"\bmy\b", r"\bi\b"), _NamedRoleActionPattern(), _NamedRoleAccessPattern()),
+        # The self-reference exclude is "can I"/"am I"/"do I", NOT a bare
+        # "\bi\b". A bare "i" also fires on polite request framing — "I need
+        # to know which roles can create XBRL instances", "I'd like to see
+        # which roles..." — where the "I" belongs to the ASK, not to the
+        # thing being asked about. Those questions are system-wide and
+        # belong here; excluding them left them matching no rule at all.
+        # (intent_classifier._self_ref already strips the same framing for
+        # target-type resolution; this is the tier-1 counterpart.)
+        excludes=(_kw(r"\bmy\b", r"can\s+i\b", r"am\s+i\b", r"do\s+i\b", r"have\s+i\b"),
+                  _NamedRoleActionPattern(), _NamedRoleAccessPattern()),
     ),
 
     _KeywordRule(
@@ -1041,7 +1207,19 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         excludes=(_kw(r"how\s+many", r"in\s+total",
                      r"reporting\s+calendar", r"report\s+for\s+my", r"download.{0,20}report",
                      r"report\s+ready\s+for\s+my\s+submission", r"reporting\s+schedule",
-                     rf"{_NON_XBRL}\s+returns?", r"\bxbrl\s+returns?\b"),),
+                     rf"{_NON_XBRL}\s+returns?", r"\bxbrl\s+returns?\b",
+                     # "WHAT MODULES am I allowed to access" / "WHAT ACTIONS
+                     # can I perform on X" ask for a LIST (PERMISSION_PROFILE
+                     # / ROLE_MODULE_ACCESS), not a yes/no check on one
+                     # action. Landing here produced the degenerate summary
+                     # "You can access." with no module named at all.
+                     # Only the ANY-permission framing is a listing: "what
+                     # modules am I allowed to ACCESS" wants the whole set,
+                     # while "what modules can the admin role CREATE" names a
+                     # specific action and is a genuine per-action check.
+                     r"what\s+modules?\b.{0,40}\baccess\b",
+                     r"which\s+modules?\b.{0,40}\baccess\b",
+                     r"what\s+actions?\b", r"which\s+actions?\b"),),
     ),
 
     _KeywordRule(
@@ -1054,7 +1232,14 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # self-referential "access" questions like "What
                      # returns am I entitled to access?" — MY_RETURN_
                      # ACCESS's territory, not this intent's).
-                     r"what\s+do\s+i"),),
+                     r"what\s+do\s+i",
+                     # "What modules am I allowed to access?" — every other
+                     # alternative here needs "my"/"I have"/"do I have", so
+                     # this phrasing matched no any_of member and the rule
+                     # never fired, leaving the question unclassified once
+                     # PERMISSION_CHECK correctly stopped claiming it.
+                     r"am\s+i\s+allowed", r"allowed\s+to\s+access",
+                     r"am\s+i\s+able\s+to\s+access"),),
         excludes=(
             _kw(r"\bcan\s+i\b"),  # PERMISSION_CHECK owns "can I ..."
             # "access\w*" also matches "accessible"/"accessing" etc, which
@@ -1537,7 +1722,12 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     _mk(Intent.DEPT_RETURN_ACCESS_MATRIX, ("system_wide",),
         r"\breturn\s+.*accessible\s+by\s+the\s+(maximum|most)\b",
         r"\breturns?\s+.*accessible\s+by\s+all\s+departments?\b",
-        r"\bdepartment\s+has\s+access\s+to\s+the\s+most\s+returns?\b"),
+        r"\bdepartment\s+has\s+access\s+to\s+the\s+most\s+returns?\b",
+        # "which/how many departments have access to ALL returns" — the
+        # coverage transpose of "returns accessible by all departments".
+        r"\bdepartments?\b.{0,30}\baccess\s+to\s+all\s+(the\s+)?returns?\b",
+        r"\bdepartments?\b.{0,30}\baccess\s+to\s+every\s+returns?\b",
+        r"\bdepartments?\b.{0,30}\bhave\s+all\s+(the\s+)?returns?\b"),
 
     # ── INSTANCE_LOG ─────────────────────────────────────────────────────
     _mk(Intent.MY_SUBMISSION_HISTORY, ("self",),
@@ -2234,7 +2424,13 @@ _CANONICAL_ACTION_ORDER = ("create", "edit", "view", "approve",
                            # function's final None-filter, and the handler
                            # falls back to the slow LLM path anyway.
                            "generate", "disable",
-                           "approval", "upload", "new")
+                           "approval", "upload", "new",
+                           # LAST deliberately: these mean "any permission at
+                           # all" (role_handlers.ANY_FLAG), so a question that
+                           # also names a specific verb must resolve to that
+                           # verb instead — "do I have ACCESS to CREATE users"
+                           # is a create check, not an any-permission one.
+                           "access", "use", "run", "perform")
 
 
 def _extract_raw_action_word(q: str) -> str | None:
@@ -2324,6 +2520,13 @@ def _extract_named_entity_before_or_after(q: str, noun_words: tuple[str, ...]) -
         ):
             for m in re.finditer(pattern, q, flags):
                 candidate = _strip_leading_not_entity_words(m.group(1).strip())
+                # A noun_word is never its own name: "...assigned to
+                # department Dept 1" matches the case-insensitive
+                # "<word> dept" pass with word="department", which was then
+                # returned as the department NAME.
+                if candidate.lower() in {w.lower() for w in noun_words} | {
+                        w.lower() + "s" for w in noun_words}:
+                    continue
                 if candidate and candidate.lower() not in _NOT_AN_ENTITY_NAME:
                     return candidate
     # After: reuse the existing after-keyword extractor with common prepositions.
@@ -2435,7 +2638,13 @@ _ROLE_FILLER_WORDS = frozenset({
     "or", "assigned", "belong", "belongs", "belonging", "with", "having",
     "under", "i", "we", "they", "he", "she", "it", "me", "all", "any",
     "most", "least", "fewest", "minimum", "maximum", "smallest", "largest", "biggest",
-    "user", "users", "by",
+    "by",
+    # NOTE: "user"/"users" are deliberately NOT here. "Admin User" is a real
+    # role name, and treating "User" as a hard stop made this extractor
+    # return None for every question naming that role ("which modules does
+    # the Admin User role have full control over?" lost its target_role and
+    # then mis-read "User" as the MODULE). A capture consisting only of the
+    # bare noun is rejected after the fact instead — see _GENERIC_ROLE_ONLY.
     # Action verbs. "Roles" is itself a real module (see _MODULE_SYNONYMS),
     # so "can i edit roles" / "can i modify roles" are ordinary
     # PERMISSION_CHECK questions ABOUT that module — but the word directly
@@ -2454,6 +2663,11 @@ _ROLE_FILLER_WORDS = frozenset({
 # Connective words that can sit between "role"/"roles" and the actual name
 # on the AFTER side ("role OF Tester", "role ID OF admin") — skipped over
 # rather than treated as filler that ends the search.
+# A capture that is ONLY a generic noun is the noun itself, not a name
+# ("the role users" -> "users"). Multi-word captures containing it are
+# fine, which is the whole point ("Admin User").
+_GENERIC_ROLE_ONLY = frozenset({"user", "users", "role", "roles"})
+
 _ROLE_AFTER_CONNECTIVES = frozenset({"of", "called", "named", "is", "for", "id", "code", "identifier"})
 
 
@@ -2483,7 +2697,7 @@ def _extract_role_name_loose(q: str) -> str | None:
         while j >= 0 and lower[j] not in _ROLE_FILLER_WORDS and len(words) < 3:
             words.insert(0, tokens[j])
             j -= 1
-        if words:
+        if words and " ".join(words).lower() not in _GENERIC_ROLE_ONLY:
             return " ".join(words)
         # After: "role of <name>" / "role ID of <name>"
         j = i + 1
@@ -2493,7 +2707,7 @@ def _extract_role_name_loose(q: str) -> str | None:
         while j < len(lower) and lower[j] not in _ROLE_FILLER_WORDS and len(words) < 3:
             words.append(tokens[j])
             j += 1
-        if words:
+        if words and " ".join(words).lower() not in _GENERIC_ROLE_ONLY:
             return " ".join(words)
     return None
 
@@ -3141,10 +3355,18 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
             params["query_type"] = "full_control"
 
     if intent == Intent.DEPT_RETURN_ACCESS_MATRIX:
+        params["xbrl_type"] = _extract_xbrl_type(q)
         if re.search(r"accessible\s+by\s+all\s+departments?", q, re.IGNORECASE):
             params["query_type"] = "all_departments"
         elif re.search(r"maximum\s+number\s+of\s+departments?|accessible\s+by\s+the\s+most", q, re.IGNORECASE):
             params["query_type"] = "max_access"
+        # The transpose of all_departments: DEPARTMENTS covering every
+        # RETURN, rather than returns covered by every department. Checked
+        # after those two so their more specific wording still wins.
+        elif re.search(r"departments?\b.{0,30}\b(access\s+to|have)\s+all\s+(the\s+)?returns?"
+                        r"|departments?\b.{0,30}\baccess\s+to\s+every\s+returns?",
+                        q, re.IGNORECASE):
+            params["query_type"] = "dept_all_returns"
 
     if intent == Intent.ROLES_WITH_PERMISSION:
         if re.search(r"full\s+access", q, re.IGNORECASE):
@@ -3158,6 +3380,16 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
 
     if intent in (Intent.PERMISSION_CHECK, Intent.ROLE_MODULE_ACCESS, Intent.ROLES_WITH_PERMISSION):
         module = None
+        # Look for the module in the question with the ROLE NAME removed.
+        # Role names contain module words: "Admin User" contains "User", so
+        # "which modules does the Admin User role have full control over?"
+        # extracted module="user" from the role's own name and answered "11
+        # role(s) have access to 'user'". The name was already consumed as
+        # target_role, so it must not be re-read as a module.
+        module_q = q
+        _role_name = params.get("target_role")
+        if _role_name:
+            module_q = re.sub(re.escape(_role_name), " ", module_q, flags=re.IGNORECASE)
         for pat, canonical in _MODULE_SYNONYMS:
             # "role"/"roles" is ambiguous: it's a real module ("Roles" in
             # the actual OptionName data — "which roles can I create?"),
@@ -3170,7 +3402,7 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
             # requesting a module.
             if canonical == "role" and params.get("target_role"):
                 continue
-            if pat.search(q):
+            if pat.search(module_q):
                 module = canonical
                 break
         if module is None:

@@ -1371,13 +1371,35 @@ def handle_nonxbrl_return_profile(scope: dict, entities: dict, store: XMLStore) 
 
 def handle_dept_return_access_matrix(scope: dict, entities: dict, store: XMLStore) -> dict:
     depts = store.departments()
+    # Both access lists and both return sets, narrowed by xbrl_type (None =
+    # both). Counting Forms/store.returns() alone silently excluded every
+    # non-XBRL return from a question that never said "XBRL".
+    xbrl_type = entities.get("xbrl_type")
+    all_returns = _returns_of_type(store, xbrl_type)
+    universe_ids = {v for r in all_returns for v in (r.get("Id", ""), r.get("ReturnId", "")) if v}
+
+    def _dept_ids(d: dict) -> set[str]:
+        if xbrl_type == "xbrl":
+            raw = d.get("Forms", "")
+        elif xbrl_type == "non_xbrl":
+            raw = d.get("NXForms", "")
+        else:
+            raw = f"{d.get('Forms', '')}|{d.get('NXForms', '')}"
+        # Intersect with the real rows: an access list can carry a stale code
+        # for a return that no longer exists, which would otherwise inflate
+        # every count and break the "has all returns" comparison below.
+        return {f.strip() for f in raw.split("|") if f.strip()} & universe_ids
+
     access_counter: Counter = Counter()
     for d in depts:
-        form_ids = {f.strip() for f in d.get("Forms", "").split("|") if f.strip()}
-        for rid in form_ids:
+        for rid in _dept_ids(d):
             access_counter[rid] += 1
 
-    return_index = {r.get("Id", ""): r for r in store.returns()}
+    return_index = {}
+    for r in all_returns:
+        for key in (r.get("Id", ""), r.get("ReturnId", "")):
+            if key:
+                return_index.setdefault(key, r)
     rows = []
     for rid, count in access_counter.most_common():
         ret = return_index.get(rid)
@@ -1385,11 +1407,30 @@ def handle_dept_return_access_matrix(scope: dict, entities: dict, store: XMLStor
 
     dept_counts = []
     for d in depts:
-        form_ids = {f.strip() for f in d.get("Forms", "").split("|") if f.strip()}
-        dept_counts.append({"DeptName": d.get("Name", ""), "ReturnCount": len(form_ids)})
+        dept_counts.append({"DeptName": d.get("Name", ""), "ReturnCount": len(_dept_ids(d))})
     dept_counts.sort(key=lambda x: x["ReturnCount"], reverse=True)
 
     query_type = entities.get("query_type")
+    type_word = _TYPE_WORD.get(xbrl_type, "")
+
+    if query_type == "dept_all_returns":
+        # "which departments have access to ALL returns" — the transpose of
+        # all_departments below. A department qualifies only if its access
+        # list covers every distinct return, which may well be none.
+        total_returns = len({r.get("Id", "") for r in all_returns if r.get("Id")})
+        covering = [d for d in depts
+                    if len({i for i in _dept_ids(d) if i in {r.get("Id", "") for r in all_returns}}) >= total_returns
+                    and total_returns > 0]
+        return _result("dept_return_access_matrix",
+                       f"Departments With Access to All {type_word}Returns".replace("  ", " "),
+                       covering,
+                       f"{len(covering)} department(s) have access to all {total_returns} {type_word}return(s)."
+                       .replace("  ", " ") if covering
+                       else f"No department has access to all {total_returns} {type_word}return(s). "
+                            f"'{dept_counts[0]['DeptName']}' comes closest with {dept_counts[0]['ReturnCount']}."
+                            .replace("  ", " ") if dept_counts
+                       else "No departments found.",
+                       count=len(covering), total_returns=total_returns, xbrl_type=xbrl_type)
 
     if query_type == "all_departments":
         # "which returns are accessible by ALL departments" — a genuinely

@@ -10,6 +10,9 @@ from collections import Counter
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
 
+# Sentinel attribute meaning "any of the four flags" -- see _flag_true.
+ANY_FLAG = "__ANY__"
+
 _ACTION_MAP: dict[str, str] = {
     "new": "HasNew", "create": "HasNew", "add": "HasNew",
     # No dedicated RoleAccess flag exists for "upload" — treated as a
@@ -29,12 +32,31 @@ _ACTION_MAP: dict[str, str] = {
     # "perform", "delete" -- no HasExecute/HasDelete flag exists).
     "generate": "HasNew",
     "disable": "HasEdit",
+    # "access"/"use"/"run"/"perform" do NOT name one of the four flags --
+    # they ask whether the role has ANY permission on the module at all.
+    # There is no HasAccess column, so every one of these previously missed
+    # _ACTION_MAP, fell through to the LLM, and came back "Sorry, I couldn't
+    # understand your request" -- 17 catalogue questions in ROLE_ACCESS
+    # alone ("Can I access the Balance Sheet module?", "Which roles can
+    # access X?", "Can I run cross-validation?", "What modules am I allowed
+    # to access?"). ANY_FLAG is a sentinel, not a column name; the two
+    # handlers below test it against all four flags instead of one.
+    "access": ANY_FLAG, "use": ANY_FLAG, "run": ANY_FLAG, "perform": ANY_FLAG,
 }
+
+
+def _flag_true(row: dict, attr: str) -> bool:
+    """Is *attr* granted on this XML_RoleAccess row? ANY_FLAG means "any of
+    the four", which is what "can I access X" actually asks."""
+    if attr == ANY_FLAG:
+        return any(row.get(f, "false").lower() == "true" for f in _ALL_FLAGS)
+    return row.get(attr, "false").lower() == "true"
 
 _ALL_FLAGS = ("HasNew", "HasEdit", "HasView", "HasApprove")
 
 
-_ATTR_TO_CANONICAL_WORD = {"HasNew": "create", "HasEdit": "edit", "HasView": "view", "HasApprove": "approve"}
+_ATTR_TO_CANONICAL_WORD = {"HasNew": "create", "HasEdit": "edit", "HasView": "view",
+                            "HasApprove": "approve", ANY_FLAG: "access"}
 
 
 def _display_action_word(action_word: str, attr: str) -> str:
@@ -337,7 +359,7 @@ def handle_permission_check(scope: dict, entities: dict, store: XMLStore) -> dic
                 if get_attr(a, "RoleId", "Role_Id") == role_id]
     if module:
         accesses = [a for a in accesses if _module_matches(module, a.get("OptionName", ""))]
-    allowed = [a for a in accesses if a.get(attr, "false").lower() == "true"]
+    allowed = [a for a in accesses if _flag_true(a, attr)]
     who_phrase = "You" if scope["target_type"] == "self" else role.get("Name", "")
     can = "can" if allowed else "cannot"
     module_phrase = f" on {module}" if module else ""
@@ -426,7 +448,7 @@ def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -
         return _not_found("roles_with_permission", "Roles With Permission", _UNDERSTAND_FAILURE_MSG)
     matches = []
     for a in store.role_access():
-        if a.get(attr, "false").lower() != "true":
+        if not _flag_true(a, attr):
             continue
         if not _module_matches(module, store.option_name_by_id(a.get("OptionId", ""))):
             continue
