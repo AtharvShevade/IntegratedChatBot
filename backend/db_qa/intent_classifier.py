@@ -30,6 +30,17 @@ ACTION_MAP = {
     "edit": "HasEdit", "update": "HasEdit", "modify": "HasEdit",
     "view": "HasView", "see": "HasView", "read": "HasView",
     "approve": "HasApprove", "approval": "HasApprove",
+    # "generate"/"disable" resolved ONLY via the LLM normalizer before
+    # (llm_service.normalize_action_word, whose own docstring uses
+    # "generate" -> "create" as its example). That call costs a real
+    # round trip -- measured at 19-26s here, since it retries twice --
+    # and returns nothing at all when the Ollama proxy is unreachable,
+    # so the user waited ~26s to be told the request wasn't understood.
+    # Both verbs map unambiguously, so resolve them deterministically and
+    # leave the LLM for genuinely ambiguous verbs ("run", "manage",
+    # "perform", "delete" -- no HasExecute/HasDelete flag exists).
+    "generate": "HasNew",
+    "disable": "HasEdit",
 }
 
 # Period keywords → PeriodName in XML_Period.xml  (lower → canonical).

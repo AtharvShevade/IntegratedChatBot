@@ -18,6 +18,17 @@ _ACTION_MAP: dict[str, str] = {
     "edit": "HasEdit", "update": "HasEdit", "modify": "HasEdit",
     "view": "HasView", "see": "HasView", "read": "HasView",
     "approve": "HasApprove", "approval": "HasApprove",
+    # "generate"/"disable" resolved ONLY via the LLM normalizer before
+    # (llm_service.normalize_action_word, whose own docstring uses
+    # "generate" -> "create" as its example). That call costs a real
+    # round trip -- measured at 19-26s here, since it retries twice --
+    # and returns nothing at all when the Ollama proxy is unreachable,
+    # so the user waited ~26s to be told the request wasn't understood.
+    # Both verbs map unambiguously, so resolve them deterministically and
+    # leave the LLM for genuinely ambiguous verbs ("run", "manage",
+    # "perform", "delete" -- no HasExecute/HasDelete flag exists).
+    "generate": "HasNew",
+    "disable": "HasEdit",
 }
 
 _ALL_FLAGS = ("HasNew", "HasEdit", "HasView", "HasApprove")
@@ -79,6 +90,30 @@ def _run_coro_sync(coro):
     # its own loop in a throwaway thread instead.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
+
+
+
+def _module_matches(module: str, option_name: str) -> bool:
+    """Does an extracted module value select this XML_RoleAccess OptionName?
+
+    Substring match (the convention new_intent_classifier._MODULE_SYNONYMS'
+    canonical values are built around -- "report" deliberately selects every
+    Report-family module), with ONE carve-out: "-" is a non-word character,
+    so every "xbrl ..." canonical is also a literal substring of the
+    corresponding "Non-XBRL ..." OptionName. Without this guard,
+    module="xbrl generation" selected BOTH 'XBRL Generation' and 'Non-XBRL
+    Generation', so "can i generate xbrl?" silently answered using the
+    caller's non-XBRL permissions too -- breaking the XBRL/non-XBRL
+    separation this module is otherwise careful about. The reverse is safe
+    ("non-xbrl ..." is not a substring of any XBRL name), which is why only
+    this direction is rejected.
+    """
+    if not module:
+        return True
+    m, o = module.lower(), option_name.lower()
+    if m not in o:
+        return False
+    return not (m.startswith("xbrl") and "non-xbrl" in o)
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -301,7 +336,7 @@ def handle_permission_check(scope: dict, entities: dict, store: XMLStore) -> dic
     accesses = [store.enrich_role_access(a) for a in store.role_access()
                 if get_attr(a, "RoleId", "Role_Id") == role_id]
     if module:
-        accesses = [a for a in accesses if module.lower() in a.get("OptionName", "").lower()]
+        accesses = [a for a in accesses if _module_matches(module, a.get("OptionName", ""))]
     allowed = [a for a in accesses if a.get(attr, "false").lower() == "true"]
     who_phrase = "You" if scope["target_type"] == "self" else role.get("Name", "")
     can = "can" if allowed else "cannot"
@@ -352,7 +387,7 @@ def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -
         for a in store.role_access():
             if not all(a.get(f, "false").lower() == "true" for f in _ALL_FLAGS):
                 continue
-            if module and module.lower() not in store.option_name_by_id(a.get("OptionId", "")).lower():
+            if not _module_matches(module, store.option_name_by_id(a.get("OptionId", ""))):
                 continue
             role = role_index.get(get_attr(a, "RoleId", "Role_Id", default=""))
             if role:
@@ -375,7 +410,7 @@ def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -
                 continue
             if any(a.get(f, "false").lower() == "true" for f in ("HasNew", "HasEdit", "HasApprove")):
                 continue
-            if module and module.lower() not in store.option_name_by_id(a.get("OptionId", "")).lower():
+            if not _module_matches(module, store.option_name_by_id(a.get("OptionId", ""))):
                 continue
             role = role_index.get(get_attr(a, "RoleId", "Role_Id", default=""))
             if role:
@@ -393,7 +428,7 @@ def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -
     for a in store.role_access():
         if a.get(attr, "false").lower() != "true":
             continue
-        if module and module.lower() not in store.option_name_by_id(a.get("OptionId", "")).lower():
+        if not _module_matches(module, store.option_name_by_id(a.get("OptionId", ""))):
             continue
         role = role_index.get(get_attr(a, "RoleId", "Role_Id", default=""))
         if role:
@@ -428,7 +463,7 @@ def handle_role_module_access(scope: dict, entities: dict, store: XMLStore) -> d
             # branch previously ignored `module` entirely once target_role
             # was set, always dumping every one of the role's accesses
             # regardless of which single module was actually asked about.
-            matching = [a for a in accesses if module.lower() in a.get("OptionName", "").lower()]
+            matching = [a for a in accesses if _module_matches(module, a.get("OptionName", ""))]
             has_any = any(
                 a.get(f, "false").lower() == "true" for a in matching for f in _ALL_FLAGS
             )
@@ -443,7 +478,7 @@ def handle_role_module_access(scope: dict, entities: dict, store: XMLStore) -> d
         role_index = build_index(store.roles(), "RoleId")
         matches = []
         for a in store.role_access():
-            if module.lower() not in store.option_name_by_id(a.get("OptionId", "")).lower():
+            if not _module_matches(module, store.option_name_by_id(a.get("OptionId", ""))):
                 continue
             role = role_index.get(get_attr(a, "RoleId", "Role_Id", default=""))
             if role:

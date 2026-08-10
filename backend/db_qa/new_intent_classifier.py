@@ -110,9 +110,16 @@ _RETURN_SUBMIT_VERBS = r"(?:submit(?:ted|s)?|generat(?:ed?|es)?|creat(?:ed?|es)?
 # Builder") must resolve to that one before the generic "returns"/"reports"
 # catch-all (which matches every Report/Reports/Generation/MISReport module)
 # has a chance to swallow it.
+#
+# EVERY non-XBRL entry must precede its XBRL counterpart. "-" is a non-word
+# character, so `\bxbrl` matches INSIDE "non-xbrl" — an xbrl-first entry
+# therefore claims non-XBRL queries too. The generation/log/report pairs
+# below were already ordered this way; query-builder was not, which is why
+# "who can access the non-xbrl query builder" resolved to module="xbrl
+# query" and answered about the wrong module.
 _MODULE_SYNONYMS: list[tuple[re.Pattern, str]] = [
-    (_kw(r"xbrl\s+query\s+builder"), "xbrl query"),
     (_kw(rf"{_NON_XBRL}\s+query\s+builder", r"nxquerybuilder"), "non-xbrl query"),
+    (_kw(r"xbrl\s+query\s+builder"), "xbrl query"),
     (_kw(rf"{_NON_XBRL}\s+generation", rf"generate\s+{_NON_XBRL}"), "non-xbrl generation"),
     (_kw(rf"{_NON_XBRL}\s+log"), "non-xbrl log"),
     # "NX FileUpload" — the real OptionName for uploading Non-XBRL files.
@@ -138,6 +145,19 @@ _MODULE_SYNONYMS: list[tuple[re.Pattern, str]] = [
     # Non-XBRL module name, but "sdmx" isn't a substring of anything else.
     (_kw(r"\bsdmx\b"), "sdmx"),
     (_kw(r"report\s+log"), "report log"),
+    # The remaining *Log modules that genuinely exist in XML_RoleAccess but
+    # had no entry here at all, so every question naming one resolved to
+    # module=None and was answered against EVERY module the role can touch.
+    # "audit log" matters most: it appears in five EXEMPLARS ("Can I view
+    # the audit log?", "Which roles have approval rights for the audit
+    # log?", ...) yet nothing mapped it to its real name, 'Data Audit Log'.
+    # All three must precede the generic "returns?/reports?", "users?" and
+    # "notifications?" entries below, which would otherwise claim them
+    # first ("return validation log" -> "report", "user activity log" ->
+    # "user").
+    (_kw(r"(data\s+)?audit\s+log"), "audit log"),
+    (_kw(r"(user\s+)?activity\s+log"), "activity log"),
+    (_kw(r"(return\s+)?validation\s+log"), "validation log"),
     # Generic "returns"/"reports" catch-all — matches XBRL Report, Non-XBRL
     # Reports, Report, Report Log, and MISReport (all contain "report" as a
     # substring), which is the right breadth for an unqualified "can I
@@ -148,7 +168,10 @@ _MODULE_SYNONYMS: list[tuple[re.Pattern, str]] = [
     (_kw(r"data\s+variation"), "data variation"),
     (_kw(r"data\s+preparation"), "data preparation"),
     (_kw(r"balance\s+sheet"), "balance sheet"),
-    (_kw(r"cross-?validation"), "cross validation"),
+    # [\s-]? not -? : the real OptionName is "Cross Validation" (a SPACE),
+    # so the hyphen-only form could never match the data it maps to, and a
+    # user typing the phrase the way it is actually spelled got no module.
+    (_kw(r"cross[\s-]?validation"), "cross validation"),
     (_kw(r"user\s+notifications?"), "user notification"),
     (_kw(r"notifications?"), "notification"),
     (_kw(r"departments?"), "department"),
@@ -253,17 +276,39 @@ class _NamedRoleActionPattern:
     # listing every module a role has ANY access to, so "the admin role
     # access X" should stay there, not be diverted to a single-permission
     # PERMISSION_CHECK just because "access" resembles an action verb.
-    _PAT = re.compile(
-        r"\b([A-Za-z][A-Za-z0-9_.\-]{1,40})\s+roles?\s+"
-        r"(?:create|edit|update|modify|view|see|approve|add|upload|"
-        r"disable|delete|run|generate|do|manage|perform)\b",
-        re.IGNORECASE,
+    _VERB = (r"(?:create|edit|update|modify|view|see|read|approve|add|upload|"
+             r"disable|delete|run|generate|do|manage|perform)")
+
+    # Both word orders, and an optional "can" between the role and the verb.
+    #
+    # The original single pattern required "<name> role <verb>" with nothing
+    # in between, which missed two natural phrasings entirely:
+    #   "can role Tester VIEW the audit log"  - role BEFORE the name
+    #   "the checker role CAN approve what"   - "can" between the two
+    # Both are role-SCOPED questions, but landed on ROLES_WITH_PERMISSION
+    # ("which roles system-wide can do X") with the named role extracted and
+    # then silently discarded, since that handler never reads target_role.
+    #
+    # Allowing the optional "can" does NOT re-capture the system-wide
+    # phrasing this class exists to let through: "which roles can create"
+    # yields group(1)="which" and "roles can create" yields group(1)="can",
+    # both of which _NOT_AN_ENTITY_NAME rejects. That filler check, not the
+    # absence of "can", is what actually separates the two question shapes.
+    _PATS = (
+        re.compile(rf"\b([A-Za-z][A-Za-z0-9_.\-]{{1,40}})\s+roles?\s+(?:can\s+)?{_VERB}\b",
+                   re.IGNORECASE),
+        re.compile(rf"\broles?\s+([A-Za-z][A-Za-z0-9_.\-]{{1,40}})\s+(?:can\s+)?{_VERB}\b",
+                   re.IGNORECASE),
     )
 
     def search(self, q: str):
-        m = self._PAT.search(q)
-        if m and m.group(1).lower() not in _NOT_AN_ENTITY_NAME:
-            return m
+        # finditer, not search: the FIRST match's group(1) is often filler
+        # ("which roles can ..."), and returning None on it would hide a
+        # genuine named-role match later in the same sentence.
+        for pat in self._PATS:
+            for m in pat.finditer(q):
+                if m.group(1).lower() not in _NOT_AN_ENTITY_NAME:
+                    return m
         return None
 
 
@@ -795,7 +840,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # "is there a role called X"/"does role X exist" are existence
         # checks -> ROLE_LIST(query_type=exists), not ROLE_PROFILE; excluded
         # here so that rule (lower in this list, same all_of group) wins.
-        excludes=(_kw(r"is\s+there\s+a\s+role", r"\bexist\w*\b"),),
+        #
+        # "permission"/"allowed" likewise: this intent answers a role's NAME,
+        # ID and active status only, so a question about what the role may DO
+        # is never its territory. Needed because "do i have permission to edit
+        # roles" satisfies this rule's role-noun + "do i have" groups and ties
+        # 2-2 on score with PERMISSION_CHECK, which this rule then won purely
+        # by being defined earlier in _KEYWORD_RULES — answering with the
+        # caller's role name instead of whether they can edit anything.
+        excludes=(_kw(r"is\s+there\s+a\s+role", r"\bexist\w*\b",
+                     r"permission\w*", r"\ballowed\b"),),
     ),
 
     _KeywordRule(
@@ -875,7 +929,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # verb here matched it, so it never reached this rule via regex.
                      # intent_classifier.ACTION_MAP/role_handlers._ACTION_MAP map
                      # "upload" -> HasNew, so the handler resolves it.
-                     r"full\s+access", r"no\s+edit", r"no\s+create", r"upload")),
+                     r"full\s+access", r"no\s+edit", r"no\s+create", r"upload",
+                     # Aligned with PERMISSION_CHECK's verb group below. The two
+                     # rules ask the same question from opposite ends ("who can
+                     # X" vs "can I X"), so a verb either rule accepts the other
+                     # must too — otherwise the SAME action is answerable in the
+                     # first person but falls through entirely in the third
+                     # ("can i generate xbrl" -> PERMISSION_CHECK, but "who can
+                     # generate xbrl" -> no intent at all, straight to the LLM).
+                     r"update", r"modify", r"see", r"read", r"add", r"delete",
+                     r"disable", r"run", r"generate", r"manage", r"perform")),
         any_of=(_kw(r"which", r"what", r"can", r"have", r"who"),),
         # A NAMED role directly adjacent to the permission verb ("the admin
         # role CREATE", "checker role APPROVE" — no "can" in between) means
@@ -894,7 +957,7 @@ _KEYWORD_RULES: list[_KeywordRule] = [
 
     _KeywordRule(
         Intent.ROLE_MODULE_ACCESS, ("role", "system_wide"),
-        all_of=(_kw(r"module\w*", r"sdmx", r"cross-?validation", r"nxquerybuilder",
+        all_of=(_kw(r"module\w*", r"sdmx", r"cross[\s-]?validation", r"nxquerybuilder",
                      r"balance\s+sheet", r"data\s+preparation", r"audit\s+log",
                      r"provider\w*", rf"{_NON_XBRL}\s+upload", r"maker-?checker"),),
         any_of=(_kw(r"access\w*", r"role\w*"),),
@@ -904,7 +967,15 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # entirely and would return every module the role can touch in ANY
         # way (view/edit/approve/create all lumped together), not
         # specifically what it can create.
-        excludes=(_kw(r"\bmy\b", r"\bcan\s+i\b"), _NamedRoleActionPattern()),
+        # "do i have access to X" joins the existing "my"/"can i" self-
+        # reference excludes: this rule's target_types are ("role",
+        # "system_wide"), so a first-person question landed here with
+        # target_type="role" and NO target_role, and handle_role_module_
+        # access()'s `if target_role:` branch then fell through to the
+        # module-only branch — answering "which ROLES can access X" to
+        # someone who asked whether THEY can.
+        excludes=(_kw(r"\bmy\b", r"\bcan\s+i\b", r"\bdo\s+i\s+have\b", r"\bam\s+i\b"),
+                  _NamedRoleActionPattern()),
     ),
 
     _KeywordRule(
@@ -919,10 +990,29 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # by allowing multi-word role names ("the Admin User
                      # role").
                      r"can\s+(the\s+)?\w+(?:\s+\w+){0,2}\s+role\b",
+                     # Mirror order: "the checker role CAN approve what" —
+                     # "can" AFTER the role rather than before it. Without
+                     # this the phrasing matched no PERMISSION_CHECK trigger
+                     # at all, and once _NamedRoleActionPattern started
+                     # (correctly) excluding it from ROLES_WITH_PERMISSION it
+                     # fell through to no intent whatsoever.
+                     # The inline lookahead is what keeps the system-wide
+                     # framing out: "WHICH roles can create" would otherwise
+                     # match here just as well, and it genuinely belongs to
+                     # ROLES_WITH_PERMISSION. Same filler set the duck-typed
+                     # patterns check via _NOT_AN_ENTITY_NAME, spelled out
+                     # here because _kw() compiles a plain alternation with
+                     # no place to hook a Python-level check.
+                     r"(?!which\b|what\b|whose\b|how\b|many\b|all\b|other\b|these\b|those\b)"
+                     r"\w+\s+roles?\s+can(?=\s)",
                      r"am\s+i\s+allowed", r"am\s+i\s+able\s+to",
                      r"do\s+i\s+have\s+(the\s+)?(permission|right|access)\s+to",
                      r"do\s+i\s+have\s+approval\s+rights?"),
-                 _kw(r"create", r"edit", r"update", r"modify", r"view", r"see",
+                 # "read" is in intent_classifier.ACTION_MAP/role_handlers.
+                 # _ACTION_MAP (-> HasView) but was missing here, so "can i
+                 # read the audit log" matched no rule at all and never
+                 # reached the handler that already knew how to answer it.
+                 _kw(r"create", r"edit", r"update", r"modify", r"view", r"see", r"read",
                      r"approve", r"add", r"upload", r"access", r"disable",
                      r"delete", r"run", r"generate", r"do", r"manage", r"perform")),
         # "How many returns can I access in total?" (a MY_RETURN_ACCESS
@@ -2101,6 +2191,12 @@ def _extract_period_name_loose(q: str) -> str | None:
 # HasNew attribute, so this only affects response phrasing, not correctness.
 _CANONICAL_ACTION_ORDER = ("create", "edit", "view", "approve",
                            "add", "update", "modify", "see", "read",
+                           # Kept in step with ACTION_MAP: a verb that maps
+                           # deterministically there must be extractable here,
+                           # or `action` stays None, is dropped by this
+                           # function's final None-filter, and the handler
+                           # falls back to the slow LLM path anyway.
+                           "generate", "disable",
                            "approval", "upload", "new")
 
 
@@ -2303,6 +2399,20 @@ _ROLE_FILLER_WORDS = frozenset({
     "under", "i", "we", "they", "he", "she", "it", "me", "all", "any",
     "most", "least", "fewest", "minimum", "maximum", "smallest", "largest", "biggest",
     "user", "users", "by",
+    # Action verbs. "Roles" is itself a real module (see _MODULE_SYNONYMS),
+    # so "can i edit roles" / "can i modify roles" are ordinary
+    # PERMISSION_CHECK questions ABOUT that module — but the word directly
+    # before "roles" there is the verb, which this extractor would otherwise
+    # return as the role NAME ("edit"). That poisons two things at once:
+    # target_role becomes garbage (the handler then reports "Role 'edit' was
+    # not found" instead of answering), and _extract_new_params' guard
+    # `if canonical == "role" and params.get("target_role")` sees a set
+    # target_role and skips the "role" module synonym, so module goes
+    # missing too. _ROLE_TRAILING_FILLER_RE already strips this same verb
+    # list on the trailing side; the leading side was never covered.
+    "create", "edit", "update", "modify", "view", "see", "read", "approve",
+    "add", "upload", "access", "disable", "delete", "run", "generate",
+    "manage", "perform", "assign", "remove",
 })
 # Connective words that can sit between "role"/"roles" and the actual name
 # on the AFTER side ("role OF Tester", "role ID OF admin") — skipped over
