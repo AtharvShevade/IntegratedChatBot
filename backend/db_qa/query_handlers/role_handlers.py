@@ -9,6 +9,10 @@ from collections import Counter
 
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
+from backend.db_qa.query_handlers._extraction_guard import (
+    UNDERSTAND_FAILURE_MSG as _UNDERSTAND_FAILURE_MSG,
+    looks_like_extraction_garbage,
+)
 
 # Sentinel attribute meaning "any of the four flags" -- see _flag_true.
 ANY_FLAG = "__ANY__"
@@ -142,23 +146,9 @@ def _result(intent: str, label: str, records: list, summary: str, **meta) -> dic
     return {"intent": intent, "label": label, "found": bool(records), "records": records, "summary": summary, "meta": meta}
 
 
-_UNDERSTAND_FAILURE_MSG = "Sorry, I couldn't understand your request. Could you please rephrase it?"
-
-# Words that indicate extraction captured leftover sentence grammar rather
-# than an attempted role name — if EVERY word in the extracted text is one
-# of these, treat it the same as an empty extraction (never show it to the
-# user as if it were a real attempted name, e.g. "Role 'in the system' not
-# found." or "Role 'has least users' not found.").
-_ROLE_NAME_GARBAGE_WORDS = frozenset({
-    "in", "the", "system", "has", "have", "had", "least", "most", "fewest",
-    "users", "user", "is", "are", "does", "do", "did", "of", "for", "to",
-    "and", "or", "with", "a", "an", "this", "that", "role", "roles",
-})
-
-
-def _looks_like_garbage(name: str) -> bool:
-    words = re.findall(r"[A-Za-z]+", name.lower())
-    return not words or all(w in _ROLE_NAME_GARBAGE_WORDS for w in words)
+# This rule started life here as a role-only word list; it is now shared
+# with departments and returns, which had the same leak.
+_looks_like_garbage = looks_like_extraction_garbage
 
 
 def _role_not_found(intent: str, label: str, name: str | None) -> dict:

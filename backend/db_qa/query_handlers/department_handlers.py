@@ -5,6 +5,7 @@ from collections import Counter
 
 from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
 from backend.db_qa.query_handlers._return_resolution import resolve_named_return
+from backend.db_qa.query_handlers._extraction_guard import looks_like_extraction_garbage
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -42,7 +43,11 @@ def _department_not_found(intent: str, label: str, scope: dict, entities: dict) 
     if scope.get("target_type") == "self":
         return _not_found(intent, label, "Your department could not be found.")
     name = (entities.get("target_department") or "").strip()
-    if not name:
+    # Case 1 also covers an extraction that captured sentence grammar
+    # instead of a name ("has most return", "are currently active"): quoting
+    # it back reads as though we searched for a department by that name, and
+    # tells the user their own parser mis-fired. See _extraction_guard.
+    if not name or looks_like_extraction_garbage(name):
         return _not_found(intent, label, _UNDERSTAND_FAILURE_MSG)
     return _not_found(intent, label, f"Department '{name}' was not found.")
 

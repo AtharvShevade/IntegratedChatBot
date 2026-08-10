@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 
@@ -66,7 +67,7 @@ def handle_cross_entity_query(scope: dict, entities: dict, store: XMLStore) -> d
     if target_department and not target_role and not target_return:
         dept = store.dept_by_name(target_department)
         if not dept:
-            return _not_found("cross_entity_query", "Cross-Entity Query", f"Department '{target_department}' not found.")
+            return _not_found("cross_entity_query", "Cross-Entity Query", not_found_summary("Department '{name}' not found.", target_department, "Please specify a department name."))
         dept_id = get_attr(dept, "DeptId", "Id", default="")
         role_access_by_role = {}
         for a in store.role_access():
@@ -85,7 +86,7 @@ def handle_cross_entity_query(scope: dict, entities: dict, store: XMLStore) -> d
         dept = store.dept_by_name(target_department)
         if not role or not dept:
             missing = target_role if not role else target_department
-            return _not_found("cross_entity_query", "Cross-Entity Query", f"'{missing}' not found.")
+            return _not_found("cross_entity_query", "Cross-Entity Query", not_found_summary("'{name}' not found.", missing, "Please specify a role and a department."))
         role_id = get_attr(role, "RoleId", "Role_Id", default="")
         dept_id = get_attr(dept, "DeptId", "Id", default="")
         matches = [store.enrich_user(u) for u in store.users()
@@ -98,7 +99,7 @@ def handle_cross_entity_query(scope: dict, entities: dict, store: XMLStore) -> d
     if target_role and target_return:
         role = store.role_by_name(target_role)
         if not role:
-            return _not_found("cross_entity_query", "Cross-Entity Query", f"'{target_role}' not found.")
+            return _not_found("cross_entity_query", "Cross-Entity Query", not_found_summary("'{name}' not found.", target_role, "Please specify a role name."))
         ret, early = resolve_named_return(store, scope, target_return, intent="cross_entity_query", label="Cross-Entity Query")
         if early:
             return early

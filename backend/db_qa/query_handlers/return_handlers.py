@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 
 from backend.db_qa.xml_store import XMLStore, get_attr
+from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 from backend.db_qa.query_handlers.role_handlers import _UNDERSTAND_FAILURE_MSG
 
@@ -1284,7 +1285,7 @@ def handle_nonxbrl_return_list(scope: dict, entities: dict, store: XMLStore) -> 
     if target_department:
         dept = store.dept_by_name(target_department)
         if not dept:
-            return _not_found("nonxbrl_return_list", "Non-XBRL Returns", f"Department '{target_department}' not found.")
+            return _not_found("nonxbrl_return_list", "Non-XBRL Returns", not_found_summary("Department '{name}' not found.", target_department, "Please specify a department name."))
         nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
         returns = [r for r in returns if r.get("Id") in nx_ids or r.get("ReturnId") in nx_ids]
     elif scope["target_type"] == "self":
@@ -1502,7 +1503,7 @@ def handle_dept_full_return_list(scope: dict, entities: dict, store: XMLStore) -
     dept = store.resolve_dept(target) if target else None
     if not dept:
         return _not_found("dept_full_return_list", "Department Return List",
-                          f"Department '{target}' not found." if target else "Please specify a department name.")
+                          not_found_summary("Department '{name}' not found.", target, "Please specify a department name."))
     form_ids = [f.strip() for f in dept.get("Forms", "").split("|") if f.strip()]
     nx_ids = [f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()]
     xbrl = [store.enrich_return(r) for r in store.returns() if r.get("Id") in form_ids or r.get("ReturnId") in form_ids]

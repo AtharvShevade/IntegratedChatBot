@@ -20,6 +20,10 @@ from __future__ import annotations
 import difflib
 
 from backend.db_qa.xml_store import XMLStore
+from backend.db_qa.query_handlers._extraction_guard import (
+    UNDERSTAND_FAILURE_MSG,
+    looks_like_extraction_garbage,
+)
 
 _MAX_DISAMBIGUATION_OPTIONS = 15
 
@@ -128,6 +132,11 @@ def resolve_named_return(
         all_candidates = [r for r in all_candidates if return_form_ids(r) & allowed]
 
     if not all_candidates:
+        # "I couldn't find a return matching 'does my department'" — the
+        # quoted text is parser output, not anything the user typed. Same
+        # rule as the department/role not-found paths.
+        if looks_like_extraction_garbage(target):
+            return None, _not_found(intent, label, UNDERSTAND_FAILURE_MSG)
         fuzzy = _fuzzy_name_suggestions(store, target, xbrl_type=xbrl_type)
         msg = f"I couldn't find a return matching '{target}'."
         if fuzzy:

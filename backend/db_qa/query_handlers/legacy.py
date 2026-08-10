@@ -20,6 +20,7 @@ Returns a ``QueryResult`` dict::
 from __future__ import annotations
 
 from backend.db_qa.xml_store import XMLStore, SUBMISSION_STATUS_LABELS, _safe, get_attr
+from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ def handle_user_by_role(store: XMLStore, params: dict, user_id: str, is_admin: b
     role = store.role_by_name(target) if target else None
     if not role:
         return _not_found("USER_BY_ROLE", "Users by Role",
-                          f"Role '{target}' not found." if target else "Please specify the role name.")
+                          not_found_summary("Role '{name}' not found.", target, "Please specify the role name."))
     role_id = role.get("RoleId", "")
     users = [store.enrich_user(u) for u in store.users() if u.get("RoleId") == role_id]
     return _result("USER_BY_ROLE", f"Users with Role: {role.get('Name')}",
@@ -428,7 +429,7 @@ def handle_dept_info(store: XMLStore, params: dict, user_id: str, is_admin: bool
     dept = store.dept_by_name(target) if target else None
     if not dept:
         return _not_found("DEPT_INFO", "Department Info",
-                          f"Department '{target}' not found." if target else "Please specify a department name.")
+                          not_found_summary("Department '{name}' not found.", target, "Please specify a department name."))
     dept_id = get_attr(dept, "DeptId", "Id", default="")
     user_count = sum(1 for u in store.users() if get_attr(u, "DepartmentId", "DeptId") == dept_id)
     form_ids   = {f.strip() for f in dept.get("Forms",   "").split("|") if f.strip()}
@@ -454,7 +455,7 @@ def handle_dept_returns(store: XMLStore, params: dict, user_id: str, is_admin: b
     dept = store.dept_by_name(target) if target else None
     if not dept:
         return _not_found("DEPT_RETURNS", "Department Returns",
-                          f"Department '{target}' not found." if target else "Please specify a department name.")
+                          not_found_summary("Department '{name}' not found.", target, "Please specify a department name."))
 
     form_ids = [f.strip() for f in dept.get("Forms", "").split("|") if f.strip()]
     nx_ids = [f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()]
@@ -487,7 +488,7 @@ def handle_role_permissions(store: XMLStore, params: dict, user_id: str, is_admi
     role = store.role_by_name(target) if target else None
     if not role:
         return _not_found("ROLE_PERMISSIONS", "Role Permissions",
-                          f"Role '{target}' not found." if target else "Please specify a role name.")
+                          not_found_summary("Role '{name}' not found.", target, "Please specify a role name."))
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
     accesses = [store.enrich_role_access(a)
                 for a in store.role_access()
@@ -505,7 +506,7 @@ def handle_role_users(store: XMLStore, params: dict, user_id: str, is_admin: boo
     role = store.role_by_name(target) if target else None
     if not role:
         return _not_found("ROLE_USERS", "Users with Role",
-                          f"Role '{target}' not found." if target else "Please specify a role name.")
+                          not_found_summary("Role '{name}' not found.", target, "Please specify a role name."))
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
     users = [store.enrich_user(u) for u in store.users()
              if get_attr(u, "RoleId", "Role_Id") == role_id]
@@ -522,7 +523,7 @@ def handle_permission_check(store: XMLStore, params: dict, user_id: str, is_admi
     role = store.role_by_name(target_role) if target_role else None
     if not role:
         return _not_found("PERMISSION_CHECK", "Permission Check",
-                          f"Role '{target_role}' not found." if target_role else "Please specify a role and action.")
+                          not_found_summary("Role '{name}' not found.", target_role, "Please specify a role and action."))
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
     accesses = [store.enrich_role_access(a)
                 for a in store.role_access()
@@ -562,7 +563,7 @@ def handle_returns_details(store: XMLStore, params: dict, user_id: str, is_admin
     ret = store.return_by_name(target) if target else None
     if not ret:
         return _not_found("RETURNS_DETAILS", "Return Details",
-                          f"Return '{target}' not found." if target else "Please specify a return name.")
+                          not_found_summary("Return '{name}' not found.", target, "Please specify a return name."))
     return _result("RETURNS_DETAILS", f"Return: {ret.get('Name')}", [store.enrich_return(ret)],
                    f"Details for return '{ret.get('Name')}'.")
 
@@ -578,7 +579,7 @@ def handle_returns_by_period(store: XMLStore, params: dict, user_id: str, is_adm
                 break
     if not period_id:
         return _not_found("RETURNS_BY_PERIOD", "Returns by Period",
-                          f"Period '{period_name}' not found." if period_name else "Please specify a period.")
+                          not_found_summary("Period '{name}' not found.", period_name, "Please specify a period."))
     rets = [store.enrich_return(r) for r in store.returns() if r.get("PeriodId") == period_id]
     return _result("RETURNS_BY_PERIOD", f"{period_name} Returns",
                    rets, f"Found {len(rets)} {period_name} XBRL return(s).", count=len(rets))
@@ -643,7 +644,7 @@ def handle_submission_status(store: XMLStore, params: dict, user_id: str, is_adm
     ret = store.return_by_name(target) if target else None
     if not ret:
         return _not_found("SUBMISSION_STATUS", "Submission Status",
-                          f"Return '{target}' not found." if target else "Please specify a return name.")
+                          not_found_summary("Return '{name}' not found.", target, "Please specify a return name."))
     form_id = ret.get("ReturnId") or ret.get("Id", "")
     logs = [_enrich_log(store, l) for l in store.instance_log()
             if l.get("FormId") == form_id]
@@ -694,13 +695,13 @@ def handle_notification_list(store: XMLStore, params: dict, user_id: str, is_adm
     if not notifs and not details:
         return _not_found("NOTIFICATION_LIST", "Notifications",
                           f"No notification configuration found" +
-                          (f" for return '{target_return}'." if target_return else "."))
+                          (not_found_summary(" for return '{name}'.", target_return, ".")))
 
     records = notifs + details
     return _result("NOTIFICATION_LIST", "Notification Configuration",
                    records,
                    f"Found {len(records)} notification setting(s)" +
-                   (f" for return '{target_return}'." if target_return else "."),
+                   (not_found_summary(" for return '{name}'.", target_return, ".")),
                    count=len(records))
 
 
@@ -774,7 +775,7 @@ def handle_audit_log(store: XMLStore, params: dict, user_id: str, is_admin: bool
     entries.sort(key=lambda e: e.get("AuditDateTime", ""), reverse=True)
     return _result("AUDIT_LOG", "Audit Log",
                    entries,
-                   f"Found {len(entries)} audit record(s)" + (f" for '{target}'." if target else "."),
+                   f"Found {len(entries)} audit record(s)" + (not_found_summary(" for '{name}'.", target, ".")),
                    count=len(entries))
 
 
@@ -793,7 +794,7 @@ def handle_cross_validation_log(store: XMLStore, params: dict, user_id: str, is_
     return _result("CROSS_VAL_LOG", "Cross-Validation Log",
                    entries,
                    f"Found {len(entries)} cross-validation record(s); {len(failed)} failure(s)" +
-                   (f" for return '{target}'." if target else "."),
+                   (not_found_summary(" for return '{name}'.", target, ".")),
                    count=len(entries), failed=len(failed))
 
 

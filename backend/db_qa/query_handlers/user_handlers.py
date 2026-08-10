@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
+from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 from backend.db_qa.query_handlers.role_handlers import _role_not_found
 
 _USER_FIELD_LABELS: dict[str, str] = {
@@ -154,7 +155,7 @@ def handle_users_by_department(scope: dict, entities: dict, store: XMLStore) -> 
             if role:
                 return handle_users_by_role(scope, {**entities, "target_role": target}, store)
         return _not_found("users_by_department", "Users by Department",
-                          f"Department '{target}' not found." if target else "Please specify a department name.")
+                          not_found_summary("Department '{name}' not found.", target, "Please specify a department name."))
     dept_id = get_attr(dept, "DeptId", "Id", default="")
     users = [store.enrich_user(u) for u in store.users() if get_attr(u, "DepartmentId", "DeptId") == dept_id]
     return _result("users_by_department", f"Users in {dept.get('Name')}", users,

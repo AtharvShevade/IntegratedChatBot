@@ -216,17 +216,35 @@ def test_department_not_found_message_never_leaks_parser_output(handler_name, ex
     that name — never wrapped in the parser's own intermediate text."""
     handler = getattr(department_handlers, handler_name)
     with patch.object(department_handlers, "_resolve_target_department", return_value=None):
-        entities = {"target_department": "ID of department Ghost", **extra_entities}
+        entities = {"target_department": "Ghost", **extra_entities}
         r = handler({"target_type": "department"}, entities, None)
     assert r["found"] is False
-    # The bug this guards: the raw, unclean parser output leaking straight
-    # into the message ("'ID of department Ghost' department could not be
-    # found."). This test intentionally passes an already-dirty value (as
-    # if entity-extraction cleaning were somehow bypassed) to prove the
-    # HANDLER itself never echoes it — the handler only ever uses the
-    # cleaned target_department value it was actually given, verbatim, with
-    # no further "department could not be found" wrapping of that raw text.
-    assert r["summary"] == "Department 'ID of department Ghost' was not found."
+    assert r["summary"] == "Department 'Ghost' was not found."
+
+
+@pytest.mark.parametrize("handler_name,extra_entities", [
+    ("handle_department_profile", {}),
+    ("handle_department_returns", {}),
+    ("handle_department_has_return", {"target_return": "CIMS_ROR"}),
+])
+@pytest.mark.parametrize("dirty", [
+    "ID of department Ghost",     # a captured sentence fragment
+    "has most return",            # the reported bug
+    "are currently active",
+])
+def test_department_not_found_never_quotes_a_captured_fragment(handler_name, extra_entities, dirty):
+    """This value is not a name the user typed — it is what the extractor
+    grabbed when a rule mis-fired. Quoting it reads as though the system
+    searched for a department by that name, which advertises the misfire and
+    sends the user looking for a name they never wrote. It used to be echoed
+    verbatim ("Department 'has most return' was not found.")."""
+    handler = getattr(department_handlers, handler_name)
+    with patch.object(department_handlers, "_resolve_target_department", return_value=None):
+        entities = {"target_department": dirty, **extra_entities}
+        r = handler({"target_type": "department"}, entities, None)
+    assert r["found"] is False
+    assert dirty not in r["summary"], r["summary"]
+    assert "rephrase" in r["summary"].lower(), r["summary"]
 
 
 @pytest.mark.parametrize("handler_name,extra_entities", [
