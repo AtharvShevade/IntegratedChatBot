@@ -254,6 +254,7 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "ReportingDate":    "Reporting Date",
     "GeneratedOn":      "Generated On",
     "Email":            "Email",
+    "DeptId":           "Department ID",
     "UserCount":        "User Count",
     "XbrlReturnCount":  "XBRL Returns",
     "NonXbrlReturnCount": "Non-XBRL Returns",
@@ -271,7 +272,7 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
     "Forms", "NXForms",
 })
 
-def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
+def _skip_fields(sample_record: dict | None = None, show_dept_id: bool = False) -> frozenset[str]:
     # InstanceLog-derived records (submissions) carry both a raw numeric
     # "Status" code (0-11) and a human "StatusLabel" ("New / Pending",
     # "Approved", ...). Displaying both duplicates the "Status" header
@@ -280,9 +281,16 @@ def _skip_fields(sample_record: dict | None = None) -> frozenset[str]:
     # meaningless for a status CODE and rendered almost every row as
     # "Inactive" regardless of its real status. StatusLabel supersedes
     # Status whenever both are present, so skip the raw field.
+    skip = _SKIP_FIELDS
+    if show_dept_id:
+        # DeptId is skipped by default (an internal identifier most
+        # questions never ask about), but a question that explicitly asks
+        # for the department ID should get it back — see handlers' own
+        # "want_dept_id" entity, threaded here via result["meta"]["show_dept_id"].
+        skip = skip - {"DeptId"}
     if sample_record and "StatusLabel" in sample_record:
-        return _SKIP_FIELDS | {"Status"}
-    return _SKIP_FIELDS
+        skip = skip | {"Status"}
+    return skip
 
 _PRIORITY_COLS: list[str] = [
     "Name", "LoginId", "EmailId", "Email", "MobileNo",
@@ -326,10 +334,15 @@ def _fmt_val(v, col: str | None = None) -> str:
     return s or "\u2014"
 
 
-def _select_cols(records: list[dict]) -> list[str]:
-    skip   = _skip_fields(records[0])
+def _select_cols(records: list[dict], show_dept_id: bool = False) -> list[str]:
+    skip   = _skip_fields(records[0], show_dept_id)
     sample = [k for k in records[0].keys() if k not in skip]
     cols   = [c for c in _PRIORITY_COLS if c in sample]
+    if show_dept_id and "DeptId" in sample and "DeptId" not in cols:
+        # Not one of the curated _PRIORITY_COLS (it's normally hidden), so
+        # it needs to be added explicitly when a question asked for it —
+        # placed first since it was the thing the user actually asked about.
+        cols = ["DeptId"] + cols
     return cols or sample[:5]
 
 
@@ -338,6 +351,7 @@ def _format_plain(result: dict) -> str:
     summary = result.get("summary", "No data found.")
     records = result.get("records", [])
     label   = result.get("label", "")
+    show_dept_id = bool(result.get("meta", {}).get("show_dept_id"))
 
     if not records:
         return summary
@@ -354,7 +368,7 @@ def _format_plain(result: dict) -> str:
     if len(records) == 1:
         rec   = records[0]
         lines = [label, ""]
-        skip  = _skip_fields(rec)
+        skip  = _skip_fields(rec, show_dept_id)
         for k, v in rec.items():
             if k in skip:
                 continue
@@ -363,7 +377,7 @@ def _format_plain(result: dict) -> str:
                 lines.append(f"  {_friendly(k)}: {fv}")
         return "\n".join(lines)
 
-    cols   = _select_cols(records)
+    cols   = _select_cols(records, show_dept_id)
     hdrs   = [_friendly(c) for c in cols]
     widths = [
         max(len(h), max((len(_fmt_val(r.get(c), c)) for r in records), default=0))
@@ -416,6 +430,7 @@ def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
     records = result.get("records", [])
     label   = result.get("label", "")
     summary = result.get("summary", "No data found.")
+    show_dept_id = bool(result.get("meta", {}).get("show_dept_id"))
 
     if not records:
         return {
@@ -444,7 +459,7 @@ def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
     # still render as a compact one-row table, not a full profile dump).
     if len(records) == 1 and not _is_list_shaped(intent):
         rec  = records[0]
-        skip = _skip_fields(rec)
+        skip = _skip_fields(rec, show_dept_id)
         cols = [k for k in rec if k not in skip and _fmt_val(rec.get(k), k) != "\u2014"]
         return {
             "label":    label,
@@ -456,7 +471,7 @@ def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
         }
 
     # Multiple records
-    cols = _select_cols(records)
+    cols = _select_cols(records, show_dept_id)
     return {
         "label":    label,
         "summary":  summary,

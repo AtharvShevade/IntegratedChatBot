@@ -70,6 +70,17 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
     query_type = (entities.get("query_type") or "all").lower()
     depts = store.departments()
 
+    if query_type == "ambiguous_quantity":
+        # "few"/"some"/"several" returns has no fixed threshold — unlike
+        # "fewest" (a ranking) or "no returns" (a count of exactly zero),
+        # there's no deterministic answer to compute here, so ask the user
+        # to be specific rather than silently guessing what "few" means.
+        return _not_found(
+            "department_list", "Departments",
+            "Could you clarify what you mean by 'few'? For example, ask for the department "
+            "with the fewest returns, departments with no returns assigned, or a specific count.",
+        )
+
     if query_type == "count":
         active = sum(1 for d in depts if is_active_status(d.get("Status")))
         return _result("department_list", "Department Count",
@@ -134,7 +145,8 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
         rows = depts
         label, summary = "All Departments", f"There are {len(rows)} departments in the system."
 
-    return _result("department_list", label, rows, summary, count=len(rows))
+    return _result("department_list", label, rows, summary, count=len(rows),
+                   show_dept_id=bool(entities.get("want_dept_id")))
 
 
 def handle_department_profile(scope: dict, entities: dict, store: XMLStore) -> dict:
@@ -152,7 +164,8 @@ def handle_department_profile(scope: dict, entities: dict, store: XMLStore) -> d
     label = "My Department" if scope["target_type"] == "self" else f"Department: {dept.get('Name')}"
     return _result("department_profile", label, [enriched],
                    f"Department '{dept.get('Name')}' (id {dept_id}) has {user_count} user(s) and "
-                   f"{xbrl_count + non_xbrl_count} return(s) assigned ({xbrl_count} XBRL, {non_xbrl_count} non-XBRL).")
+                   f"{xbrl_count + non_xbrl_count} return(s) assigned ({xbrl_count} XBRL, {non_xbrl_count} non-XBRL).",
+                   show_dept_id=bool(entities.get("want_dept_id")))
 
 
 def _return_access_row(ret: dict) -> dict:
@@ -220,9 +233,55 @@ def handle_department_returns(scope: dict, entities: dict, store: XMLStore) -> d
                    dept_name=dept_name, xbrl_count=len(xbrl), non_xbrl_count=len(non_xbrl))
 
 
+def _handle_departments_with_type_access(xbrl_type: str, store: XMLStore, want_dept_id: bool) -> dict:
+    """"Which departments can access non-XBRL returns?" — the type-level
+    form of this intent: no single return is named, so the answer is every
+    department holding at least one return of that TYPE.
+
+    Kept inside departments_with_return_access rather than given its own
+    intent because it is the same question ("which departments can access
+    <X>") with a category in place of a name; the classifier drops the
+    generic phrase from target_return (see _clean_extracted_return_name)
+    and flags the category as xbrl_type instead.
+    """
+    label_phrase = "non-XBRL" if xbrl_type == "non_xbrl" else "XBRL"
+    attr = "NXForms" if xbrl_type == "non_xbrl" else "Forms"
+    # Membership is resolved against the real return rows of that type, not
+    # just "the access list is non-empty" — a department's list can carry a
+    # stale code for a return that no longer exists, which would otherwise
+    # count as access to a return nobody can actually file.
+    type_ids = {v for r in (store.non_xbrl_returns() if xbrl_type == "non_xbrl" else store.returns())
+                for v in (r.get("Id", ""), r.get("ReturnId", "")) if v}
+    matches = []
+    for d in store.departments():
+        ids = {f.strip() for f in (d.get(attr) or "").split("|") if f.strip()}
+        if ids & type_ids:
+            matches.append(d)
+    return _result(
+        "departments_with_return_access", f"Departments With Access to {label_phrase} Returns",
+        matches, f"{len(matches)} department(s) have access to at least one {label_phrase} return."
+        if matches else f"No department currently has access to any {label_phrase} return.",
+        count=len(matches), show_dept_id=want_dept_id,
+    )
+
+
 def handle_departments_with_return_access(scope: dict, entities: dict, store: XMLStore) -> dict:
     target = entities.get("target_return", "")
-    ret, early = resolve_named_return(store, scope, target, intent="departments_with_return_access", label="Departments With Return Access")
+    xbrl_type = entities.get("xbrl_type")
+    if not target and xbrl_type in ("xbrl", "non_xbrl"):
+        return _handle_departments_with_type_access(
+            xbrl_type, store, bool(entities.get("want_dept_id")))
+    # enforce_department_auth=False: this is a cross-department AUDIT
+    # question ("which departments have access to X") — the caller's own
+    # department's access to X is irrelevant to answering it truthfully,
+    # and without this an admin asking about a return outside their own
+    # department's Forms list would wrongly get "return not found" before
+    # the audit logic ever ran (same exception as handle_department_has_
+    # return's "does department Y have access" — see its comment).
+    ret, early = resolve_named_return(
+        store, scope, target, intent="departments_with_return_access", label="Departments With Return Access",
+        enforce_department_auth=False,
+    )
     if early:
         return early
     ret_id = ret.get("Id", "")
@@ -233,9 +292,42 @@ def handle_departments_with_return_access(scope: dict, entities: dict, store: XM
         nx_ids = {f.strip() for f in d.get("NXForms", "").split("|") if f.strip()}
         if ret_id in form_ids or ret_code in form_ids or ret_id in nx_ids or ret_code in nx_ids:
             matches.append(d)
+
+    if entities.get("query_type") == "missed_deadline":
+        from datetime import date
+        from backend.db_qa.query_handlers.return_handlers import (
+            _resolve_return_frequency_code, _most_recently_completed_occurrence,
+        )
+        frequency, period_name = _resolve_return_frequency_code(store, ret)
+        due_days = (ret.get("DueDays") or "").strip() or None
+        occ = _most_recently_completed_occurrence(frequency, due_days, date.today())
+        if not occ or not occ.get("period_end"):
+            return _result("departments_with_return_access", f"Missed Deadline: {ret.get('Name')}", [],
+                           f"'{ret.get('Name')}' has no fixed reporting period, so a missed-deadline check doesn't apply.")
+        period_end = occ["period_end"]
+        filed_user_ids = {
+            log.get("UserId", "") for log in store.instance_log()
+            if log.get("FormId") in (ret_id, ret_code) and log.get("ReportingDate") == period_end
+        }
+        filed_dept_ids = set()
+        for u in store.users():
+            if u.get("LoginId") in filed_user_ids or u.get("UserId") in filed_user_ids:
+                dept_id = get_attr(u, "DepartmentId", "DeptId", default="")
+                if dept_id:
+                    filed_dept_ids.add(dept_id)
+        missed = [d for d in matches if get_attr(d, "DeptId", "Id", default="") not in filed_dept_ids]
+        if not missed:
+            return _result("departments_with_return_access", f"Missed Deadline: {ret.get('Name')}", [],
+                           f"No department missed the submission deadline ({period_end}) for return '{ret.get('Name')}'.")
+        return _result("departments_with_return_access", f"Missed Deadline: {ret.get('Name')}", missed,
+                       f"{len(missed)} department(s) missed the submission deadline ({period_end}) for return '{ret.get('Name')}'.",
+                       return_name=ret.get("Name"), count=len(missed),
+                       show_dept_id=bool(entities.get("want_dept_id")))
+
     return _result("departments_with_return_access", f"Departments With Access to {ret.get('Name')}",
                    matches, f"{len(matches)} department(s) have access to return '{ret.get('Name')}'.",
-                   return_name=ret.get("Name"), count=len(matches))
+                   return_name=ret.get("Name"), count=len(matches),
+                   show_dept_id=bool(entities.get("want_dept_id")))
 
 
 def handle_department_has_return(scope: dict, entities: dict, store: XMLStore) -> dict:
@@ -259,9 +351,13 @@ def handle_department_has_return(scope: dict, entities: dict, store: XMLStore) -
     has_access = ret.get("Id", "") in form_ids or ret.get("ReturnId", "") in form_ids \
         or ret.get("Id", "") in nx_ids or ret.get("ReturnId", "") in nx_ids
     dept_name = dept.get("Name", "")
+    dept_id = get_attr(dept, "DeptId", "Id", default="")
     who_phrase = "Your department" if scope["target_type"] == "self" else f"Department '{dept_name}'"
     verb = "does" if has_access else "does not"
+    row = {"DeptName": dept_name, "ReturnName": ret.get("Name"), "HasAccess": has_access}
+    if entities.get("want_dept_id"):
+        row["DeptId"] = dept_id
     return _result("department_has_return", f"{dept_name} <-> {ret.get('Name')}",
-                   [{"DeptName": dept_name, "ReturnName": ret.get("Name"), "HasAccess": has_access}],
+                   [row],
                    f"{who_phrase} {verb} have access to return '{ret.get('Name')}'.",
-                   has_access=has_access)
+                   has_access=has_access, show_dept_id=bool(entities.get("want_dept_id")))

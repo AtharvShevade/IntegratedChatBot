@@ -620,17 +620,51 @@ class XMLStore:
         return None
 
     def resolve_role(self, query: str) -> dict | None:
-        """Best-effort role lookup: exact by Name, then fuzzy."""
+        """Best-effort role lookup: exact by Name, then a whole-word/prefix
+        match ("admin" -> "Admin User"), then typo-tolerant fuzzy.
+
+        The plain difflib fuzzy fallback alone missed exactly the most
+        common real-world case — a user typing just the first word of a
+        multi-word role name ("admin" for "Admin User") — because
+        difflib's ratio penalizes the large length difference between a
+        short query and a longer full name (ratio ~0.53, below the 0.70
+        cutoff) even though the words that ARE present match exactly. The
+        whole-word/prefix step below catches that case directly; fuzzy
+        matching remains only for genuine typos ("Testor" -> "Tester").
+        """
         if not query:
             return None
         r = self.role_by_name(query)
         if r:
             return r
-        import difflib
+
+        ql = query.strip().lower()
         names = [r.get("Name", "") for r in self.roles() if r.get("Name")]
-        matches = difflib.get_close_matches(query, names, n=1, cutoff=0.70)
-        if matches:
-            return self.role_by_name(matches[0])
+
+        # Whole-word match: the query is exactly one word of a role's name
+        # ("admin" in "Admin User", "maker" in "Test Maker"). If more than
+        # one role shares that word, this is genuinely ambiguous — decline
+        # here rather than guessing, same as an unmatched query.
+        word_matches = [n for n in names if ql in n.lower().split()]
+        if len(word_matches) == 1:
+            return self.role_by_name(word_matches[0])
+        if not word_matches:
+            prefix_matches = [n for n in names if n.lower().startswith(ql)]
+            if len(prefix_matches) == 1:
+                return self.role_by_name(prefix_matches[0])
+
+        try:
+            from rapidfuzz import process as _fuzz_process, fuzz as _fuzz_scorer
+            result = _fuzz_process.extractOne(
+                ql, [n.lower() for n in names], scorer=_fuzz_scorer.WRatio, score_cutoff=80,
+            )
+            if result:
+                return self.role_by_name(names[result[2]])
+        except ImportError:  # pragma: no cover - rapidfuzz is a hard dependency elsewhere
+            import difflib
+            matches = difflib.get_close_matches(query, names, n=1, cutoff=0.70)
+            if matches:
+                return self.role_by_name(matches[0])
         return None
 
     def resolve_return(self, query: str) -> dict | None:
@@ -648,7 +682,8 @@ class XMLStore:
             return by_name.get(matches[0])
         return None
 
-    def find_return_candidates(self, query: str, limit: int | None = 10) -> list[dict]:
+    def find_return_candidates(self, query: str, limit: int | None = 10,
+                                xbrl_type: str | None = None) -> list[dict]:
         """Return ALL plausible return matches for *query*, not just one —
         for callers (e.g. next-reporting-date) that must ask the user to
         disambiguate rather than silently guess when a partial name like
@@ -668,6 +703,15 @@ class XMLStore:
         *limit* caps how many rows are returned (None = unlimited) — pass
         None when the caller needs the true total match count (e.g. to show
         "found N matches" without silently truncating that count).
+
+        *xbrl_type* ("xbrl"/"non_xbrl", None = both) restricts the search
+        pool. Pass it whenever the QUESTION already fixed the return type
+        ("what frequency does non-XBRL return BSR1 use?") so a same-named
+        or fuzzily-similar return of the OTHER type can never win the
+        match — enforcing the type here, at the data-access layer, rather
+        than resolving across everything and rejecting afterwards, which
+        turned a resolvable name into a "that's an XBRL return" error
+        whenever the wrong-type row happened to rank higher.
         """
         if not query:
             return []
@@ -675,11 +719,19 @@ class XMLStore:
         if not q:
             return []
 
+        if xbrl_type == "xbrl":
+            all_returns = list(self.returns())
+        elif xbrl_type == "non_xbrl":
+            all_returns = list(self.non_xbrl_returns())
+        else:
+            all_returns = list(self.returns()) + list(self.non_xbrl_returns())
+
         exact = self.return_by_name(query) or self.return_by_id(query)
-        if exact:
+        if exact and (xbrl_type is None or any(
+                r.get("Id", "") == exact.get("Id", "") and r.get("Name", "") == exact.get("Name", "")
+                for r in all_returns)):
             return [exact]
 
-        all_returns = list(self.returns()) + list(self.non_xbrl_returns())
         seen: set[str] = set()
 
         def _dedup_add(rows: list[dict]) -> list[dict]:

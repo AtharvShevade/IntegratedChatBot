@@ -177,9 +177,15 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         optional_entities=("target_department", "xbrl_type"),
     ),
     Intent.DEPARTMENTS_WITH_RETURN_ACCESS: IntentSpec(
-        "Which departments (and how many) have access to a given return",
+        "Which departments (and how many) have access to a given return; "
+        "or (query_type=missed_deadline) which of those departments have "
+        "no submission on record for the return's most recently completed "
+        "reporting period; or, when no single return is named and a TYPE "
+        "is given instead (xbrl_type), which departments have access to at "
+        "least one return of that type",
         target_types=("return",),
         required_entities=("target_return",),
+        optional_entities=("query_type", "xbrl_type"),
     ),
     Intent.DEPARTMENT_HAS_RETURN: IntentSpec(
         "Does self's or a named department have access to a given return",
@@ -196,9 +202,10 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         optional_entities=("query_type", "target_role"),
     ),
     Intent.ROLE_PROFILE: IntentSpec(
-        "Role name/id/active status for self's or a named role",
+        "Role name/id/active status for self's or a named role, or a role "
+        "looked up by its numeric role_id",
         target_types=("self", "role"),
-        optional_entities=("target_role",),
+        optional_entities=("target_role", "role_id"),
     ),
     Intent.ROLE_USERS: IntentSpec(
         "Which users (and how many) have a given role",
@@ -212,10 +219,11 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
 
     # ── ROLE_ACCESS ──────────────────────────────────────────────────────
     Intent.PERMISSION_PROFILE: IntentSpec(
-        "All permissions/modules for self or a named role, incl. "
-        "'what do I NOT have access to'",
+        "All permissions/modules for self or a named role; query_type "
+        "'not_access' answers 'what do I NOT have access to', "
+        "'full_control' filters to modules with all 4 flags set",
         target_types=("self", "role"),
-        optional_entities=("target_role",),
+        optional_entities=("target_role", "query_type"),
     ),
     Intent.PERMISSION_CHECK: IntentSpec(
         "Can self or a named role perform a given action on a given module",
@@ -225,16 +233,19 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
     ),
     Intent.ROLES_WITH_PERMISSION: IntentSpec(
         "Which roles can perform a given action (optionally on a given "
-        "module) — full access, view-only, no edit/create, etc.",
+        "module); query_type 'full_access'/'view_only'/'no_edit_create' "
+        "answer the composite full-access, view-only, and "
+        "no-edit-or-create-at-all framings",
         target_types=("system_wide",),
         required_entities=("action",),
-        optional_entities=("module",),
+        optional_entities=("module", "query_type"),
     ),
     Intent.ROLE_MODULE_ACCESS: IntentSpec(
         "Role<->module access — list modules for a role, or which roles "
-        "access a named module (NXQueryBuilder, SDMX, Balance Sheet, etc.)",
+        "access a named module (NXQueryBuilder, SDMX, Balance Sheet, etc.); "
+        "query_type 'full_control' filters to modules with all 4 flags set",
         target_types=("role", "system_wide"),
-        optional_entities=("target_role", "module"),
+        optional_entities=("target_role", "module", "query_type"),
     ),
     Intent.ROLE_PERMISSION_DIFF: IntentSpec(
         "Difference in permissions between two named roles",
@@ -256,15 +267,21 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
 
     # ── PERIOD ───────────────────────────────────────────────────────────
     Intent.PERIOD_LIST: IntentSpec(
-        "All reporting periods/frequencies, count, EBR codes, or "
-        "QF-vs-QAD comparison",
+        "All reporting periods/frequencies, count, EBR codes, full annual "
+        "calendar; or (query_type) which returns share the same frequency, "
+        "or which frequency has the most returns scheduled under it",
         target_types=("system_wide",),
+        optional_entities=("query_type",),
     ),
     Intent.PERIOD_LOOKUP: IntentSpec(
         "Period name/id lookup, EBR code, advance-notification days for "
-        "a named period, or the id for a named frequency",
-        target_types=("system_wide",),
-        optional_entities=("period_name", "period_id"),
+        "a named period, or the id for a named frequency; comparing two "
+        "named periods/EBR codes; periods with advance-notification days "
+        "over a threshold or none configured; or (self) the caller's "
+        "personal reporting calendar / report due dates",
+        target_types=("self", "system_wide"),
+        optional_entities=("period_name", "period_id", "period_b", "field",
+                            "query_type", "threshold_days"),
     ),
     Intent.RETURNS_BY_FREQUENCY: IntentSpec(
         "Which returns (mine or all) are filed monthly/quarterly/annually",
@@ -286,6 +303,7 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         "formula/schema-calc flags, CIMS flag, frequency, internal form id",
         target_types=("return",),
         required_entities=("target_return",),
+        optional_entities=("xbrl_type",),
     ),
     Intent.RETURN_FIELD: IntentSpec(
         "A single field of a named return (return id, internal form id, "
@@ -293,6 +311,7 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         "the full profile dump",
         target_types=("return",),
         required_entities=("target_return", "field"),
+        optional_entities=("xbrl_type",),
     ),
     Intent.RETURN_VALIDATION_CONFIG: IntentSpec(
         "Validation configuration for a return or system-wide — formula, "
@@ -313,9 +332,11 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
     ),
     Intent.NEXT_REPORTING_DATE: IntentSpec(
         "Next reporting/period-end date and submission due date for a named "
-        "return, computed from its period frequency (period.xml) and DueDays",
+        "return, computed from its period frequency (period.xml) and DueDays; "
+        "or (query_type=calendar) every occurrence in the current year",
         target_types=("return",),
         required_entities=("target_return",),
+        optional_entities=("query_type", "xbrl_type"),
     ),
     Intent.REPORTS_FILED_IN_RANGE: IntentSpec(
         "Which XBRL or non-XBRL returns were actually submitted (InstanceLog "
@@ -332,10 +353,13 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
         "date falling between two dates — scoped to the caller's own "
         "department for regular users; admins may additionally ask about a "
         "named department or system-wide across all departments — "
-        "'what reports are coming up between X and Y'",
+        "'what reports are coming up between X and Y'; or (query_type="
+        "overdue) which returns' next due date has already passed with no "
+        "submission on record; or (query_type=next_due) the single soonest "
+        "upcoming due date across every return the caller can access",
         target_types=("self", "department", "system_wide"),
         required_entities=("date_from", "date_to"),
-        optional_entities=("target_department", "xbrl_type"),
+        optional_entities=("target_department", "xbrl_type", "query_type"),
     ),
     Intent.MONTHLY_FILING_STATUS: IntentSpec(
         "Per-return filed/not-filed roll-up for a single named or relative "
@@ -409,15 +433,19 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
     ),
     Intent.SUBMISSIONS_FOR_RETURN: IntentSpec(
         "Who submitted a named return, most-recent submission + outcome, "
-        "count this quarter",
+        "count this quarter; or (query_type=on_time_rate) the historical "
+        "on-time submission rate for the return, comparing each past "
+        "submission's timestamp to its period's due date",
         target_types=("return",),
         required_entities=("target_return",),
+        optional_entities=("query_type",),
     ),
     Intent.MY_SUBMISSION_HISTORY: IntentSpec(
         "Which returns I've submitted so far, or whether I've ever "
-        "submitted a named return",
+        "submitted a named return; or (query_type=on_time_rate) my own "
+        "historical on-time submission rate for a named return",
         target_types=("self",),
-        optional_entities=("target_return",),
+        optional_entities=("target_return", "query_type"),
     ),
 
     # ── MENU_OPTIONS ─────────────────────────────────────────────────────

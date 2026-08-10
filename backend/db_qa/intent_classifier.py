@@ -23,21 +23,36 @@ import re
 # Permission action keywords → attribute name in XML_RoleAccess.xml
 ACTION_MAP = {
     "new": "HasNew", "create": "HasNew", "add": "HasNew",
+    # "upload" has no dedicated RoleAccess flag of its own — the schema
+    # only tracks HasNew/HasEdit/HasView/HasApprove — so it's treated as
+    # a creation action (closest fit), same as "add"/"new".
+    "upload": "HasNew",
     "edit": "HasEdit", "update": "HasEdit", "modify": "HasEdit",
     "view": "HasView", "see": "HasView", "read": "HasView",
     "approve": "HasApprove", "approval": "HasApprove",
 }
 
-# Period keywords → PeriodName in XML_Period.xml  (lower → canonical)
+# Period keywords → PeriodName in XML_Period.xml  (lower → canonical).
+# Order matters: _extract_period() below returns on the FIRST alias whose
+# keyword appears anywhere in the text, so a multi-word/prefix form that
+# could also satisfy a LATER, more generic key must be listed first —
+# e.g. "semi annual"/"semi-annual" must precede "annual"/"yearly"/"year",
+# since "semi annual" contains the standalone word "annual" and would
+# otherwise be wrongly resolved to Yearly instead of HalfYearly.
 PERIOD_ALIASES: dict[str, str] = {
-    "daily": "Daily", "day": "Daily",
-    "weekly": "Weekly", "week": "Weekly",
-    "monthly": "Monthly", "month": "Monthly",
-    "quarterly": "Quarterly", "quarter": "Quarterly",
-    "half": "HalfYearly", "halfyearly": "HalfYearly", "half-yearly": "HalfYearly",
-    "yearly": "Yearly", "annual": "Yearly", "year": "Yearly",
+    "daily": "Daily", "day": "Daily", "every day": "Daily",
+    "fortnightly": "Fortnightly", "biweekly": "Fortnightly", "bi-weekly": "Fortnightly",
+    "every fortnight": "Fortnightly", "every two weeks": "Fortnightly",
+    "weekly": "Weekly", "week": "Weekly", "every week": "Weekly",
+    "monthly": "Monthly", "month": "Monthly", "every month": "Monthly",
+    "quarterly": "Quarterly", "quarter": "Quarterly", "every quarter": "Quarterly",
+    "semi annual": "HalfYearly", "semi-annual": "HalfYearly", "semiannual": "HalfYearly",
+    "semi annually": "HalfYearly", "semi-annually": "HalfYearly",
+    "half yearly": "HalfYearly", "half-yearly": "HalfYearly", "halfyearly": "HalfYearly",
+    "half": "HalfYearly", "every half year": "HalfYearly", "twice a year": "HalfYearly",
+    "yearly": "Yearly", "annually": "Yearly", "annual": "Yearly", "year": "Yearly",
+    "every year": "Yearly",
     "bi-monthly": "BiMonthly", "bimonthly": "BiMonthly",
-    "fortnightly": "Fortnightly",
 }
 
 
@@ -68,7 +83,7 @@ def _extract_after_kw(text: str, *keywords: str) -> str | None:
     """
     for kw in keywords:
         m = re.search(
-            rf"\b{re.escape(kw)}\b\s+(?:called\s+|named\s+)?([A-Za-z0-9_.\-\s()]{{1,40}}?)(?:\?|$|\sis\b|\shas\b|\sand\b)",
+            rf"\b{re.escape(kw)}\b\s+(?:called\s+|named\s+)?([A-Za-z0-9_.\-\s()]{{1,60}}?)(?:\?|$|\sis\b|\shas\b|\shave\b|\snot\b|\sand\b|\saccess\b|\ssubmit\w*\b|\sacross\b|\sfor\s+(?:the\s+)?(?:this|next|current)\b|\sthis\b|\snext\b|\suse\b|\sCIMS[\s-]?enabled\b)",
             text,
             re.IGNORECASE,
         )
@@ -107,7 +122,27 @@ def _extract_action(text: str) -> str | None:
 
 
 def _self_ref(text: str) -> bool:
-    """True if the question references the current user (me/my/I/myself)."""
+    """True if the question references the current user (me/my/I/myself).
+
+    "give me"/"tell me"/"show me"/"help me"/"let me" are polite request
+    fillers, not a self-reference — "give me the name of role ID 101" is
+    asking about role 101, not "my own" role, but bare "me" alone would
+    otherwise match. Stripped before the check so they can never trigger a
+    false positive; any OTHER genuine self-reference elsewhere in the same
+    sentence ("give me my role ID") still matches normally.
+    """
+    text = re.sub(r"\b(?:give|tell|show|help|let)\s+me\b", "", text, flags=re.IGNORECASE)
+    # "I need to know ...", "I'd like to see ..." are the same kind of
+    # polite request framing as "show me ..." — the "I" belongs to the ASK,
+    # not to the thing being asked about. Left in, they silently narrowed
+    # catalogue questions to the caller's own department: "I need to know
+    # which Non-XBRL returns have no due days configured" answered 19 while
+    # the identical "Can you show me which..." answered 70.
+    text = re.sub(
+        r"\bi\s*(?:'d|\s+would)?\s*(?:need|want|wish|like|would\s+like)\s+to\s+"
+        r"(?:know|see|get|find\s+out|check|understand)\b",
+        "", text, flags=re.IGNORECASE,
+    )
     return bool(re.search(r"\b(my|me|i|myself|mine|i am|i've|i have)\b", text, re.IGNORECASE))
 
 

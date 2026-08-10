@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
+from backend.db_qa.query_handlers.role_handlers import _role_not_found
 
 _USER_FIELD_LABELS: dict[str, str] = {
     "email": "email address",
@@ -142,6 +143,16 @@ def handle_users_by_department(scope: dict, entities: dict, store: XMLStore) -> 
     target = entities.get("target_department", "")
     dept = store.dept_by_name(target) if target else None
     if not dept:
+        # A capitalized word before "users"/"department" is genuinely
+        # ambiguous between the two ("Admin" reads as plausible either
+        # way) — the classifier has to guess one structurally, so when
+        # that guess doesn't resolve as a department, try it as a role
+        # before giving up ("List Admin users" -> no "Admin" department
+        # exists, but an "Admin User" role does).
+        if target:
+            role = store.resolve_role(target)
+            if role:
+                return handle_users_by_role(scope, {**entities, "target_role": target}, store)
         return _not_found("users_by_department", "Users by Department",
                           f"Department '{target}' not found." if target else "Please specify a department name.")
     dept_id = get_attr(dept, "DeptId", "Id", default="")
@@ -153,10 +164,9 @@ def handle_users_by_department(scope: dict, entities: dict, store: XMLStore) -> 
 
 def handle_users_by_role(scope: dict, entities: dict, store: XMLStore) -> dict:
     target = entities.get("target_role", "")
-    role = store.role_by_name(target) if target else None
+    role = store.resolve_role(target) if target else None
     if not role:
-        return _not_found("users_by_role", "Users by Role",
-                          f"Role '{target}' not found." if target else "Please specify a role name.")
+        return _role_not_found("users_by_role", "Users by Role", target)
     role_id = get_attr(role, "RoleId", "Role_Id", default="")
     users = [store.enrich_user(u) for u in store.users() if get_attr(u, "RoleId", "Role_Id") == role_id]
     return _result("users_by_role", f"Users with Role: {role.get('Name')}", users,

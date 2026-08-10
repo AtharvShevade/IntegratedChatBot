@@ -59,9 +59,14 @@ def check_return_auth(ret: dict, scope: dict) -> dict | None:
     )
 
 
-def _fuzzy_name_suggestions(store: XMLStore, query: str, limit: int = 5) -> list[str]:
-    names = sorted({r.get("Name", "") for r in store.returns() if r.get("Name")}
-                    | {r.get("Name", "") for r in store.non_xbrl_returns() if r.get("Name")})
+def _fuzzy_name_suggestions(store: XMLStore, query: str, limit: int = 5,
+                             xbrl_type: str | None = None) -> list[str]:
+    pool: list[dict] = []
+    if xbrl_type != "non_xbrl":
+        pool += list(store.returns())
+    if xbrl_type != "xbrl":
+        pool += list(store.non_xbrl_returns())
+    names = sorted({r.get("Name", "") for r in pool if r.get("Name")})
     return difflib.get_close_matches(query, names, n=limit, cutoff=0.4)
 
 
@@ -74,6 +79,7 @@ def resolve_named_return(
     label: str,
     no_target_message: str | None = None,
     enforce_department_auth: bool = True,
+    xbrl_type: str | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Resolve a user-typed return name/id to exactly one return.
 
@@ -100,6 +106,13 @@ def resolve_named_return(
     set is a valid "No" answer, not something to deny asking about. Every
     other handler (profile/validation-config/next-reporting-date/...) that
     would otherwise LEAK the return's content should leave this True.
+
+    xbrl_type ("xbrl"/"non_xbrl", None = both): restricts matching to that
+    return type, so a type-specific handler can never resolve a name to a
+    return of the other type. Pass it from any handler that only ever
+    answers about one type (e.g. nonxbrl_return_profile) or whose question
+    named the type explicitly — the restriction is applied while searching,
+    so the "did you mean" suggestions stay type-correct too.
     """
     target = (target or "").strip()
     if not target:
@@ -108,14 +121,14 @@ def resolve_named_return(
             no_target_message or "Please specify a return name.",
         )
 
-    all_candidates = store.find_return_candidates(target, limit=None)
+    all_candidates = store.find_return_candidates(target, limit=None, xbrl_type=xbrl_type)
 
     allowed = scope.get("allowed_form_ids")
     if enforce_department_auth and allowed is not None:
         all_candidates = [r for r in all_candidates if return_form_ids(r) & allowed]
 
     if not all_candidates:
-        fuzzy = _fuzzy_name_suggestions(store, target)
+        fuzzy = _fuzzy_name_suggestions(store, target, xbrl_type=xbrl_type)
         msg = f"I couldn't find a return matching '{target}'."
         if fuzzy:
             msg += " Did you mean: " + ", ".join(fuzzy) + "?"

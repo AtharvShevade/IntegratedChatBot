@@ -1,6 +1,8 @@
 """New-taxonomy handlers — INSTANCE_LOG category (submissions)."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from backend.db_qa.xml_store import XMLStore, get_attr
 from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
@@ -11,6 +13,42 @@ def _result(intent: str, label: str, records: list, summary: str, **meta) -> dic
 
 def _not_found(intent: str, label: str, msg: str) -> dict:
     return _result(intent, label, [], msg)
+
+
+_LOG_DATE_FMTS = ["%d-%b-%Y", "%d/%m/%Y", "%Y-%m-%d"]
+
+
+def _parse_log_date(s: str) -> object | None:
+    s = (s or "").strip().split(" ")[0]
+    for fmt in _LOG_DATE_FMTS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _compute_on_time_rate(logs: list[dict], due_days: str | None) -> dict:
+    """Historical on-time submission rate: for each InstanceLog entry,
+    the expected due date is its own ReportingDate + the return's
+    DueDays (the same "period-end + due_days" rule next_reporting_date()
+    uses going forward, applied retroactively here) — on-time if the
+    actual filing timestamp (DTC) falls on or before that due date.
+    Entries with no parseable ReportingDate/DTC are skipped (can't judge
+    them either way) rather than counted as late."""
+    days = int(due_days) if (due_days or "").strip().isdigit() else 0
+    on_time = 0
+    judged = 0
+    for log in logs:
+        reporting_date = _parse_log_date(log.get("ReportingDate", ""))
+        filed_date = _parse_log_date(log.get("DTC", ""))
+        if not reporting_date or not filed_date:
+            continue
+        judged += 1
+        due_date = reporting_date + timedelta(days=days)
+        if filed_date <= due_date:
+            on_time += 1
+    return {"judged": judged, "on_time": on_time, "late": judged - on_time}
 
 
 def _login_ids_for(store: XMLStore, login_id: str, user_id: str | None) -> set[str]:
@@ -138,8 +176,28 @@ def handle_submissions_for_return(scope: dict, entities: dict, store: XMLStore) 
     ret, early = resolve_named_return(store, scope, target, intent="submissions_for_return", label="Submissions for Return")
     if early:
         return early
-    form_id = ret.get("ReturnId") or ret.get("Id", "")
-    logs = [store.enrich_instance_log_entry(l) for l in store.instance_log() if l.get("FormId") == form_id]
+    # InstanceLog.FormId stores the return's internal Id ("2029"), not its
+    # external ReturnId code ("R018") — checking only "ReturnId or Id"
+    # (falls back to Id ONLY when ReturnId is empty) silently missed every
+    # submission for any return that HAS a ReturnId, since real data
+    # never keys FormId by ReturnId at all. Checking both membership-style
+    # (matching handle_departments_with_return_access's convention) is
+    # correct regardless of which code happens to be populated.
+    form_ids = {v for v in (ret.get("Id", ""), ret.get("ReturnId", "")) if v}
+    logs = [store.enrich_instance_log_entry(l) for l in store.instance_log() if l.get("FormId") in form_ids]
+
+    if entities.get("query_type") == "on_time_rate":
+        due_days = (ret.get("DueDays") or "").strip() or None
+        rate = _compute_on_time_rate(logs, due_days)
+        if not rate["judged"]:
+            return _not_found("submissions_for_return", f"On-Time Rate: {ret.get('Name')}",
+                              f"No submission history with parseable dates was found for return '{ret.get('Name')}'.")
+        pct = round(100 * rate["on_time"] / rate["judged"])
+        return _result("submissions_for_return", f"On-Time Rate: {ret.get('Name')}",
+                       [{"ReturnName": ret.get("Name"), **rate, "OnTimePercent": pct}],
+                       f"'{ret.get('Name')}' was submitted on time {pct}% of the time "
+                       f"({rate['on_time']} of {rate['judged']} judged submission(s)).")
+
     logs.sort(key=lambda l: l.get("DTC", ""), reverse=True)
     most_recent = logs[0] if logs else None
     return _result("submissions_for_return", f"Submissions for {ret.get('Name')}", logs,
@@ -158,8 +216,21 @@ def handle_my_submission_history(scope: dict, entities: dict, store: XMLStore) -
         ret, early = resolve_named_return(store, scope, target_return, intent="my_submission_history", label="My Submission History")
         if early:
             return early
-        form_id = ret.get("ReturnId") or ret.get("Id", "")
-        matches = [l for l in logs if l.get("FormId") == form_id]
+        form_ids = {v for v in (ret.get("Id", ""), ret.get("ReturnId", "")) if v}
+        matches = [l for l in logs if l.get("FormId") in form_ids]
+
+        if entities.get("query_type") == "on_time_rate":
+            due_days = (ret.get("DueDays") or "").strip() or None
+            rate = _compute_on_time_rate(matches, due_days)
+            if not rate["judged"]:
+                return _not_found("my_submission_history", f"My On-Time Rate: {ret.get('Name')}",
+                                  f"You have no submission history with parseable dates for return '{ret.get('Name')}'.")
+            pct = round(100 * rate["on_time"] / rate["judged"])
+            return _result("my_submission_history", f"My On-Time Rate: {ret.get('Name')}",
+                           [{"ReturnName": ret.get("Name"), **rate, "OnTimePercent": pct}],
+                           f"You submitted '{ret.get('Name')}' on time {pct}% of the time "
+                           f"({rate['on_time']} of {rate['judged']} judged submission(s)).")
+
         return _result("my_submission_history", f"My Submissions: {ret.get('Name')}", matches,
                        f"You have submitted return '{ret.get('Name')}' {len(matches)} time(s)."
                        if matches else f"You have not yet submitted return '{ret.get('Name')}'.",

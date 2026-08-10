@@ -33,6 +33,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
     ],
     Intent.USER_FIELD: [
         "What is my email address?",
+        "Can you tell me the mobile number of user rpatel?",
         "What is the email address of user jsmith?",
         "What is my mobile number on record?",
         "What is the mobile number of user rpatel?",
@@ -94,6 +95,9 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which department has the most returns assigned?",
         "Which department has the fewest returns assigned?",
         "Which departments have no returns assigned?",
+        "Which departments have zero returns assigned?",
+        "Which departments don't have any returns?",
+        "Which departments have no assigned returns?",
         "List all departments along with their assigned return counts.",
     ],
     Intent.DEPARTMENT_PROFILE: [
@@ -114,6 +118,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Where am I assigned?",
         "Which department do I work in?",
         "Tell me which department I'm part of.",
+        "What is the email address of my department?",
     ],
     Intent.DEPARTMENT_RETURNS: [
         "Which XBRL returns does my department have access to?",
@@ -130,12 +135,24 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which reports can my department file?",
         "Which returns can the Treasury department access?",
         "What returns are assigned to the Compliance department?",
+        "Which returns are available for the Treasury department?",
+        "Which returns are accessible by my department?",
+        "Which returns are mapped to the Compliance department?",
+        "Which returns are linked to my department?",
+        "Which returns are configured for the Treasury department?",
     ],
     Intent.DEPARTMENTS_WITH_RETURN_ACCESS: [
         "Which departments have access to return CIMS_ROR?",
         "How many departments have access to return DPSS09?",
         "Can you show me which departments have access to return DPSS09?",
         "I need to know which departments have access to return CIMS_RAQ.",
+        "Which departments have missed the submission deadline for return CIMS_ROR?",
+        "Which departments failed to submit return DPSS09 on time?",
+        # Type-level form (no single return named) — same intent, answered
+        # via xbrl_type rather than target_return.
+        "Which departments can access Non-XBRL returns?",
+        "Which departments have access to XBRL returns?",
+        "Which departments are assigned Non-XBRL returns?",
     ],
     Intent.DEPARTMENT_HAS_RETURN: [
         "Does my department have access to return CIMS_RAQ?",
@@ -151,8 +168,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which roles are inactive or disabled?",
         "How many roles are there in total?",
         "Which role has the most users?",
+        "Which role has the least users?",
+        "Which role is used by the fewest users?",
         "List all roles along with the number of users in each.",
         "Is there a role called Auditor in the system?",
+        "What roles do we have?",
+        "What roles are present in the system?",
+        "I need the role list.",
+        "Can you tell me all the roles?",
     ],
     Intent.ROLE_PROFILE: [
         "What is my role?",
@@ -161,12 +184,18 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Is my role currently active?",
         "What is the role ID for Admin User?",
         "What is the name of role ID 101?",
+        "Which role do I belong to?",
+        "Tell me about the Tester role.",
     ],
     Intent.ROLE_USERS: [
         "Which users are assigned the Tester role?",
         "Who has the Admin User role?",
         "Can you show me which users are assigned the Auditor role?",
         "I need to know which users are assigned the Checker role.",
+        "Show users assigned to the Maker role.",
+        "Who belongs to the Tester role?",
+        "How many users belong to the Tester role?",
+        "Count users in the Admin role.",
     ],
     Intent.ROLE_PEER_COUNT: [
         "How many other users share the same role as me?",
@@ -185,6 +214,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What does the Tester role NOT have access to?",
     ],
     Intent.PERMISSION_CHECK: [
+        "Do I have permission to approve submissions?",
         "Can I create new users?",
         "Can role Admin User create new users?",
         "Can I edit department settings?",
@@ -261,7 +291,15 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What are all the reporting periods and frequencies defined in the system?",
         "List all reporting frequencies with their EBR codes.",
         "How many reporting frequencies are defined?",
-        "What is the difference between QF and QAD frequencies?",
+        "Give me the full list of reporting frequencies we have configured.",
+        "Which returns share the same reporting schedule or frequency?",
+        "Do any returns have an identical reporting frequency?",
+        "What is the full annual reporting calendar across all frequencies?",
+        "Show me the annual calendar covering every reporting frequency.",
+        "Which frequency has the most returns scheduled under it?",
+        "Which reporting frequency is used by the largest number of returns?",
+        "Which period has the most returns assigned?",
+        "Which reporting period has the highest number of returns?",
     ],
     Intent.PERIOD_LOOKUP: [
         "What is the period name for period ID 107?",
@@ -272,13 +310,74 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What is the advance notification days for daily returns?",
         "Which periods have an advance notification period greater than 10 days?",
         "Are there any returns with no advance notification days configured?",
+        "Is there any return that has no advance notification configured at all?",
+        "What is my personal reporting calendar for this year?",
+        "Can you show me a calendar view of all my report due dates?",
+        "Show me all my upcoming report due dates for the year.",
+        # Comparison framing — moved here from PERIOD_LIST so this
+        # intent's exemplar space matches its own regex/handler
+        # (query_type="compare"), not the plain full-listing intent.
+        "What is the difference between QF and QAD frequencies?",
+        "Can you compare the Quarterly and Half Yearly frequencies for me?",
+        "How does the Fortnightly frequency differ from the Monthly one?",
     ],
+    # RETURNS_BY_FREQUENCY gets deliberately dense coverage below (well
+    # past this file's usual "handful of strong phrasings" convention —
+    # see the module docstring) because every frequency word has several
+    # real user synonyms (Monthly/Month, Quarterly/Quarter, Half Yearly/
+    # Semi Annual, Yearly/Annual/Annually/Year, Fortnightly/Biweekly,
+    # Weekly/Week, Daily/Day) that regex already resolves deterministically
+    # via PERIOD_ALIASES, but which still need embedding-tier exemplars so
+    # a phrasing regex doesn't anticipate can still land here via semantic
+    # similarity rather than falling through to LLM disambiguation or
+    # nothing at all.
     Intent.RETURNS_BY_FREQUENCY: [
+        # Monthly / Month
         "Which returns are filed on a monthly basis?",
-        "Which returns are filed quarterly?",
-        "Which returns are filed annually?",
-        "Which of my returns are filed quarterly?",
+        "Which returns are filed monthly?",
+        "Show me all the monthly returns.",
+        "List the returns filed every month.",
         "Which of my returns are filed monthly?",
+        "Give me the month returns.",
+        "What returns get filed every month?",
+        # Quarterly / Quarter
+        "Which returns are filed quarterly?",
+        "Show quarterly returns.",
+        "List the quarter returns.",
+        "Which of my returns are filed quarterly?",
+        "Which of my returns follow a quarterly reporting schedule?",
+        "Give me the returns filed every quarter.",
+        "What returns are submitted on a quarterly basis?",
+        # Half Yearly / Semi Annual
+        "Show me all the half yearly returns.",
+        "List the semi annual returns.",
+        "Which returns are filed half-yearly?",
+        "What returns get filed every half year?",
+        "Give me the returns that are semi-annual.",
+        # Yearly / Annual / Annually / Year
+        "Which returns are filed annually?",
+        "Which returns are annual?",
+        "Show annual returns.",
+        "List yearly returns.",
+        "Returns filed every year.",
+        "Give me annual reporting returns.",
+        "Which of my returns are filed yearly?",
+        "What returns are due once a year?",
+        # Fortnightly / Biweekly
+        "Show me all the fortnightly returns.",
+        "List biweekly returns.",
+        "Which returns are filed every fortnight?",
+        "Give me the returns filed once every two weeks.",
+        # Weekly / Week
+        "Give me the returns that are filed weekly.",
+        "Show weekly returns.",
+        "List the week returns.",
+        "Which returns are filed every week?",
+        # Daily / Day
+        "Which returns are filed daily?",
+        "Show me the day returns.",
+        "List all daily returns.",
+        "What returns are due every day?",
     ],
 
     # ── XBRL_RETURNS ─────────────────────────────────────────────────────
@@ -293,8 +392,12 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which returns are CIMS-enabled?",
         "Which returns use the table linkbase?",
         "Which returns belong to the DPSS category?",
+        "Which returns belong to the DBS category?",
+        "Which returns belong to the DBR category?",
         "Which returns have a due period of more than 21 days?",
         "Which XBRL returns can I submit?",
+        "List all returns and their next three upcoming due dates.",
+        "Show me the next three due dates for every return.",
     ],
     Intent.RETURN_PROFILE: [
         "What version of the taxonomy does return CIMS_ROR use?",
@@ -312,11 +415,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Tell me about return CIMS_ROR.",
     ],
     Intent.RETURN_FIELD: [
+        "Please provide the return ID for CIMS_ROR.",
         "What is the return ID for CIMS_ROR?",
         "What is the internal form ID for return CIMS_RAQ?",
         "How many days are due for submission of return CIMS_ROR?",
         "Does return CIMS_RAQ require encryption?",
         "What is the reporting frequency of return CIMS_ROR?",
+        "What report formats are available for return CIMS_ROR?",
+        "What formats does return CIMS_RAQ support — PDF, Excel, or HTML?",
     ],
     Intent.RETURN_VALIDATION_CONFIG: [
         "Does return CIMS_RAQ require formula validation?",
@@ -335,6 +441,8 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "When is return CIMS_RAQ due?",
         "When should I submit return CIMS_ROR next?",
         "Can you tell me when is return DPSS09 due?",
+        "What is the reporting calendar for return CIMS_ROR for the current year?",
+        "Can I see the full reporting calendar for return CIMS_ROR?",
     ],
     Intent.REPORTS_FILED_IN_RANGE: [
         "Show me all XBRL reports filed between 1-Jan-2026 and 31-Mar-2026",
@@ -347,6 +455,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What non-XBRL returns are due between two dates?",
         "What returns are upcoming next month?",
         "Can you show me which returns have upcoming due dates in the next 30 days?",
+        "Which returns have upcoming due dates in the next 10 days?",
+        "How many returns are due this month across the organization?",
+        "Are any of my returns overdue?",
+        "Which returns are overdue for submission across all departments?",
+        "What is my next Non-XBRL return due?",
+        "Which return is due next for me?",
+        "What is my next XBRL return due?",
+        "When is my next return due?",
     ],
     Intent.MONTHLY_FILING_STATUS: [
         "What's my XBRL filing status for June 2025?",
@@ -366,13 +482,25 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which Non-XBRL returns have a folder structure?",
         "Which Non-XBRL returns can I submit?",
         "How many Non-XBRL returns do I have access to?",
+        "What are the Non-XBRL returns I have access to?",
+        "Give me the list of Non-XBRL returns I can access.",
+        "Show me the Non-XBRL returns available to me.",
     ],
     Intent.NONXBRL_RETURN_PROFILE: [
+        "Please provide the base file template for Non-XBRL return BSR1.",
         "What is the base file template for Non-XBRL return BSR1?",
         "What is the period or frequency of Non-XBRL return BSR1?",
         "How many due days does Non-XBRL return BSR1 have?",
         "Is Non-XBRL return BSR1 CIMS-enabled?",
         "What is the job processing ID for Non-XBRL return BSR1?",
+        "What is the report generation status for Non-XBRL return BSR1?",
+        "What is the reporting schedule for Non-XBRL return BSR1?",
+        "Can I see the reporting schedule for Non-XBRL return BSR1?",
+        "What report formats are supported for Non-XBRL return BSR1?",
+        "What report format does Non-XBRL return BSR1 use?",
+        "Tell me about the Non-XBRL return BSR1.",
+        "Show me the Non-XBRL return Collateral Loan.",
+        "Give me the details of Non-XBRL return Credit to Women.",
     ],
 
     # ── DEPT_RETURN_MAPPING ──────────────────────────────────────────────
@@ -421,6 +549,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Did my last submission go through?",
     ],
     Intent.SUBMISSION_LIST: [
+        "Which returns have reports pending generation across all users?",
         "Which of my submissions are pending approval?",
         "Which submissions are pending approval across all users?",
         "Which of my submissions have been approved?",
@@ -446,6 +575,8 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What is the rendered Excel or HTML report path for my submission 4021?",
         "Does my submission 4021 have any comments or remarks?",
         "Has my submission 4021 been uploaded to CIMS?",
+        "Can I re-download the report for my submission 4021?",
+        "What is the report generation date for my submission 4021?",
     ],
     Intent.SUBMISSIONS_FOR_RETURN: [
         "Which users have submitted return CIMS_ROR?",
@@ -453,6 +584,13 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "How many submissions are there for return CIMS_ROR this quarter across all users?",
         "Show submissions made by all users for return CIMS_ROR this period.",
         "Which submissions made by user jsmith are still pending?",
+        # New computed metric from the updated catalog — no existing field
+        # for this exists yet in the InstanceLog handler; flagged in the
+        # Phase 1 report as needing a handler decision before this phrasing
+        # can return a real answer rather than falling through unanswered.
+        "What is the average time between report generation and submission for return CIMS_ROR?",
+        "What is the historical on-time submission rate for return CIMS_ROR?",
+        "What is the report generation status for return CIMS_ROR this period?",
     ],
     Intent.MY_SUBMISSION_HISTORY: [
         "Which returns have I submitted so far?",
@@ -460,6 +598,9 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Have I ever submitted return CIMS_ROR before?",
         "How many submissions have I made for return CIMS_ROR this quarter?",
         "Which of my submissions were made for reporting date 31-Mar-2026?",
+        "What is my on-time submission rate for return CIMS_ROR?",
+        "Is the report ready for my submission of return CIMS_ROR?",
+        "Can I download the report for my last submission of return CIMS_ROR?",
     ],
 
     # ── MENU_OPTIONS ─────────────────────────────────────────────────────
@@ -472,6 +613,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What modules fall under the Data Management section?",
     ],
     Intent.MODULE_DETAIL: [
+        "Can you tell me the parent module of NXQueryBuilder?",
         "What is the menu rank or order of the Balance Sheet module?",
         "What is the resource label for module option 205?",
         "What is the icon for the Balance Sheet module?",
@@ -487,6 +629,7 @@ EXEMPLARS: dict[Intent, list[str]] = {
 
     # ── AUDIT_SECURITY ───────────────────────────────────────────────────
     Intent.AUDIT_HISTORY: [
+        "Can you show me all changes made to user jsmith's profile?",
         "What changes were made by user jsmith in the last 30 days?",
         "What changes have I made in the system in the last 7 days?",
         "Show my activity history in the application.",
@@ -570,6 +713,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "How many days before the due date will I be notified for return CIMS_ROR?",
         "Will I receive an SMS reminder for return CIMS_ROR?",
         "Am I configured to receive notifications for return CIMS_ROR?",
+        "Which returns have their report generation scheduled but not yet run?",
+        # "Failed scheduled jobs" is a new log sub-type from the updated
+        # catalog, not currently one of LOG_QUERY's optional log_type values
+        # — flagged in the Phase 1 report; mapped here for now since it's
+        # phrased as a notification/scheduling question, not an error log one.
+        "Are there any failed scheduled report-generation jobs in the last 7 days?",
+        "When is my next reminder scheduled for return CIMS_ROR?",
+        "Can I see the schedule of reminders for all my returns?",
     ],
 }
 

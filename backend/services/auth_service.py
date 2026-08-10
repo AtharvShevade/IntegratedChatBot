@@ -35,6 +35,9 @@ from backend.tools.xml_loader import load_xml_tree
 # LoginId -> Dept -> allowed-FormIds flow, just different raw attribute names.
 _DEPT_ID_ATTR:    str = "Id" if version_config.IS_V6 else "DeptId"
 _DEPT_FORMS_ATTR: str = "ReturnId" if version_config.IS_V6 else "Forms"
+# Non-XBRL returns live in a second, separate access list on the same
+# department row. Env-overridable for the same reason the attrs below are.
+_DEPT_NX_FORMS_ATTR: str = os.getenv("XML_DEPT_NX_FORMS_ATTR", "NXForms")
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,10 @@ AUTHORIZATION_ENABLED: bool = os.getenv("AUTHORIZATION_ENABLED", "true").lower()
 
 # { login_id: (result, monotonic_ts, xml_mtime) }
 _cache: dict[str, tuple[set[str] | None, float, float]] = {}
+
+# Same shape as _cache, for the non-XBRL (NXForms) access list — kept
+# separate so the two lists can never be confused for one another.
+_nx_cache: dict[str, tuple[set[str] | None, float, float]] = {}
 
 # Per-login_id cache for role-based CreateInstance access.
 _create_cache: dict[str, tuple[bool, float]] = {}
@@ -125,17 +132,56 @@ def get_allowed_form_ids(login_id: str) -> set[str] | None:
     return result
 
 
+def get_allowed_nx_form_ids(login_id: str) -> set[str] | None:
+    """The NON-XBRL counterpart of get_allowed_form_ids.
+
+    A department's access list is split across two attributes in
+    XML_Dept.xml — Forms (XBRL) and NXForms (non-XBRL) — but every existing
+    caller of get_allowed_form_ids (instance generation, report lookup,
+    ...) deals exclusively in XBRL forms, so that function reads Forms only
+    and must keep doing so. This is added alongside it rather than folded
+    into it, so no existing caller's allowed set silently widens.
+
+    Same contract as get_allowed_form_ids: None means "not found / auth
+    disabled" (caller decides), a set (possibly empty) otherwise.
+    """
+    if not AUTHORIZATION_ENABLED:
+        return None
+    clean = login_id.strip()
+    if not clean:
+        return None
+
+    current_mtime = _auth_xml_mtime()
+    entry = _nx_cache.get(clean)
+    if entry:
+        result, ts, cached_mtime = entry
+        if current_mtime == cached_mtime and (time.monotonic() - ts) < _AUTH_TTL:
+            return result
+
+    result = _lookup(clean, forms_attr=_DEPT_NX_FORMS_ATTR)
+    _nx_cache[clean] = (result, time.monotonic(), current_mtime)
+    return result
+
+
 def invalidate(login_id: str) -> None:
     """Remove a cached entry so the next request re-reads the XML."""
     _cache.pop(login_id.strip(), None)
+    _nx_cache.pop(login_id.strip(), None)
 
 
 # ---------------------------------------------------------------------------
 # Internal lookup
 # ---------------------------------------------------------------------------
 
-def _lookup(login_id: str) -> set[str] | None:
-    """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids."""
+def _lookup(login_id: str, forms_attr: str | None = None) -> set[str] | None:
+    """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids.
+
+    *forms_attr* names the XML_Dept.xml attribute holding the pipe-delimited
+    access list; defaults to _DEPT_FORMS_ATTR (the XBRL forms list). Pass
+    _DEPT_NX_FORMS_ATTR to resolve the non-XBRL list instead — see
+    get_allowed_nx_form_ids.
+    """
+    forms_attr = forms_attr or _DEPT_FORMS_ATTR
     # ── Step 1: resolve DepartmentId from XML_User.xml ──────────────────────
     user_root = load_xml_tree(xml_user_path(), "XML_User.xml")
     if user_root is None:
@@ -185,7 +231,7 @@ def _lookup(login_id: str) -> set[str] | None:
 
     for el in dept_root.findall("Row"):
         if el.attrib.get(_DEPT_ID_ATTR, "").strip() == dept_id:
-            forms_raw = el.attrib.get(_DEPT_FORMS_ATTR, "")
+            forms_raw = el.attrib.get(forms_attr, "")
             form_ids = {f.strip() for f in forms_raw.split("|") if f.strip()}
             logger.info(
                 "[AUTH] SUMMARY | LoginId: %r | DepartmentId: %r | "
