@@ -45,18 +45,34 @@ logs/
 .coverage
 htmlcov/
 
-# ── sql_agent (vendored SQL agent checkout) ───────────────────────────────────
-# Its own nested git metadata — the agent is a clone, not a submodule, so this
-# keeps the outer repo from seeing it.
-sql_agent/.git/
-# Measurement baselines / ad-hoc reports; nothing in the pipeline reads them.
-sql_agent/scratch/
-# Hallucination logs written at generation time when SQL stays invalid.
-sql_agent/eval/results/
-# Sensitive extracted schema data. NOTE: the FAISS indexes and schema.json under
-# embedding_building/ are deliberately NOT ignored — the chatbot reads them at
-# runtime (EMBEDDING_DIR) and they are rebuilt only via embedding_building/.
-sql_agent/data/.json-formatted/
+# ── backend/sql_agent (consolidated, self-contained SQL agent) ───────────────
+# Runtime code (backend/sql_agent/src/, the shim files, __init__.py) is
+# tracked as ordinary source — no ignore rule needed for it.
+#
+# backend/sql_agent/embeddings/ holds the PREBUILT runtime artifacts (FAISS
+# indexes, schema.json, concept_map.json, qa_pairs.json, semantic_layer.yaml,
+# business_dictionary.yaml, bm25_table_index.pkl, ...) this package reads at
+# request time. There is no build step in this repo, so these ARE tracked and
+# shipped — do NOT ignore *.faiss / *.pkl / *.json / *.yaml under this path.
+# A refreshed embeddings drop replaces this folder's contents wholesale; it is
+# never rebuilt in-repo.
+#
+# Everything that BUILDS those artifacts (schema/DDL extraction, index
+# construction, QA-pair authoring, evaluation) lives only in the separate
+# development repo and must never be copied in here. These rules are a
+# defensive net, not the primary control — the primary control is simply
+# never copying that code into this repo:
+**/embedding_building/
+backend/sql_agent/eval/
+backend/sql_agent/scripts/
+
+# The old top-level vendored checkout this migration replaces. Guards against
+# it reappearing via a stray clone/copy.
+/sql_agent/
+
+# Temporary rollback copies made during the consolidation migration — never
+# commit these; delete once the migration is validated.
+**/_sql_agent.bak/
 
 # ── db_qa intent-exemplar embedding index (generated — rebuild via
 #    `python -m backend.db_qa.intents.embedding_index`) ───────────────────────

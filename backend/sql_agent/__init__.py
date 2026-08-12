@@ -23,7 +23,10 @@
 #
 # Steps 1-4 in the OLD agent were a 3-tuple retrieval feeding generation
 # directly. The selection stage and the exact-match tier are new, and
-# get_relevant_schema now returns four values.
+# get_relevant_schema now returns a RetrievalResult object (tables, columns,
+# matched_labels, qa_example, concept_bindings) instead of a plain tuple —
+# deliberately non-iterable so any stale positional-unpack call site fails
+# loudly instead of silently reading a stale shape.
 
 from __future__ import annotations
 
@@ -149,9 +152,11 @@ def _retrieve(query: str):
     if exact:
         return [], [], [], None, exact
 
-    tables, columns, matched_labels, qa_example = get_relevant_schema(
+    retrieval = get_relevant_schema(
         query, query_vec=query_vec, shortlist_k=config.SRC_CONFIG.SHORTLIST_K,
     )
+    tables, columns = retrieval.tables, retrieval.columns
+    matched_labels, qa_example = retrieval.matched_labels, retrieval.qa_example
     if not tables:
         return [], [], [], None, None
 
