@@ -380,9 +380,9 @@ def _handle_action_selected(
                 "What data would you like to query? Please describe in detail "
                 "(include report name, section, and time period).\n"
                 "Examples:\n"
-                "\u2022 Overseas assets total for ALE section 1A\n"
+                "\u2022 What is the credit equivalent current credit exposure for domestic derivatives from ale?\n"
                 "\u2022 Total loan assets from RAQ section 1 domestic latest\n"
-                "\u2022 Derivative notional principal from ALE domestic"
+                "\u2022 What is the loss provision held on an industry basis from ale?"
             ),
             result_type="guided_input",
             options=[],
