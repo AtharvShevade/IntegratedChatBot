@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import VarianceChartModal from './VarianceChartModal.jsx'
+import { fetchCompareSummary } from '../services/api.js'
 
 // ── Download helper ───────────────────────────────────────────────────────────
 function triggerBlobDownload(url, label) {
@@ -1586,6 +1587,26 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
   const lines    = (headerText || '').split('\n')
   const title    = lines[0] || ''
   const subtitle = lines[1] || ''
+
+  // The summary arrives on a SECOND request. /compare-execute gives the
+  // summary only 8 seconds inline so the table is never held up, and on a
+  // CPU-hosted Ollama that budget always expires (~140s is the real cost),
+  // which is why this panel used to come back empty every time. Fetch it
+  // here, once the table is already rendered, and fill the panel in when it
+  // lands. Only when the inline attempt came back empty — a fast host that
+  // beat the 8s budget has already supplied it.
+  const [asyncSummary, setAsyncSummary] = useState('')
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  useEffect(() => {
+    if (llmSummary || !rows?.length) return undefined
+    const controller = new AbortController()
+    setSummaryLoading(true)
+    fetchCompareSummary(rows, labelA, labelB, (headerText || '').split('\n')[0]?.replace(/^Variance Analysis\s*—\s*/, '') || '', { signal: controller.signal })
+      .then((text) => { if (!controller.signal.aborted) setAsyncSummary(text) })
+      .finally(() => { if (!controller.signal.aborted) setSummaryLoading(false) })
+    return () => controller.abort()
+  }, [llmSummary, rows, labelA, labelB, headerText])
+  const summaryText = llmSummary || asyncSummary
   const SEV_ORDER = { critical: 4, high: 3, medium: 2, low: 1 }
   const sortedRows = useMemo(() => {
     if (!sortBy) return rows
@@ -1670,19 +1691,32 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
           </tbody>
         </table>
       </div>
-      {llmSummary && (
-        <div className="variance-summary">
-          <div className="variance-summary-header">
-            <div className="variance-summary-label">AI Analysis</div>
-            <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
-          </div>
+      {/* The chart is computed entirely from `rows` — data already on screen
+          in the table above — and has no dependency on the AI summary. It
+          used to live INSIDE the `llmSummary &&` block, so whenever the
+          optional LLM call failed or timed out the Visualize button
+          disappeared along with it, taking a working deterministic feature
+          down with a decorative one. The header now renders on the table's
+          own terms; only the summary TEXT waits on the LLM. */}
+      <div className="variance-summary">
+        <div className="variance-summary-header">
+          <div className="variance-summary-label">AI Analysis</div>
+          <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
+        </div>
+        {summaryText ? (
           <div className="variance-summary-text">
             <ReactMarkdown>
-              {llmSummary.replace(/^AI\s+Summary:\s*/i, '').split('\n').map((l) => l.replace(/^•\s*/, '- ')).join('\n')}
+              {summaryText.replace(/^AI\s+Summary:\s*/i, '').split('\n').map((l) => l.replace(/^•\s*/, '- ')).join('\n')}
             </ReactMarkdown>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="variance-summary-text variance-summary-empty">
+            {summaryLoading
+              ? 'Analysing the variance… this can take a minute or two. The table and chart above are ready now.'
+              : 'AI analysis is unavailable for this comparison. The variance table and chart above are complete.'}
+          </div>
+        )}
+      </div>
       {showChart && (
         <VarianceChartModal rows={rows} labelA={labelA} labelB={labelB} onClose={() => setShowChart(false)} />
       )}

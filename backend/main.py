@@ -26,7 +26,8 @@ from backend import version_config  # noqa: E402
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
 from backend.models import (  # noqa: E402
-    ChatRequest, ChatResponse, CompareRequest, ExplainCategoryRequest, FeedbackRequest,
+    ChatRequest, ChatResponse, CompareRequest, CompareSummaryRequest,
+    ExplainCategoryRequest, FeedbackRequest,
 )
 from backend.utils.intent_log import log_feedback  # noqa: E402
 
@@ -370,6 +371,75 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to process your request at the moment. Please try again.",
         ) from exc
+
+
+@app.post("/compare-summary", status_code=status.HTTP_200_OK)
+async def compare_summary(request: CompareSummaryRequest) -> dict:
+    """The AI narrative for a variance table the user is already looking at.
+
+    /compare-execute returns the table and chart immediately with whatever
+    summary its 8-second inline budget managed to produce — which on a CPU
+    Ollama is none. The frontend then calls this endpoint, which runs the
+    same generator with a realistic budget, and drops the bullets into the
+    panel when they arrive.
+
+    Returns {"llm_summary": str} — empty string on any failure, exactly as
+    the inline path does, so a missing summary is never an error state:
+    the table and chart above it are complete either way.
+    """
+    from backend.tools.xbrl_comparator import generate_llm_summary
+
+    logger.info(
+        "API request received: /compare-summary report=%s rows=%d",
+        request.report_name or "?", len(request.rows),
+    )
+    if not request.rows:
+        return {"llm_summary": ""}
+
+    # generate_llm_summary reads each row's two values by the LABEL keys
+    # (r.get(label_a)), while the frontend holds them as val_a/val_b — the
+    # shape /compare-execute serialised them into. Map back rather than
+    # changing either side's contract.
+    label_a = request.label_a or "A"
+    label_b = request.label_b or "B"
+    rows = [
+        {
+            "concept":     row.concept,
+            label_a:       row.val_a,
+            label_b:       row.val_b,
+            "diff":        row.diff,
+            "pct_change":  row.pct_change,
+            "significant": row.significant,
+        }
+        for row in request.rows
+    ]
+
+    try:
+        timeout = float(os.getenv("OLLAMA_SUMMARY_ASYNC_TIMEOUT", "300"))
+    except ValueError:
+        timeout = 300.0
+
+    start = time.monotonic()
+    try:
+        summary = await _run_cancellable(
+            request.request_id,
+            generate_llm_summary(rows, label_a, label_b, request.report_name, timeout=timeout),
+        )
+    except RequestStopped:
+        logger.info("Compare-summary request stopped by user: report=%s", request.report_name or "?")
+        return {"llm_summary": ""}
+    except Exception as exc:  # noqa: BLE001 — the summary is optional by design
+        log_exception(
+            logger, "Compare summary failed", exc,
+            endpoint="/compare-summary", report_name=request.report_name,
+        )
+        return {"llm_summary": ""}
+
+    logger.info(
+        "[PERF] endpoint=/compare-summary duration=%.2fs chars=%d",
+        time.monotonic() - start, len(summary or ""),
+    )
+    return {"llm_summary": summary or ""}
 
 
 @app.post("/explain-category", response_model=ChatResponse, status_code=status.HTTP_200_OK)
