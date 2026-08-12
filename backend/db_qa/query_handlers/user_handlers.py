@@ -28,6 +28,8 @@ _USER_FIELD_LABELS: dict[str, str] = {
     "failed_login_count": "failed login count",
     "status": "account status",
     "password_date": "password last-updated date",
+    "department": "department",
+    "role": "role",
 }
 
 _USER_FIELD_ATTR: dict[str, str] = {
@@ -41,7 +43,15 @@ _USER_FIELD_ATTR: dict[str, str] = {
     "failed_login_count": "FailedLoginCount",
     "status": "Status",
     "password_date": "PasswordUpdateDate",
+    # Not raw XML_User attributes — DeptName/RoleName are attached by
+    # XMLStore.enrich_user() from the DepartmentId/RoleId foreign keys, so
+    # handle_user_field enriches the row before reading these two.
+    "department": "DeptName",
+    "role": "RoleName",
 }
+
+# The fields above that only exist on an ENRICHED user row.
+_ENRICHED_USER_FIELDS: frozenset[str] = frozenset({"department", "role"})
 
 
 def _result(intent: str, label: str, records: list, summary: str, **meta) -> dict:
@@ -81,17 +91,39 @@ def handle_user_field(scope: dict, entities: dict, store: XMLStore) -> dict:
 
     u = _resolve_target_user(store, scope, entities)
     if not u:
-        who = "Your" if scope["target_type"] == "self" else f"'{entities.get('target_user', '')}'"
+        target = entities.get("target_user", "")
+        # "What is the department of Finance?" / "...the role of Tester?" —
+        # the classifier reads "<field> of <name>" as naming a USER, which
+        # is the only reading available to it from the sentence shape alone.
+        # When the name turns out not to be a user but IS a department or a
+        # role, the question was the collection one all along; answer that
+        # rather than reporting a missing user. Same fallback idiom (and
+        # same admin-only scope) as handle_users_by_department's
+        # department -> role retry below.
+        if target and field in _ENRICHED_USER_FIELDS and scope["target_type"] != "self":
+            if store.dept_by_name(target):
+                return handle_users_by_department(scope, {**entities, "target_department": target}, store)
+            if store.resolve_role(target):
+                return handle_users_by_role(scope, {**entities, "target_role": target}, store)
+        who = "Your" if scope["target_type"] == "self" else f"'{target}'"
         return _not_found("user_field", "User Field", f"{who} profile could not be found.")
 
+    if field in _ENRICHED_USER_FIELDS:
+        u = store.enrich_user(u)
     value = u.get(attr, "").strip() or "Not set"
     who_phrase = "Your" if scope["target_type"] == "self" else f"{u.get('Name', '')}'s"
     if field == "status":
         display = "Yes, active" if is_active_status(value) else "No, inactive"
         return _result("user_field", field_label.title(), [{attr: value}],
                        f"{who_phrase} account is active: {display}.")
+    # See handle_user_list's failed_login branch: the count is hidden from
+    # ordinary user output unless the question was about it, and here it is
+    # the entire answer — without the flag the record would render with no
+    # columns at all.
+    show_failed = field == "failed_login_count"
     return _result("user_field", field_label.title(), [{attr: value}],
-                   f"{who_phrase} {field_label} is: {value}.")
+                   f"{who_phrase} {field_label} is: {value}.",
+                   show_failed_logins=show_failed)
 
 
 def handle_user_list(scope: dict, entities: dict, store: XMLStore) -> dict:
@@ -111,6 +143,11 @@ def handle_user_list(scope: dict, entities: dict, store: XMLStore) -> dict:
         rows = [u for u in users if int(u.get("FailedLoginCount", "0") or "0") > 0]
         rows.sort(key=lambda u: int(u.get("FailedLoginCount", "0") or "0"), reverse=True)
         label, summary = "Users with Failed Login Attempts", f"Found {len(rows)} users with failed login attempts."
+        # The failed-login count is hidden from ordinary user tables
+        # (agent/db_qa_router._CONDITIONAL_FIELDS) — this question is
+        # entirely about it, so unhide the column here.
+        return _result("user_list", label, [store.enrich_user(u) for u in rows], summary,
+                       count=len(rows), show_failed_logins=True)
     elif query_type == "duplicate_email":
         from collections import Counter
         emails = [u.get("EmailId", "").lower() for u in users if u.get("EmailId")]

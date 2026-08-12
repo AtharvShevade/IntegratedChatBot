@@ -145,7 +145,14 @@ def handle_department_list(scope: dict, entities: dict, store: XMLStore) -> dict
                        if rows else "No departments found.")
         else:  # with_counts
             rows = enriched
-            label, summary = "All Departments (With Return Counts)", f"There are {len(rows)} departments."
+            label = "All Departments (With Return Counts)"
+            total = sum(d["TotalReturnCount"] for d in rows)
+            # "There are 15 departments." reads as the answer to "how many
+            # departments are there" — the very question this branch exists
+            # to be distinguished from. Say what the table below actually
+            # shows instead.
+            summary = (f"{len(rows)} department(s), with XBRL, non-XBRL and total return "
+                       f"counts for each ({total} assignments in total).")
     else:
         rows = depts
         label, summary = "All Departments", f"There are {len(rows)} departments in the system."

@@ -44,9 +44,21 @@ _USER_FIELD_PATTERNS: dict[str, str] = {
     "created_date": r"\b(created|creation\s+date)\b",
     "created_by": r"\bwho\s+creat\w*\b",
     "last_login": r"\blast\s+(log|login|logged|signed)\b",
-    "failed_login_count": r"\bfailed\s+(logins?|log\s*in\s*(attempts?|count)?|password)\b",
+    # "how many FAILED ATTEMPTS does user maker have" — users routinely drop
+    # the "login" word entirely, and the previous alternation required it,
+    # so the bare-"attempts" phrasing found no field at all and the question
+    # fell through to a generic user listing.
+    "failed_login_count": r"\bfailed\s+(logins?|log\s*in\s*(attempts?|count)?|attempts?|password)\b",
     "status": r"\b(active|status|enabled|disabled)\b",
     "password_date": r"\bpassword\s+(update|change|reset)\b",
+    # Department/role are ordinary per-user fields ("what is the department
+    # of user atharv815") exactly like email or last login — they live at
+    # the END of this table so the more specific field words above always
+    # win when both appear ("the email of the user in Finance department").
+    # See user_handlers._USER_FIELD_ATTR: both resolve off the enriched
+    # user row (DeptName/RoleName), not a raw XML_User attribute.
+    "department": r"\b(departments?|depts?)\b",
+    "role": r"\broles?\b",
 }
 
 
@@ -133,6 +145,15 @@ _MODULE_SYNONYMS: list[tuple[re.Pattern, str]] = [
     (_kw(rf"{_NON_XBRL}\s+files?", rf"upload\s+{_NON_XBRL}", rf"{_NON_XBRL}\s+upload",
          r"nx\s*fileupload", r"file\s*upload"), "fileupload"),
     (_kw(rf"{_NON_XBRL}\s+reports?", rf"{_NON_XBRL}\s+returns?"), "non-xbrl report"),
+    # "create/generate XBRL INSTANCES" is the XBRL Generation module — an
+    # instance IS the generated XBRL artifact. Without this the phrase
+    # matched no specific module and fell all the way to the bare `roles?`
+    # catch-all below (the word "roles" being present in "WHICH ROLES can
+    # create XBRL instances"), so the answer was filtered by the "Roles"
+    # menu module and read "11 role(s) can create on role."
+    (_kw(rf"{_NON_XBRL}\s+instances?"), "non-xbrl generation"),
+    (_kw(r"xbrl\s+instances?", r"instance\s+generation",
+         r"generate\s+.{0,12}instances?", r"create\s+.{0,12}instances?"), "xbrl generation"),
     (_kw(r"xbrl\s+generation", r"generate\s+xbrl"), "xbrl generation"),
     (_kw(r"xbrl\s+reports?", r"xbrl\s+returns?"), "xbrl report"),
     (_kw(r"sdmx\s+generation"), "sdmx generation"),
@@ -263,6 +284,156 @@ class _UsersByDeptStructuralPattern:
         return None
 
 
+# Words that can sit where a USERNAME sits in the phrasings
+# _UserAttributePattern recognises, without being anyone's name. The
+# extractor identifies the name by what it is NOT (real login IDs are typed
+# in any case, with or without digits — "atharv815", "maker", "jsmith" — so
+# there is no positive shape to match on), which is exactly why the guard
+# list has to cover the sentence grammar AND this taxonomy's own domain
+# nouns: without them "how many failed attempts user maker has" happily
+# read "attempts" as a role name, and "list all users with their
+# departments" read "their" as one.
+_USER_NAME_FILLER_WORDS = frozenset(_NOT_AN_ENTITY_NAME) | frozenset({
+    # Sentence grammar not already in _NOT_AN_ENTITY_NAME.
+    "a", "an", "this", "that", "these", "those", "there", "here",
+    "was", "were", "be", "been", "am", "had", "could", "would", "should",
+    "will", "shall", "may", "might", "must", "and", "or", "not", "no",
+    "my", "our", "your", "their", "its", "his", "her", "them", "they",
+    "i", "we", "he", "she", "it", "me", "us", "you",
+    "any", "some", "each", "every", "none", "both", "other", "others",
+    "along", "about", "whose", "where", "when", "why", "please",
+    # Relationship verbs that follow a user noun in LIST questions
+    # ("users assigned to Admin", "users belonging to Finance") — never a
+    # name, and letting them through turned every one of those listings
+    # into a single-user field lookup.
+    "assigned", "assign", "belongs", "belong", "belonging", "under",
+    "having", "associated", "linked", "mapped", "works", "work", "working",
+    "are", "is", "does", "do", "did", "has", "have",
+    # This taxonomy's own domain vocabulary. A question can name any of
+    # these right where a username would sit, and none of them is one.
+    "user", "users", "account", "accounts", "person", "people", "member",
+    "members", "employee", "employees", "staff",
+    "role", "roles", "department", "departments", "dept", "depts",
+    "attempt", "attempts", "login", "logins", "logged", "failed", "failure",
+    "failures", "password", "passwords", "email", "emails", "mobile",
+    "phone", "status", "profile", "profiles", "detail", "details", "name",
+    "names", "code", "codes", "level", "levels", "access", "permission",
+    "permissions", "module", "modules", "return", "returns", "report",
+    "reports", "form", "forms", "submission", "submissions",
+    "active", "inactive", "enabled", "disabled", "deactivated", "locked",
+    "total", "info", "information", "record", "records", "data",
+    # "Show every role with its USER COUNT." — the aggregation noun sits
+    # exactly where a username would ("user count"), and reading it as one
+    # turned a per-role summary into a lookup for a person called "count".
+    "count", "counts", "number", "numbers", "list", "lists", "each", "every",
+})
+
+
+def _user_name_ok(name: str | None) -> bool:
+    """True when *name* looks like a username the user actually typed,
+    rather than a fragment of their sentence.
+
+    Sentence punctuation is stripped before the check: "...with its user
+    count." captured "count." (with the full stop), which no longer matched
+    the guard word "count" and was accepted as a username.
+    """
+    return bool(name) and name.strip().strip(".,;:!?'\"").lower() not in _USER_NAME_FILLER_WORDS
+
+
+class _UserAttrMatch(tuple):
+    """The (field, name) pair _UserAttributePattern resolves. A tuple
+    subclass so _KeywordRule.match_score's plain truthiness test works (it
+    only ever calls .search() and checks the result is not None), while
+    _extract_new_params can read both halves off the same object."""
+
+    __slots__ = ()
+
+    @property
+    def field(self) -> str:
+        return self[0]
+
+    @property
+    def name(self) -> str:
+        return self[1]
+
+
+# The FIELD half — which per-user attribute the question is asking for.
+# Ordered most-specific first: a failed-login question mentioning nothing
+# else must not be read as a department/role one.
+_USER_ATTR_FIELDS: tuple[tuple[str, re.Pattern], ...] = (
+    ("failed_login_count",
+     re.compile(r"\bfailed\s+(?:login\s+|log\s*in\s+|sign[\s-]?in\s+)?"
+                r"(?:attempts?|logins?|tries|counts?)\b", re.IGNORECASE)),
+    ("department", re.compile(r"\b(?:departments?|depts?)\b", re.IGNORECASE)),
+    ("role", re.compile(r"\broles?\b", re.IGNORECASE)),
+)
+
+# The NAME half — three orderings users actually write, each checked
+# independently against the whole question (see _RoleUsersStructuralPattern's
+# docstring for why a single combined alternation would lose matches).
+_USER_ATTR_NAME_PATS: tuple[re.Pattern, ...] = (
+    # "the department OF (user) atharv815", "role FOR jsmith",
+    # "failed attempts OF user maker"
+    re.compile(r"\b(?:departments?|depts?|roles?|attempts?|logins?|counts?)\s+"
+               r"(?:of|for)\s+(?:the\s+)?(?:users?\s+)?"
+               r"(?P<name>[A-Za-z][A-Za-z0-9_.\-]*)", re.IGNORECASE),
+    # "USER maker has ...", "does USER jsmith have ..." — deliberately the
+    # SINGULAR noun only. "user X" names one person; "users ..." introduces
+    # a collection ("users assigned to Admin", "users with their
+    # departments"), which is a listing question, not a field lookup.
+    re.compile(r"\buser\s+(?P<name>[A-Za-z][A-Za-z0-9_.\-]*)", re.IGNORECASE),
+    # "atharv815's department", "jsmith's role"
+    re.compile(r"\b(?P<name>[A-Za-z][A-Za-z0-9_.\-]*)['’]s\s+"
+               r"(?:departments?|depts?|roles?|failed)", re.IGNORECASE),
+)
+
+
+class _UserAttributePattern:
+    """Duck-typed like a compiled re.Pattern (only .search() is called by
+    _KeywordRule.match_score) — matches a question asking for ONE named
+    user's department, role, or failed-login count.
+
+    A match requires BOTH halves: a field word AND a username sitting in a
+    position that only a username occupies. Requiring both is what keeps
+    this apart from the surrounding listing intents, which share the same
+    nouns: "which users belong to the Finance department" has the field
+    word but no name in a name position, so it stays with
+    USERS_BY_DEPARTMENT; "give me all admin users" has neither.
+
+    Without this pattern these questions had no rule of their own at all:
+    "what is the department of user atharv815" satisfied
+    USERS_BY_DEPARTMENT's user-noun + dept-noun + "of" groups and was
+    answered by looking for a department literally called "of user
+    atharv815", while "what is the role of atharv815" matched nothing
+    anywhere and fell through the classifier entirely.
+    """
+
+    def search(self, q: str) -> _UserAttrMatch | None:
+        field = next((f for f, pat in _USER_ATTR_FIELDS if pat.search(q)), None)
+        if not field:
+            return None
+        if field in ("department", "role") and self._names_a_specific_field(q):
+            # "what is the email of user jsmith in the Finance department"
+            # asks for the EMAIL; the department is just where the user
+            # sits. A dept/role word alone is far weaker evidence than an
+            # explicit field word, so it yields to one whenever both appear.
+            return None
+        for pat in _USER_ATTR_NAME_PATS:
+            for m in pat.finditer(q):
+                if _user_name_ok(m.group("name")):
+                    return _UserAttrMatch((field, m.group("name")))
+        return None
+
+    @staticmethod
+    def _names_a_specific_field(q: str) -> bool:
+        return any(re.search(pat, q, re.IGNORECASE)
+                   for field, pat in _USER_FIELD_PATTERNS.items()
+                   if field not in ("department", "role"))
+
+
+_USER_ATTRIBUTE_PATTERN = _UserAttributePattern()
+
+
 class _NamedRoleActionPattern:
     """Duck-typed like a compiled pattern (only .search() called by
     _KeywordRule.match_score). Matches "<name> role(s) <verb>" with the
@@ -356,6 +527,71 @@ class _NamedDepartmentPattern:
         return None
 
 
+# "Department Management", "Department Master", "Department Setup" name the
+# SCREEN, not a department called "Management". Kept local to the bare
+# lookup pattern rather than added to _DEPT_FILLER_WORDS: only a
+# whole-string "department <word>" question is ambiguous this way, and the
+# other consumers of that set have their own sentence context to go on.
+_DEPT_MODULE_WORDS = frozenset({
+    "management", "master", "masters", "setup", "configuration", "config",
+    "module", "modules", "menu", "menus", "section", "sections", "screen",
+    "page", "pages", "maintenance", "admin", "administration", "settings",
+})
+
+
+class _BareDepartmentLookupPattern:
+    """Duck-typed like a compiled pattern. Matches a question that is
+    NOTHING BUT a department reference — "department test", "dept Dept1",
+    "Test2 department" — with no verb, no field word and no other noun.
+
+    Users type this as a lookup ("department test" = "tell me about
+    department test"), and every other department rule needs a second
+    signal (a field word, a list verb, a return noun) that this phrasing
+    simply doesn't contain, so it reached no rule at all and came back
+    "Sorry, I didn't understand your query".
+
+    The whole-string anchor is the point: it is what keeps this from
+    firing on "department test returns" or "users in department test",
+    which are other intents' questions and carry their own signals.
+    """
+
+    _PATS = (
+        re.compile(r"^\s*(?:departments?|depts?)\s+(?P<name>[A-Za-z0-9][A-Za-z0-9_.\- ]{0,40}?)\s*\??\s*$",
+                   re.IGNORECASE),
+        re.compile(r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9_.\- ]{0,40}?)\s+(?:departments?|depts?)\s*\??\s*$",
+                   re.IGNORECASE),
+    )
+
+    def search(self, q: str):
+        for pat in self._PATS:
+            m = pat.match(q)
+            if m:
+                words = m.group("name").strip().split()
+                # EVERY word must clear the filler sets, not just the first:
+                # "departments without any returns" fits this pattern's
+                # shape perfectly with "without any returns" as the "name",
+                # and only the domain noun at the END gives it away as a
+                # no-returns question rather than a department called
+                # "without any returns".
+                if words and len(words) <= 3 and all(
+                        w.lower() not in _NOT_AN_ENTITY_NAME
+                        and w.lower() not in _DEPT_FILLER_WORDS
+                        and w.lower() not in _DEPT_MODULE_WORDS for w in words):
+                    return m
+        return None
+
+
+# "what is the id of dept1" names a department without ever using the word
+# "department" as a separate token — the name itself carries it. Every
+# department rule keys off _G_DEPT_NOUN (`\bdepts?\b`), which cannot match
+# inside "dept1" (the digit is a word character, so there is no boundary
+# after "dept"), so the question reached no rule at all. A token that
+# STARTS with "dept" and continues with alphanumerics is a department
+# reference in this data ("Dept 1" is stored, "dept1"/"Dept1" is how users
+# type it); _clean_extracted_department_name/resolve_dept then resolve it.
+_DEPT_PREFIXED_NAME_RE = re.compile(r"\bdept[a-z]*\d[\w.\-]*\b", re.IGNORECASE)
+
+
 class _NamedRoleAccessPattern:
     """Duck-typed like a compiled pattern. Matches "<name> role(s) [have/
     has] access" — a role explicitly named, asking generically about its
@@ -389,6 +625,103 @@ class _NamedRoleAccessPattern:
         return None
 
 
+# "What is the role ID of Admin User?" asks for the ROLE's id, but the
+# role's own NAME ends in "User", so USERS_BY_ROLE's structural "<name>
+# users" pattern matched and answered with the 14 people holding it.
+# Excluded from every users-of-a-role rule: an id lookup is never a request
+# for a user list, whatever the role happens to be called.
+_ROLE_ID_QUESTION = _kw(r"roles?\s+id\b", r"roles?\s+identifier\b",
+                        r"id\s+of\s+(the\s+)?roles?\b", r"id\s+for\s+(the\s+)?roles?\b")
+
+# A PER-ROLE user count ("how many users are assigned to each role", "every
+# role with its user count") is ROLE_LIST's with_counts branch — a table of
+# every role and its total — not a listing of the users holding one role.
+# Defined once and used both as that branch's trigger (see
+# _ROLE_QUERY_TYPE_PATTERNS) and as an exclude on the users-of-a-role rules,
+# which otherwise matched on the same user+role nouns and answered with
+# "Found N users with role 'each'".
+_ROLE_USER_COUNTS_ALTS: tuple[str, ...] = (
+    # Every alternative needs a PER-ROLE context ("each", or the word
+    # "role" near the count). A bare "count of users" is a plain user
+    # count — USER_LIST's question — and excluding that from USER_LIST left
+    # "give me the count of users" matching no rule at all.
+    r"roles?.{0,20}users?\s+counts?",
+    r"users?\s+counts?.{0,20}roles?",
+    r"number\s+of\s+users?\s+in\s+each",
+    r"number\s+of\s+users?\s+(?:for|per|assigned\s+to)\s+each",
+    r"how\s+many\s+users?\s+(?:are\s+)?(?:assigned\s+to|in|have)\s+each",
+    r"(?:along\s+)?with\s+(?:its|their|the)\s+(?:\w+\s+){0,2}users?\s+counts?",
+    r"roles?.{0,20}with\s+the\s+number\s+of\s+users?",
+    r"each\s+roles?.{0,25}users?",
+    r"users?\s+(?:assigned\s+)?(?:to|per)\s+each\s+roles?",
+)
+_ROLE_USER_COUNTS = _kw(*_ROLE_USER_COUNTS_ALTS)
+
+# "Can the Admin User create new users?" / "Does Admin User have permission
+# to create users?" — a permission question naming its subject WITHOUT the
+# word "role" anywhere. _NamedRoleActionPattern only recognises the
+# "<name> ROLE <verb>" form, so these matched no PERMISSION_CHECK trigger,
+# while USERS_BY_ROLE's structural "<name> users" pattern DID match (the
+# role is called "Admin User" and the module is "users") and answered with
+# the 14 people holding that role.
+#
+# The "can" form requires 1-3 words between the modal and the verb: with
+# nothing in between the subject is the question word itself ("which roles
+# CAN CREATE ..."), which is ROLES_WITH_PERMISSION's system-wide framing.
+# Pronoun subjects are excluded — "can I ..." has its own trigger and its
+# own target_type.
+_PERMISSION_ACTION_VERB = (r"(?:create|edit|update|modify|view|see|read|approve|add|"
+                           r"upload|access|disable|generate|delete|submit)")
+_ROLE_ACTION_QUESTION_ALTS: tuple[str, ...] = (
+    rf"can\s+(?!i\b|we\b|you\b|they\b|he\b|she\b|it\b|my\b|our\b|the\s+user\b)"
+    rf"(?:the\s+)?[A-Za-z][\w.\-]*(?:\s+[A-Za-z][\w.\-]*){{0,2}}\s+{_PERMISSION_ACTION_VERB}\b",
+    rf"does\s+(?:the\s+)?[A-Za-z][\w.\-]*(?:\s+[A-Za-z][\w.\-]*){{0,2}}\s+have\s+"
+    rf"(?:the\s+)?(?:permission|rights?|access)\s+to\s+{_PERMISSION_ACTION_VERB}",
+    rf"is\s+(?:the\s+)?[A-Za-z][\w.\-]*(?:\s+[A-Za-z][\w.\-]*){{0,2}}\s+allowed\s+to\s+"
+    rf"{_PERMISSION_ACTION_VERB}",
+)
+_ROLE_ACTION_QUESTION = _kw(*_ROLE_ACTION_QUESTION_ALTS)
+
+# The same three shapes with the subject CAPTURED, so the role being asked
+# about can be extracted — the role-name extractors are all anchored on the
+# literal word "role", which these phrasings never use, leaving
+# PERMISSION_CHECK with a target_type of "role" and no role to check.
+_ROLE_ACTION_SUBJECT_RES: tuple[re.Pattern, ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        rf"\bcan\s+(?!i\b|we\b|you\b|they\b|he\b|she\b|it\b|my\b|our\b)"
+        rf"(?:the\s+)?(?P<name>[A-Za-z][\w.\-]*(?:\s+[A-Za-z][\w.\-]*){{0,2}})\s+"
+        rf"{_PERMISSION_ACTION_VERB}\b",
+        rf"\bdoes\s+(?:the\s+)?(?P<name>[A-Za-z][\w.\-]*(?:\s+[A-Za-z][\w.\-]*){{0,2}})\s+have\s+"
+        rf"(?:the\s+)?(?:permission|rights?|access)\s+to\s+{_PERMISSION_ACTION_VERB}",
+        rf"\bis\s+(?:the\s+)?(?P<name>[A-Za-z][\w.\-]*(?:\s+[A-Za-z][\w.\-]*){{0,2}})\s+allowed\s+to\s+"
+        rf"{_PERMISSION_ACTION_VERB}",
+    )
+)
+
+
+def _extract_role_from_action_question(q: str) -> str | None:
+    """The role named as the SUBJECT of a permission question that never
+    says "role" — "Can the Admin User create new users?" -> "Admin User".
+
+    Trailing filler is trimmed word by word from the right (the capture is
+    greedy up to three words, so "the Admin User create" style over-capture
+    has to be walked back), and the whole candidate is rejected if nothing
+    but filler survives.
+    """
+    for pat in _ROLE_ACTION_SUBJECT_RES:
+        m = pat.search(q)
+        if not m:
+            continue
+        words = m.group("name").split()
+        while words and words[-1].lower() in _ROLE_FILLER_WORDS:
+            words.pop()
+        while words and words[0].lower() in _ROLE_FILLER_WORDS:
+            words.pop(0)
+        if words:
+            return " ".join(words)
+    return None
+
+
 # Status/quantifier words that can precede "users" without naming a role at
 # all ("all users", "active users") — excluded so _RoleUsersStructuralPattern
 # doesn't mistake them for a role name.
@@ -406,6 +739,10 @@ _ROLE_USERS_STATUS_WORDS = frozenset({
     # this phrasing, not a per-role users listing.
     "most", "least", "fewest", "minimum", "maximum", "smallest", "largest",
     "biggest",
+    # "How many users are assigned to EACH role?" is a per-role breakdown
+    # (ROLE_LIST's with_counts), not a listing of everyone holding a role
+    # called "each" — which is what the structural pattern produced.
+    "each", "per", "count", "counts", "number",
     # Action verbs ("can I CREATE users", "DELETE users") — PERMISSION_
     # CHECK's territory, never a role reference.
     "create", "edit", "view", "approve", "delete", "add", "update",
@@ -414,6 +751,11 @@ _ROLE_USERS_STATUS_WORDS = frozenset({
     # match "<word> users" as "role users" (word="role"), stealing the
     # match before the real name ("development") is even considered.
     "role", "roles",
+    # Possessives ("users with THEIR departments", "users and THEIR roles").
+    # "my"/"our"/"your" were already here; the third-person forms were not,
+    # so "list all users with their departments" was answered as a listing
+    # of everyone holding a role called "their".
+    "their", "them", "his", "her", "its",
     # "users belong to DEPARTMENT Finance" — "department"/"dept" is a
     # generic noun, not the name itself (that's USERS_BY_DEPARTMENT's own
     # structural pattern's territory, one word further on).
@@ -533,6 +875,14 @@ def _rank_alts(rank_words: str) -> tuple[str, ...]:
     return (
         rf"(?:{rank_words})\s+(?:{_RET_NOUN})",
         rf"(?:{rank_words})\s+(?:number|count|amount)\s+of\s+(?:{_RET_NOUN})",
+        # "the most ASSIGNED returns" — the same ranking with the
+        # relationship word between the rank and the noun. Only the
+        # noun-last and noun-first orders were covered, so this one
+        # phrasing (a verbatim acceptance case) satisfied the ranking
+        # excludes nowhere and was answered "14 departments have access to
+        # at least one return" by DEPARTMENTS_WITH_RETURN_ACCESS.
+        rf"(?:{rank_words})\s+(?:assigned|allocated|mapped|accessible|available)\s+"
+        rf"(?:{_RET_NOUN})",
         rf"(?:{_RET_NOUN})\s+(?:access|assigned|allocated|mapped)\b.{{0,15}}?"
         rf"\b(?:{rank_words})",
     )
@@ -545,6 +895,49 @@ _DEPT_RANK_FEWEST = _kw(*_rank_alts(_FEWEST_WORDS))
 _DEPT_RETURN_RANKING = _kw(
     *_rank_alts(rf"{_MOST_WORDS}|{_FEWEST_WORDS}"), r"top\s+\d+",
 )
+
+
+# ── "no returns" / "return counts": one vocabulary, four call sites ───────
+#
+# Both of these phrase sets are consumed in the same three-or-four places —
+# DEPARTMENT_LIST's any_of (so the question reaches the intent), the
+# routing excludes of the sibling department rules (so it isn't stolen
+# first), and _DEPARTMENT_QUERY_TYPE_PATTERNS (so it picks the right branch
+# once there). Each site previously carried its own hand-written copy, and
+# they had already drifted: "0 returns" was in none of them, so "which
+# department have 0 returns assigned" satisfied DEPARTMENTS_WITH_RETURN_
+# ACCESS on the bare word "assigned" and was answered "14 department(s)
+# have access to at least one return" — the exact opposite of the question.
+# Defining each set once is what keeps a synonym added in one place from
+# being invisible in the other two.
+#
+# "0"/"zero"/"no"/"none"/"without any" — the same question in the four ways
+# users write a count of nothing, in either word order ("no returns
+# assigned" / "no assigned returns").
+_NO_RETURNS_ALTS: tuple[str, ...] = (
+    r"no\s+returns?", r"zero\s+returns?", r"0\s+returns?",
+    r"no\s+assigned\s+returns?", r"zero\s+assigned\s+returns?", r"0\s+assigned\s+returns?",
+    r"without\s+any\s+returns?", r"with\s+no\s+returns?", r"none\s+assigned",
+    r"don'?t\s+have\s+any\s+returns?", r"doesn'?t\s+have\s+any\s+returns?",
+    r"do\s+not\s+have\s+any\s+returns?", r"does\s+not\s+have\s+any\s+returns?",
+)
+_NO_RETURNS = _kw(*_NO_RETURNS_ALTS)
+
+# A per-department return COUNT table ("list departments along with the
+# count of their returns") — a listing of every department with its own
+# totals, not a count of departments and not one department's return list.
+# "count of their returns" in particular reads as a plain how-many to
+# _HOW_MANY_PAT, which is why this must be matched ahead of it.
+_DEPT_RETURN_COUNTS_ALTS: tuple[str, ...] = (
+    rf"(?:number|count|amount)s?\s+of\s+(?:their|its|the|all)?\s*(?:assigned\s+)?(?:{_RET_NOUN})",
+    rf"(?:{_RET_NOUN})\s+counts?",
+    rf"counts?\s+of\s+(?:{_RET_NOUN})",
+    rf"with\s+(?:their|its)\s+(?:\w+\s+){{0,2}}(?:{_RET_NOUN})",
+    rf"(?:assigned|total)\s+(?:{_RET_NOUN})\s+counts?",
+    rf"each\s+departments?.{{0,25}}(?:{_RET_NOUN})",
+    rf"(?:{_RET_NOUN})\s+(?:assigned\s+)?(?:to|for)\s+each\s+departments?",
+)
+_DEPT_RETURN_COUNTS = _kw(*_DEPT_RETURN_COUNTS_ALTS)
 
 
 # ── USER keyword rules ──────────────────────────────────────────────────
@@ -564,8 +957,41 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"(account|profile|user)\s+status", r"is\s+my\s+account",
                      r"(account|user)\s+password", r"password\s+(update|change|reset)",
                      r"last\s*log\w*", r"account\s+creat\w*", r"who\s+creat\w*\s+my",
-                     r"failed\s*log\w*"),),
+                     r"failed\s*log\w*", r"failed\s+attempts?"),),
         excludes=(_kw(r"submission", r"instance", r"return\b", r"report\b"),),
+    ),
+
+    # user_field, structural: ONE named user's department/role/failed-login
+    # count — "what is the department of user atharv815", "what is the role
+    # of atharv815", "how many failed attempts user maker has".
+    #
+    # priority=2 (i.e. 200+) because every one of these questions also
+    # satisfies a LISTING rule below on its shared nouns — USERS_BY_
+    # DEPARTMENT's dept-noun + user-noun + "of" groups, or USERS_BY_ROLE's
+    # structural "<word> users" — including the two structural rules that
+    # already carry priority=1. Naming a specific user is strictly more
+    # specific than any of them: the question is about that one person, not
+    # about the collection they belong to.
+    _KeywordRule(
+        Intent.USER_FIELD, ("self", "other_user"),
+        all_of=(_USER_ATTRIBUTE_PATTERN,),
+        # "Can user jsmith create roles?" / "which modules can user rpatel
+        # access?" name a user AND a role/module word, so they satisfy the
+        # structural pattern — but they ask what that user may DO, which is
+        # PERMISSION_CHECK / ROLE_MODULE_ACCESS territory, not "what role is
+        # this user assigned". An action verb or permission noun is the
+        # signal that separates the two.
+        excludes=(_kw(r"permissions?", r"modules?", r"full\s+control",
+                      # "can <up to three words> <verb>" — the words in
+                      # between are the subject being asked about ("can USER
+                      # JSMITH create roles", "can the Admin User role
+                      # approve"), so the gap has to be tolerated rather
+                      # than enumerated.
+                      r"can\s+(?:\w+\s+){0,3}"
+                      r"(?:create|edit|update|modify|view|see|read|approve|add|"
+                      r"upload|disable|delete|run|generate|submit|manage|perform|access)",
+                      r"allowed\s+to", r"able\s+to", r"rights?\s+to"),),
+        priority=2,
     ),
 
     # user_profile: profile/account/details + self-ref, or "who am I"
@@ -597,15 +1023,28 @@ _KEYWORD_RULES: list[_KeywordRule] = [
     # department NAME to filter by, and answered "I couldn't understand your
     # request" / "Please specify a department name."
     #
-    # priority=1 because it is strictly more specific than either of those
-    # (it requires all three nouns), and the "along with / with their" phrasing
-    # is what distinguishes "users AND their role AND their department" from a
-    # question filtering users BY one of them.
+    # priority=1 because it is strictly more specific than either of those,
+    # and the "along with / with their" phrasing is what distinguishes
+    # "users AND their department" from a question filtering users BY one.
+    #
+    # Only ONE of the role/department nouns is required, not both: "give me
+    # a list of all users with their departments" asks for exactly the same
+    # table as the three-noun phrasing (enrich_user attaches both RoleName
+    # and DeptName to every row), but demanding both nouns sent it to
+    # USERS_BY_DEPARTMENT/USERS_BY_ROLE instead, which then had no name to
+    # filter by and answered "Please specify a department name."
     _KeywordRule(
         Intent.USERS_WITH_ROLES_AND_DEPARTMENTS, ("system_wide",),
-        all_of=(_G_USER_NOUN, _G_ROLE_NOUN, _G_DEPT_NOUN,
+        all_of=(_G_USER_NOUN, _kw(r"roles?", r"departments?", r"depts?"),
                  _kw(r"along\s+with", r"with\s+their", r"and\s+their",
                      r"together\s+with", r"including\s+their")),
+        # A per-group user COUNT ("list all roles along with the number of
+        # users in each") is an aggregation over roles or departments —
+        # ROLE_LIST/DEPARTMENT_LIST own it — not a row-per-user listing.
+        # Dropping the both-nouns-required condition above is what let this
+        # rule reach those questions at all, so the guard belongs here.
+        excludes=(_kw(r"number\s+of\s+users?", r"users?\s+counts?",
+                      r"counts?\s+of\s+users?", r"how\s+many\s+users?"),),
         priority=1,
     ),
 
@@ -671,7 +1110,15 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # structurally satisfy this rule's groups whenever the
                      # role's own NAME happens to contain the word "User"
                      # (e.g. "Admin User"), so that alone can't be trusted.
-                     r"\bmodules?\b", r"permissions?", r"full\s+control"),),
+                     r"\bmodules?\b", r"permissions?", r"full\s+control"),
+                  # An ID lookup is never a request for a user list, even
+                  # when the role is called "Admin User" — see
+                  # _ROLE_ID_QUESTION. A per-role user COUNT likewise
+                  # belongs to ROLE_LIST — see _ROLE_USER_COUNTS.
+                  # A permission question naming a role but no
+                  # "role" word is PERMISSION_CHECK's — see
+                  # _ROLE_ACTION_QUESTION.
+                  _ROLE_ID_QUESTION, _ROLE_USER_COUNTS, _ROLE_ACTION_QUESTION,),
     ),
 
     # users_by_role, structural: "<word> users" with no literal "role" word
@@ -702,7 +1149,13 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # users" shape, and wins on its priority bump — the
                      # answer was a list of 14 users to a question about
                      # modules.
-                     r"\bmodules?\b", r"permissions?", r"full\s+control"),),
+                     r"\bmodules?\b", r"permissions?", r"full\s+control"),
+                  # See _ROLE_ID_QUESTION / _ROLE_USER_COUNTS — same
+                  # carve-outs as the non-structural rule above.
+                  # A permission question naming a role but no
+                  # "role" word is PERMISSION_CHECK's — see
+                  # _ROLE_ACTION_QUESTION.
+                  _ROLE_ID_QUESTION, _ROLE_USER_COUNTS, _ROLE_ACTION_QUESTION,),
         priority=1,
     ),
 
@@ -735,7 +1188,8 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # reached ROLE_LIST, but a polite prefix ("Can you show me which role
         # has the most users?") adds a list-verb that tipped this rule ahead
         # of it, answering "There are 37 users in the system."
-        excludes=(_kw(r"\bmy\b", r"number\s+of\s+users?\s+in\s+each",
+        excludes=(_ROLE_USER_COUNTS,
+                  _kw(r"\bmy\b",
                      r"most\s+users?", r"least\s+users?", r"fewest\s+users?",
                      r"maximum\s+users?", r"minimum\s+users?",
                      r"which\s+role\b", r"\brole\s+has\b",
@@ -768,7 +1222,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # "which/what departments ... <type> returns" enumerates DEPARTMENTS
         # for a whole return TYPE — DEPARTMENTS_WITH_RETURN_ACCESS' type-level
         # form — not "does department X have access to return Y".
-        excludes=(_kw(r"every\s+returns?", r"all\s+returns?", r"any\s+returns?"),
+        excludes=(_kw(r"every\s+returns?", r"all\s+returns?", r"any\s+returns?",
+                     # "What is the complete return ACCESS LIST for
+                     # department Test?" is a listing of everything the
+                     # department can reach (DEPARTMENT_RETURNS), not a
+                     # yes/no check on one named return — this rule matched
+                     # it on dept+access+return and its target_return
+                     # extractor then captured "access list for department
+                     # Test", answering "I couldn't understand your request".
+                     r"access\s+lists?", r"complete\s+lists?", r"full\s+lists?",
+                     r"lists?\s+of\s+returns?", r"complete\s+returns?\s+access"),
                   _DEPT_RETURN_RANKING,
                   # "WHICH XBRL RETURN DOES my department have access to" is
                   # the same LISTING question as its plural form, which
@@ -851,6 +1314,16 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                   # Replaces five hand-written ranking alternatives that
                   # covered only the "rank ... noun" word order.
                   _DEPT_RETURN_RANKING,
+                  #   "which department have 0/zero/no returns assigned"
+                  #       -> the departments with NOTHING assigned
+                  #          (DEPARTMENT_LIST's no_returns branch). This
+                  #          rule matched on the bare word "assigned" and
+                  #          answered with the 14 departments that DO have
+                  #          access — the exact opposite of the question.
+                  _NO_RETURNS,
+                  #   "list departments with XBRL and Non-XBRL return counts"
+                  #       -> a per-department count table, not an access list.
+                  _DEPT_RETURN_COUNTS,
                   _NamedDepartmentPattern()),
         priority=1,
     ),
@@ -868,6 +1341,21 @@ _KEYWORD_RULES: list[_KeywordRule] = [
     # embedding tier (classify_by_embedding), which is trained on real
     # paraphrases instead of a growing regex. Anything that doesn't hit one
     # of the templated forms below is expected to fall through to tier 2/3.
+    # "What can department Test access?" / "What can my department submit?"
+    # — a department's access list asked WITHOUT the word "returns" at all,
+    # so the rule below (which requires a return noun) never matched and the
+    # question reached no rule. What a department can access IS its return
+    # list; there is nothing else in this taxonomy for it to mean.
+    _KeywordRule(
+        Intent.DEPARTMENT_RETURNS, ("self", "department"),
+        all_of=(_G_DEPT_NOUN,
+                _kw(r"what\s+can", r"which\s+can", r"what\s+all\s+can"),
+                _kw(r"access", r"submit\w*", r"file", r"work\s+with", r"see", r"view")),
+        # A named RETURN means the question is "can department X access
+        # return Y" (DEPARTMENT_HAS_RETURN), not "what can it access".
+        excludes=(_kw(r"\breturns?\s+[A-Za-z0-9_]+", r"\bform\s+[A-Za-z0-9_]+"),),
+    ),
+
     _KeywordRule(
         Intent.DEPARTMENT_RETURNS, ("self", "department"),
         all_of=(_G_DEPT_NOUN, _kw(r"returns?", r"forms?", r"reports?")),
@@ -884,7 +1372,29 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # relationship named from the other side again, and
                      # "what" alongside the existing "which" opener.
                      r"assigned\s+to", r"allocated\s+to",
-                     rf"what\s+(xbrl|{_NON_XBRL})?\s*returns?"),),
+                     rf"what\s+(xbrl|{_NON_XBRL})?\s*returns?",
+                     # "give me list of RETURN OF DEPARTMENT testing" — the
+                     # possessive framing, and the only trigger this rule
+                     # was missing for it, so DEPARTMENT_LIST's generic
+                     # "give me" + department groups won and answered with
+                     # a list of all 15 departments.
+                     # "of" only, NOT "for": "complete list of returns FOR
+                     # department X" is DEPT_FULL_RETURN_LIST's own
+                     # phrasing, and since keyword rules are tried before
+                     # the _mk rule that owns it, accepting "for" here
+                     # silently took that intent over.
+                     r"returns?\s+of\s+(the\s+)?departments?",
+                     r"returns?\s+of\s+(the\s+)?depts?",
+                     # "what is the complete return ACCESS LIST FOR
+                     # department Test" — a whole-access-list request, which
+                     # is exactly this intent, but with no other trigger
+                     # word it fell to DEPARTMENT_LIST.
+                     # NB deliberately NOT "complete list of returns for
+                     # department X" — that exact phrasing is
+                     # DEPT_FULL_RETURN_LIST's own, and keyword rules are
+                     # tried before the _mk rule that owns it, so a trigger
+                     # matching it here silently takes over that intent.
+                     r"access\s+lists?\s+for", r"complete\s+returns?\s+access"),),
         # "accessible by the maximum/most" / "accessible by all departments"
         # / "department has access to the most returns" are DEPT_RETURN_
         # ACCESS_MATRIX's cross-department RANKING questions (system-wide,
@@ -908,6 +1418,15 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"access\s+to\s+every\s+returns?",
                      r"overdue"),
                   _DEPT_RETURN_RANKING,
+                  # A cross-department COUNT table ("list departments with
+                  # XBRL and Non-XBRL return counts") satisfies this rule's
+                  # dept + return + "xbrl returns" groups, but names no
+                  # department at all — it was answered "Sorry, I couldn't
+                  # understand your request" after the extractor found
+                  # nothing to resolve. It belongs to DEPARTMENT_LIST's
+                  # with_counts branch. Likewise a no-returns question.
+                  _DEPT_RETURN_COUNTS,
+                  _NO_RETURNS,
                   # Same type-level carve-out as DEPARTMENT_HAS_RETURN above:
                   # a plural "which/what departments" framing asks which
                   # departments hold a TYPE of return, not for one named
@@ -915,9 +1434,29 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                   re.compile(r"(?:which|what)\s+departments?.{0,40}(?:non[\s-]?xbrl|xbrl)\s+returns?", re.IGNORECASE)),
     ),
 
+    # A question that is only a department reference — "department test",
+    # "Test2 department". No field word, no verb, nothing for any other
+    # rule to key off, so it previously matched nothing at all. Answering
+    # with the department's profile is what "tell me about department X"
+    # means; every more specific phrasing ("department test returns",
+    # "users in department test") carries its own signal and is excluded by
+    # this pattern's whole-string anchor.
+    _KeywordRule(
+        Intent.DEPARTMENT_PROFILE, ("department",),
+        all_of=(_BareDepartmentLookupPattern(),),
+        # Defence in depth alongside the pattern's own per-word filler
+        # check: any aggregation vocabulary means the trailing words are a
+        # predicate, not a name.
+        excludes=(_NO_RETURNS, _DEPT_RETURN_COUNTS, _DEPT_RETURN_RANKING),
+        priority=1,
+    ),
+
     _KeywordRule(
         Intent.DEPARTMENT_PROFILE, ("self", "department"),
-        all_of=(_G_DEPT_NOUN,),
+        # "dept1"/"Dept1" IS the department reference in "what is the id of
+        # dept1" — see _DEPT_PREFIXED_NAME_RE. Accepted alongside the plain
+        # noun so such a question reaches this rule at all.
+        all_of=(_kw(r"departments?", r"depts?", r"dept[a-z]*\d[\w.\-]*"),),
         any_of=(_kw(r"email", r"\bid\b", r"identifier", r"what\s+department\s+am\s+i",
                      r"which\s+department",
                      # "is my department currently active" — previously fell
@@ -941,19 +1480,21 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # top-N returns is unambiguously an aggregation query, never a
         # single-department profile lookup.
         excludes=(_DEPT_RETURN_RANKING,
+                  # Same no-returns synonyms DEPARTMENT_LIST's own rule
+                  # recognizes (shared via _NO_RETURNS, so the two can't
+                  # drift) — a singular "which department has zero/no/
+                  # without any returns" is exactly as much an aggregation
+                  # query as "which departments have no returns" (plural),
+                  # but this rule's broad "which department" opener was
+                  # still swallowing the singular phrasing first, extracting
+                  # the whole clause ("has zero returns assigned") as if it
+                  # were a department name.
+                  _NO_RETURNS,
+                  # "list departments along with the count of their returns"
+                  # asks for every department's totals, not one department's
+                  # profile.
+                  _DEPT_RETURN_COUNTS,
                   _kw(r"few\s+returns?", r"some\s+returns?", r"several\s+returns?",
-                     # Same no-returns/ambiguous-quantity synonyms DEPARTMENT_LIST's
-                     # own rule recognizes — a singular "which department has zero/
-                     # no/without any returns" is exactly as much an aggregation
-                     # query as "which departments have no returns" (plural), but
-                     # this rule's broad "which department" opener was still
-                     # swallowing the singular phrasing first, extracting the
-                     # whole clause ("has zero returns assigned") as if it were a
-                     # department name.
-                     r"no\s+returns?", r"zero\s+returns?", r"without\s+any\s+returns?",
-                     r"no\s+assigned\s+returns?",
-                     r"don'?t\s+have\s+any\s+returns?", r"doesn'?t\s+have\s+any\s+returns?",
-                     r"do\s+not\s+have\s+any\s+returns?", r"does\s+not\s+have\s+any\s+returns?",
                      # "which department has access to ALL returns" is a
                      # coverage question over every department
                      # (DEPT_RETURN_ACCESS_MATRIX), not a single department's
@@ -991,12 +1532,14 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                  # they reject ("...the HIGHEST number of returns") has to be
                  # accepted here or it lands nowhere at all.
                  _DEPT_RETURN_RANKING,
-                 _kw(r"most", r"fewest", r"least", r"no\s+returns",
+                 # Shared with the sibling rules' excludes and with
+                 # _DEPARTMENT_QUERY_TYPE_PATTERNS — see _NO_RETURNS_ALTS /
+                 # _DEPT_RETURN_COUNTS_ALTS for why these are defined once.
+                 _NO_RETURNS,
+                 _DEPT_RETURN_COUNTS,
+                 _kw(r"most", r"fewest", r"least",
                      r"maximum", r"minimum", r"top\s+\d+",
-                     r"few\s+returns?", r"some\s+returns?", r"several\s+returns?",
-                     r"zero\s+returns?", r"without\s+any\s+returns?", r"no\s+assigned\s+returns?",
-                     r"don'?t\s+have\s+any\s+returns?", r"doesn'?t\s+have\s+any\s+returns?",
-                     r"do\s+not\s+have\s+any\s+returns?", r"does\s+not\s+have\s+any\s+returns?")),
+                     r"few\s+returns?", r"some\s+returns?", r"several\s+returns?")),
         # "complete list of returns FOR DEPARTMENT X" names a SPECIFIC
         # department (DEPT_FULL_RETURN_LIST's territory) — this rule's own
         # "complete list of" trigger (_G_ALL) would otherwise steal it and
@@ -1051,6 +1594,11 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # — previously unmatched entirely (every other any_of
                      # alternative here requires self-reference).
                      r"role\s+id\s+(for|of)", r"name\s+of\s+role\s+id",
+                     # "What is Tester role ID?" — the id word trails the
+                     # role name instead of leading it, so neither
+                     # "role id for/of" nor "role id <number>" matched and
+                     # the question reached no rule at all.
+                     r"role\s+id\b", r"role\s+identifier\b",
                      # A bare "role id <number>" appearing anywhere is a
                      # reliable, order-independent signal on its own —
                      # covers verbose/redundant phrasings like "the name of
@@ -1099,7 +1647,12 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      # structurally satisfy this rule's groups whenever the
                      # role's own NAME happens to contain the word "User"
                      # (e.g. "Admin User"), so that alone can't be trusted.
-                     r"\bmodules?\b", r"permissions?", r"full\s+control"),),
+                     r"\bmodules?\b", r"permissions?", r"full\s+control"),
+                  # Same three carve-outs the USERS_BY_ROLE rules carry —
+                  # this rule answers the same question shape and was
+                  # claiming "show every role with its user count" once
+                  # they stopped.
+                  _ROLE_ID_QUESTION, _ROLE_USER_COUNTS, _ROLE_ACTION_QUESTION,),
     ),
 
     _KeywordRule(
@@ -1217,7 +1770,12 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         # access()'s `if target_role:` branch then fell through to the
         # module-only branch — answering "which ROLES can access X" to
         # someone who asked whether THEY can.
-        excludes=(_kw(r"\bmy\b", r"\bcan\s+i\b", r"\bdo\s+i\s+have\b", r"\bam\s+i\b"),
+        # "what modules do I NOT have access to" — the negation between
+        # "do i" and "have" slipped past the self-reference exclude, so a
+        # first-person question about the caller's own gaps was answered as
+        # a role/module lookup with no role. PERMISSION_PROFILE's
+        # not_access branch owns it.
+        excludes=(_kw(r"\bmy\b", r"\bcan\s+i\b", r"\bdo\s+i\s+(not\s+)?have\b", r"\bam\s+i\b"),
                   _NamedRoleActionPattern()),
     ),
 
@@ -1250,7 +1808,12 @@ _KEYWORD_RULES: list[_KeywordRule] = [
                      r"\w+\s+roles?\s+can(?=\s)",
                      r"am\s+i\s+allowed", r"am\s+i\s+able\s+to",
                      r"do\s+i\s+have\s+(the\s+)?(permission|right|access)\s+to",
-                     r"do\s+i\s+have\s+approval\s+rights?"),
+                     r"do\s+i\s+have\s+approval\s+rights?",
+                     # "Can the Admin User create new users?" / "Does Admin
+                     # User have permission to create users?" — the subject
+                     # named with no "role" word at all. See
+                     # _ROLE_ACTION_QUESTION_ALTS.
+                     *_ROLE_ACTION_QUESTION_ALTS),
                  # "read" is in intent_classifier.ACTION_MAP/role_handlers.
                  # _ACTION_MAP (-> HasView) but was missing here, so "can i
                  # read the audit log" matched no rule at all and never
@@ -1303,7 +1866,11 @@ _KEYWORD_RULES: list[_KeywordRule] = [
         Intent.PERMISSION_PROFILE, ("self", "role"),
         all_of=(_kw(r"permission\w*", r"access\w*", r"modules?\s+am\s+i\s+allowed",
                      r"not\s+have\s+access", r"full\s+control", r"control\s+over"),),
-        any_of=(_kw(r"my", r"i\s+have", r"do\s+i\s+have", r"what\s+can\s+i",
+        # "do i NOT have" — the negation sits between the subject and the
+        # verb, so the plain "do i have" alternative missed the whole
+        # "what modules do I not have access to" family even though this
+        # rule's all_of group recognises "not have access".
+        any_of=(_kw(r"my", r"i\s+have", r"do\s+i\s+(not\s+)?have", r"what\s+can\s+i",
                      r"role\w*",
                      # Narrow, not a bare "\bi\b" (which stole unrelated
                      # self-referential "access" questions like "What
@@ -1402,6 +1969,19 @@ _FREQ_WORD = (
     r"fortnightly|bi[\s-]?weekly|bi[\s-]?monthly)"
 )
 
+# The verbs users reach for to describe sending a return to the regulator.
+# They are interchangeable in every phrasing this taxonomy cares about —
+# "which of my returns are FILED quarterly" and "...are SUBMITTED
+# quarterly" are one question — but the frequency rules below hard-coded
+# "filed", so the submitted/reported half of the vocabulary matched no rule
+# at all and fell through to the generic SQL agent. Defined once and shared
+# by every rule that accepts this verb, so a synonym added here reaches all
+# of them rather than one.
+_FILE_VERB = (
+    r"(?:file[ds]?|filing|submit(?:ted|s|ting)?|report(?:ed|s|ing)?|"
+    r"sent|send|furnish(?:ed|es)?|prepare[ds]?)"
+)
+
 # Literal-pattern rules for everything OUTSIDE USER/DEPARTMENT/ROLE/
 # ROLE_ACCESS (those 4 categories now live entirely in _KEYWORD_RULES
 # above). Left as representative-coverage patterns per the original
@@ -1434,6 +2014,24 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\badvance\s+notifications?\b(?!.{0,30}\bdays?\b)"),
 
     # ── XBRL_RETURNS / NON_XBRL_RETURNS / PERIOD / DEPT_RETURN_MAPPING ──
+    # OVERDUE / DUE-WINDOW questions that ALSO name a frequency — "which
+    # monthly returns are overdue", "give me all overdue daily returns",
+    # "which quarterly returns are due in the next 30 days".
+    #
+    # Placed immediately BEFORE RETURNS_BY_FREQUENCY because _NEW_RULES is
+    # first-match-wins by list order and every one of these satisfies that
+    # rule's "<freq> returns" trigger too. It won, and the overdue/window
+    # half of the question was silently dropped: "which quarterly returns
+    # are overdue?" answered with all 154 quarterly returns, overdue or
+    # not. The frequency is not lost by routing here instead — it is
+    # extracted as period_name and applied as a third filter alongside
+    # scope and xbrl_type (see handle_reports_upcoming_in_range).
+    _mk(Intent.REPORTS_UPCOMING_IN_RANGE, ("self", "department", "system_wide"),
+        rf"{_FREQ_WORD}\s+(reporting\s+)?returns?\b.{{0,30}}\boverdue\b",
+        rf"\boverdue\b.{{0,30}}{_FREQ_WORD}\s+(reporting\s+)?returns?\b",
+        rf"{_FREQ_WORD}\s+(reporting\s+)?returns?\b.{{0,30}}\bdue\s+(in|within)\s+the\s+next\s+\d+\s+days?\b",
+        rf"\breturns?\s+(that\s+are\s+|are\s+)?{_FILE_VERB}\s+(on\s+a\s+)?{_FREQ_WORD}\b.{{0,20}}\boverdue\b"),
+
     # RETURNS_BY_FREQUENCY: covers both question-word-first phrasing
     # ("which returns are filed monthly") and the reversed/no-question-word
     # phrasing real users type ("returns filed quarterly", "quarterly
@@ -1444,12 +2042,17 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     # here) and a negative lookahead for a nearby "notification" — so it
     # only fires for the genuine "list returns of this frequency" framing.
     _mk(Intent.RETURNS_BY_FREQUENCY, ("self", "system_wide"),
-        rf"\bwhich\s+returns?\s+are\s+filed\s+(on\s+a\s+)?{_FREQ_WORD}\b",
-        rf"\breturns?\s+(that\s+are\s+|are\s+)?filed\s+(on\s+a\s+)?{_FREQ_WORD}\b",
+        rf"\bwhich\s+returns?\s+are\s+{_FILE_VERB}\s+(on\s+a\s+)?{_FREQ_WORD}\b",
+        rf"\breturns?\s+(that\s+are\s+|are\s+)?{_FILE_VERB}\s+(on\s+a\s+)?{_FREQ_WORD}\b",
+        # "which returns do I submit/file/report quarterly" — the active
+        # voice, with the verb after the subject instead of before the
+        # frequency. Previously unmatched in every verb form.
+        rf"\breturns?\s+(do|does|did)\s+(i|we|my\s+department)\s+{_FILE_VERB}\s+(on\s+a\s+)?{_FREQ_WORD}\b",
+        rf"\breturns?\s+(that\s+)?(i|we)\s+{_FILE_VERB}\s+(on\s+a\s+)?{_FREQ_WORD}\b",
         # "returns filed every year/quarter/month/..." — "every" here
         # means the same as the adjective form ("filed every year" ==
         # "filed yearly"), not a literal frequency word by itself.
-        r"\breturns?\s+filed\s+every\s+(day|week|fortnight|month|quarter|half\s+year|year)\b",
+        rf"\breturns?\s+{_FILE_VERB}\s+every\s+(day|week|fortnight|month|quarter|half\s+year|year)\b",
         # "Which returns are annual?" / "Show returns that are quarterly" —
         # no "filed" at all, just a plain adjective after "are".
         rf"\breturns?\s+are\s+{_FREQ_WORD}\b",
@@ -1479,8 +2082,27 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\b(reporting\s+)?(period|frequency)\s+(for|of)\s+(?!more\s+than\b|greater\s+than\b)(the\s+)?(return|form|report)?\s*\S",
         r"\bwhat\s+(period|frequency)\s+is\b.{0,40}\breturn\b",
         r"\bhow\s+often\s+is\b.{0,40}\bfiled\b",
-        r"\breport\s+formats?\b.{0,40}\bfor\s+return\b",
-        r"\bwhat\s+formats?\s+are\s+(supported|available)\s+for\s+return\b"),
+        # The word "return" before the name is optional — users write "what
+        # report formats are available for CIMS_ROR?" as often as "...for
+        # return CIMS_ROR?", and only the latter matched.
+        #
+        # The leading (?!.*non[\s-]?xbrl) guard is load-bearing: a NON-XBRL
+        # return's report format lives on its own row and is answered by
+        # NONXBRL_RETURN_PROFILE ("uses the Excel report format"), whereas
+        # this intent's formats branch reports the XBRL instance format
+        # ("xml instance only"). Without the guard the broadened pattern
+        # claimed the non-XBRL phrasing too and answered it with the XBRL
+        # format — a confidently wrong answer to a question that already
+        # worked.
+        r"^(?!.*non[\s-]?xbrl).*\breport\s+formats?\b.{0,40}\bfor\b",
+        r"^(?!.*non[\s-]?xbrl).*\bwhat\s+formats?\s+are\s+(supported|available)\s+for\b",
+        # "how many days are DUE for CIMS_ROR" / "...due for submission of
+        # return CIMS_ROR" — the return's configured DueDays field. The
+        # days-REMAINING framing ("how many days are LEFT to submit X") is
+        # a date computation and belongs to NEXT_REPORTING_DATE instead;
+        # both are answered, neither is a submission-record lookup.
+        r"\bhow\s+many\s+days?\s+(are\s+|is\s+)?due\b",
+        r"\bdue\s+days?\s+(for|of)\b"),
     # PERIOD_LOOKUP: single-period/EBR-code field lookups (id/name/EBR
     # code/notification-days for one named period), the QF-vs-QAD-style
     # comparison between two periods, the "greater than N days"/"no
@@ -1493,6 +2115,14 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     _mk(Intent.PERIOD_LOOKUP, ("self", "system_wide"),
         r"\bperiod\s+(name|id)\s+for\b", r"\bperiod\s+id\s+represents?\b",
         r"\bwhich\s+period\s+id\s+represents?\b",
+        # "what period is ID 103?" / "which period is id 103" — the id is
+        # named without the "period id for" lead-in, and nothing matched.
+        r"\b(what|which)\s+(reporting\s+)?period\s+is\s+(period\s+)?id\s+\d+\b",
+        r"\b(what|which)\s+(reporting\s+)?period\s+(does\s+)?id\s+\d+\b",
+        # "what is my reporting calendar" — the self-scoped personal
+        # calendar, which only matched with the literal word "personal".
+        r"\b(my|our)\s+(reporting|report)\s+calendar\b",
+        r"\breporting\s+calendar\s+for\s+(me|myself)\b",
         r"\bebr\s+frequency\s+code\b",
         r"\badvance\s+notification\s+days?\b.{0,20}\bfor\b",
         r"\bdifference\s+between\b.{0,60}\bfrequenc\w*\b",
@@ -1519,7 +2149,24 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         r"\b(period|frequenc\w*)\b.{0,10}\bhas\s+the\s+most\s+returns\b",
         r"\bmost\s+returns?\s+scheduled\s+under\b", r"\bmost\s+returns?\s+assigned\b",
         r"\b(period|frequenc\w*)\b.{0,40}\bhighest\s+number\s+of\s+returns\b",
-        r"\b(period|frequenc\w*)\b.{0,40}\bused\s+by\s+the\s+maximum\s+(number\s+of\s+)?returns?\b"),
+        r"\b(period|frequenc\w*)\b.{0,40}\bused\s+by\s+the\s+maximum\s+(number\s+of\s+)?returns?\b",
+        # The LEAST/FEWEST/LOWEST/MINIMUM mirror of the four most-returns
+        # patterns above. Only the "most" half existed, so every
+        # least-returns phrasing either matched nothing at all ("which
+        # frequency has minimum returns?") or fell through to the plain
+        # period listing ("...lowest number of returns?" -> all 23 periods).
+        r"\b(period|frequenc\w*)\b.{0,10}\bhas\s+the\s+(least|fewest)\s+returns\b",
+        r"\b(period|frequenc\w*)\b.{0,10}\bhas\s+(least|fewest|minimum)\s+returns\b",
+        r"\b(least|fewest)\s+returns?\s+(scheduled|assigned)\b",
+        r"\b(period|frequenc\w*)\b.{0,40}\b(lowest|smallest|minimum)\s+number\s+of\s+returns\b",
+        r"\b(period|frequenc\w*)\b.{0,40}\bused\s+by\s+the\s+(fewest|minimum)\s+(number\s+of\s+)?returns?\b",
+        # "which frequency has maximum returns?" — the bare adjective with
+        # no "number of" between it and the noun, in both directions.
+        r"\b(period|frequenc\w*)\b.{0,10}\bhas\s+(the\s+)?(maximum|most|highest)\s+returns?\b",
+        # "how many frequencies are there / total number of frequencies" —
+        # a COUNT of the configured frequencies, not a listing of them.
+        r"\b(total\s+number|count)\s+of\s+(reporting\s+)?(periods?|frequenc\w*)\b",
+        r"\bhow\s+many\s+(reporting\s+)?(periods?|frequenc\w*)\b"),
     _mk(Intent.RETURNS_SUBMITTABLE_BY_DEPT, ("self", "department", "return"),
         # "submit"/"generate"/"create"/"file" are all synonyms end users use
         # interchangeably for filing a return (same synonym set already
@@ -1582,7 +2229,15 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         # "between X and Y" span, but still the same "next due date falls
         # in this window" computation.
         r"\bupcoming\s+due\s+dates?\s+in\s+the\s+next\s+\d+\s+days?\b",
-        r"\bdue\s+in\s+the\s+next\s+\d+\s+days?\b",
+        # "the" is optional and "within" is as common as "in" — both forms
+        # were unmatched, so "which returns are due within the next 10
+        # days" reached no rule at all.
+        r"\bdue\s+(in|within)\s+(the\s+)?next\s+\d+\s+days?\b",
+        r"\b(returns?|reports?|forms?)\b.{0,20}\bin\s+the\s+next\s+\d+\s+days?\b",
+        # "which of my returns are due soon" — no explicit N. Resolved to
+        # the same rolling-window computation via next_due (the soonest
+        # upcoming due date), not a guessed number of days.
+        r"\breturns?\s+(that\s+are\s+|are\s+)?due\s+soon\b",
         r"\bdue\s+(this|next|current)\s+month\b",
         r"\bhow\s+many\s+returns?\s+are\s+due\s+this\s+month\b",
         # "are any of my returns overdue" / "which returns are overdue for
@@ -1634,7 +2289,10 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
     _mk(Intent.NEXT_REPORTING_DATE, ("return",),
         r"\bnext\s+report(ing)?\s+date\b", r"\bnext\s+due\s+date\b",
         r"\bwhen\s+is\b.{0,55}\bdue\b", r"\bwhen\s+(is|does)\b.{0,55}\bnext\s+(report|reporting|submission|due)\b",
-        r"\bwhen\s+(should|do)\s+i\s+(submit|file|report)\b", r"\bdue\s+date\s+for\b",
+        # "when do I NEED TO / HAVE TO submit X" — the modal between the
+        # subject and the verb made this unmatched in every form.
+        r"\bwhen\s+(should|do|does|will|must)\s+(i|we)\s+(need\s+to\s+|have\s+to\s+)?(submit|file|report|send)\b",
+        r"\bdue\s+date\s+for\b",
         r"\bnext\s+period[\s-]?end\b", r"\bhow\s+many\s+days?\s+(are\s+)?left\s+before\b.{0,40}\bdue\b",
         # "submission schedule for return X (across all departments/for
         # my returns this year)" — the schedule is a property of the
@@ -1648,8 +2306,26 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         # still the same underlying return-frequency computation
         # (query_type="calendar" tells the handler to enumerate instead
         # of returning just the next occurrence).
-        r"\breporting\s+calendar\s+for\s+return\b",
-        r"\bfull\s+reporting\s+calendar\s+for\s+return\b"),
+        # The word "return" after "for" is optional — "give me reporting
+        # calendar for OCB" is how these are actually typed, and only the
+        # "...for return OCB" form matched, so the bare one reached no rule
+        # at all. The name itself is resolved downstream by the entity
+        # extractor from the whole message, exactly as in the "for return X"
+        # form; this pattern only has to recognise the QUESTION shape.
+        r"\b(full\s+)?reporting\s+calendar\s+for\b",
+        r"\b(full\s+)?reporting\s+calendar\s+of\b",
+        # "how many days are LEFT/REMAINING to submit X" / "how many days
+        # do I have to submit X" / "how many days until X is due" — days
+        # remaining until the next due date, which is this intent's own
+        # computation. (The days-DUE framing asks for the configured
+        # DueDays field instead and is RETURN_FIELD's; see its rule.)
+        r"\bhow\s+many\s+days?\s+(are\s+|is\s+)?(left|remaining)\b",
+        r"\bhow\s+many\s+days?\s+do\s+(i|we)\s+have\b",
+        # "how many days before the due date will I be NOTIFIED" asks about
+        # the notification lead time configured on the period, not about
+        # the due date itself — that's NOTIFICATION_QUERY/PERIOD_LOOKUP's
+        # question, and this pattern would otherwise answer it with a date.
+        r"\bhow\s+many\s+days?\s+(until|till|before)\b(?!.*\bnotif)"),
     _mk(Intent.RETURN_PROFILE, ("return",),
         r"\btaxonomy\s+(version|does)\b", r"\bxsd\s+path\b",
         r"\bdue\s+days?\s+.*submission\s+of\s+return\b", r"\balternate\s+name\s+for\s+return\b",
@@ -1785,6 +2461,20 @@ _NEW_RULES: list[tuple[Intent, tuple[str, ...], list[re.Pattern]]] = [
         rf"\b{_NON_XBRL}\s+returns?\b", rf"\bhow\s+many\s+{_NON_XBRL}\b"),
     _mk(Intent.DEPT_FULL_RETURN_LIST, ("department",),
         r"\bcomplete\s+list\s+of\s+returns?\s+for\s+department\b"),
+    # "Which returns are assigned to Test?" — a department's return list
+    # with the word "department" nowhere in the sentence, so the keyword
+    # rule (which requires the department noun) can't see it. Nothing else
+    # in this taxonomy assigns returns TO anything but a department, so the
+    # shape is unambiguous once the self-referential and department-noun
+    # forms are excluded — both of which the keyword rules above already
+    # claim first (keyword rules are tried before _NEW_RULES entirely).
+    #
+    # The name must not be a bare pronoun/filler ("assigned to me", "to
+    # them") — those name no department and would resolve to nothing.
+    _mk(Intent.DEPARTMENT_RETURNS, ("self", "department"),
+        r"\breturns?\s+(?:are\s+|is\s+)?(?:assigned|allocated|mapped|available|accessible)\s+to\s+"
+        r"(?!me\b|us\b|them\b|him\b|her\b|it\b|you\b|my\b|our\b|the\s+department\b)"
+        r"[A-Za-z][A-Za-z0-9_.\- ]{0,40}"),
     _mk(Intent.MY_RETURN_ACCESS, ("self",),
         r"\bwhich\s+returns?\s+does\s+my\s+department\s+have\s+access\b",
         r"\bcomplete\s+list\s+of\s+returns?\s+i\s+can\s+work\s+with\b",
@@ -2011,7 +2701,7 @@ def _refine_range_target_type(
     if _SYSTEM_WIDE_RANGE_RE.search(q) and "system_wide" in accepted:
         return "system_wide"
 
-    explicit_dept = _extract_named_entity_before_or_after(q, ("department", "dept"))
+    explicit_dept = _extract_named_entity_before_or_after(q, ("department", "dept"), _DEPT_FILLER_WORDS)
     if explicit_dept and "department" in accepted:
         return "department"
 
@@ -2303,6 +2993,18 @@ _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     # routing excludes; see _rank_alts.)
     ("most", _DEPT_RANK_MOST),
     ("fewest", _DEPT_RANK_FEWEST),
+    # Both of these must also precede "count", for the same reason ranking
+    # does: they are how-many questions ABOUT RETURNS, and _HOW_MANY_PAT
+    # answers with a count OF DEPARTMENTS.
+    #   "list departments along with the count of their returns"
+    #       -> answered "Total departments: 15 (11 active, 4 inactive)",
+    #          which is the answer to "how many departments are there".
+    #   "which department have 0 returns assigned"
+    #       -> "0 returns" contains no how-many wording itself, but keeping
+    #          the no-returns test adjacent to the count test is what makes
+    #          the precedence between them explicit rather than incidental.
+    ("no_returns", _NO_RETURNS),
+    ("with_counts", _DEPT_RETURN_COUNTS),
     ("count", _HOW_MANY_PAT),
     # Checked before "with_counts": "top 5 departments BY RETURN COUNT" also
     # matches with_counts' "return\s+counts?" pattern, and first-match-wins
@@ -2310,22 +3012,13 @@ _DEPARTMENT_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     # plain with_counts (unlimited, unsorted) branch instead of the
     # sorted-and-sliced one.
     ("top_n", _kw(r"top\s+\d+")),
-    # Every phrasing here should mean the same thing regardless of word
-    # order or verb choice — "no returns assigned", "zero returns
-    # assigned", "don't/doesn't/do not have any returns", "no assigned
-    # returns" all describe a department with zero accessible returns.
-    ("no_returns", _kw(r"no\s+returns?", r"without\s+any\s+returns?", r"zero\s+returns?",
-                        r"no\s+assigned\s+returns?",
-                        r"don'?t\s+have\s+any\s+returns?", r"doesn'?t\s+have\s+any\s+returns?",
-                        r"do\s+not\s+have\s+any\s+returns?", r"does\s+not\s+have\s+any\s+returns?")),
+    # ("no_returns"/"with_counts" are matched at the top of this table,
+    # ahead of "count" — see the note there.)
     # An inherently vague quantity ("few"/"some"/"several" returns) with no
     # ordinal ranking (unlike "fewest") — this can't be answered with a
     # single deterministic query, so it's flagged for the handler to ask
     # a clarification question instead of guessing what "few" means.
     ("ambiguous_quantity", _kw(r"\bfew\b", r"\bsome\b", r"\bseveral\b")),
-    # ("most"/"fewest" are matched at the top of this table, ahead of
-    # "count" — see the note there.)
-    ("with_counts", _kw(r"return\s+counts?", r"with\s+their\s+return", r"assigned\s+return\s+counts?")),
     ("inactive", _INACTIVE_PAT),
     ("active", _ACTIVE_PAT),
 ]
@@ -2341,6 +3034,12 @@ def _extract_top_n(q: str, default: int = 5) -> int:
     return int(m.group(1)) if m else default
 
 _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # with_counts BEFORE count, for the same reason the department table
+    # orders them that way: "list of roles along with the NUMBER OF USERS
+    # in each" satisfies _HOW_MANY_PAT, and first-match-wins answered it
+    # with "Total roles: 16 (14 active, 2 inactive)" — the answer to "how
+    # many roles are there", not to the question asked.
+    ("with_counts", _ROLE_USER_COUNTS),
     ("count", _HOW_MANY_PAT),
     ("exists", _kw(r"is\s+there\s+a\s+role", r"does\s+.*role.*exist", r"role.*exists?\b",
                     r"check\s+if.*role.*exists?", r"is\s+.*\s+a\s+valid\s+role")),
@@ -2351,7 +3050,8 @@ _ROLE_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("least_users", _kw(r"least\s+users?", r"fewest\s+users?", r"minimum\s+users?",
                           r"smallest\s+role", r"least[\s-]?used\s+role",
                           r"role.{0,15}fewest", r"role.{0,15}used\s+by\s+the\s+fewest")),
-    ("with_counts", _kw(r"user\s+counts?", r"number\s+of\s+users?\s+in\s+each")),
+    # ("with_counts" is matched at the top of this table, ahead of "count"
+    # — see the note there.)
     ("inactive", _INACTIVE_PAT),
     ("active", _ACTIVE_PAT),
 ]
@@ -2450,7 +3150,11 @@ _PERIOD_LOOKUP_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("no_notification", _kw(r"no\s+advance\s+notification", r"without\s+(any\s+)?advance\s+notification",
                              r"advance\s+notification.{0,20}not\s+configured")),
     ("personal_calendar", _kw(r"personal\s+reporting\s+calendar", r"calendar\s+view",
-                               r"report\s+due\s+dates?", r"reporting\s+calendar\s+for")),
+                               r"report\s+due\s+dates?", r"reporting\s+calendar\s+for",
+                               # "what is MY reporting calendar" — the
+                               # possessive form, previously unmatched here
+                               # even once its routing rule was added.
+                               r"(my|our)\s+(reporting|report)\s+calendar")),
 ]
 
 # Which single field a plain (non-aggregate) PERIOD_LOOKUP question wants —
@@ -2467,20 +3171,43 @@ _PERIOD_FIELD_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 _PERIOD_LIST_QUERY_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("shared_frequency", _kw(r"share\s+the\s+same", r"same\s+reporting\s+(schedule|frequenc\w*)")),
+    # Both rankings are matched BEFORE "count": "which frequency has the
+    # highest NUMBER OF returns" satisfies _HOW_MANY_PAT too, and
+    # first-match-wins here — a count of frequencies is not the answer to
+    # a ranking question. (Same ordering rule as the department table.)
     ("most_returns", _kw(r"most\s+returns?\s+scheduled", r"most\s+returns?\s+assigned",
                           r"(period|frequenc\w*)\s+has\s+the\s+most\s+returns?",
+                          r"(period|frequenc\w*)\s+has\s+(the\s+)?(maximum|highest)\s+returns?",
                           r"highest\s+number\s+of\s+returns?",
                           r"used\s+by\s+the\s+maximum\s+(number\s+of\s+)?returns?",
                           r"maximum\s+(number\s+of\s+)?returns?.{0,20}(period|frequenc\w*)")),
+    # The mirror of most_returns. Absent entirely before, so every
+    # least/fewest/lowest/minimum phrasing produced either no match or the
+    # unranked period list.
+    ("least_returns", _kw(r"(least|fewest)\s+returns?\s+(scheduled|assigned)",
+                           r"(period|frequenc\w*)\s+has\s+the\s+(least|fewest)\s+returns?",
+                           r"(period|frequenc\w*)\s+has\s+(the\s+)?(minimum|lowest|smallest)\s+returns?",
+                           r"(lowest|smallest|minimum)\s+number\s+of\s+returns?",
+                           r"used\s+by\s+the\s+(fewest|minimum)\s+(number\s+of\s+)?returns?",
+                           r"(minimum)\s+(number\s+of\s+)?returns?.{0,20}(period|frequenc\w*)")),
+    # "how many reporting frequencies are defined?" answered with all 23
+    # rows — the count is the answer, and the list is not.
+    ("count", _HOW_MANY_PAT),
 ]
 
-_PERIOD_ID_RE = re.compile(r"\bperiod\s+id\s+(\d+)\b", re.IGNORECASE)
+# "period id 103" and the bare "id 103" both name a period ID here — the
+# second form appears in "what period is ID 103?", where the word "period"
+# sits before the verb rather than before the id, so the "period id N"
+# pattern alone found nothing and the question fell through with no id to
+# look up. Only consulted for PERIOD_LOOKUP, so a bare "id N" cannot be
+# mistaken for another entity's id.
+_PERIOD_ID_RE = re.compile(r"\bperiod\s+id\s+(\d+)\b|\bid\s+(\d+)\b", re.IGNORECASE)
 _NOTIFICATION_THRESHOLD_RE = re.compile(r"\bgreater\s+than\s+(\d+)\s*days?\b", re.IGNORECASE)
 
 
 def _extract_period_id(q: str) -> str | None:
     m = _PERIOD_ID_RE.search(q)
-    return m.group(1) if m else None
+    return (m.group(1) or m.group(2)) if m else None
 
 
 def _extract_notification_threshold(q: str, default: int = 0) -> int:
@@ -2578,12 +3305,23 @@ def _strip_leading_not_entity_words(phrase: str) -> str:
     return " ".join(words)
 
 
-def _extract_named_entity_before_or_after(q: str, noun_words: tuple[str, ...]) -> str | None:
+def _extract_named_entity_before_or_after(q: str, noun_words: tuple[str, ...],
+                                           filler_words: frozenset[str] = frozenset()) -> str | None:
     """Extract a proper-noun-looking token immediately before OR after any
     of *noun_words* (e.g. "department"/"dept"). Handles both "Finance
     department" (before) and "department of Finance"/"in Finance" (after),
     which _extract_after_kw alone (after-only) cannot. A sentence-initial
     question/list word (What/Which/Who/...) is never returned as the name.
+
+    *filler_words*: domain nouns that can legitimately sit immediately
+    BEFORE the noun word without being its name — "which RETURNS department
+    testing can access" put "returns" there, and the before-pass returned it
+    as the department name, so the question was answered "Department
+    'returns' was not found." _NOT_AN_ENTITY_NAME alone can't cover this:
+    it holds sentence grammar, not each caller's domain vocabulary. Callers
+    pass their own set (department callers pass _DEPT_FILLER_WORDS, which
+    already lists exactly these words for _NamedDepartmentPattern's use —
+    sharing it is what stops the two from drifting apart again).
     """
     for word in noun_words:
         # Two passes, most-specific first.
@@ -2618,7 +3356,8 @@ def _extract_named_entity_before_or_after(q: str, noun_words: tuple[str, ...]) -
                 if candidate.lower() in {w.lower() for w in noun_words} | {
                         w.lower() + "s" for w in noun_words}:
                     continue
-                if candidate and candidate.lower() not in _NOT_AN_ENTITY_NAME:
+                if (candidate and candidate.lower() not in _NOT_AN_ENTITY_NAME
+                        and candidate.lower() not in filler_words):
                     return candidate
     # After: reuse the existing after-keyword extractor with common prepositions.
     return _extract_after_kw(q, *[f"in {w}" for w in noun_words], *noun_words,
@@ -2644,7 +3383,7 @@ def _extract_department_name_loose(q: str) -> str | None:
     m = re.search(r"\b(?:in|of|belonging\s+to|belongs?\s+to)\s+([A-Z][A-Za-z0-9_.\-]{1,40})\b", q)
     if m:
         return m.group(1).strip()
-    return _extract_named_entity_before_or_after(q, ("department", "dept"))
+    return _extract_named_entity_before_or_after(q, ("department", "dept"), _DEPT_FILLER_WORDS)
 
 
 # Leading filler that _extract_named_entity_before_or_after's "after"
@@ -2666,6 +3405,18 @@ _DEPT_LEADING_FILLER_RE = re.compile(
 )
 
 
+# Trailing clause the after-"department" capture keeps when the sentence
+# continues past the name — "department testing CAN ACCESS" ends at
+# _extract_after_kw's " access" terminator with "testing can" captured, and
+# "department dept1 CAN SUBMIT" the same way. The modal is never part of a
+# department name, but the shared terminator set can't drop it: it stops
+# AT "access", one word too late.
+_DEPT_TRAILING_FILLER_RE = re.compile(
+    r"\s+(?:can|could|will|would|should|may|might|must|do|does|did|is|are|has|have)\b.*$",
+    re.IGNORECASE,
+)
+
+
 def _clean_extracted_department_name(name: str | None) -> str | None:
     if not name:
         return None
@@ -2675,7 +3426,65 @@ def _clean_extracted_department_name(name: str | None) -> str | None:
         if stripped == cleaned:
             break
         cleaned = stripped
+    cleaned = _DEPT_TRAILING_FILLER_RE.sub("", cleaned).strip()
+    # "...accessible to department Test." — a sentence-final period is not
+    # part of the name, and left attached it turned an exact match into a
+    # "Department 'Test.' was not found."
+    cleaned = cleaned.strip(" .,;:!").strip()
     return cleaned or None
+
+
+# Leading filler _extract_after_kw(q, "user", ...) captures when the word
+# "user" is used as a common noun before the real name — "the user code of
+# jsmith", "the user profile for rpatel" — plus the "of/for the" connectors
+# that survive when the anchor is "user" itself.
+_USER_LEADING_FILLER_RE = re.compile(
+    r"^(?:code|id|name|profile|details?|status|department|dept|role)\s+"
+    r"(?:of|for)\s+(?:the\s+)?(?:user\s+)?",
+    re.IGNORECASE,
+)
+
+# Trailing clause _extract_after_kw's generic stop-set (?/is/has/have/and)
+# doesn't cover — "which department does user rpatel BELONG TO" captured
+# "rpatel belong to". Deliberately a short, verb-only list: display names
+# are multi-word ("Reena Gotal"), so anything broader would truncate real
+# names rather than trailing grammar.
+_USER_TRAILING_FILLER_RE = re.compile(
+    r"\s+(?:belongs?|belonging|works?|working|assigned|currently|had|"
+    r"was|were|does|do|did|can|could|would|should)\b.*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_extracted_user_name(name: str | None) -> str | None:
+    """Strip the sentence fragments _extract_after_kw's generic capture can
+    leave on a username, and reject a capture that is nothing but grammar
+    or domain vocabulary ("attempts", "role", "their").
+
+    Without the rejection, "how many failed attempts user maker has" and
+    friends quoted the parser's own output back at the user as though they
+    had asked about a person named "attempts" — see
+    query_handlers/_extraction_guard.py for the same principle applied to
+    department/role/return names once a lookup has already failed. Here it
+    is applied BEFORE the lookup, because a filler capture is never worth
+    looking up in the first place.
+    """
+    if not name:
+        return None
+    cleaned = name
+    for _ in range(2):  # a second pass catches a filler revealed by the first
+        stripped = _USER_LEADING_FILLER_RE.sub("", cleaned).strip()
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    cleaned = _USER_TRAILING_FILLER_RE.sub("", cleaned).strip()
+    cleaned = cleaned.strip(" .,;:'\"?!").strip()
+    # Only the FIRST word is guard-checked: real display names are multi-word
+    # ("Atharv Shevade") and a filler word can only ever lead the capture.
+    first = re.split(r"\s+", cleaned)[0] if cleaned else ""
+    if not cleaned or not _user_name_ok(first):
+        return None
+    return cleaned
 
 
 # Same class of bug as _DEPT_LEADING_FILLER_RE, for role names — "What is
@@ -2850,10 +3659,33 @@ _GENERIC_RETURN_WORDS_RE = re.compile(
 )
 
 
+_RETURN_NOUN_PREFIX_RE = re.compile(r"^(?:returns?|forms?|reports?)\s+(?=\S)", re.IGNORECASE)
+
+# Context clauses that trail a return NAME without being part of it —
+# "how many days due for return CIMS_ROR FOR SUBMISSION" captured
+# "CIMS_ROR for submission" and then found no such return. _extract_after_kw's
+# shared stop-word set can't own these: "for" is far too common a word to
+# terminate every entity capture in the taxonomy.
+_RETURN_TRAILING_CLAUSE_RE = re.compile(
+    r"\s+for\s+(?:submission|submitting|filing|the\s+submission|this\s+(?:period|month|quarter|year))\b.*$",
+    re.IGNORECASE,
+)
+
+
 def _clean_extracted_return_name(name: str | None) -> str | None:
     if not name:
         return None
     name = _LEADING_FILLER_RE.sub("", name).strip()
+    # "what is the return ID for RETURNS CIMS?" — the plural noun is part
+    # of the user's sentence, not of the name, but it survives the leading
+    # filler regex (which only strips "id/code/... for|of"). Left with
+    # "returns CIMS", the resolver searched for a return by that literal
+    # name and reported it couldn't find one — while listing real returns
+    # in its own "did you mean" suggestions. Stripped only when something
+    # follows it, so a bare "returns" (a KIND, not a name) still falls to
+    # the generic-words check below.
+    name = _RETURN_NOUN_PREFIX_RE.sub("", name).strip()
+    name = _RETURN_TRAILING_CLAUSE_RE.sub("", name).strip()
     name = _TRAILING_FILLER_RE.sub("", name).strip()
     # A sentence-final period gets swept up when the return name is the
     # last word before it ("...return CIMS_ROR.") — trailing "?" is
@@ -2940,15 +3772,42 @@ def _extract_return_name_for_due_date(q: str) -> str | None:
     return/form/report keyword immediately before the name (e.g. "reporting
     date for CIMS_ROR", "reporting frequency of CIMS_ROR", "return id for
     CIMS_ROR")."""
-    name = _extract_after_kw(q, "return", "form", "report")
+    # Multi-word anchors are tried FIRST, before the bare "return"/"form"/
+    # "report" nouns. Those bare nouns also occur INSIDE the question's own
+    # vocabulary — "what REPORT formats are available for CIMS_ROR" anchors
+    # on "report" and captures "formats are available for CIMS_ROR" as the
+    # name — so the specific phrase has to win when both are present. Same
+    # specific-anchor-first ordering the return-scoped extraction in
+    # _extract_new_params already uses for "submission of".
+    # (Any "return "/"form " noun left at the FRONT of a specific-anchor
+    # capture is stripped by _clean_extracted_return_name, so "reporting
+    # calendar for return OCB" still yields "OCB".)
+    name = _extract_after_kw(
+        q, "reporting calendar for", "reporting calendar of",
+        # "how many days remaining for SUBMISSION OF CIMS_RAQ(Monthly)" /
+        # "how many days UNTIL CIMS_FormGPB is due" — the name has no
+        # return/form/report noun anywhere near it, so without these
+        # anchors nothing was extracted and the handler asked which return
+        # was meant, for a question that named one.
+        "submission of", "submissions of", "submitting",
+        "until", "till",
+        # "when is CIMS_ROR due?" — the name sits between the question
+        # opener and "due", with no anchor noun anywhere. The trailing
+        # "due" is stripped by _TRAILING_FILLER_RE.
+        "when is", "when will", "when are",
+        "report formats for", "report format for",
+        "formats are available for", "formats are supported for",
+        "formats available for", "formats supported for",
+        "reporting date for", "due date for", "period end for",
+        "period end date for", "reporting frequency of", "reporting frequency for",
+        "frequency of", "frequency for", "reporting period of", "reporting period for",
+        "period of", "return id for", "return id of", "internal form id for",
+        "internal form id of",
+    )
     if not name:
-        name = _extract_after_kw(
-            q, "reporting date for", "due date for", "period end for",
-            "period end date for", "reporting frequency of", "reporting frequency for",
-            "frequency of", "frequency for", "reporting period of", "reporting period for",
-            "period of", "return id for", "return id of", "internal form id for",
-            "internal form id of", "submit", "file",
-        )
+        name = _extract_after_kw(q, "return", "form", "report")
+    if not name:
+        name = _extract_after_kw(q, "submit", "file")
     return _clean_extracted_return_name(name)
 
 
@@ -2999,6 +3858,26 @@ _DATE_RANGE_RE = re.compile(
     rf"\b(?:between|from|during|for\s+the\s+period(?:\s+of)?)\s+({_DATE_TOKEN})\s+(?:and|to|-)\s+({_DATE_TOKEN})\b",
     re.IGNORECASE,
 )
+
+
+# A frequency WORD inside a relative-date phrase is part of the date, not
+# a frequency filter: "which returns are due THIS MONTH" asks about a
+# window, and reading "month" as a Monthly filter silently dropped every
+# quarterly/yearly return whose period ends inside it. Stripped before
+# frequency extraction (never before date extraction, which needs these
+# phrases intact).
+_RELATIVE_DATE_PHRASE_RE = re.compile(
+    r"\b(?:this|next|last|previous|current|coming|past|following)\s+"
+    r"(?:\d+\s+)?(?:day|days|week|weeks|month|months|quarter|quarters|year|years)\b"
+    r"|\b(?:in|within|over)\s+the\s+(?:next|last|past|coming)\s+\d+\s+"
+    r"(?:day|days|week|weeks|month|months|year|years)\b"
+    r"|\bnext\s+\d+\s+(?:day|days|week|weeks|month|months|year|years)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_relative_date_phrases(q: str) -> str:
+    return _RELATIVE_DATE_PHRASE_RE.sub(" ", q)
 
 
 def _extract_date_range(q: str) -> tuple[str | None, str | None]:
@@ -3057,7 +3936,11 @@ _NEXT_DUE_RE = re.compile(
     rf"\bnext\s+(?:{_NON_XBRL}\s+|xbrl\s+)?returns?\s+(?:is\s+|has\s+|that\s+is\s+|which\s+is\s+)?due\b"
     rf"|\bnext\s+due\s+(?:{_NON_XBRL}\s+|xbrl\s+)?returns?\b"
     # "which non-XBRL return is due next" — same ask, words reversed.
-    rf"|\b(?:{_NON_XBRL}\s+|xbrl\s+)?returns?\s+(?:is\s+)?due\s+next\b",
+    rf"|\b(?:{_NON_XBRL}\s+|xbrl\s+)?returns?\s+(?:is\s+)?due\s+next\b"
+    # "which of my returns are due soon" — no N to build a window from, so
+    # it resolves to the same soonest-upcoming computation rather than a
+    # guessed number of days.
+    rf"|\breturns?\s+(?:that\s+are\s+|are\s+)?due\s+soon\b",
     re.IGNORECASE,
 )
 
@@ -3168,9 +4051,9 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
     if intent in (Intent.USER_PROFILE, Intent.USER_FIELD, Intent.USERS_BY_DEPARTMENT,
                   Intent.AUDIT_HISTORY, Intent.SUBMISSION_STATUS, Intent.SUBMISSION_DETAIL,
                   Intent.USER_ACCESS_SUMMARY, Intent.SECURITY_EVENTS):
-        params["target_user"] = explicit or _extract_after_kw(
+        params["target_user"] = explicit or _clean_extracted_user_name(_extract_after_kw(
             q, "user", "for user", "of user", "about user", "made by", "submitted by",
-        )
+        ))
 
     if intent in (Intent.SUBMISSION_STATUS, Intent.SUBMISSION_DETAIL):
         params["submission_id"] = _extract_submission_id(q)
@@ -3182,7 +4065,23 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
                     Intent.DEPARTMENT_HAS_RETURN, Intent.DEPT_FULL_RETURN_LIST, Intent.CROSS_ENTITY_QUERY,
                     Intent.AUDIT_ENTITY_TRAIL, Intent.NONXBRL_RETURN_LIST, Intent.RETURNS_SUBMITTABLE_BY_DEPT):
         params["target_department"] = explicit or _clean_extracted_department_name(
-            _extract_named_entity_before_or_after(q, ("department", "dept")))
+            _extract_named_entity_before_or_after(q, ("department", "dept"), _DEPT_FILLER_WORDS))
+        if not params["target_department"]:
+            # "what is the id of dept1" — the name IS the noun, so there is
+            # no separate "department"/"dept" token for the extractor above
+            # to anchor on. See _DEPT_PREFIXED_NAME_RE.
+            m = _DEPT_PREFIXED_NAME_RE.search(q)
+            if m:
+                params["target_department"] = m.group(0)
+        if not params["target_department"] and intent == Intent.DEPARTMENT_RETURNS:
+            # "Which returns are assigned to Test?" — the department is
+            # named with no "department" noun anywhere, so the noun-anchored
+            # extractor above has nothing to anchor on. The relationship
+            # verb is the only anchor available (see this intent's
+            # "<returns> assigned to <name>" rule in _NEW_RULES).
+            params["target_department"] = _clean_extracted_department_name(
+                _extract_after_kw(q, "assigned to", "allocated to",
+                                  "accessible to", "available to", "mapped to"))
 
     if intent == Intent.NONXBRL_RETURN_LIST:
         params["query_type"] = _extract_query_type(q, _NONXBRL_RETURN_LIST_QUERY_TYPE_PATTERNS)
@@ -3208,6 +4107,11 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
                   Intent.PERMISSION_PROFILE, Intent.ROLES_WITH_PERMISSION, Intent.ROLE_MODULE_ACCESS,
                   Intent.ROLE_PERMISSION_DIFF, Intent.CROSS_ENTITY_QUERY):
         params["target_role"] = explicit or _clean_extracted_role_name(_extract_role_name_loose(q))
+        if not params["target_role"] and intent == Intent.PERMISSION_CHECK:
+            # "Can the Admin User create new users?" names the role as the
+            # sentence's subject with no "role" word for the extractor above
+            # to anchor on — see _extract_role_from_action_question.
+            params["target_role"] = _extract_role_from_action_question(q)
         if not params["target_role"] and intent == Intent.USERS_BY_ROLE:
             # No "role" word at all in the question ("give me all admin
             # users", "list of all tester users") — fall back to the
@@ -3221,6 +4125,12 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
 
     if intent == Intent.ROLE_PROFILE:
         params["role_id"] = _extract_role_id(q)
+        # RoleId is hidden from table output by default (db_qa_router.
+        # _SKIP_FIELDS treats it as an internal key), so "what is the role
+        # ID of Tester?" rendered a Name/Status row with no ID in it —
+        # the answer survived only in the summary sentence. Mirrors
+        # DEPARTMENT_PROFILE's own want_dept_id.
+        params["want_role_id"] = bool(re.search(r"\b(id|ids|identifier)\b", q, re.IGNORECASE))
 
     if intent == Intent.ROLE_PERMISSION_DIFF:
         # "difference in permissions BETWEEN Admin User AND Tester" — the
@@ -3283,8 +4193,16 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
             # CIMS_ROR?" — no literal "return"/"form"/"report" word at all,
             # so the extraction above never finds an anchor; the verb
             # itself ("access"/"submit") is the only anchor available here.
+            #
+            # The "<verb> to" forms are listed FIRST: "which departments
+            # have ACCESS TO CIMS_ROR" anchored on the bare "access" and
+            # captured "to CIMS_ROR", which matched 23 returns by fuzzy
+            # fallback and asked the user to disambiguate a name they had
+            # already given exactly.
             params["target_return"] = explicit or _clean_extracted_return_name(
-                _extract_after_kw(q, "access", "submit"))
+                _extract_after_kw(q, "access to", "submit to", "assigned to",
+                                  "available to", "accessible to",
+                                  "access", "submit"))
         if intent == Intent.DEPARTMENTS_WITH_RETURN_ACCESS and not params["target_return"]:
             # No return named at all: "which departments can access non-XBRL
             # returns?" asks the same question about a CATEGORY. Only set
@@ -3320,6 +4238,12 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
         params["xbrl_type"] = _extract_xbrl_type(q)
 
     if intent == Intent.REPORTS_UPCOMING_IN_RANGE:
+        # A frequency named alongside an overdue/window question is a THIRD
+        # filter, not a different question — "which monthly returns are
+        # overdue" means overdue AND monthly. Extracted only when the word
+        # is genuinely there (_extract_period returns None otherwise), so
+        # an unqualified "which returns are overdue" is unaffected.
+        params["period_name"] = _extract_period(_strip_relative_date_phrases(q))
         # "overdue" has no date range at all (no "between X and Y"/"next N
         # days" span to extract) — it's a distinct computation (next due
         # date already passed AND not yet filed), so it's flagged via
@@ -3344,7 +4268,7 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
         # " is"/" has"/" and") swallows the month clause into the
         # department name. Trim it back off here rather than teaching the
         # shared extractor about a stop-word specific to this one intent.
-        dept = explicit or _extract_named_entity_before_or_after(q, ("department", "dept"))
+        dept = explicit or _extract_named_entity_before_or_after(q, ("department", "dept"), _DEPT_FILLER_WORDS)
         if dept:
             dept = re.sub(r"\s+for\s+.*$", "", dept, flags=re.IGNORECASE).strip() or None
         params["target_department"] = _clean_extracted_department_name(dept)
@@ -3401,10 +4325,21 @@ def _extract_new_params(intent: Intent, q: str) -> dict:
                 params["field"] = _first_match(q, _PERIOD_FIELD_PATTERNS)
 
     if intent == Intent.USER_FIELD:
-        for field, pat in _USER_FIELD_PATTERNS.items():
-            if re.search(pat, q, re.IGNORECASE):
-                params["field"] = field
-                break
+        # The structural pattern resolves BOTH halves of a "<field> of
+        # <user>" question in one pass, and it is the only thing that can
+        # find a username written with no "user" anchor word at all ("what
+        # is the role of atharv815") — so consult it before falling back to
+        # the keyword tables, which see only the field half.
+        attr = _USER_ATTRIBUTE_PATTERN.search(q)
+        if attr:
+            params["field"] = attr.field
+            if not params.get("target_user"):
+                params["target_user"] = attr.name
+        else:
+            for field, pat in _USER_FIELD_PATTERNS.items():
+                if re.search(pat, q, re.IGNORECASE):
+                    params["field"] = field
+                    break
 
     if intent == Intent.USER_LIST:
         params["query_type"] = _extract_query_type(q, _USER_QUERY_TYPE_PATTERNS)

@@ -73,9 +73,12 @@ def handle_security_events(scope: dict, entities: dict, store: XMLStore) -> dict
 
     if query_type == "failed_login_exceeded":
         users = [u for u in store.users() if int(u.get("FailedLoginCount", "0") or "0") >= 5]
+        # show_failed_logins: the count is hidden from ordinary user tables
+        # (agent/db_qa_router._CONDITIONAL_FIELDS); this question is about it.
         return _result("security_events", "Users Exceeding Failed Login Limit",
                        [store.enrich_user(u) for u in users],
-                       f"{len(users)} user(s) have exceeded the failed-login threshold.", count=len(users))
+                       f"{len(users)} user(s) have exceeded the failed-login threshold.",
+                       count=len(users), show_failed_logins=True)
 
     if query_type == "deactivated":
         users = [u for u in store.users() if u.get("Status", "").lower() != "true"]
@@ -90,7 +93,8 @@ def handle_security_events(scope: dict, entities: dict, store: XMLStore) -> dict
         return _result("security_events", "My Security Status",
                        [{"FailedLoginCount": u.get("FailedLoginCount", "0"), "Locked": locked}],
                        f"Your account has {u.get('FailedLoginCount', '0')} failed login attempt(s)"
-                       + (" and appears locked." if locked else "."))
+                       + (" and appears locked." if locked else "."),
+                       show_failed_logins=True)
 
     target_user = entities.get("target_user", "")
     if target_user:
@@ -98,7 +102,8 @@ def handle_security_events(scope: dict, entities: dict, store: XMLStore) -> dict
         if not u:
             return _not_found("security_events", "Security Status", f"User '{target_user}' not found.")
         return _result("security_events", f"Security Status: {u.get('Name')}", [store.enrich_user(u)],
-                       f"Security details for '{u.get('Name')}'.")
+                       f"Security details for '{u.get('Name')}'.",
+                       show_failed_logins=True)
 
     return _not_found("security_events", "Security Events", "Please specify a user or a query type.")
 

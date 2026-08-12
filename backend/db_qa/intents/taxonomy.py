@@ -131,7 +131,12 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
     Intent.USER_FIELD: IntentSpec(
         "A single field of self or another user's profile "
         "(email, mobile, login_id, user_code, created_date, created_by, "
-        "last_login, failed_login_count, status, password_date)",
+        "last_login, failed_login_count, status, password_date, "
+        "department, role) — one NAMED user's own attribute, e.g. 'what is "
+        "the department of user atharv815', 'what is the role of atharv815', "
+        "'how many failed attempts does user maker have'. Asking which "
+        "users belong to a given department or role is the reverse question "
+        "(USERS_BY_DEPARTMENT / USERS_BY_ROLE), not this one",
         target_types=("self", "other_user"),
         required_entities=("field",),
         optional_entities=("target_user",),

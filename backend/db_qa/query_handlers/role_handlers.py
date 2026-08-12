@@ -243,8 +243,39 @@ def handle_role_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     return _result("role_list", label, rows, summary, count=len(rows))
 
 
+def _role_of_named_user(store: XMLStore, name: str) -> dict | None:
+    """The role assigned to the USER called *name*, or None.
+
+    "What is the role ID of tester user?" asks for a person's role, while
+    "What is the role ID of Admin User?" asks for a role that is itself
+    called "Admin User". Only the data can tell these apart, so the caller
+    checks for an exact ROLE name first and falls back here — where a
+    trailing "user" noun is dropped before looking the person up, since it
+    is part of the question ("tester user"), not of the login id.
+    """
+    candidate = re.sub(r"\s+users?\s*$", "", name, flags=re.IGNORECASE).strip()
+    if not candidate:
+        return None
+    u = store.user_by_name(candidate) or store.user_by_id(candidate)
+    if not u:
+        return None
+    return store.role_by_id(get_attr(u, "RoleId", "Role_Id", default=""))
+
+
 def handle_role_profile(scope: dict, entities: dict, store: XMLStore) -> dict:
     role = _resolve_target_role(store, scope, entities)
+    target = (entities.get("target_role") or "").strip()
+    # An EXACT role name always wins ("Admin User" is a real role), so this
+    # only fires for a name that is not one — where a user by that name is
+    # the only reading left that resolves to anything.
+    if target and scope["target_type"] != "self" and not store.role_by_name(target):
+        user_role = _role_of_named_user(store, target)
+        if user_role:
+            role_id = get_attr(user_role, "RoleId", "Role_Id", default="")
+            return _result("role_profile", f"Role: {user_role.get('Name')}", [user_role],
+                           f"User '{target}' is assigned the '{user_role.get('Name')}' role "
+                           f"(id {role_id}).",
+                           show_role_id=bool(entities.get("want_role_id")))
     if not role:
         if scope["target_type"] == "self":
             return _not_found("role_profile", "Role Profile", "Your role could not be found.")
@@ -255,7 +286,10 @@ def handle_role_profile(scope: dict, entities: dict, store: XMLStore) -> dict:
     active = is_active_status(role.get("Status"))
     return _result("role_profile", label, [role],
                    f"{who_phrase} role is '{role.get('Name')}' (id {get_attr(role, 'RoleId', 'Role_Id', default='')}), "
-                   f"which is currently {'active' if active else 'inactive'}.")
+                   f"which is currently {'active' if active else 'inactive'}.",
+                   # RoleId is hidden from tables by default — show it when
+                   # the question was about the ID itself.
+                   show_role_id=bool(entities.get("want_role_id")))
 
 
 def handle_role_users(scope: dict, entities: dict, store: XMLStore) -> dict:
@@ -352,8 +386,37 @@ def handle_permission_check(scope: dict, entities: dict, store: XMLStore) -> dic
     allowed = [a for a in accesses if _flag_true(a, attr)]
     who_phrase = "You" if scope["target_type"] == "self" else role.get("Name", "")
     can = "can" if allowed else "cannot"
-    module_phrase = f" on {module}" if module else ""
     display_word = _display_action_word(action_word, attr)
+
+    # Name the module the way the APPLICATION does, not the way the
+    # classifier tokenised it: "You cannot upload on fileupload." quotes an
+    # internal matching token back at the user. The rows that survived the
+    # module filter carry the real OptionName ("NX FileUpload"), so use it.
+    matched_names = list(dict.fromkeys(
+        a.get("OptionName", "") for a in accesses if a.get("OptionName")))
+    if matched_names:
+        module_label = matched_names[0] if len(matched_names) == 1 else ", ".join(matched_names)
+        module_phrase = f" in {module_label}"
+    elif module:
+        # The role has no RoleAccess row for that module at all — still a
+        # truthful "cannot", but the reason is worth stating rather than
+        # implying the flag was simply off. The module is named from the
+        # application's own list (any role's rows will do — the goal is the
+        # real OptionName, not this role's access), falling back to the
+        # user's own words only if nothing in the system matches.
+        module_label = next(
+            (name for name in (store.option_name_by_id(a.get("OptionId", ""))
+                               for a in store.role_access())
+             if name and _module_matches(module, name)),
+            module,
+        )
+        whose = "your role" if scope["target_type"] == "self" else f"role '{role.get('Name', '')}'"
+        return _result("permission_check", f"Permission Check: {display_word}", [],
+                       f"{who_phrase} cannot {display_word} in {module_label} — that module is "
+                       f"not assigned to {whose}.",
+                       action=display_word, module=module, count=0)
+    else:
+        module_phrase = ""
     return _result("permission_check", f"Permission Check: {display_word}{module_phrase}",
                    allowed, f"{who_phrase} {can} {display_word}{module_phrase}.",
                    action=display_word, module=module, count=len(allowed))
@@ -437,16 +500,25 @@ def handle_roles_with_permission(scope: dict, entities: dict, store: XMLStore) -
     if not attr:
         return _not_found("roles_with_permission", "Roles With Permission", _UNDERSTAND_FAILURE_MSG)
     matches = []
+    matched_names: list[str] = []
     for a in store.role_access():
         if not _flag_true(a, attr):
             continue
-        if not _module_matches(module, store.option_name_by_id(a.get("OptionId", ""))):
+        option_name = store.option_name_by_id(a.get("OptionId", ""))
+        if not _module_matches(module, option_name):
             continue
+        if option_name and option_name not in matched_names:
+            matched_names.append(option_name)
         role = role_index.get(get_attr(a, "RoleId", "Role_Id", default=""))
         if role:
             matches.append(role)
     unique = _dedup_roles_preserve_order(matches)
-    module_phrase = f" on {module}" if module else ""
+    # Same reason as handle_permission_check: report the application's own
+    # module name ("XBRL Generation"), not the classifier's matching token
+    # ("xbrl generation"), and never the bare word when the two differ.
+    module_phrase = ""
+    if module:
+        module_phrase = f" in {', '.join(matched_names)}" if matched_names else f" in {module}"
     display_word = _display_action_word(action_word, attr)
     return _result("roles_with_permission", f"Roles That Can {display_word}{module_phrase}",
                    unique, f"{len(unique)} role(s) can {display_word}{module_phrase}.", count=len(unique))

@@ -497,20 +497,32 @@ class XMLStore:
 
     # ── Generic indexes (built once, O(1) lookups after first call) ──────────
 
-    def _dept_index(self) -> tuple[dict, dict]:
-        """Build and cache (by_id, by_name_lower) maps for departments."""
+    def _dept_index(self) -> tuple[dict, dict, dict]:
+        """Build and cache (by_id, by_name_lower, by_name_exact) maps.
+
+        by_name_exact is case-SENSITIVE and exists because this data has
+        two distinct departments whose names differ only in case — "Test"
+        (id 101) and "test" (id 118). Both collapse to the same key in
+        by_name_lower, where the later row silently overwrites the earlier
+        one, so a question about "Test" was answered with department 118's
+        data. An exactly-cased name is unambiguous evidence of which one
+        the user meant and is checked first; the lower-cased map remains
+        the fallback for the ordinary case-insensitive lookup.
+        """
         key = "__dept_index__"
         if key not in self._cache:
             by_id: dict[str, dict] = {}
             by_name: dict[str, dict] = {}
+            by_name_exact: dict[str, dict] = {}
             for d in self.departments():
                 did = get_attr(d, "DeptId", "Id", default="")
-                nl = d.get("Name", "").strip().lower()
+                name = d.get("Name", "").strip()
                 if did:
                     by_id[did] = d
-                if nl:
-                    by_name[nl] = d
-            self._cache[key] = (by_id, by_name)  # type: ignore[assignment]
+                if name:
+                    by_name.setdefault(name.lower(), d)
+                    by_name_exact.setdefault(name, d)
+            self._cache[key] = (by_id, by_name, by_name_exact)  # type: ignore[assignment]
         return self._cache[key]  # type: ignore[return-value]
 
     def _role_index(self) -> tuple[dict, dict]:
@@ -552,14 +564,21 @@ class XMLStore:
         did = str(dept_id).strip()
         if not did:
             return None
-        by_id, _ = self._dept_index()
+        by_id, _, _ = self._dept_index()
         return by_id.get(did)
 
     def dept_by_name(self, name: str) -> dict | None:
-        """O(1) case-insensitive lookup: department by Name."""
-        nl = name.strip().lower()
-        _, by_name = self._dept_index()
-        return by_name.get(nl)
+        """O(1) lookup: department by Name — exact case first, then
+        case-insensitive.
+
+        The exact-case step matters only where two departments' names
+        differ by case alone ("Test" vs "test", both real in this data);
+        for every other name the two steps return the same row. See
+        _dept_index.
+        """
+        raw = name.strip()
+        _, by_name, by_name_exact = self._dept_index()
+        return by_name_exact.get(raw) or by_name.get(raw.lower())
 
     def role_by_name(self, name: str) -> dict | None:
         """O(1) case-insensitive lookup: role by Name."""
@@ -605,19 +624,72 @@ class XMLStore:
             return self.user_by_name(matches[0])
         return None
 
+    # A typo is a wrong character in a name the user was trying to spell.
+    # 0.70 is not that: at that cutoff "tes1" scores 0.75 against "test"
+    # and silently answered a question about a department the user never
+    # named — the single worst failure mode here, because the answer looks
+    # perfectly valid. 0.86 still accepts a one-character slip in a name of
+    # ordinary length ("Requiss" -> "Requis", 0.92; "atharv81" ->
+    # "atharv810", 0.94) while rejecting "tes1". Deliberately strict: for
+    # names this short, "not found, please name the department" beats a
+    # confident answer about the wrong one.
+    _DEPT_FUZZY_CUTOFF = 0.86
+    # Below this length a query is a fragment, not a misspelling — "t" or
+    # "te" is one keystroke away from half the department list, so no
+    # fuzzy match on it can be trusted regardless of ratio.
+    _DEPT_FUZZY_MIN_LEN = 4
+
     def resolve_dept(self, query: str) -> dict | None:
-        """Best-effort department lookup: exact by Name, then fuzzy."""
+        """Best-effort department lookup, strictest evidence first:
+
+          1. Exact name (case-sensitive, then case-insensitive).
+          2. Alphanumerics-only match — "dept1"/"DEPT 1" -> "Dept 1".
+             Still an EXACT match, just insensitive to the spacing and
+             punctuation users drop when typing a name they've read.
+          3. Typo-tolerant fuzzy, deliberately narrow (see the constants
+             above): long-enough query, high cutoff, and no near-tie
+             between two candidates.
+
+        Returns None rather than a best guess when nothing clears those
+        bars — the caller reports "department not found" and asks the user
+        to name it, which is the honest answer. Silently substituting a
+        similarly-spelled department produces a confident, wrong table.
+        """
         if not query:
             return None
-        d = self.dept_by_name(query)
+        q = query.strip()
+        d = self.dept_by_name(q)
         if d:
             return d
+
+        import re as _re
+        norm = _re.sub(r"[^a-z0-9]+", "", q.lower())
+        if norm:
+            hits = [dept for dept in self.departments()
+                    if _re.sub(r"[^a-z0-9]+", "", (dept.get("Name") or "").lower()) == norm]
+            # Ambiguous only if the collapsed forms of two DIFFERENT
+            # departments collide; one hit is a confident answer.
+            if len(hits) == 1:
+                return hits[0]
+            if hits:
+                return None
+
+        if len(q) < self._DEPT_FUZZY_MIN_LEN:
+            return None
         import difflib
-        names = [d.get("Name", "") for d in self.departments() if d.get("Name")]
-        matches = difflib.get_close_matches(query, names, n=1, cutoff=0.70)
-        if matches:
-            return self.dept_by_name(matches[0])
-        return None
+        names = [dept.get("Name", "") for dept in self.departments() if dept.get("Name")]
+        scored = sorted(
+            ((difflib.SequenceMatcher(None, q.lower(), n.lower()).ratio(), n) for n in names),
+            reverse=True,
+        )
+        if not scored or scored[0][0] < self._DEPT_FUZZY_CUTOFF:
+            return None
+        # A runner-up scoring within 0.05 means the query is as close to one
+        # department as to another — that's a question for the user, not a
+        # coin flip resolved in the data layer.
+        if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.05:
+            return None
+        return self.dept_by_name(scored[0][1])
 
     def resolve_role(self, query: str) -> dict | None:
         """Best-effort role lookup: exact by Name, then a whole-word/prefix

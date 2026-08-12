@@ -154,8 +154,11 @@ def handle_user_failed_login(store: XMLStore, params: dict, user_id: str, is_adm
     failed = [store.enrich_user(u) for u in store.users()
               if int(u.get("FailedLoginCount", "0") or "0") > 0]
     failed.sort(key=lambda u: int(u.get("FailedLoginCount", "0") or "0"), reverse=True)
+    # show_failed_logins: the count is hidden from ordinary user tables
+    # (agent/db_qa_router._CONDITIONAL_FIELDS); this question is about it.
     return _result("USER_FAILED_LOGIN", "Users with Failed Login Attempts",
-                   failed, f"Found {len(failed)} users with failed login attempts.", count=len(failed))
+                   failed, f"Found {len(failed)} users with failed login attempts.",
+                   count=len(failed), show_failed_logins=True)
 
 
 def handle_user_duplicate_email(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
@@ -247,7 +250,8 @@ def handle_my_failed_logins(store: XMLStore, params: dict, user_id: str, is_admi
     count = u.get("FailedLoginCount", "0")
     return _result("MY_FAILED_LOGINS", "My Failed Login Count",
                    [{"FailedLoginCount": count, "LastFailedLoginDT": u.get("LastFailedLoginDT", "")}],
-                   f"Your account has {count} failed login attempt(s).")
+                   f"Your account has {count} failed login attempt(s).",
+                   show_failed_logins=True)
 
 
 def handle_my_status(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:

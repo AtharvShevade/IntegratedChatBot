@@ -330,6 +330,83 @@ html, body, #root {
   .followup-btn     { font-size: 0.82rem; padding: 8px 12px; }
 }
 
+
+/* ── Structured formula-error sections ─────────────────────────────────────
+   Rendered from the backend's explanation_sections (see
+   backend/tools/formula_error.py's build_sections). Headings are real
+   elements, so no markdown emphasis markers are ever shown to the user. */
+
+.formula-error-section {
+  background: #f4f4f8;
+  border: 1px solid #d8d8e4;
+  border-radius: 8px;
+  padding: 10px 16px;
+}
+
+.formula-error-section-heading {
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6a0dad;
+  margin-bottom: 8px;
+}
+
+.formula-error-fix .formula-error-section-heading {
+  color: #1f7a34;
+}
+
+.formula-error-rule-text {
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.55;
+  color: #1f2937;
+}
+
+.formula-error-points {
+  margin: 0;
+  padding-left: 1.15em;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.formula-error-points li {
+  font-size: 0.88em;
+  line-height: 1.5;
+  color: #1f2937;
+}
+
+/* The value column carries a plain business figure, not code — the monospace
+   treatment used for DB locations would misrepresent it. */
+.formula-error-section .formula-error-kv-value {
+  font-family: inherit;
+  background: transparent;
+  color: #1f2937;
+  font-weight: 600;
+  padding: 0;
+}
+
+.formula-error-kv-note {
+  font-weight: 400;
+  font-style: normal;
+  color: #6b7280;
+  font-size: 0.92em;
+}
+
+.formula-error-kv-context {
+  display: block;
+  margin-top: 2px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.86em;
+  color: #6b7280;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 5px;
+  border-radius: 4px;
+  word-break: break-all;
+  font-weight: 400;
+}
+
 @media (max-width: 480px) {
   .app-shell { max-width: 100%; height: 100dvh; }
   .app-header { padding: 10px 14px; gap: 8px; }
@@ -2358,3 +2435,193 @@ html, body, #root {
   }
 }
 .error-summary-dl-btn:hover { background: #546e7a; }
+
+/* ── Error-card layout ─────────────────────────────────────────────────────
+   One error = ONE card. The sections inside it (Reported, Dimensions
+   Involved, …) are flat bands, not nested boxes — each previously carried its
+   own background, border and 10px/16px padding, which read as a stack of
+   separate cards and made a single error several screens tall.
+
+   Label/value pairs sit in a responsive grid so short pairs share a row and
+   use the full width, collapsing to one column when the card is narrow. The
+   ROW is the flex box holding label + value; the grid used to sit on the
+   row's PARENT while the label and value were plain inline spans, so nothing
+   separated them and they rendered concatenated ("Branch codeTyped"). The
+   ":" also lives in the DOM, so readability never depends on CSS loading. */
+
+.formula-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.formula-error-section {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.formula-error-section-heading {
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6a0dad;
+  margin-bottom: 3px;
+}
+
+/* auto-fit + minmax gives 2+ columns when there is room and exactly 1 when
+   there is not, with no breakpoint to maintain. */
+.formula-error-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(clamp(200px, 26vw, 300px), 1fr));
+  column-gap: 22px;
+  row-gap: 3px;
+  align-items: start;
+  min-width: 0;
+}
+
+.formula-error-kv-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 0;
+  min-width: 0;
+}
+
+.formula-error-section .formula-error-kv-label {
+  flex: 0 0 auto;
+  white-space: normal;
+  font-weight: 600;
+  color: #4b5563;
+  overflow-wrap: anywhere;
+}
+
+.formula-error-section .formula-error-kv-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: inherit;
+  background: transparent;
+  color: #1f2937;
+  font-weight: 600;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.formula-error-kv-note {
+  font-weight: 400;
+  font-style: normal;
+  color: #6b7280;
+  font-size: 0.92em;
+}
+
+.formula-error-kv-context {
+  display: block;
+  flex-basis: 100%;
+  margin-top: 1px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.86em;
+  color: #6b7280;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 5px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+}
+
+.formula-error-rule-text {
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.5;
+  color: #1f2937;
+  overflow-wrap: anywhere;
+}
+
+.formula-error-points {
+  margin: 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.formula-error-points li {
+  font-size: 0.88em;
+  line-height: 1.45;
+  color: #1f2937;
+  overflow-wrap: anywhere;
+}
+
+/* The fix stays visually distinct, but as an accent rather than a boxed card. */
+.formula-error-fix {
+  background: rgba(46, 158, 70, 0.07);
+  border: none;
+  border-left: 3px solid #2e9e46;
+  border-radius: 0 6px 6px 0;
+  padding: 5px 8px 5px 10px;
+}
+
+.formula-error-fix .formula-error-section-heading {
+  color: #1f7a34;
+}
+
+.formula-error-mono-block {
+  display: block;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.8em;
+  color: #4a0a7a;
+  background: rgba(106, 13, 173, 0.08);
+  padding: 4px 8px;
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* Nothing inside an error card may force the chat column to scroll sideways. */
+.dimensional-error-item,
+.formula-error-card-body {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.dimensional-error-item {
+  padding: 10px 4px;
+}
+
+@media (max-width: 520px) {
+  .formula-error-kv-grid { grid-template-columns: 1fr; }
+  .formula-error-kv-row  { flex-direction: column; row-gap: 0; }
+}
+
+
+/* ── One error = one card ──────────────────────────────────────────────────
+   Formula errors already get a card per rule (.formula-error-card). Dimension
+   errors were rendered as list items inside a single shared box, separated
+   only by a hard black rule, so several errors read as one long block. Each
+   item is now its own card on the tray behind it; the list marker stays
+   outside the card so the errors remain numbered. */
+
+.dimensional-error-item {
+  background: #fff;
+  border: 1px solid #d8d8e4;
+  border-bottom: 1px solid #d8d8e4;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.dimensional-error-item:last-child {
+  margin-bottom: 0;
+  border-bottom: 1px solid #d8d8e4;
+}
+
+.dimensional-error-list {
+  padding: 10px 12px 10px 34px;
+}

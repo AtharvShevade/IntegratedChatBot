@@ -216,16 +216,40 @@ def handle_period_list(scope: dict, entities: dict, store: XMLStore) -> dict:
         return _result("period_list", "Returns Sharing a Frequency", rows,
                        f"{len(rows)} frequency group(s) have more than one return assigned.", count=len(rows))
 
-    if query_type == "most_returns":
+    if query_type in ("most_returns", "least_returns"):
         rets = _all_period_returns(store)
         counts = Counter(get_attr(r, "PeriodId", "Period_Id", default="") for r in rets if get_attr(r, "PeriodId", "Period_Id", default=""))
         if not counts:
-            return _not_found("period_list", "Frequency With Most Returns", "No returns are assigned to any reporting frequency.")
-        top_pid, top_count = counts.most_common(1)[0]
-        period_name = store.period_name_by_id(top_pid)
-        row = {"Frequency": period_name, "ReturnCount": top_count}
-        return _result("period_list", "Frequency With Most Returns", [row],
-                       f"'{period_name}' has the most returns scheduled under it, with {top_count} return(s).")
+            return _not_found("period_list", "Frequency By Return Count",
+                              "No returns are assigned to any reporting frequency.")
+        # least_returns ranks over the frequencies that actually HAVE
+        # returns — a period with none assigned isn't "the frequency with
+        # the fewest returns", it's a frequency nothing is scheduled under,
+        # which is a different question (and would make every answer here a
+        # tie at zero).
+        ranked = counts.most_common()
+        pid, count = ranked[0] if query_type == "most_returns" else ranked[-1]
+        superlative = "most" if query_type == "most_returns" else "fewest"
+        period_name = store.period_name_by_id(pid)
+        row = {"Frequency": period_name, "ReturnCount": count}
+        return _result("period_list", f"Frequency With {superlative.title()} Returns", [row],
+                       f"'{period_name}' has the {superlative} returns scheduled under it, "
+                       f"with {count} return(s).",
+                       frequency=period_name, count=count)
+
+    if query_type == "count":
+        # "How many reporting frequencies are defined?" — the count IS the
+        # answer; listing all 23 rows answers "what are they" instead.
+        #
+        # Keyed "FrequencyCount", NOT "total": a record whose keys are all
+        # in db_qa_router._COUNT_KEYS is rendered by the User/Department
+        # count template, which always emits Total/Active/Inactive columns.
+        # Periods have no active flag, so two of those three would be
+        # empty and imply a distinction that doesn't exist here.
+        return _result("period_list", "Reporting Frequency Count",
+                       [{"FrequencyCount": len(periods)}],
+                       f"There are {len(periods)} reporting frequencies configured.",
+                       total=len(periods))
 
     return _result("period_list", "Reporting Periods", periods,
                    f"There are {len(periods)} reporting period(s) configured.", count=len(periods))
@@ -757,8 +781,26 @@ def handle_next_reporting_date(scope: dict, entities: dict, store: XMLStore) -> 
             f"The next reporting period for '{ret_name}' ends on {result['period_end']}, "
             f"and the submission is due by {result['due_date']}."
         )
+        # "how many days are left to submit X" asks for the count, not the
+        # date — answer it directly when a real due date exists, rather
+        # than leaving the user to subtract dates themselves.
+        due_obj = _parse_flexible_date(result["due_date"])
+        if due_obj:
+            days_left = (due_obj - date.today()).days
+            if days_left > 0:
+                summary += f" That's {days_left} day(s) from today."
+            elif days_left == 0:
+                summary += " That's today."
     else:
-        summary = f"The next reporting period for '{ret_name}' ends on {result['period_end']}."
+        # The period end is NOT the due date, and presenting it alone
+        # invited exactly that reading. Say which one this is and that the
+        # other is unavailable, rather than implying the return has no
+        # deadline at all.
+        summary = (
+            f"The next reporting period for '{ret_name}' ends on {result['period_end']}. "
+            "No submission due date is configured for this return (it has no DueDays value), "
+            "so the reporting period end above is the only date available."
+        )
     return _result("next_reporting_date", f"Next Reporting Date: {ret_name}", [row], summary,
                    period_end=result["period_end"], due_date=result["due_date"])
 
@@ -949,7 +991,8 @@ def _most_recently_completed_occurrence(frequency: str, due_days: str | None, be
     return last
 
 
-def _find_overdue_returns(store: XMLStore, all_returns: list[dict], scope_phrase: str) -> dict:
+def _find_overdue_returns(store: XMLStore, all_returns: list[dict], scope_phrase: str,
+                          qualifier: str = "") -> dict:
     """Which of *all_returns* have a most-recently-completed reporting
     period whose due date has already passed with no matching InstanceLog
     submission on record — "are any of my returns overdue?" /
@@ -980,11 +1023,18 @@ def _find_overdue_returns(store: XMLStore, all_returns: list[dict], scope_phrase
                 "DueDate": due_date_str,
             })
     overdue.sort(key=lambda r: r["DueDate"])
+    # The qualifier ("Monthly XBRL ") is echoed into both the label and the
+    # summary so a filtered answer is visibly filtered — otherwise "which
+    # monthly returns are overdue" and "which returns are overdue" produce
+    # identically-worded answers over different data.
+    label = f"Overdue {qualifier}Returns".replace("  ", " ")
     if not overdue:
-        return _result("reports_upcoming_in_range", "Overdue Returns", [],
-                       f"No returns are overdue for {scope_phrase}.", count=0)
-    return _result("reports_upcoming_in_range", "Overdue Returns", overdue,
-                   f"{len(overdue)} return(s) are overdue for {scope_phrase}.", count=len(overdue))
+        return _result("reports_upcoming_in_range", label, [],
+                       f"No {qualifier}returns are overdue for {scope_phrase}.".replace("  ", " "),
+                       count=0)
+    return _result("reports_upcoming_in_range", label, overdue,
+                   f"{len(overdue)} {qualifier}return(s) are overdue for {scope_phrase}.".replace("  ", " "),
+                   count=len(overdue))
 
 
 def _find_next_due_return(store: XMLStore, all_returns: list[dict], scope_phrase: str,
@@ -1087,11 +1137,30 @@ def handle_reports_upcoming_in_range(scope: dict, entities: dict, store: XMLStor
     all_returns = _filter_by_xbrl_type(store, all_returns, xbrl_type)
     all_returns = [r for r in all_returns if r.get("Id", "") in allowed_ids or r.get("ReturnId", "") in allowed_ids]
 
+    # Frequency is a THIRD independent filter, composing with scope and
+    # type: "which monthly returns are overdue" asks for the intersection,
+    # not for every overdue return. Resolved through the same
+    # _resolve_period + PeriodId comparison handle_returns_by_frequency
+    # uses, so both intents agree on what "monthly" selects.
+    freq_phrase = ""
+    period_name = entities.get("period_name") or ""
+    if period_name:
+        period = _resolve_period(store, period_name)
+        if not period:
+            return _not_found("reports_upcoming_in_range", "Upcoming Reports",
+                              f"No reporting frequency found matching '{period_name}'.")
+        period_id = get_attr(period, "Period_Id", "Id", default="")
+        all_returns = [r for r in all_returns
+                       if get_attr(r, "PeriodId", "Period_Id", default="") == period_id]
+        freq_phrase = f"{period.get('PeriodName', period_name)} "
+
+    type_phrase = {"xbrl": "XBRL ", "non_xbrl": "non-XBRL "}.get(xbrl_type, "")
     if entities.get("query_type") == "overdue":
-        return _find_overdue_returns(store, all_returns, scope_phrase)
+        return _find_overdue_returns(store, all_returns, scope_phrase,
+                                     f"{freq_phrase}{type_phrase}")
     if entities.get("query_type") == "next_due":
         return _find_next_due_return(store, all_returns, scope_phrase,
-                                     {"xbrl": "XBRL ", "non_xbrl": "non-XBRL "}.get(xbrl_type, ""))
+                                     f"{freq_phrase}{type_phrase}")
 
     date_from = entities.get("date_from")
     date_to = entities.get("date_to")
@@ -1123,12 +1192,13 @@ def handle_reports_upcoming_in_range(scope: dict, entities: dict, store: XMLStor
         })
 
     matches.sort(key=lambda m: m.get("NextPeriodEnd", ""))
-    type_phrase = {"xbrl": "XBRL ", "non_xbrl": "non-XBRL "}.get(xbrl_type, "")
-    label = f"{type_phrase}Reports Upcoming {start.strftime('%d-%b-%Y')} to {end.strftime('%d-%b-%Y')}"
+    qualifier = f"{freq_phrase}{type_phrase}"
+    label = (f"{qualifier}Reports Upcoming {start.strftime('%d-%b-%Y')} to "
+             f"{end.strftime('%d-%b-%Y')}").replace("  ", " ")
     return _result(
         "reports_upcoming_in_range", label, matches,
-        f"Found {len(matches)} {type_phrase}return(s) due for {scope_phrase} between "
-        f"{start.strftime('%d-%b-%Y')} and {end.strftime('%d-%b-%Y')}.",
+        f"Found {len(matches)} {qualifier}return(s) due for {scope_phrase} between "
+        f"{start.strftime('%d-%b-%Y')} and {end.strftime('%d-%b-%Y')}.".replace("  ", " "),
         count=len(matches),
     )
 

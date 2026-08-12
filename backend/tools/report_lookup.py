@@ -3513,6 +3513,20 @@ def extract_error_summary(error_file_path: str) -> dict:
 _SUPPORTED_ERROR_CATEGORIES = frozenset({"formula_error", "dimensional", "xbrl_schema"})
 
 
+def _v2_explain_enabled() -> bool:
+    """Whether the unified (V2) formula/dimension explanation flow is active.
+
+    Default ON. Set ERROR_EXPLAIN_V2=0 to fall back to the legacy split flow
+    (report_lookup.parse_formula_errors + formula_error_generic +
+    dimension_taxonomy), which is retained unchanged for rollback and for the
+    golden-file comparison.
+
+    Read per call rather than cached at import so the flag can be flipped
+    without a restart while comparing the two flows.
+    """
+    return os.getenv("ERROR_EXPLAIN_V2", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
     """Parse the error file and return counts per supported category.
 
@@ -3567,8 +3581,16 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
     # "instances" list for the occurrences), so len(rules) IS that count;
     # the per-rule occurrence count is unaffected and still surfaces inside
     # each rule's own explanation ("failed for N reporting instances").
+    # The counting parser MUST be the same one the explainer uses, or the
+    # "showing 1-3 of N" header disagrees with what is actually explainable.
+    # Under V2 that is one parser for every file — the legacy branch below
+    # picked its parser from form_id, so a caller that omitted form_id counted
+    # with a different parser than the one that later explained.
     try:
-        if form_id and not _is_4000_series(form_id):
+        if _v2_explain_enabled():
+            from backend.tools.formula_error import parse_formula_errors_v2
+            rules = parse_formula_errors_v2(error_file_path)
+        elif form_id and not _is_4000_series(form_id):
             from backend.tools.formula_error_generic import parse_generic_formula_errors
             rules = parse_generic_formula_errors(error_file_path)
         else:
@@ -3586,7 +3608,11 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
             dim_badge, error_file_path,
         )
         if dim_badge > 0:
-            dim_errors = parse_dimensional_html_errors(error_file_path)
+            if _v2_explain_enabled():
+                from backend.tools.dimension_error import parse_dimension_errors
+                dim_errors = parse_dimension_errors(error_file_path)
+            else:
+                dim_errors = parse_dimensional_html_errors(error_file_path)
             logger.info(
                 "[count_errors_by_category] dimensional parse returned %d entries",
                 len(dim_errors),
@@ -3692,6 +3718,23 @@ def explain_errors_by_category(
 
     try:
         if category == "formula_error":
+            # V2: ONE parser and ONE explainer for every file. Whether the
+            # error can be explained with DB backtracking data is decided per
+            # table, from that table's own header row (error_file_shape), not
+            # from the form id — the form-id proxy mis-routes five files in the
+            # real corpus (4044/4012/4005/4020 and 4038's _Instance.html are
+            # 4000-series with NO backtracking columns).
+            if _v2_explain_enabled():
+                from backend.tools.formula_error import explain_formula_error_file
+                explained = explain_formula_error_file(
+                    error_file_path, form_id=form_id, max_rules=_MAX_EXPLAIN, offset=offset,
+                )
+                logger.info(
+                    "[explain_errors_by_category] v2-formula done rules=%d elapsed=%.3fs form_id=%s",
+                    len(explained), time.perf_counter() - start, form_id,
+                )
+                return explained
+
             # 4000-series returns (backtracking-enabled error files) keep the
             # existing flow exactly as-is, unchanged, below. Every other
             # return uses a fully separate parser/explainer
@@ -3729,6 +3772,23 @@ def explain_errors_by_category(
             # offset is applied the same way as the formula_error branch
             # above, so "Explain Next Errors" advances through the list
             # instead of re-returning the first batch every time.
+            if _v2_explain_enabled():
+                from backend.tools.dimension_error import (
+                    explain_dimension_errors, parse_dimension_errors,
+                )
+                errors    = parse_dimension_errors(error_file_path)
+                trimmed   = errors[offset:offset + _MAX_EXPLAIN]
+                explained = explain_dimension_errors(
+                    trimmed, form_id=form_id, error_file_path=error_file_path,
+                )
+                for err in explained:
+                    err["_error_category"] = "dimensional"
+                logger.info(
+                    "[explain_errors_by_category] v2-dimensional done count=%d elapsed=%.3fs",
+                    len(explained), time.perf_counter() - start,
+                )
+                return explained
+
             errors    = parse_dimensional_html_errors(error_file_path)
             trimmed   = errors[offset:offset + _MAX_EXPLAIN]
             explained = explain_dimensional_errors(
@@ -4017,6 +4077,67 @@ def build_render_file_path(form_id: str, filename: str) -> str:
 def build_error_file_path(form_id: str, filename: str) -> str:
     base = config.instance_base_dir()
     return os.path.join(base, os.path.basename(form_id), os.path.basename(filename))
+
+def build_instance_doc_path(form_id: str, filename: str) -> str:
+    """Absolute path of a generated XBRL instance document.
+
+    Same Instance/<form_id>/ location as the error file — the two are siblings
+    in the repo — so this reuses build_error_file_path's rule rather than
+    restating it.
+    """
+    return build_error_file_path(form_id, filename)
+
+
+def resolve_instance_doc_path(error_file_path: str, form_id: str = "") -> str:
+    """The XBRL instance document for the run that produced *error_file_path*,
+    taken from that run's own InstanceDocPath in the instance log.
+
+    The instance log is the single source of truth for which file belongs to
+    which run — exactly as it already is for ErrorDocPath/RenderedExcelDocPath.
+    Matching is done on the run's ErrorDocPath basename, so the row found is
+    the one that produced this very error file, not merely a run for the same
+    form.
+
+    Returns "" when the run has no InstanceDocPath recorded, when the row
+    cannot be identified, or when the named file is not on disk. Callers must
+    treat "" as "explain without instance evidence" — never as an error.
+
+    Deliberately does NOT scan Instance/<form_id>/ for a plausible .xml: a
+    folder holds many runs, and picking a neighbouring run's instance document
+    would attribute one filing's reported values to another.
+    """
+    target = os.path.basename((error_file_path or "").strip()).lower()
+    if not target:
+        return ""
+
+    attrs = _instance_log_attrs()
+    fid = str(form_id or "").strip()
+
+    for row in _parse_instances():
+        if fid and str(row.get(attrs["form_id"], "")).strip() != fid:
+            continue
+        error_doc = os.path.basename(str(row.get(attrs["error_doc"], "")).strip()).lower()
+        if not error_doc or error_doc != target:
+            continue
+        instance_doc = os.path.basename(str(row.get(attrs["instance_doc"], "")).strip())
+        if not instance_doc:
+            logger.info(
+                "[resolve_instance_doc_path] run for %s has no InstanceDocPath recorded",
+                target,
+            )
+            return ""
+        full = build_instance_doc_path(row.get(attrs["form_id"], fid), instance_doc)
+        if file_exists(full):
+            logger.info("[resolve_instance_doc_path] %s -> %s", target, full)
+            return full
+        logger.info(
+            "[resolve_instance_doc_path] InstanceDocPath %r recorded but not on disk (%s)",
+            instance_doc, full,
+        )
+        return ""
+
+    logger.info("[resolve_instance_doc_path] no instance-log row for error file %r", target)
+    return ""
 
 def file_exists(path: str) -> bool:
     return os.path.isfile(path)

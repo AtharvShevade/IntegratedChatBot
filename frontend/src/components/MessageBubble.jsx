@@ -262,6 +262,77 @@ function _parseFormulaExplanationBlocks(text) {
   return parsed
 }
 
+// Renders the backend's structured sections directly. Every heading is a real
+// element, so no markdown emphasis markers are ever shown to the user — the
+// backend sends none, and none are reconstructed here.
+export function FormulaErrorSections({ sections }) {
+  if (!Array.isArray(sections) || sections.length === 0) return null
+  return (
+    <div className="formula-error-body">
+      {sections.map((s, i) => {
+        switch (s.kind) {
+          case 'headline':
+            return <h4 key={i} className="formula-error-title">❌ {s.text}</h4>
+          case 'rule':
+            return (
+              <div key={i} className="formula-error-section">
+                <div className="formula-error-section-heading">{s.heading}</div>
+                {s.mono
+                  ? <code className="formula-error-mono-block">{s.text}</code>
+                  : <p className="formula-error-rule-text">{s.text}</p>}
+              </div>
+            )
+          case 'values':
+            return (
+              <div key={i} className="formula-error-section">
+                <div className="formula-error-section-heading">{s.heading}</div>
+                <div className="formula-error-kv-grid">
+                  {(s.items || []).map((it, j) => (
+                    <div key={j} className="formula-error-kv-row">
+                      {/* The ":" separator lives in the DOM, not in CSS. Layout
+                          alone was separating label from value, so any styling
+                          miss rendered "Branch codeTyped" with no gap at all. */}
+                      {it.label && (
+                        <span className="formula-error-kv-label">{it.label}:</span>
+                      )}
+                      <span className="formula-error-kv-value">
+                        {it.value}
+                        {it.note && <em className="formula-error-kv-note"> ({it.note})</em>}
+                        {it.context && (
+                          <code className="formula-error-kv-context" title={it.context}>{it.context}</code>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          case 'points':
+            return (
+              <div
+                key={i}
+                className={
+                  /fix/i.test(s.heading || '')
+                    ? 'formula-error-section formula-error-fix'
+                    : 'formula-error-section'
+                }
+              >
+                <div className="formula-error-section-heading">{s.heading}</div>
+                <ul className="formula-error-points">
+                  {(s.bullets || []).map((b, j) => <li key={j}>{b}</li>)}
+                </ul>
+              </div>
+            )
+          case 'note':
+            return <p key={i} className="formula-error-note">{s.text}</p>
+          default:
+            return null
+        }
+      })}
+    </div>
+  )
+}
+
 function FormulaErrorContent({ explanation }) {
   const blocks = useMemo(() => _parseFormulaExplanationBlocks(explanation), [explanation])
   if (blocks.length === 0) return null
@@ -341,6 +412,10 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
             _error_category: err._error_category || 'formula_error',
             section:         err.rule_name,
             explanation:     rawExplanation.replace(/^⚙\s*Formula Error\s*—[^\n]*\n+/, ''),
+            // Structured sections built by backend/tools/formula_error.py.
+            // Preferred over parsing `explanation` back out of a string; the
+            // string remains the fallback for any producer that predates it.
+            sections:        Array.isArray(err.explanation_sections) ? err.explanation_sections : null,
             raw_message:     err.business_rule || '',
           })
           continue
@@ -390,7 +465,9 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
               >
                 {item.explanation && (
                   isFormula
-                    ? <FormulaErrorContent explanation={item.explanation} />
+                    ? (item.sections
+                        ? <FormulaErrorSections sections={item.sections} />
+                        : <FormulaErrorContent explanation={item.explanation} />)
                     : <p className="error-explanation-text">{item.explanation}</p>
                 )}
                 {item.raw_message && item.raw_message !== item.explanation && (
@@ -469,10 +546,16 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
         </div>
         <ol className="dimensional-error-list">
           {details.map((err, i) => {
-            const sections = _parseDimensionSections(err.explanation)
+            // Structured sections from backend/tools/dimension_error.py are
+            // preferred; the legacy "**Label:**" parser remains the fallback
+            // for any producer that predates them.
+            const structured = Array.isArray(err.explanation_sections) ? err.explanation_sections : null
+            const sections = structured ? null : _parseDimensionSections(err.explanation)
             return (
             <li key={i} className="dimensional-error-item">
-              {sections ? (
+              {structured ? (
+                <FormulaErrorSections sections={structured} />
+              ) : sections ? (
                 <div className="dimensional-error-sections">
                   {sections.map((sec, si) => {
                     const meta = _DIM_SECTION_META[sec.label] || { icon: '•', cls: 'dim-sec-generic' }
@@ -491,7 +574,10 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
                   </ReactMarkdown>
                 </div>
               )}
-              {(err.concept || err.value || err.context) && (
+              {/* The chips restate concept / value / context, which the
+                  structured sections already show in their own rows. Keep
+                  them only for the legacy string-parsed path. */}
+              {!structured && (err.concept || err.value || err.context) && (
                 <div className="dimensional-error-meta">
                   {err.concept && <span className="dim-meta-chip">concept: {err.concept}</span>}
                   {err.value   && <span className="dim-meta-chip">value: {err.value}</span>}

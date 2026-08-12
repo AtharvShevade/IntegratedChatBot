@@ -35,7 +35,11 @@ _USER_FIELDS: list[tuple[str, str]] = [
     ("RoleName",          "Role"),
     ("Status",            "Status"),
     ("LastLoginDT",       "Last Login"),
-    ("FailedLoginCount",  "Failed Logins"),
+    # No "Failed Logins" column: an operational security counter is not part
+    # of a user's identity and does not belong in a general user listing.
+    # Questions that ask about it specifically are answered from
+    # FailedLoginCount directly — see agent/db_qa_router._CONDITIONAL_FIELDS,
+    # which is what the live table-rendering path actually consults.
     ("UserCreationDate",  "Created On"),
 ]
 

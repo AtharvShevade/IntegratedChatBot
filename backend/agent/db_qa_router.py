@@ -256,6 +256,14 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "Email":            "Email",
     "DeptId":           "Department ID",
     "UserCount":        "User Count",
+    # A ranking answer ("which frequency has the most returns") carries its
+    # count in the row; without a friendly name and a place in
+    # _PRIORITY_COLS the column was silently dropped from the table and the
+    # count survived only in the summary sentence.
+    "ReturnCount":      "Returns",
+    "Frequency":        "Frequency",
+    "FrequencyCount":   "Reporting Frequencies",
+    "RoleId":           "Role ID",
     "XbrlReturnCount":  "XBRL Returns",
     "NonXbrlReturnCount": "Non-XBRL Returns",
     "TotalReturnCount": "Total Returns",
@@ -272,7 +280,29 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
     "Forms", "NXForms",
 })
 
-def _skip_fields(sample_record: dict | None = None, show_dept_id: bool = False) -> frozenset[str]:
+# Fields hidden from every table unless the question specifically asked for
+# them. Each is paired with the result-meta flag that unhides it (set by the
+# handlers that answer that specific question — see _skip_fields).
+#
+# FailedLoginCount is an operational security counter, not part of a user's
+# identity: a general "list all users" table showed a Failed Logins column
+# for all 37 rows, which is noise next to Name/Login ID/Email/Department/
+# Role/Status/Last Login and reads as an accusation on every row. It is
+# still returned in full for the questions that actually ask about it
+# ("how many failed login attempts does user X have", "which users have
+# failed login attempts"), whose handlers set show_failed_logins.
+_CONDITIONAL_FIELDS: dict[str, str] = {
+    "DeptId": "show_dept_id",
+    "FailedLoginCount": "show_failed_logins",
+    # Same story as DeptId: an internal key most questions never ask about,
+    # but "what is the role ID of Tester?" asks for exactly this and was
+    # answered with a Name/Status row that never showed it.
+    "RoleId": "show_role_id",
+}
+
+
+def _skip_fields(sample_record: dict | None = None, show_dept_id: bool = False,
+                 show_failed_logins: bool = False, show_role_id: bool = False) -> frozenset[str]:
     # InstanceLog-derived records (submissions) carry both a raw numeric
     # "Status" code (0-11) and a human "StatusLabel" ("New / Pending",
     # "Approved", ...). Displaying both duplicates the "Status" header
@@ -281,13 +311,14 @@ def _skip_fields(sample_record: dict | None = None, show_dept_id: bool = False) 
     # meaningless for a status CODE and rendered almost every row as
     # "Inactive" regardless of its real status. StatusLabel supersedes
     # Status whenever both are present, so skip the raw field.
-    skip = _SKIP_FIELDS
-    if show_dept_id:
-        # DeptId is skipped by default (an internal identifier most
-        # questions never ask about), but a question that explicitly asks
-        # for the department ID should get it back — see handlers' own
-        # "want_dept_id" entity, threaded here via result["meta"]["show_dept_id"].
-        skip = skip - {"DeptId"}
+    # Each conditional field is hidden unless its own meta flag is set —
+    # DeptId via "want_dept_id" on the handler's entities, FailedLoginCount
+    # via the failed-login handlers. See _CONDITIONAL_FIELDS above.
+    shown = {"show_dept_id": show_dept_id, "show_failed_logins": show_failed_logins,
+             "show_role_id": show_role_id}
+    skip = (_SKIP_FIELDS | set(_CONDITIONAL_FIELDS)) - {
+        field for field, flag in _CONDITIONAL_FIELDS.items() if shown[flag]
+    }
     if sample_record and "StatusLabel" in sample_record:
         skip = skip | {"Status"}
     return skip
@@ -298,9 +329,11 @@ _PRIORITY_COLS: list[str] = [
     "ReturnName", "ReturnCode", "ReturnLabel", "ReturnId", "PeriodName",
     "OptionName", "MenuName", "AccessType",
     "UserName", "AuditDateTime", "AuditType", "Remark",
-    "StatusLabel", "CreatedDate", "FailedLoginCount",
+    # FailedLoginCount deliberately absent — it is re-added by _select_cols
+    # only when the question asked about it (see _CONDITIONAL_FIELDS).
+    "StatusLabel", "CreatedDate",
     "Frequency", "ExpectedDate", "Filed", "FiledOn",
-    "UserCount", "XbrlReturnCount", "NonXbrlReturnCount", "TotalReturnCount",
+    "UserCount", "ReturnCount", "XbrlReturnCount", "NonXbrlReturnCount", "TotalReturnCount",
 ]
 
 _COUNT_KEYS: frozenset[str] = frozenset({"total", "active", "inactive"})
@@ -334,15 +367,20 @@ def _fmt_val(v, col: str | None = None) -> str:
     return s or "\u2014"
 
 
-def _select_cols(records: list[dict], show_dept_id: bool = False) -> list[str]:
-    skip   = _skip_fields(records[0], show_dept_id)
+def _select_cols(records: list[dict], show_dept_id: bool = False,
+                 show_failed_logins: bool = False, show_role_id: bool = False) -> list[str]:
+    skip   = _skip_fields(records[0], show_dept_id, show_failed_logins, show_role_id)
     sample = [k for k in records[0].keys() if k not in skip]
     cols   = [c for c in _PRIORITY_COLS if c in sample]
-    if show_dept_id and "DeptId" in sample and "DeptId" not in cols:
-        # Not one of the curated _PRIORITY_COLS (it's normally hidden), so
-        # it needs to be added explicitly when a question asked for it —
-        # placed first since it was the thing the user actually asked about.
-        cols = ["DeptId"] + cols
+    # No conditional field is one of the curated _PRIORITY_COLS (they are
+    # normally hidden), so each has to be added explicitly when a question
+    # asked for it — placed first, since it was the thing the user actually
+    # asked about.
+    shown = {"show_dept_id": show_dept_id, "show_failed_logins": show_failed_logins,
+             "show_role_id": show_role_id}
+    for field, flag in _CONDITIONAL_FIELDS.items():
+        if shown[flag] and field in sample and field not in cols:
+            cols = [field] + cols
     return cols or sample[:5]
 
 
@@ -352,6 +390,8 @@ def _format_plain(result: dict) -> str:
     records = result.get("records", [])
     label   = result.get("label", "")
     show_dept_id = bool(result.get("meta", {}).get("show_dept_id"))
+    show_failed_logins = bool(result.get("meta", {}).get("show_failed_logins"))
+    show_role_id = bool(result.get("meta", {}).get("show_role_id"))
 
     if not records:
         return summary
@@ -368,7 +408,7 @@ def _format_plain(result: dict) -> str:
     if len(records) == 1:
         rec   = records[0]
         lines = [label, ""]
-        skip  = _skip_fields(rec, show_dept_id)
+        skip  = _skip_fields(rec, show_dept_id, show_failed_logins, show_role_id)
         for k, v in rec.items():
             if k in skip:
                 continue
@@ -377,7 +417,7 @@ def _format_plain(result: dict) -> str:
                 lines.append(f"  {_friendly(k)}: {fv}")
         return "\n".join(lines)
 
-    cols   = _select_cols(records, show_dept_id)
+    cols   = _select_cols(records, show_dept_id, show_failed_logins, show_role_id)
     hdrs   = [_friendly(c) for c in cols]
     widths = [
         max(len(h), max((len(_fmt_val(r.get(c), c)) for r in records), default=0))
@@ -431,6 +471,8 @@ def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
     label   = result.get("label", "")
     summary = result.get("summary", "No data found.")
     show_dept_id = bool(result.get("meta", {}).get("show_dept_id"))
+    show_failed_logins = bool(result.get("meta", {}).get("show_failed_logins"))
+    show_role_id = bool(result.get("meta", {}).get("show_role_id"))
 
     if not records:
         return {
@@ -459,7 +501,7 @@ def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
     # still render as a compact one-row table, not a full profile dump).
     if len(records) == 1 and not _is_list_shaped(intent):
         rec  = records[0]
-        skip = _skip_fields(rec, show_dept_id)
+        skip = _skip_fields(rec, show_dept_id, show_failed_logins, show_role_id)
         cols = [k for k in rec if k not in skip and _fmt_val(rec.get(k), k) != "\u2014"]
         return {
             "label":    label,
@@ -471,7 +513,7 @@ def _build_db_qa_data(result: dict, intent: str | None = None) -> dict:
         }
 
     # Multiple records
-    cols = _select_cols(records, show_dept_id)
+    cols = _select_cols(records, show_dept_id, show_failed_logins, show_role_id)
     return {
         "label":    label,
         "summary":  summary,

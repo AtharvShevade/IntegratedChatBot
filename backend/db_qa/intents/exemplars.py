@@ -52,6 +52,20 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Is my account currently active?",
         "How many failed login attempts does my account have?",
         "How many failed login attempts does user jsmith have?",
+        # One NAMED user's department/role/failed-attempt count, with and
+        # without the word "user" before the name — the phrasings that used
+        # to land on USERS_BY_DEPARTMENT/USERS_BY_ROLE (which then had no
+        # department or role name to filter by) or on nothing at all.
+        "What is the department of user jsmith?",
+        "What is the department of jsmith?",
+        "Which department does user rpatel belong to?",
+        "What is the role of user jsmith?",
+        "What is the role of jsmith?",
+        "Which role does user rpatel have?",
+        "Tell me jsmith's department",
+        "What role is assigned to user rpatel?",
+        "How many failed attempts does user jsmith have?",
+        "How many failed attempts user jsmith has?",
     ],
     Intent.USER_LIST: [
         "How many users are there in total?",
@@ -84,6 +98,15 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Show me every user with their role and department.",
         "Can you list all users along with their roles and departments?",
         "Give me a list of all users along with their roles and departments.",
+        # Only ONE of the two attributes named — the same table either way
+        # (every row carries both), but these phrasings previously fell to
+        # USERS_BY_DEPARTMENT/USERS_BY_ROLE and asked the user to name a
+        # department to filter by.
+        "Give me a list of all users with their departments.",
+        "Give me a list of all users along with their departments.",
+        "List all users with their departments.",
+        "List all users with their roles.",
+        "Show me every user and their department.",
     ],
 
     # ── DEPARTMENT ───────────────────────────────────────────────────────
@@ -98,7 +121,25 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which departments have zero returns assigned?",
         "Which departments don't have any returns?",
         "Which departments have no assigned returns?",
+        "Which department have 0 returns assigned?",
+        "Show departments with no assigned returns.",
+        "Departments without any returns.",
+        # Per-department COUNT table — a list of every department with its
+        # own totals. Distinct from "how many departments are there"
+        # (a single count OF departments) and from a named department's
+        # return list (DEPARTMENT_RETURNS), both of which these phrasings
+        # used to be answered with.
         "List all departments along with their assigned return counts.",
+        "Give me a list of departments along with the count of their returns.",
+        "Show each department with its return counts.",
+        "List departments with XBRL and Non-XBRL return counts.",
+        "Give me all departments with their total returns.",
+        "Show each department and the number of returns assigned.",
+        # Ranking with the relationship word between rank and noun.
+        "Which department has the most assigned returns?",
+        "Which department has the fewest assigned returns?",
+        "Which department has the highest number of returns?",
+        "Which department has the lowest number of returns?",
     ],
     Intent.DEPARTMENT_PROFILE: [
         "What department am I in?",
@@ -119,6 +160,13 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which department do I work in?",
         "Tell me which department I'm part of.",
         "What is the email address of my department?",
+        # A bare department reference, and the ID phrasings that never use
+        # the word "department" as a separate token.
+        "Department Treasury",
+        "Tell me about department Treasury.",
+        "What is the ID of department Treasury?",
+        "Department ID for Treasury",
+        "Give me the department ID of Treasury.",
     ],
     Intent.DEPARTMENT_RETURNS: [
         "Which XBRL returns does my department have access to?",
@@ -140,6 +188,34 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which returns are mapped to the Compliance department?",
         "Which returns are linked to my department?",
         "Which returns are configured for the Treasury department?",
+        # Lower-case, article-free phrasings — how these are actually typed.
+        "xbrl returns assigned to department Treasury",
+        "non xbrl returns assigned to department Treasury",
+        "Which XBRL returns are assigned to department Treasury?",
+        "Which Non-XBRL returns are assigned to department Treasury?",
+        # "<returns> department <name> can access" — the name sits AFTER the
+        # department noun while a domain noun sits before it, the shape that
+        # made the extractor return "returns" as the department name.
+        "which returns department Treasury can access",
+        "what are the xbrl returns department Treasury can access",
+        "what non xbrl returns department Treasury can access",
+        "list of non xbrl returns department Treasury can access",
+        "List all returns department Treasury can access.",
+        # "can access" / "what can" framings.
+        "Which returns can department Treasury access?",
+        "What returns can department Treasury access?",
+        "What can department Treasury access?",
+        "Which XBRL returns can department Treasury access?",
+        "Which Non-XBRL returns can department Treasury access?",
+        # available / accessible / assigned, and the whole-list request.
+        "What XBRL returns are available to department Treasury?",
+        "What Non-XBRL returns are available to department Treasury?",
+        "Give me all returns accessible to department Treasury.",
+        "show returns accessible by department Treasury",
+        "Which returns are assigned to Treasury?",
+        "give me list of return of department Treasury",
+        "What is the complete return access list for department Treasury?",
+        "Which returns does department Treasury have access to?",
     ],
     Intent.DEPARTMENTS_WITH_RETURN_ACCESS: [
         "Which departments have access to return CIMS_ROR?",
@@ -171,6 +247,12 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which role has the least users?",
         "Which role is used by the fewest users?",
         "List all roles along with the number of users in each.",
+        # Per-role user COUNTS — these read as plain how-many questions and
+        # were answered with "Total roles: 16 (14 active, 2 inactive)".
+        "Give me list of roles along with the number of users in each.",
+        "Show every role with its user count.",
+        "How many users are assigned to each role?",
+        "List each role and the number of users holding it.",
         "Is there a role called Auditor in the system?",
         "What roles do we have?",
         "What roles are present in the system?",
@@ -183,7 +265,12 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What is my role ID?",
         "Is my role currently active?",
         "What is the role ID for Admin User?",
+        "What is the role ID of Tester?",
+        "What is Tester role ID?",
         "What is the name of role ID 101?",
+        # A USER's role ID, as opposed to a ROLE's own — resolved from the
+        # data (an exact role name wins; otherwise the person is looked up).
+        "What is the role ID of tester user?",
         "Which role do I belong to?",
         "Tell me about the Tester role.",
     ],
@@ -217,6 +304,14 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Do I have permission to approve submissions?",
         "Can I create new users?",
         "Can role Admin User create new users?",
+        # The same question with no "role" word at all — the role name is
+        # the bare subject, which used to route to a list of its users.
+        "Can the Admin User create new users?",
+        "Can Admin User create users?",
+        "Does Admin User have permission to create users?",
+        "Is Admin User allowed to create users?",
+        "Can I upload a Non-XBRL file?",
+        "Do I have permission to upload Non-XBRL files?",
         "Can I edit department settings?",
         "Can I approve submissions?",
         "Can I view the audit log?",
@@ -238,6 +333,9 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which roles have full access to the Balance Sheet module?",
         "Which roles can approve data preparation?",
         "Which roles can create XBRL instances?",
+        "Which roles are allowed to create XBRL instances?",
+        "Who can create XBRL instances?",
+        "Which roles can generate XBRL instances?",
         "Which roles have view-only access to returns?",
         "Which roles have no edit or create permissions at all?",
         "Which roles have approval rights for the audit log?",
@@ -300,6 +398,18 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which reporting frequency is used by the largest number of returns?",
         "Which period has the most returns assigned?",
         "Which reporting period has the highest number of returns?",
+        # The least/fewest mirror — the "most" half had eight phrasings and
+        # this half had none, so every one of these fell to the plain
+        # period listing (or matched nothing at all).
+        "Which frequency has the least returns?",
+        "Which frequency has minimum returns?",
+        "Which reporting frequency has the lowest number of returns?",
+        "Which period has the fewest returns assigned?",
+        "Which reporting frequency is used by the fewest returns?",
+        # A COUNT of the frequencies, not a listing of them.
+        "How many frequencies are there?",
+        "What is the total number of reporting frequencies?",
+        "How many reporting periods are configured?",
     ],
     Intent.PERIOD_LOOKUP: [
         "What is the period name for period ID 107?",
@@ -348,6 +458,18 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which of my returns follow a quarterly reporting schedule?",
         "Give me the returns filed every quarter.",
         "What returns are submitted on a quarterly basis?",
+        # filed / submitted / reported are one vocabulary, not three
+        # questions — the submitted/reported half used to match no regex
+        # rule and fell through to the generic SQL agent.
+        "Which of my returns are submitted quarterly?",
+        "What are my returns submitted quarterly?",
+        "Which returns do I submit quarterly?",
+        "Which returns do I file quarterly?",
+        "Which returns are reported quarterly?",
+        "Which of my returns are submitted monthly?",
+        "Which returns do I submit monthly?",
+        "Which non-XBRL returns are submitted quarterly?",
+        "Which XBRL returns are submitted monthly?",
         # Half Yearly / Semi Annual
         "Show me all the half yearly returns.",
         "List the semi annual returns.",
@@ -423,6 +545,16 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "What is the reporting frequency of return CIMS_ROR?",
         "What report formats are available for return CIMS_ROR?",
         "What formats does return CIMS_RAQ support — PDF, Excel, or HTML?",
+        # Same phrasings without the "return" noun before the name.
+        "What report formats are available for CIMS_ROR?",
+        "What is the reporting frequency for CRILC?",
+        "What is the reporting frequency for CRILC-SMA2NBFC?",
+        "What is the return ID of CIMS_RAQ annually?",
+        # The return's configured DueDays value — distinct from
+        # NEXT_REPORTING_DATE's days-remaining computation.
+        "How many days are due for CIMS_ROR?",
+        "How many days due for return CIMS_ROR for submission?",
+        "What are the due days for Non-XBRL return BSR1?",
     ],
     Intent.RETURN_VALIDATION_CONFIG: [
         "Does return CIMS_RAQ require formula validation?",
@@ -443,6 +575,21 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Can you tell me when is return DPSS09 due?",
         "What is the reporting calendar for return CIMS_ROR for the current year?",
         "Can I see the full reporting calendar for return CIMS_ROR?",
+        # The word "return" before the name is optional in every one of
+        # these — the bare form is how they are actually typed, and it
+        # previously matched no rule at all.
+        "Give me reporting calendar for OCB.",
+        "Give me full reporting calendar for CIMS_FormGPB.",
+        "Can I see the full reporting calendar for CIMS_ROR?",
+        "When should I submit CIMS_RAQ next?",
+        "What is the next due date for CIMS_ROR?",
+        "When do I need to submit CIMS_ROR?",
+        # Days REMAINING until the due date (distinct from RETURN_FIELD's
+        # configured DueDays value — see its exemplars).
+        "How many days are left to submit CIMS_ROR?",
+        "How many days do I have to submit CIMS_ROR?",
+        "How many days until CIMS_ROR is due?",
+        "How many days remaining for submission of CIMS_ROR?",
     ],
     Intent.REPORTS_FILED_IN_RANGE: [
         "Show me all XBRL reports filed between 1-Jan-2026 and 31-Mar-2026",
@@ -463,6 +610,30 @@ EXEMPLARS: dict[Intent, list[str]] = {
         "Which return is due next for me?",
         "What is my next XBRL return due?",
         "When is my next return due?",
+        # Overdue + a FREQUENCY is one question with two filters, not a
+        # plain frequency listing — these used to reach RETURNS_BY_FREQUENCY
+        # and answer with every quarterly return, overdue or not.
+        "Which monthly returns are overdue?",
+        "Give me list of all monthly overdue returns.",
+        "Which quarterly returns are overdue?",
+        "Show overdue monthly returns.",
+        "Which yearly returns are overdue?",
+        "Which half-yearly returns are overdue?",
+        "Give me all overdue daily returns.",
+        "Give me all overdue fortnightly returns.",
+        # Overdue + a TYPE, and both filters together.
+        "Give me all XBRL overdue returns.",
+        "Give me all Non-XBRL overdue returns.",
+        "Which XBRL monthly returns are overdue?",
+        "Which Non-XBRL quarterly returns are overdue?",
+        "Which of my monthly returns are overdue?",
+        # Rolling due window, with and without "the".
+        "Which of my returns are due in the next 10 days?",
+        "Which returns are due within the next 10 days?",
+        "What returns are due in the next 10 days?",
+        "Which quarterly returns are due in the next 30 days?",
+        "Which XBRL returns are due in the next 10 days?",
+        "Which of my returns are due soon?",
     ],
     Intent.MONTHLY_FILING_STATUS: [
         "What's my XBRL filing status for June 2025?",

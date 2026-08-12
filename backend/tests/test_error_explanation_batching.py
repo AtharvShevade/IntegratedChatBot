@@ -67,17 +67,31 @@ def dummy_html_file(tmp_path):
     return str(path)
 
 
+@pytest.fixture
+def legacy_flow(monkeypatch):
+    """Pin these tests to the LEGACY explanation flow.
+
+    They monkeypatch legacy seams (rl.parse_formula_errors,
+    formula_error_generic.*, rl.parse_dimensional_html_errors) to assert the
+    batching/counting contract. Under ERROR_EXPLAIN_V2 the wrappers call the
+    unified flow instead, so those patches would no longer be reached — the
+    contract itself is unchanged and is asserted for the V2 flow in
+    TestUnifiedFlowBatching below.
+    """
+    monkeypatch.setenv("ERROR_EXPLAIN_V2", "0")
+
+
 # ── 1. Unique-rule summary counts (requirement 3) ──────────────────────────
 
 class TestUniqueRuleSummaryCounts:
-    def test_formula_error_count_is_rule_count_not_occurrence_sum(self, monkeypatch, dummy_html_file):
+    def test_formula_error_count_is_rule_count_not_occurrence_sum(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule("RuleA", 149), _formula_rule("RuleB", 171), _formula_rule("RuleC", 1)]
         monkeypatch.setattr(rl, "parse_formula_errors", lambda path: rules)
         counts = rl.count_errors_by_category(dummy_html_file, form_id="4046")  # 4000-series
         assert counts["formula_error"] == 3          # not 149 + 171 + 1 = 321
         assert counts["formula_error"] != 321
 
-    def test_formula_error_count_for_generic_non_4000_series_path(self, monkeypatch, dummy_html_file):
+    def test_formula_error_count_for_generic_non_4000_series_path(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule(f"Rule{i}", 10) for i in range(8)]
         monkeypatch.setattr(
             "backend.tools.formula_error_generic.parse_generic_formula_errors",
@@ -115,7 +129,7 @@ class TestUniqueRuleSummaryCounts:
         counts = rl.count_errors_by_category(dummy_html_file)
         assert counts["xbrl_schema"] == 4
 
-    def test_no_rules_means_no_formula_error_key(self, monkeypatch, dummy_html_file):
+    def test_no_rules_means_no_formula_error_key(self, legacy_flow, monkeypatch, dummy_html_file):
         monkeypatch.setattr(rl, "parse_formula_errors", lambda path: [])
         counts = rl.count_errors_by_category(dummy_html_file, form_id="4046")
         assert "formula_error" not in counts
@@ -127,7 +141,7 @@ class TestFormulaErrorBatching:
     def test_batch_size_is_exactly_three(self):
         assert rl._MAX_EXPLAIN == 3
 
-    def test_first_batch_is_first_three_rules_4000_series(self, monkeypatch, dummy_html_file):
+    def test_first_batch_is_first_three_rules_4000_series(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule(f"Rule{i}", 1) for i in range(8)]
         monkeypatch.setattr(rl, "parse_formula_errors", lambda path: rules)
         monkeypatch.setattr(rl, "enrich_formula_errors", lambda trimmed: trimmed)
@@ -141,7 +155,7 @@ class TestFormulaErrorBatching:
         assert captured["names"] == ["Rule0", "Rule1", "Rule2"]
         assert len(result) == 3
 
-    def test_second_batch_continues_from_offset_never_repeats(self, monkeypatch, dummy_html_file):
+    def test_second_batch_continues_from_offset_never_repeats(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule(f"Rule{i}", 1) for i in range(8)]
         monkeypatch.setattr(rl, "parse_formula_errors", lambda path: rules)
         monkeypatch.setattr(rl, "enrich_formula_errors", lambda trimmed: trimmed)
@@ -156,7 +170,7 @@ class TestFormulaErrorBatching:
         # None of the first batch's rules appear again.
         assert not set(captured["names"]) & {"Rule0", "Rule1", "Rule2"}
 
-    def test_final_partial_batch_of_two(self, monkeypatch, dummy_html_file):
+    def test_final_partial_batch_of_two(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule(f"Rule{i}", 1) for i in range(8)]  # 8 rules: batches of 3,3,2
         monkeypatch.setattr(rl, "parse_formula_errors", lambda path: rules)
         monkeypatch.setattr(rl, "enrich_formula_errors", lambda trimmed: trimmed)
@@ -170,7 +184,7 @@ class TestFormulaErrorBatching:
         assert captured["names"] == ["Rule6", "Rule7"]
         assert len(result) == 2
 
-    def test_offset_past_end_returns_empty(self, monkeypatch, dummy_html_file):
+    def test_offset_past_end_returns_empty(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule(f"Rule{i}", 1) for i in range(3)]
         monkeypatch.setattr(rl, "parse_formula_errors", lambda path: rules)
         monkeypatch.setattr(rl, "enrich_formula_errors", lambda trimmed: trimmed)
@@ -179,7 +193,7 @@ class TestFormulaErrorBatching:
         result = rl.explain_errors_by_category(dummy_html_file, "formula_error", form_id="4046", offset=3)
         assert result == []
 
-    def test_generic_non_4000_series_path_also_batches_by_three_with_offset(self, monkeypatch, dummy_html_file):
+    def test_generic_non_4000_series_path_also_batches_by_three_with_offset(self, legacy_flow, monkeypatch, dummy_html_file):
         rules = [_formula_rule(f"Rule{i}", 1) for i in range(5)]
         monkeypatch.setattr(
             "backend.tools.formula_error_generic.parse_generic_formula_errors",
@@ -200,7 +214,7 @@ class TestFormulaErrorBatching:
         rl.explain_errors_by_category(dummy_html_file, "formula_error", form_id="2065", offset=3)
         assert captured["names"] == ["Rule3", "Rule4"]  # final partial batch of 2
 
-    def test_default_offset_is_zero_backward_compatible(self, monkeypatch, dummy_html_file):
+    def test_default_offset_is_zero_backward_compatible(self, legacy_flow, monkeypatch, dummy_html_file):
         """Callers that don't pass offset at all must see the first batch,
         exactly like every existing call site before this change."""
         rules = [_formula_rule(f"Rule{i}", 1) for i in range(5)]
@@ -239,7 +253,7 @@ class TestXbrlSchemaBatching:
 
 
 class TestDimensionalUnaffected:
-    def test_dimensional_branch_applies_offset(self, monkeypatch, dummy_html_file):
+    def test_dimensional_branch_applies_offset(self, legacy_flow, monkeypatch, dummy_html_file):
         """Dimension-error explanation is taxonomy-aware (see
         backend.tools.dimension_taxonomy) and, now that the "Explain
         Dimension Errors" button is wired up in the UI, batching must behave
