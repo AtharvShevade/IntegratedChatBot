@@ -263,9 +263,82 @@ function _parseFormulaExplanationBlocks(text) {
   return parsed
 }
 
+// Per-row verdict glyph for a `matrix` section. Kept as a lookup rather than a
+// chain of ternaries so an unknown status renders as blank space instead of
+// throwing — a future status value degrades, it does not break the card.
+const _MATRIX_STATUS = {
+  ok:      { glyph: '✓', className: 'error-card-row-ok' },
+  bad:     { glyph: '✗', className: 'error-card-row-bad' },
+  unknown: { glyph: '?', className: 'error-card-row-unknown' },
+  neutral: { glyph: '',  className: '' },
+}
+
+// The expected-vs-actual table — the heart of the unified error card. Both
+// formula and dimension errors send this exact shape; only the column HEADERS
+// differ ("Detail / Expected / You provided" vs "Item / Expected / You
+// reported"), which is why they travel with the data.
+function ErrorCardMatrix({ section }) {
+  const cols = section.columns || {}
+  const rows = section.rows || []
+  if (rows.length === 0) return null
+  return (
+    <div className="formula-error-section">
+      {section.heading && (
+        <div className="formula-error-section-heading">{section.heading}</div>
+      )}
+      {/* Wide tables scroll inside their own box; the chat bubble never
+          scrolls horizontally. */}
+      <div className="error-card-matrix-scroll">
+        <table className="error-card-matrix">
+          <thead>
+            <tr>
+              <th className="error-card-matrix-status" aria-label="Status" />
+              <th>{cols.label || 'Item'}</th>
+              <th>{cols.expected || 'Expected'}</th>
+              <th>{cols.actual || 'Actual'}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const status = _MATRIX_STATUS[r.status] || _MATRIX_STATUS.neutral
+              return (
+                <tr
+                  key={i}
+                  className={[
+                    status.className,
+                    // The result row of a formula is the consequence of the
+                    // rows above it, not a peer — it gets a rule above and
+                    // bolder text.
+                    r.emphasis ? 'error-card-row-emphasis' : '',
+                  ].filter(Boolean).join(' ')}
+                >
+                  <td className="error-card-matrix-status">{status.glyph}</td>
+                  <td className="error-card-matrix-label">{r.label}</td>
+                  <td className="error-card-matrix-expected">{r.expected}</td>
+                  <td className="error-card-matrix-actual">
+                    {r.actual}
+                    {r.note && <em className="error-card-matrix-note"> ({r.note})</em>}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // Renders the backend's structured sections directly. Every heading is a real
 // element, so no markdown emphasis markers are ever shown to the user — the
 // backend sends none, and none are reconstructed here.
+//
+// Serves BOTH formula and dimension errors, and both schema generations:
+//   v1 (ERROR_CARD_V2=0) — headline / rule / values / points / note
+//   v2 (the unified card) — headline / locator / rule / matrix / fix / details
+// The v1 cases are left untouched so flipping the backend flag needs no
+// frontend change; v2's `details` drawer nests v1 sections and renders them
+// through this same component.
 export function FormulaErrorSections({ sections }) {
   if (!Array.isArray(sections) || sections.length === 0) return null
   return (
@@ -274,6 +347,53 @@ export function FormulaErrorSections({ sections }) {
         switch (s.kind) {
           case 'headline':
             return <h4 key={i} className="formula-error-title">❌ {s.text}</h4>
+
+          // ── v2 kinds ──────────────────────────────────────────────────────
+          case 'locator':
+            return (
+              <div key={i} className="formula-error-section error-card-locator">
+                <div className="formula-error-section-heading">{s.heading}</div>
+                <div className="formula-error-kv-grid">
+                  {(s.items || []).map((it, j) => (
+                    <div key={j} className="formula-error-kv-row">
+                      {it.label && (
+                        <span className="formula-error-kv-label">{it.label}:</span>
+                      )}
+                      <span className="formula-error-kv-value">
+                        {it.mono ? <code>{it.value}</code> : it.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          case 'matrix':
+            return <ErrorCardMatrix key={i} section={s} />
+          case 'fix':
+            return (
+              <div key={i} className="formula-error-section formula-error-fix">
+                <div className="formula-error-section-heading">{s.heading}</div>
+                <ul className="formula-error-points">
+                  {(s.steps || []).map((step, j) => <li key={j}>{step}</li>)}
+                </ul>
+              </div>
+            )
+          case 'details':
+            // Native <details> — collapsed by default, no state to manage, and
+            // keyboard/screen-reader accessible for free.
+            return (
+              <details key={i} className="error-card-details">
+                <summary className="error-card-details-summary">{s.heading}</summary>
+                <div className="error-card-details-body">
+                  <FormulaErrorSections sections={s.sections} />
+                </div>
+              </details>
+            )
+
+          // ── shared / v1 kinds ─────────────────────────────────────────────
+          // `rule` is used by BOTH generations; `values`, `points` and `note`
+          // are v1's, and are still reached in v2 from inside the `details`
+          // drawer above.
           case 'rule':
             return (
               <div key={i} className="formula-error-section">

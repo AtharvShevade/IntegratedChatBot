@@ -53,9 +53,21 @@ needs_corpus = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def _deterministic(monkeypatch):
     """No LLM in tests: the whole suite must pass with Ollama unavailable, and
-    every assertion below is about the deterministic layer."""
+    every assertion below is about the deterministic layer.
+
+    ERROR_CARD_V2 is pinned OFF for this whole file. This suite IS the
+    specification of the legacy per-type section layout — it asserts headings
+    ("How to Fix", "Dimensions involved"), their order, and the exact prose in
+    them. The unified error card deliberately changes all three, so running it
+    here would only re-assert v1's wording against v2's output.
+
+    Keeping it pinned is what makes ERROR_CARD_V2=0 a real rollback rather than
+    a hope: this file proves the old layout still builds correctly and is still
+    reachable. The card's own contract is covered in test_error_card_v2.py.
+    """
     monkeypatch.setenv("ERROR_EXPLAIN_LLM", "0")
     monkeypatch.setenv("ERROR_EXPLAIN_V2", "1")
+    monkeypatch.setenv("ERROR_CARD_V2", "0")
 
 
 def _explain(path, form_id, n=1):

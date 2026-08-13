@@ -30,7 +30,9 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from backend.tools import error_file_shape as shape
-from backend.tools import error_llm, formula_expression, message_cleaner, taxonomy_index
+from backend.tools import (
+    error_card, error_llm, formula_expression, message_cleaner, taxonomy_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,8 @@ __all__ = [
     "parse_formula_errors_v2", "explain_formula_error_file",
     "explain_formula_rules", "build_llm_payload", "render_explanation",
     "build_sections", "sections_to_text", "resolve_labels",
+    # v2 unified error card — see backend/tools/error_card.py
+    "build_card_sections", "render_card",
 ]
 
 _CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£"}
@@ -1074,6 +1078,319 @@ def _where_to_check_items(by_var, labels, rule) -> list[dict]:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# SECTION 4b — the unified error card (v2)
+#
+# Same evaluation, re-tiered into the generic card shared with dimension
+# errors:
+#
+#   headline  the size and direction of the gap, in words
+#   locator   the rule, and the source table/cell to go and edit
+#   rule      the AST restated in business language (unchanged from v1)
+#   matrix    each component's reported value, then the result row carrying
+#             expected vs. reported
+#   fix       the action
+#   details   the rounding/comparison breakdown, the v1 "Why It Failed" prose,
+#             the validator message
+#
+# v1 split the numbers across "Reported Values" (what you gave) and
+# "Comparison" (expected vs actual vs difference) — two halves of one table
+# that the reader had to join mentally. The matrix joins them.
+#
+# Everything below is additive; build_sections() above is untouched and is
+# still what runs when ERROR_CARD_V2=0.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _is_combination(comparison) -> bool:
+    """Whether the right-hand side is built from several reported figures.
+
+    Same test _comparison_items() uses. When true, the right side is a
+    CALCULATED expectation and the left side is the figure that should have
+    matched it — which is what lets the card put a real value in the Expected
+    column. When false, both sides are just reported figures being compared.
+    """
+    if comparison is None:
+        return False
+    return (
+        len(comparison.rhs_vars) > 1
+        or (comparison.rhs is not None and comparison.rhs.uses_aggregation())
+    )
+
+
+def _expected_cell(comparison, result, unit: str) -> str:
+    """The Expected cell for the result row.
+
+    For a non-equality operator the threshold alone would be ambiguous
+    (is 100 a floor or a ceiling?), so the operator's meaning is carried with
+    it — 'greater than or equal to ₹100'.
+    """
+    amount = _format_amount(result["rhs_value"], unit)
+    operator = result.get("operator", "=")
+    if operator in ("=", "eq"):
+        return amount
+    meaning = formula_expression.OPERATOR_MEANING.get(operator, operator)
+    return f"{meaning} {amount}"
+
+
+def _fact_rows(var, by_var, labels, unit, rule, *, sign: int = 1,
+               status: str = error_card.STATUS_NEUTRAL,
+               aggregated=None) -> list[dict]:
+    """Matrix rows for ONE variable — the same fact/aggregate/multi-value
+    handling _reported_value_items() applies, expressed as table rows.
+
+    Components carry no Expected value of their own: the rule constrains the
+    RESULT, not the inputs, and inventing an expectation for an input would be
+    a claim the evidence does not support.
+    """
+    facts = by_var.get(var, [])
+    prefix = "" if sign > 0 else "less "
+    label = f"{prefix}{labels.get(var, var)}"
+
+    if not facts:
+        return [error_card.row(label, "must be reported", "— not reported",
+                               error_card.STATUS_BAD)]
+
+    if len(facts) > 1 and aggregated and len(aggregated) == len(facts):
+        return [
+            error_card.row(
+                f"{prefix}{name}", "",
+                _format_amount(_decimal_or_none(fact.get("value")), fact.get("unit") or unit),
+                status,
+            )
+            for fact, name in zip(facts, aggregated)
+        ]
+
+    if len(facts) > 1:
+        return [error_card.row(
+            label, "",
+            _format_amount(_var_total(by_var, var), _unit_of(by_var, var, unit)),
+            status, note=f"total of {len(facts)} reported values",
+        )]
+
+    fact = facts[0]
+    return [error_card.row(
+        label, "",
+        _format_amount(_decimal_or_none(fact.get("value")), fact.get("unit") or unit),
+        status, note=_entered_note(fact, rule),
+    )]
+
+
+def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule) -> list[dict]:
+    """Components first, then the result row that carries the verdict.
+
+    Reading order is deliberately 'here are the parts -> here is the total that
+    should have followed', which is the order the reader will have to work in
+    to fix it.
+    """
+    if comparison is None:
+        return []
+
+    aggregated = labels.get("_aggregated_fact_labels")
+
+    # ── verdict-style rules (presence checks, conditionals, boolean combos) ──
+    # There are no two comparable totals, so there is no result row; the table
+    # degrades to "what this rule looks at, and what was reported for it".
+    if result is None or result.get("boolean_only"):
+        missing = set((result or {}).get("missing_vars") or [])
+        rows: list[dict] = []
+        for var in comparison.variables():
+            status = error_card.STATUS_BAD if var in missing else error_card.STATUS_NEUTRAL
+            rows += _fact_rows(var, by_var, labels, unit, rule,
+                               status=status, aggregated=aggregated)
+        return rows
+
+    rows = []
+
+    # Right-hand components — the basis the expectation is computed from.
+    signed = comparison.rhs.signed_variables() if comparison.rhs is not None else []
+    for var, sign in (signed or [(v, 1) for v in comparison.rhs_vars]):
+        rows += _fact_rows(var, by_var, labels, unit, rule, sign=sign,
+                           aggregated=aggregated)
+
+    # A left side built from several variables is shown term by term too;
+    # otherwise the single left variable IS the result row below.
+    if len(comparison.lhs_vars) > 1:
+        for var in comparison.lhs_vars:
+            rows += _fact_rows(var, by_var, labels, unit, rule, aggregated=aggregated)
+
+    # ── the result row ───────────────────────────────────────────────────────
+    lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
+    result_label = (labels.get(lhs_var) if len(comparison.lhs_vars) == 1 else "") \
+        or "Total of the above"
+
+    note = ""
+    if not result.get("values_equal"):
+        # formula_expression.evaluate() reports "lhs_greater" / "lhs_less" /
+        # "lhs_equal" (or "n/a" when the sides were not comparable).
+        direction = "short by" if result.get("relationship") == "lhs_less" else "over by"
+        note = f"{direction} {_format_amount(abs(result['difference']), unit)}"
+    if result.get("rounding_changed_a_value"):
+        note = (note + ", " if note else "") + "after rounding"
+
+    rows.append(error_card.row(
+        result_label,
+        _expected_cell(comparison, result, unit),
+        _format_amount(result["lhs_value"], unit),
+        error_card.STATUS_OK if result.get("passes") else error_card.STATUS_BAD,
+        note=note,
+        emphasis=True,
+    ))
+    return rows
+
+
+def _card_headline_formula(rule, comparison, result, labels, unit) -> str:
+    """A headline that states the gap, not the category.
+
+    v1 says '<RuleName> did not pass validation', which tells the reader only
+    that they are looking at a failure they already knew about. Where the
+    numbers were established, the size and direction of the miss are known and
+    are said here instead.
+    """
+    fallback = f"{_humanize_rule_name(rule.get('rule_name', ''))} did not pass validation."
+
+    if result is None or comparison is None:
+        return fallback
+
+    if result.get("passes"):
+        return ("This rule now passes on the reported values — the underlying data may "
+                "already have been corrected.")
+
+    if result.get("boolean_only"):
+        missing = [labels.get(v) for v in (result.get("missing_vars") or []) if labels.get(v)]
+        if missing:
+            verb = "is" if len(missing) == 1 else "are"
+            return f"{_join(missing)} {verb} not reported, and this rule requires it."
+        return fallback
+
+    lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
+    lhs_label = labels.get(lhs_var) or "The reported value"
+    rhs_labels = [labels.get(v, v) for v in comparison.rhs_vars]
+
+    if _is_combination(comparison) and rhs_labels:
+        subject = "the sum of its parts"
+    elif rhs_labels:
+        subject = rhs_labels[0]
+    else:
+        subject = "the value this rule requires"
+
+    if result.get("values_equal"):
+        return f"{lhs_label} is exactly equal to {subject}, which this rule does not allow."
+
+    gap = _format_amount(abs(result["difference"]), unit)
+    direction = "lower" if result.get("relationship") == "lhs_less" else "higher"
+    return f"{lhs_label} is {gap} {direction} than {subject}."
+
+
+def _card_locator_items_formula(rule, by_var, labels) -> list[dict]:
+    """The rule's identity plus any source location the evidence carries.
+
+    _where_to_check_items() synthesises nothing — when the file has no
+    backtracking columns and no db_mapping it returns [], and the card then
+    shows the rule alone rather than a made-up location.
+    """
+    items: list[dict] = []
+    name = _humanize_rule_name(rule.get("rule_name", ""))
+    if name:
+        items.append({"label": "Validation rule", "value": name})
+    for item in _where_to_check_items(by_var, labels, rule):
+        items.append({"label": item["label"], "value": item["value"], "mono": True})
+    return items
+
+
+def _card_details_sections_formula(comparison, result, by_var, labels, unit,
+                                   rule, llm_text) -> list[dict]:
+    """The drawer — the breakdown the card body no longer leads with.
+
+    Nothing here is new and nothing here is lost: it is v1's Comparison block
+    (raw vs rounded, the explicit difference, the rounding step), v1's "Why It
+    Failed" prose, and the validator's own message.
+    """
+    sections: list[dict] = []
+
+    if comparison is not None and result is not None and not result.get("boolean_only"):
+        comparison_items = _comparison_items(comparison, result, labels, unit)
+        if comparison_items:
+            sections.append({"kind": "values", "heading": "Comparison",
+                             "items": comparison_items})
+
+    sections.append({
+        "kind": "points", "heading": "Why It Failed",
+        "bullets": _why_failed_points(comparison, result, labels, unit, llm_text),
+    })
+
+    instances = rule.get("instances") or []
+    instance = instances[0] if instances else {"business_message": ""}
+    cleaned = message_cleaner.normalise_message(instance.get("business_message", ""))
+    if cleaned:
+        sections.append({"kind": "rule", "heading": "Validator Message", "text": cleaned})
+
+    return sections
+
+
+def build_card_sections(
+    rule: dict, comparison, result: dict | None, labels: dict[str, str],
+    llm_text: dict | None = None,
+) -> list[dict]:
+    """The v2 unified error card for one formula rule."""
+    instances = rule.get("instances") or []
+    instance = instances[0] if instances else {"facts": [], "business_message": ""}
+    facts = instance.get("facts") or []
+
+    by_var: dict[str, list[dict]] = {}
+    for fact in facts:
+        by_var.setdefault(fact["var"], []).append(fact)
+    unit = next((f["unit"] for f in facts if f.get("unit")), "")
+
+    sections: list[dict] = [
+        error_card.headline(_card_headline_formula(rule, comparison, result, labels, unit)),
+    ]
+
+    locator_items = _card_locator_items_formula(rule, by_var, labels)
+    if locator_items:
+        sections.append(error_card.locator(locator_items))
+
+    rule_sentence = _readable_rule_sentence(comparison, labels)
+    if rule_sentence:
+        sections.append(error_card.rule(rule_sentence))
+
+    rows = _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule)
+    if rows:
+        sections.append(error_card.matrix(
+            rows, heading="Values",
+            label_col="Item", expected_col="Expected", actual_col="You reported",
+        ))
+
+    # Batch scope belongs in the body, not the drawer: a reader who fixes the
+    # one shown item needs to know another eleven are waiting.
+    if len(instances) > 1:
+        sections.append({
+            "kind": "note",
+            "text": (f"This rule failed for {len(instances)} reported items; "
+                     f"the first is shown above."),
+        })
+
+    sections.append(error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text)))
+
+    drawer = error_card.details(_card_details_sections_formula(
+        comparison, result, by_var, labels, unit, rule, llm_text,
+    ))
+    if drawer:
+        sections.append(drawer)
+    return sections
+
+
+def render_card(
+    rule: dict, comparison, result: dict | None, labels: dict[str, str],
+    llm_text: dict | None = None,
+) -> str:
+    """Plain-text form of the v2 card."""
+    header = f"⚙ Formula Error — {rule.get('rule_name', '')}".rstrip(" —")
+    return error_card.sections_to_text(
+        header, build_card_sections(rule, comparison, result, labels, llm_text),
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — LLM payload
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -1247,8 +1564,15 @@ def explain_one_rule(rule: dict, taxonomy_json, index, settings) -> dict:
         # explanation with a one-line "review the values" fallback.
         llm_text = _phrase_via_llm(rule, comparison, result, labels, settings)
 
-        sections = build_sections(rule, comparison, result, labels, llm_text)
-        out["explanation"] = sections_to_text(rule.get("rule_name", ""), sections)
+        # v2 = the unified error card shared with dimension errors; v1 = the
+        # original per-type sections. Chosen per request (not at import) so
+        # ERROR_CARD_V2 can be flipped with a restart and no code change.
+        if error_card.v2_enabled():
+            sections = build_card_sections(rule, comparison, result, labels, llm_text)
+            out["explanation"] = render_card(rule, comparison, result, labels, llm_text)
+        else:
+            sections = build_sections(rule, comparison, result, labels, llm_text)
+            out["explanation"] = sections_to_text(rule.get("rule_name", ""), sections)
         # Structured form for the UI, so headings/bullets are rendered as real
         # elements instead of being recovered by parsing the string back.
         out["explanation_sections"] = sections

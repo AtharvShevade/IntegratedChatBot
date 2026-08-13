@@ -33,13 +33,15 @@ import logging
 import re
 
 from backend.tools import error_file_shape as shape
-from backend.tools import error_llm, instance_context, taxonomy_index
+from backend.tools import error_card, error_llm, instance_context, taxonomy_index
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "parse_dimension_errors", "build_evidence", "render_explanation",
     "build_sections", "sections_to_text", "explain_dimension_errors",
+    # v2 unified error card — see backend/tools/error_card.py
+    "build_card_sections", "render_card",
 ]
 
 _NOT_DETERMINABLE = "Cannot be determined from the available data."
@@ -932,6 +934,352 @@ def render_explanation(evidence: dict, llm_text: dict | None = None) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# SECTION 3b — the unified error card (v2)
+#
+# Same evidence, re-tiered into the generic card shared with formula errors:
+#
+#   headline  names the specific details at fault, not the category
+#   locator   the figure, its reported value, and the period
+#   rule      one sentence: what this figure was supposed to carry
+#   matrix    every required detail x (expected | provided | status)
+#   fix       the action
+#   details   the full requirement text, the v1 diagnosis prose, the context id
+#
+# The three v1 sections "Details This Figure Must Carry", "What Each Detail
+# Must Contain" and "Details Actually Provided" were three views of the SAME
+# rows; the matrix merges them so the reader sees the diff instead of computing
+# it. Nothing is dropped — the long-form requirements move into the drawer.
+#
+# Everything below is additive. build_sections() above is untouched and is
+# still what runs when ERROR_CARD_V2=0.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Short, everyday names for the XBRL base types a typed dimension can require.
+# The long form (with pattern and example) stays in the drawer — in the table a
+# reader only needs to know what KIND of thing goes in the cell.
+_BASE_TYPE_SHORT: dict[str, str] = {
+    "string": "text", "normalizedstring": "text", "token": "text", "name": "text",
+    "datetime": "date & time", "date": "date", "time": "time",
+    "gyear": "year", "gmonth": "month", "gyearmonth": "month & year",
+    "decimal": "number", "double": "number", "float": "number",
+    "monetary": "amount", "pure": "number", "shares": "number",
+    "integer": "whole number", "int": "whole number", "long": "whole number",
+    "nonnegativeinteger": "whole number (0 or more)",
+    "positiveinteger": "whole number (1 or more)",
+    "boolean": "yes / no", "anyuri": "web address",
+}
+
+_BASE_TYPE_SUFFIX_RE = re.compile(r"ItemType$", re.IGNORECASE)
+
+
+def _short_base_type(base_type: str) -> str:
+    """'xbrli:dateTimeItemType' -> 'date & time'. "" when unrecognised, so the
+    caller can fall back rather than print a raw taxonomy type at the user."""
+    core = (base_type or "").split(":")[-1]
+    core = _BASE_TYPE_SUFFIX_RE.sub("", core)
+    return _BASE_TYPE_SHORT.get(core.lower(), "")
+
+
+def _axis_expected_short(axis: dict) -> str:
+    """The Expected cell for one axis — a few words, never a paragraph."""
+    if axis.get("is_typed"):
+        required = axis.get("required_value") or {}
+        short = _short_base_type(required.get("base_type", ""))
+        return short or "a value you enter"
+    count = len(axis.get("allowed_members") or [])
+    if count == 1:
+        return "one fixed option"
+    if count:
+        return f"one of {count} options"
+    return "pick from a list"
+
+
+def _card_axes(evidence: dict) -> list[dict]:
+    """Rows for the table: ALL axes the concept's hypercube requires.
+
+    Deliberately wider than _display_axes(), which narrows to the single axis
+    the validator named. The table's whole value is showing the complete
+    required set beside what was supplied, so the reader can see which rows are
+    fine — narrowing it back to one row would rebuild the original problem.
+    """
+    return evidence.get("expected_axes") or _display_axes(evidence)
+
+
+def _axis_label_for_id(evidence: dict, axis_id: str) -> str:
+    """A business label for an axis id, from the taxonomy labels gathered during
+    evidence assembly, falling back to a humanised local name."""
+    return (evidence.get("_axis_labels", {}) or {}).get(axis_id) or \
+        taxonomy_index.humanize_local_name(axis_id, ("Axis", "Dimension"))
+
+
+def _missing_axis_labels(evidence: dict) -> list[str]:
+    missing = set(evidence.get("missing_axes") or [])
+    return [a["label"] for a in _card_axes(evidence) if a["axis_id"] in missing]
+
+
+def _unexpected_axis_labels(evidence: dict) -> list[str]:
+    """v1 prints these raw ids; the card names them properly."""
+    return [_axis_label_for_id(evidence, aid) for aid in evidence.get("unexpected_axes") or []]
+
+
+def _card_headline(evidence: dict) -> str:
+    """A headline that names the actual problem.
+
+    v1's _HEADLINES is a static per-diagnosis sentence ("Some of the details
+    this figure must carry are missing") which forces the reader on to the
+    table to learn WHICH. The evidence already knows, so it is said here and
+    the table becomes confirmation rather than a lookup.
+    """
+    diagnosis = evidence.get("diagnosis")
+
+    if diagnosis == "missing_axes":
+        names = _missing_axis_labels(evidence)
+        if names:
+            verb = "is" if len(names) == 1 else "are"
+            return f"{_join_natural(names)} {verb} missing from this figure."
+
+    elif diagnosis == "invalid_member":
+        items = evidence.get("invalid_members") or []
+        if len(items) == 1:
+            item = items[0]
+            tail = ("is not one of the allowed options"
+                    if item.get("reason") == "member_not_allowed"
+                    else "is not written in the required format")
+            return f"{item['axis_label']} was reported as \"{item['reported']}\", which {tail}."
+        if items:
+            names = _join_natural([i["axis_label"] for i in items])
+            return f"{names} use values that are not allowed for this figure."
+
+    elif diagnosis == "typed_value_invalid":
+        axes = _display_axes(evidence)
+        if axes:
+            return f"{axes[0]['label']} is not written in the required format."
+
+    elif diagnosis == "unexpected_axes":
+        extra = _join_natural(_unexpected_axis_labels(evidence))
+        if extra:
+            return f"This figure carries {extra}, which does not belong to it."
+
+    # Every other diagnosis (and any case above where the names could not be
+    # established) keeps the v1 wording — it is already accurate, just general.
+    return _headline(evidence)
+
+
+def _card_locator_items(evidence: dict) -> list[dict]:
+    """Where in the source data this error lives.
+
+    Only the PERIOD is decoded from the context id; the remaining segments are
+    dimension values whose axis cannot be recovered from the id (see
+    error_card.period_from_context). The verified axis/value pairs are already
+    in the table, sourced from the instance document.
+    """
+    items: list[dict] = []
+    concept = _concept_display(evidence)
+    if concept:
+        items.append({"label": "Figure", "value": concept})
+    reported = _reported_value_display(evidence)
+    if reported:
+        items.append({"label": "Reported value", "value": reported})
+    period = error_card.period_from_context(evidence.get("context_id", ""))
+    if period:
+        items.append({"label": "Period", "value": period})
+    return items
+
+
+def _card_rule_text(evidence: dict) -> str:
+    """One sentence stating what this figure was supposed to carry."""
+    diagnosis = evidence.get("diagnosis")
+
+    if diagnosis in ("typed_value_invalid", "typed_value_unverified"):
+        axes = _display_axes(evidence)
+        if axes:
+            return f"{axes[0]['label']}: {_axis_requirement(axes[0])}"
+
+    if diagnosis == "concept_not_in_taxonomy":
+        return ("The taxonomy found for this return does not list this item as one that takes "
+                "details at all.")
+
+    if diagnosis == "axis_not_in_taxonomy":
+        return ("One of the details used here is not defined in the taxonomy found for this "
+                "return.")
+
+    if diagnosis == "no_taxonomy":
+        return ("No taxonomy could be found for this return, so what this figure should carry "
+                "could not be established.")
+
+    axes = _card_axes(evidence)
+    if len(axes) > 1:
+        return (f"Every figure of this kind must carry all {len(axes)} details listed below — "
+                f"none of them can be left out.")
+    if axes:
+        return "This figure must carry the detail listed below."
+    return ""
+
+
+def _card_matrix_rows(evidence: dict) -> list[dict]:
+    """One row per required detail: what it must be, what was supplied, verdict.
+
+    Status is only ever "ok"/"bad" when the evidence establishes it. With no
+    instance document there is no observation, so every row is "unknown" and
+    the note under the table says why — the card never invents a verdict.
+    """
+    axes = _card_axes(evidence)
+    if not axes:
+        return []
+
+    observed = evidence.get("observed_dimensions")
+    supplied: dict[str, str] = {}
+    for entry in observed or []:
+        axis_id = taxonomy_index.local_name(entry.get("dimension", ""))
+        supplied[axis_id] = (entry.get("value") or "").strip()
+
+    missing = set(evidence.get("missing_axes") or [])
+    invalid_by_label = {i["axis_label"]: i for i in evidence.get("invalid_members") or []}
+    typed_check = evidence.get("typed_value_check") or {}
+    focus_id = (evidence.get("focus_axis") or {}).get("axis_id", "")
+
+    rows: list[dict] = []
+    for axis in axes:
+        axis_id, label = axis["axis_id"], axis["label"]
+        expected = _axis_expected_short(axis)
+
+        # The axis an IllegalTypedDimensionContent error was raised against.
+        if typed_check and axis_id and axis_id == focus_id:
+            reported = (typed_check.get("reported") or "").strip()
+            if not reported:
+                rows.append(error_card.row(
+                    label, expected, "could not be read", error_card.STATUS_UNKNOWN))
+            else:
+                # matches is False => proven wrong; None => rejected but the
+                # value could not be re-checked here. Never claim the stronger one.
+                status = (error_card.STATUS_BAD if typed_check.get("matches") is False
+                          else error_card.STATUS_UNKNOWN)
+                note = ("as quoted by the validator"
+                        if typed_check.get("reported_source") == "validator_message" else "")
+                rows.append(error_card.row(label, expected, reported, status, note=note))
+            continue
+
+        if axis_id in missing:
+            rows.append(error_card.row(
+                label, expected, "— not provided", error_card.STATUS_BAD))
+            continue
+
+        bad = invalid_by_label.get(label)
+        if bad:
+            rows.append(error_card.row(
+                label, expected, bad.get("reported") or "(empty)", error_card.STATUS_BAD))
+            continue
+
+        if observed is None:
+            rows.append(error_card.row(
+                label, expected, "not established", error_card.STATUS_UNKNOWN))
+            continue
+
+        value = supplied.get(axis_id)
+        if value is None:
+            rows.append(error_card.row(
+                label, expected, "— not provided", error_card.STATUS_BAD))
+        else:
+            rows.append(error_card.row(
+                label, expected, value or "(empty)", error_card.STATUS_OK))
+
+    # Details the figure carries but the taxonomy does not want. Appended after
+    # the required rows so the required set still reads as a block.
+    for axis_id in evidence.get("unexpected_axes") or []:
+        rows.append(error_card.row(
+            _axis_label_for_id(evidence, axis_id),
+            "not required for this figure",
+            supplied.get(axis_id) or "(empty)",
+            error_card.STATUS_BAD,
+        ))
+    return rows
+
+
+def _card_fix_steps(evidence: dict, llm_text: dict | None) -> list[str]:
+    """Identical policy to v1: grounded LLM wording when it passes the gate,
+    the deterministic steps otherwise."""
+    return _llm_points((llm_text or {}).get("how_to_fix")) or _how_to_fix_points(evidence)
+
+
+def _card_details_sections(evidence: dict, llm_text: dict | None) -> list[dict]:
+    """The drawer — everything the card body deliberately does not lead with.
+
+    This is what makes the redesign a re-tiering rather than a deletion: the
+    full requirement text (including the complete allowed-value lists, which
+    are long and are NOT actionable when a detail is simply absent), the v1
+    diagnosis prose, and the raw context id all remain available.
+    """
+    sections: list[dict] = []
+    axes = _card_axes(evidence)
+
+    if axes:
+        sections.append({
+            "kind": "values", "heading": "What Each Detail Must Contain",
+            "items": [{"label": a["label"], "value": _axis_requirement(a)} for a in axes],
+        })
+
+    sections.append({
+        "kind": "points", "heading": "What Is Wrong",
+        "bullets": _llm_points((llm_text or {}).get("why_failed"))
+                   or _what_is_wrong_points(evidence),
+    })
+
+    context = (evidence.get("context_id") or "").strip()
+    if context:
+        sections.append({"kind": "rule", "heading": "Context Id (for reference)",
+                         "text": context, "mono": True})
+
+    source = (evidence.get("taxonomy_source") or "").strip()
+    if source:
+        sections.append({"kind": "rule", "heading": "Taxonomy Source", "text": source,
+                         "mono": True})
+    return sections
+
+
+def build_card_sections(evidence: dict, llm_text: dict | None = None) -> list[dict]:
+    """The v2 unified error card for one dimension error."""
+    sections: list[dict] = [error_card.headline(_card_headline(evidence))]
+
+    locator_items = _card_locator_items(evidence)
+    if locator_items:
+        sections.append(error_card.locator(locator_items))
+
+    rule_text = _card_rule_text(evidence)
+    if rule_text:
+        sections.append(error_card.rule(rule_text))
+
+    rows = _card_matrix_rows(evidence)
+    if rows:
+        sections.append(error_card.matrix(
+            rows, heading="Details",
+            label_col="Detail", expected_col="Expected", actual_col="You provided",
+        ))
+        # When nothing could be observed, say so directly under the table —
+        # otherwise a column of "not established" reads as a system failure
+        # rather than a missing input.
+        if evidence.get("observed_dimensions") is None:
+            sections.append({"kind": "note", "text": _NO_MEMBER_EVIDENCE})
+        elif evidence.get("observed_dimensions") == []:
+            sections.append({"kind": "note",
+                             "text": "The generated return file shows this figure carries no "
+                                     "details at all."})
+
+    sections.append(error_card.fix(_card_fix_steps(evidence, llm_text)))
+
+    drawer = error_card.details(_card_details_sections(evidence, llm_text))
+    if drawer:
+        sections.append(drawer)
+    return sections
+
+
+def render_card(evidence: dict, llm_text: dict | None = None) -> str:
+    """Plain-text form of the v2 card."""
+    title = _concept_display(evidence) or _display_title(evidence)
+    header = f"📐 Dimension Error — {title}".rstrip(" —")
+    return error_card.sections_to_text(header, build_card_sections(evidence, llm_text))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — LLM payload + orchestration
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -1044,10 +1392,17 @@ def explain_dimension_errors(
         except Exception as exc:
             logger.warning("[dimension_error] phrasing failed: %s", exc)
 
-        sections = build_sections(evidence, llm_text)
-        merged["explanation"] = sections_to_text(
-            _concept_display(evidence) or _display_title(evidence), sections,
-        )
+        # v2 = the unified error card shared with formula errors; v1 = the
+        # original per-type sections. Chosen per request (not at import) so
+        # ERROR_CARD_V2 can be flipped with a restart and no code change.
+        if error_card.v2_enabled():
+            sections = build_card_sections(evidence, llm_text)
+            merged["explanation"] = render_card(evidence, llm_text)
+        else:
+            sections = build_sections(evidence, llm_text)
+            merged["explanation"] = sections_to_text(
+                _concept_display(evidence) or _display_title(evidence), sections,
+            )
         # Structured form for the UI, so headings/bullets render as real
         # elements instead of being recovered by parsing the string back.
         merged["explanation_sections"] = sections

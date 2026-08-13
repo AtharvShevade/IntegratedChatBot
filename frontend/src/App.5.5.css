@@ -2315,3 +2315,248 @@ html, body, #root {
 .dimensional-error-list {
   padding: 10px 12px 10px 34px;
 }
+
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   UNIFIED ERROR CARD (v2)  â€”  backend flag: ERROR_CARD_V2
+
+   One layout for BOTH formula and dimension validation errors:
+       headline / locator / rule / matrix / fix / details
+
+   Only NEW class names are defined here, so this block is purely additive:
+   with ERROR_CARD_V2=0 the backend emits the legacy sections, none of these
+   selectors match anything, and the old appearance returns untouched.
+   To remove the redesign entirely, delete this block from both App.5.5.css
+   and App.6.0.css. See doc/ERROR_CARD_V2.md.
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+
+/* â”€â”€ Where: the locator strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+.error-card-locator {
+  background: rgba(106, 13, 173, 0.04);
+  border-left: 3px solid rgba(106, 13, 173, 0.35);
+  border-radius: 0 6px 6px 0;
+  padding: 7px 10px;
+}
+
+.error-card-locator code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+/* â”€â”€ The expected-vs-actual table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Wide content scrolls inside its own box so the chat bubble itself never
+   scrolls horizontally. */
+.error-card-matrix-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
+.error-card-matrix {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+.error-card-matrix thead th {
+  text-align: left;
+  font-size: 0.82em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #6b7280;
+  padding: 0 10px 5px 0;
+  border-bottom: 1px solid #e2e5ea;
+  white-space: nowrap;
+}
+
+.error-card-matrix td {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid #f0f1f4;
+  vertical-align: top;
+}
+
+.error-card-matrix tr:last-child td {
+  border-bottom: none;
+}
+
+/* Fixed narrow gutter so every label starts at the same x regardless of glyph. */
+.error-card-matrix-status,
+.error-card-matrix th.error-card-matrix-status {
+  width: 1.6em;
+  padding-right: 6px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.error-card-matrix-label {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.error-card-matrix-expected {
+  color: #4b5563;
+}
+
+.error-card-matrix-actual {
+  color: #1f2937;
+}
+
+.error-card-matrix-note {
+  color: #6b7280;
+  font-size: 0.92em;
+  font-style: italic;
+}
+
+/* Per-row verdict. Colour is never the ONLY signal â€” the check/cross glyph
+   carries the same meaning for colour-blind readers and in monochrome print. */
+.error-card-row-ok .error-card-matrix-status      { color: #1f7a34; }
+.error-card-row-bad .error-card-matrix-status     { color: #c0392b; }
+.error-card-row-unknown .error-card-matrix-status { color: #b45309; }
+
+.error-card-row-bad .error-card-matrix-label,
+.error-card-row-bad .error-card-matrix-actual {
+  color: #a12b1c;
+}
+
+.error-card-row-bad {
+  background: rgba(192, 57, 43, 0.05);
+}
+
+.error-card-row-unknown .error-card-matrix-actual {
+  color: #92400e;
+  font-style: italic;
+}
+
+/* The result row of a formula: a consequence of the rows above, not a peer. */
+.error-card-row-emphasis td {
+  border-top: 2px solid #d7dae0;
+  padding-top: 7px;
+  font-weight: 700;
+}
+
+/* â”€â”€ The collapsed technical drawer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+.error-card-details {
+  border-top: 1px solid #e8eaee;
+  padding-top: 8px;
+}
+
+.error-card-details-summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6b7280;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.error-card-details-summary::-webkit-details-marker { display: none; }
+
+.error-card-details-summary::before {
+  content: '\25B8';
+  font-size: 1.05em;
+  line-height: 1;
+  transition: transform 0.12s ease;
+}
+
+.error-card-details[open] > .error-card-details-summary::before {
+  transform: rotate(90deg);
+}
+
+.error-card-details-summary:hover { color: #4b5563; }
+
+.error-card-details-body {
+  padding: 10px 0 2px 14px;
+  border-left: 2px solid #eceef1;
+  margin-top: 8px;
+}
+
+/* ── Card width ─────────────────────────────────────────────────────────────
+   Every error message renders its OWN .error-panel-wrapper, and that wrapper
+   shrink-wraps to its content — so the two error types sized themselves
+   independently and came out different widths. A formula card was the wide
+   one: its WHERE strip inherits .formula-error-kv-grid, whose auto-fit tracks
+   have a minimum of clamp(200px, 26vw, 300px), so three locator items demand
+   roughly 3 x 300px + gaps (~950px) before the grid will wrap at all. A
+   dimension card, with less in its locator, shrank to well under that.
+
+   Pinning the wrapper to ONE width makes every error card — formula or
+   dimension — render identically, because both are plain block children that
+   then fill it. Change the 760px below to resize both together. */
+.error-panel-wrapper {
+  width: 100%;
+  max-width: min(760px, 92vw);
+}
+
+/* With the wrapper capped, three 300px tracks no longer fit and would force a
+   horizontal overflow. A smaller minimum lets the locator reflow to two rows
+   instead of overflowing. Scoped to the v2 card's locator so the legacy
+   sections' own kv-grids are untouched. */
+.error-card-locator .formula-error-kv-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  column-gap: 16px;
+}
+
+/* ── No overlapping text ────────────────────────────────────────────────────
+   Grid and flex items default to `min-width: auto`, which refuses to shrink
+   below their content's minimum size. Combined with .formula-error-kv-label's
+   `flex: 0 0 auto` (shrink disabled), a long label — e.g. "Aggregate minimum
+   deposit required to be kept with RBI:" — could not shrink OR wrap, so it
+   overflowed its grid track and painted on top of the neighbouring column
+   instead of reflowing.
+
+   Two things are needed, and both are required: an explicit `min-width: 0`
+   so the track is allowed to shrink at all, and a wrap rule so the text has
+   somewhere to go once it does. Stacking label above value (column direction)
+   gives a long label the full track width rather than making it compete with
+   its own value for the same line — which is already how these rows render
+   once they wrap, so the appearance does not change.
+
+   Scoped to the v2 card's own containers, so the legacy sections keep their
+   existing behaviour when ERROR_CARD_V2=0. */
+.error-card-locator .formula-error-kv-row,
+.error-card-details-body .formula-error-kv-row {
+  min-width: 0;
+  flex-direction: column;
+  row-gap: 1px;
+}
+
+.error-card-locator .formula-error-kv-label,
+.error-card-locator .formula-error-kv-value,
+.error-card-details-body .formula-error-kv-label,
+.error-card-details-body .formula-error-kv-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The matrix scrolls rather than overlaps (its wrapper is overflow-x: auto),
+   but long concept labels still need an explicit break opportunity so a cell
+   wraps inside its column instead of widening it indefinitely. */
+.error-card-matrix th,
+.error-card-matrix td {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Headline and fix steps are plain prose, but concept names in this domain
+   run long and contain no spaces in places ("CIMS_MPD03_CRR_LAYOUT3_HM"). */
+.error-card-details-body .formula-error-rule-text,
+.error-card-details-body .formula-error-points li {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .error-card-matrix { font-size: 0.8em; }
+  .error-card-matrix td,
+  .error-card-matrix thead th { padding-right: 6px; }
+}
+
