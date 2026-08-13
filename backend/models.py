@@ -70,6 +70,34 @@ class CompareRequest(BaseModel):
     instance_b:  int = Field(..., ge=0)
     request_id:  Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
 
+class CompareSummaryRow(BaseModel):
+    """One variance row, in the shape the frontend already holds it (the
+    `variance_data` it was sent). Posted back rather than re-derived from
+    server-side session state, which expires — the comparison table is
+    often still on screen long after the session that produced it is gone."""
+    concept:     str                 = Field("", max_length=512)
+    val_a:       Optional[float]     = None
+    val_b:       Optional[float]     = None
+    diff:        Optional[float]     = None
+    pct_change:  Optional[float]     = None
+    significant: bool                = False
+
+
+class CompareSummaryRequest(BaseModel):
+    """Request body for /compare-summary — the AI narrative for a variance
+    table that has ALREADY been rendered.
+
+    Split out from /compare-execute so the table and chart appear
+    immediately: the summary takes ~140s against llama3.1 on CPU, which is
+    far too long to hold the comparison response open for (see
+    generate_llm_summary's own docstring)."""
+    rows:        list[CompareSummaryRow] = Field(default_factory=list, max_length=500)
+    label_a:     str = Field("", max_length=256)
+    label_b:     str = Field("", max_length=256)
+    report_name: str = Field("", max_length=256)
+    request_id:  Optional[str] = Field(None, max_length=64)  # enables Stop Generation
+
+
 class ExplainCategoryRequest(BaseModel):
     """Request body for /explain-category — on-demand error explanation."""
     error_file_path: str = Field(..., max_length=1024)

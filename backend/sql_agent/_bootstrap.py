@@ -1,20 +1,22 @@
 # backend/sql_agent/_bootstrap.py
 #
-# Makes the vendored SQL agent at <project_root>/sql_agent importable as `src`
-# (its own internal package name) and translates this project's .env variable
+# Makes the vendored engine at backend/sql_agent/src/ importable under its own
+# internal package name, `src`, and translates this project's .env variable
 # names into the ones its src/config.py reads.
 #
-# Why a bootstrap instead of copying its source into backend/:
-#   * src/sql_generator.py imports `embedding_building.parser`, and every
-#     retrieval path resolves artefacts under config.EMBEDDING_DIR — both live
-#     in the sql_agent tree. Keeping one copy on sys.path keeps those working,
-#     keeps the rebuild scripts (embedding_building/, scripts/, eval/) working,
-#     and means the next `git pull` of that repo is a drop-in.
-#   * Nothing here edits its source, so we never have to re-apply patches.
+# This package is fully self-contained: the engine (src/), its prebuilt
+# artifacts (embeddings/), and its DDL fallback (data/schema.sql) all live
+# under THIS folder — there is no separate top-level sql_agent/ checkout, and
+# no reference anywhere to embedding_building/ or any other build-time tree.
+# `sys.path` is pointed at this folder (not the project root) purely so the
+# engine's internal `from src import config` / `from src.retriever import
+# ...` imports keep resolving without editing all fifteen of its modules —
+# that indirection is the only thing standing between "one folder" and a
+# package rename across the whole engine.
 #
 # Env translation is required because the two projects independently named the
 # same settings: this project has used ORACLE_* / OLLAMA_BASE_URL /
-# SQL_OLLAMA_MODEL since the old agent, while sql_agent/src/config.py reads
+# SQL_OLLAMA_MODEL since the old agent, while src/config.py reads
 # DB_* / OLLAMA_URL / OLLAMA_MODEL. Rather than duplicate credentials in .env
 # under two names, we map them here, before src.config is ever imported.
 #
@@ -32,14 +34,14 @@ logger = logging.getLogger(__name__)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(_HERE))
 
-# Root of the vendored SQL agent checkout (the newly cloned implementation).
-SQL_AGENT_ROOT = os.path.join(PROJECT_ROOT, "sql_agent")
+# Root of the self-contained SQL agent package — this folder itself.
+SQL_AGENT_ROOT = _HERE
 
 # Retrieval artefacts (FAISS indexes, schema.json, qa_pairs.json,
-# semantic_layer.yaml, concept_map.json). This is the scope the clone ships
-# built and defaults to; kept in place rather than copied so a rebuild via
-# embedding_building/ is immediately live for the chatbot too.
-EMBEDDING_DIR = os.path.join(SQL_AGENT_ROOT, "embedding_building", "cims_raq_quarterly")
+# semantic_layer.yaml, concept_map.json, business_dictionary.yaml) — prebuilt,
+# shipped as data files alongside the engine. Refreshing them is: replace the
+# contents of this folder and restart; no rebuild step runs in this repo.
+EMBEDDING_DIR = os.path.join(SQL_AGENT_ROOT, "embeddings")
 
 # Checked-in Oracle DDL, the authoritative column-type source for the prompt.
 DDL_SCHEMA_PATH = os.path.join(SQL_AGENT_ROOT, "data", "schema.sql")
@@ -75,9 +77,9 @@ def _restore_env() -> None:
     backend/services/llm_service.py). Leaving SQLCoder in the process env would
     silently hand those features a model that can only emit SQL.
 
-    Safe to restore immediately, because sql_agent/src/config.py snapshots every
-    value into module-level constants at import time and nothing downstream in
-    the agent re-reads os.environ.
+    Safe to restore immediately, because src/config.py snapshots every value
+    into module-level constants at import time and nothing downstream in the
+    agent re-reads os.environ.
     """
     for name, previous in _saved_env.items():
         if previous is None:
@@ -87,17 +89,12 @@ def _restore_env() -> None:
 
 
 def ensure() -> None:
-    """Idempotent: put sql_agent/ on sys.path, apply the agent's env long enough
-    for its config module to load, then hand the process env back untouched."""
+    """Idempotent: put this package's src/ on sys.path, apply the agent's env
+    long enough for its config module to load, then hand the process env back
+    untouched."""
     global _done
     if _done:
         return
-
-    if not os.path.isdir(SQL_AGENT_ROOT):
-        raise RuntimeError(
-            f"SQL agent not found at {SQL_AGENT_ROOT} — the chatbot's DB-query "
-            "path needs that checkout present."
-        )
 
     # ── .env files, in precedence order ──────────────────────────────────────
     # 1. The chatbot's own .env — read into a LOCAL dict via dotenv_values(),
@@ -112,10 +109,6 @@ def ensure() -> None:
     #    any test process where this module's ensure() is the FIRST thing to
     #    touch .env at all: it would permanently flip those flags for every
     #    test that runs afterward in the same process, regardless of module.
-    #    (Confirmed directly: a test exercising this module's embedding path
-    #    made REQUIRE_AUTH visible to unrelated backend.agent tests later in
-    #    the same pytest run, which had never observed a "true" value before
-    #    because nothing upstream of them had loaded .env yet.)
     chatbot_env: dict = {}
     try:
         from dotenv import dotenv_values
@@ -129,7 +122,7 @@ def ensure() -> None:
         writes to os.environ itself."""
         return os.environ.get(name) or chatbot_env.get(name)
 
-    # 2. sql_agent/.env — the agent's OWN settings file, and authoritative for
+    # 2. An optional agent-local .env inside this folder — authoritative for
     #    the keys it defines. It has to override, not defer, because the two
     #    projects independently use some of the same variable names: the
     #    chatbot's .env sets OLLAMA_MODEL to its error-explanation model
@@ -151,17 +144,17 @@ def ensure() -> None:
         for key, value in agent_env.items():
             _setenv(key, value, override=True)
 
-    # Real env / sql_agent/.env (already applied above via _setenv, so already
-    # in os.environ) still wins; the chatbot .env dict is consulted only as a
-    # fallback, and only through this function — never written to os.environ.
+    # Real env / agent-local .env (already applied above via _setenv, so
+    # already in os.environ) still wins; the chatbot .env dict is consulted
+    # only as a fallback, and only through this function — never written to
+    # os.environ.
     env = _chatbot_env
 
     # ── Retrieval artefacts + DDL ────────────────────────────────────────────
-    # The agent's own EMBEDDING_DIR values are relative to ITS repo root, but the
-    # chatbot process runs from the project root — so resolve a relative value
-    # (from sql_agent/.env or a real env var) against SQL_AGENT_ROOT rather than
-    # letting it silently resolve to a nonexistent directory and degrade every
-    # answer with no error.
+    # A relative EMBEDDING_DIR override (from an agent-local .env or a real env
+    # var) is resolved against SQL_AGENT_ROOT (this folder) rather than the
+    # process's working directory, so "copy this folder, start from anywhere"
+    # keeps working regardless of how the chatbot is launched.
     configured_dir = (env("EMBEDDING_DIR") or "").strip()
     if configured_dir:
         if not os.path.isabs(configured_dir):
@@ -174,30 +167,21 @@ def ensure() -> None:
     _setenv("QUERY_PREFIX", env("SQL_QUERY_PREFIX"), override=False)
 
     # ── Ollama ───────────────────────────────────────────────────────────────
-    # Only consulted when sql_agent/.env did not set these itself. SQL_OLLAMA_MODEL
-    # still overrides the chatbot's OLLAMA_MODEL for the same reason described
-    # above — the inherited value would be the error-explanation model.
+    # Only consulted when the agent-local .env did not set these itself.
+    # SQL_OLLAMA_MODEL still overrides the chatbot's OLLAMA_MODEL for the same
+    # reason described above — the inherited value would be the
+    # error-explanation model.
     base = (env("OLLAMA_BASE_URL") or "").rstrip("/")
     if base:
         _setenv("OLLAMA_URL", f"{base}/api/generate", override=False)
     if "OLLAMA_MODEL" not in agent_env:
         _setenv("OLLAMA_MODEL", env("SQL_OLLAMA_MODEL"), override=True)
 
-    # Selector is a separate INSTRUCT model (SQLCoder cannot follow prose). The
-    # agent's default (qwen2.5-coder:7b) is not necessarily served by this
-    # deployment's Ollama, so fall back to the instruct model this project
-    # already pulls for intent extraction.
-    _setenv(
-        "SELECTOR_MODEL",
-        env("SQL_SELECTOR_MODEL") or env("OLLAMA_EXTRACT_MODEL"),
-        override=False,
-    )
-
     # ── Oracle ───────────────────────────────────────────────────────────────
     # Single source of truth is the chatbot's .env, under ORACLE_*. Mapped here
-    # so the credentials are not duplicated into sql_agent/.env; if that file
-    # does define DB_* itself, those values were already applied above and these
-    # non-overriding calls leave them alone.
+    # so the credentials are not duplicated into an agent-local .env; if that
+    # file does define DB_* itself, those values were already applied above
+    # and these non-overriding calls leave them alone.
     _setenv("DB_HOST", env("ORACLE_HOST"), override=False)
     _setenv("DB_PORT", env("ORACLE_PORT"), override=False)
     _setenv("DB_SERVICE", env("ORACLE_SERVICE"), override=False)
@@ -230,7 +214,6 @@ def ensure() -> None:
     # happen while the agent's values are in place and before _restore_env().
     embedding_dir = os.environ.get("EMBEDDING_DIR")
     sql_model = os.environ.get("OLLAMA_MODEL")
-    selector_model = os.environ.get("SELECTOR_MODEL")
     try:
         import src.config  # noqa: F401
     finally:
@@ -238,6 +221,6 @@ def ensure() -> None:
 
     _done = True
     logger.info(
-        "[SQL_AGENT] bootstrapped root=%s embedding_dir=%s model=%s selector=%s",
-        SQL_AGENT_ROOT, embedding_dir, sql_model, selector_model,
+        "[SQL_AGENT] bootstrapped root=%s embedding_dir=%s model=%s",
+        SQL_AGENT_ROOT, embedding_dir, sql_model,
     )

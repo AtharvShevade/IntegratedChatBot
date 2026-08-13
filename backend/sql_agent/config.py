@@ -19,7 +19,6 @@ _bootstrap.ensure()
 
 from src.config import (                                        # noqa: E402
     BUSINESS_SEMANTICS_LEVEL,
-    CONTEXT_PIPELINE,
     DB_HOST,
     DB_MAX_ROWS,
     DB_PASSWORD,
@@ -34,7 +33,6 @@ from src.config import (                                        # noqa: E402
     OLLAMA_NUM_CTX,
     OLLAMA_URL,
     QUERY_PREFIX,
-    SELECTOR_MODEL,
     SHORTLIST_K,
     TOP_K_COLUMNS,
     TOP_K_TABLES,

@@ -1256,12 +1256,23 @@ async def generate_llm_summary(
     label_a:     str,
     label_b:     str,
     report_name: str = "",
+    timeout:     float | None = None,
 ) -> str:
     """Call Ollama to produce a narrative executive summary of the variance.
 
     Returns a plain-text paragraph. Returns "" on any error so the table
     is still shown without a summary rather than failing entirely.
     Retries once on transient failures. Logs full tracebacks for diagnosis.
+
+    *timeout* overrides OLLAMA_SUMMARY_TIMEOUT for this one call. The
+    default (None -> the env var, 8s) is what the INLINE caller in
+    _run_comparison uses: there the summary is awaited before the
+    comparison response is sent, so it must never hold the table hostage.
+    /compare-summary passes a generous value instead, because by then the
+    table is already on screen and the user is waiting for nothing else.
+    Measured on the reference machine: this prompt takes ~140s against
+    llama3.1 on CPU, so the 8s inline budget can never actually produce a
+    summary there — which is why the async path exists.
     """
     import httpx
 
@@ -1384,7 +1395,9 @@ async def generate_llm_summary(
     # way, but it's awaited synchronously in _run_comparison before the
     # response is built, so a slow/hung Ollama call was blocking the whole
     # comparison response for up to 240s for what is meant to be optional.)
-    timeout    = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "8"))
+    if timeout is None:
+        timeout = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "8"))
+    timeout = float(timeout)
 
     chat_payload = {
         "model":      model,

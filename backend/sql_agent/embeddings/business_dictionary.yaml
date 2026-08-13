@@ -1,0 +1,148 @@
+# Business-term registry for CIMS_RAQ(Quarterly) — Phase 1 of the retrieval
+# accuracy roadmap (see plan: "Retrieval & SQL Accuracy Roadmap").
+#
+# Three kinds of entry, each solving a DIFFERENT retrieval problem:
+#
+#   acronyms  — context-free shorthand, always expand. Migrated 1:1 from the
+#               regex list _QUERY_EXPANSIONS in src/retriever.py (kept in sync
+#               there via src/business_dictionary.py — retriever.py no longer
+#               hardcodes this list, it delegates to this file).
+#   synonyms  — a business phrase that maps to a canonical term. Populates
+#               RewrittenQuery.detected_metrics for the Context Resolver; does
+#               NOT pin a table.
+#   aliases   — a surface form that names a SPECIFIC table outright. This is
+#               the deterministic fix for source-data label drift: the sheet
+#               backing cims_raq_q_sec2_part_b is named "Part B" in the DB but
+#               its own header text reads "Part C" (RAQBaseFile.xlsx,
+#               "Section2PartB" sheet), so the enriched embedding document was
+#               built from "Part C" wording and a user typing "Part B" gets a
+#               weaker embedding match than a wrong candidate. No amount of
+#               retrieval tuning fixes bad ground-truth text — this alias
+#               overrides embedding scores entirely, the same way an explicit
+#               section number does in src/section_alias.py.
+#
+# return_code is omitted (defaults to "applies to all returns") until a second
+# return is onboarded — see src/concept_map.py's return_code tagging for the
+# established convention this will follow.
+
+acronyms:
+  - forms: [npa]
+    canonical: "NPA non performing assets"
+  - forms: [gnpa]
+    canonical: "gross NPA non performing assets GNPA"
+  - forms: [nnpa]
+    canonical: "net NPA non performing assets NNPA"
+  - forms: [sma]
+    canonical: "special mention accounts SMA"
+  - forms: [car]
+    canonical: "capital adequacy ratio CAR"
+  - forms: [crar]
+    canonical: "capital adequacy ratio CRAR"
+  - forms: [pcr]
+    canonical: "provision coverage ratio PCR"
+  - forms: [rwa]
+    canonical: "risk weighted assets RWA"
+  - forms: [slr]
+    canonical: "statutory liquidity ratio SLR"
+  - forms: [crr]
+    canonical: "cash reserve ratio CRR"
+  - forms: [psl]
+    canonical: "priority sector lending PSL"
+  - forms: [raq]
+    canonical: "Risk Assessment Questionnaire RAQ CIMS"
+  - forms: [cims]
+    canonical: "CIMS banking supervisory return"
+  - forms: [dom]
+    canonical: domestic
+  - forms: [ove]
+    canonical: overseas
+  - forms: [infra]
+    canonical: infrastructure
+  - forms: [sensec]
+    canonical: "sensitive sector"
+  - forms: [oiba]
+    canonical: "other interest bearing assets OIBA"
+  - forms: [anbc]
+    canonical: "adjusted net bank credit ANBC"
+
+# NOTE: "sec4" -> "section 4" and "parta"/"partb" -> "part A"/"part B" style
+# regex substitutions stay in src/business_dictionary.py as pattern rules, not
+# data rows here — they're a structural transform (any digit, any letter), not
+# a fixed vocabulary, and belong with the code that applies them.
+
+synonyms:
+  - forms: [loan book, advances, loan assets]
+    canonical: loan_assets
+  - forms: [restructured advances, restructured loans]
+    canonical: restructured_standard_advances
+  - forms: [investment book, investment portfolio]
+    canonical: investment_quality
+  - forms: [export credit, export finance]
+    canonical: export_credit
+  - forms: [top defaulters, top impaired credits, largest npas]
+    canonical: top_impaired_credits
+  - forms: [gold loans, gold lending]
+    canonical: gold_loan_exposure
+  - forms: [country risk, cross border exposure]
+    canonical: country_risk_exposure
+
+aliases:
+  # Fixes the confirmed SEC2_PART_B alias-drift miss (see plan Section 1, root
+  # cause 1b). Table name says Part B; the sheet's own header text says
+  # "Part C - Other Risk Assets and Exposures".
+  #
+  # Deliberately NOT registering bare "part b" or "part c" — schema.json has
+  # cims_raq_q_sec1_part_b_dom, sec3_part_b, sec4_part_b (all genuinely "Part
+  # B") and cims_raq_q_sec1_part_c_o (genuinely "Part C"). An unqualified
+  # alias would silently steal those queries. Every form below is qualified by
+  # "section 2" or is the literal, distinctive header phrase — each string
+  # here must be checked against schema.json for exactly this kind of
+  # collision before being added (see scripts/validate_business_dictionary.py).
+  - forms: ["section 2 part b", "section 2 part c",
+            "other risk assets and exposures"]
+    canonical: cims_raq_q_sec2_part_b
+    kind: alias
+
+  # Fixes the confirmed sibling-collision miss on cims_raq_q_sec1_part_a_dom
+  # (dense embeddings put it at rank #2-3 behind unrelated domestic tables).
+  # Verified against schema.json: "Total Loan Assets" is a real column ONLY
+  # on sec1_part_a_dom (domestic) and sec1_part_c_o (overseas) among all
+  # sec1_part_* siblings, so qualifying by domestic/overseas is a safe,
+  # collision-free pin.
+  - forms: ["total loan assets, domestic", "total loan assets domestic",
+            "total loan assets for domestic"]
+    canonical: cims_raq_q_sec1_part_a_dom
+    kind: alias
+  - forms: ["total loan assets, overseas", "total loan assets overseas",
+            "total loan assets for overseas"]
+    canonical: cims_raq_q_sec1_part_c_o
+    kind: alias
+
+  # Fixes a mislabeled test expectation, not a routing bug: an earlier test
+  # scenario ("loss provision held against notes and bonds, domestic
+  # operations") was scored against cims_raq_q_sec2_part_b (an NPA-provision
+  # MOVEMENT table with no "notes and bonds" concept at all). The real
+  # "Notes and Bonds of Corporates" column lives on sec1_part_b_dom
+  # (domestic) / sec1_part_d_o (overseas) — confirmed via schema.json.
+  # Verified "notes and bonds" appears on no other sec1_part_* sibling, so
+  # this qualifier pair is collision-free.
+  - forms: ["notes and bonds, domestic", "notes and bonds domestic",
+            "notes and bonds of corporates, domestic"]
+    canonical: cims_raq_q_sec1_part_b_dom
+    kind: alias
+  - forms: ["notes and bonds, overseas", "notes and bonds overseas",
+            "notes and bonds of corporates, overseas"]
+    canonical: cims_raq_q_sec1_part_d_o
+    kind: alias
+
+  # Fixes a confirmed ALE sibling-collision miss: "off-balance sheet
+  # exposures" (cims_ale_q_sec_2a) was outranked by cims_ale_q_sec2_d1
+  # (Derivatives - Risk Perspective), which also mentions "Credit Equivalent"
+  # in its column descriptions. Domestic/overseas/global are columns WITHIN
+  # sec_2a (cr_eqv_dom / cr_eqv_os / cr_eqv_gobl), not separate tables, so a
+  # single unqualified alias is correct and safe here. Verified against
+  # schema.json: "off balance sheet" appears on no other table.
+  - forms: ["off balance sheet exposure", "off balance sheet exposures",
+            "off-balance sheet exposure", "off-balance sheet exposures"]
+    canonical: cims_ale_q_sec_2a
+    kind: alias

@@ -122,6 +122,55 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
 }
 
 /**
+ * Fetch the AI narrative for a variance table that is already on screen.
+ *
+ * /compare-execute returns the table and chart immediately, with only an
+ * 8-second budget for the summary — which a CPU-hosted Ollama cannot meet
+ * (~140s measured). This second call runs the same generator with a
+ * realistic budget so the AI Analysis panel fills in when it is ready,
+ * instead of the table waiting minutes for an optional paragraph.
+ *
+ * Never throws: a missing summary is not an error state — the table and
+ * chart are complete without it.
+ *
+ * @param {Array}  rows - variance_data rows exactly as received.
+ * @param {string} labelA
+ * @param {string} labelB
+ * @param {string} reportName
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal]
+ * @returns {Promise<string>} the summary text, or '' if unavailable.
+ */
+export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts = {}) {
+  const { signal } = opts
+  try {
+    const res = await fetch(`${BASE_URL}/compare-summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rows: (rows ?? []).map((r) => ({
+          concept:     r.concept ?? '',
+          val_a:       r.val_a ?? null,
+          val_b:       r.val_b ?? null,
+          diff:        r.diff ?? null,
+          pct_change:  r.pct_change ?? null,
+          significant: Boolean(r.significant),
+        })),
+        label_a:     labelA ?? '',
+        label_b:     labelB ?? '',
+        report_name: reportName ?? '',
+      }),
+      signal,
+    })
+    if (!res.ok) return ''
+    const data = await res.json().catch(() => ({}))
+    return data.llm_summary ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Send a natural language message to the FastAPI /chat endpoint.
  *
  * @param {string} message - User query text.

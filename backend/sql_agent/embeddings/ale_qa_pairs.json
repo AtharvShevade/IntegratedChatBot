@@ -1,0 +1,377 @@
+[
+  {
+    "table": "cims_ale_q_anx_1_a",
+    "question": "For the quarter, what are the total debit and credit entry counts and amounts for accounts with banks in India?",
+    "sql": "SELECT ac_bnk_ind, db_no, db_amt, cr_no, cr_amt FROM cims_ale_q_anx_1_a WHERE rdate = TRUNC(SYSDATE, 'Q') - 1"
+  },
+  {
+    "table": "cims_ale_q_anx_1_a",
+    "question": "Which reporting rows have credit entry amounts greater than debit entry amounts as on the latest reporting date?",
+    "sql": "SELECT ac_bnk_ind, code, rdate, db_amt, cr_amt FROM cims_ale_q_anx_1_a WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_1_a) AND cr_amt > db_amt"
+  },
+  {
+    "table": "cims_ale_q_anx_1_a",
+    "question": "How have the total number of debit and credit entries for accounts with banks in India trended over the last four reporting dates?",
+    "sql": "SELECT rdate, SUM(db_no) AS total_debit_entries, SUM(cr_no) AS total_credit_entries FROM cims_ale_q_anx_1_a WHERE rdate IN (SELECT rdate FROM (SELECT DISTINCT rdate FROM cims_ale_q_anx_1_a ORDER BY rdate DESC) WHERE ROWNUM <= 4) GROUP BY rdate ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_anx_1_b",
+    "question": "For the quarter ended 30-Jun-2026, what is the total debit and credit amount reported for accounts with banks overseas?",
+    "sql": "SELECT ac_bnk_ind, SUM(db_amt) AS total_debit_amt, SUM(cr_amt) AS total_credit_amt FROM cims_ale_q_anx_1_b WHERE rdate = TO_DATE('30-06-2026','DD-MM-YYYY') GROUP BY ac_bnk_ind"
+  },
+  {
+    "table": "cims_ale_q_anx_1_b",
+    "question": "Which reporting dates have credit entries number exceeding debit entries number for overseas bank accounts?",
+    "sql": "SELECT rdate, ac_bnk_ind, db_no, cr_no FROM cims_ale_q_anx_1_b WHERE cr_no > db_no ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_anx_1_b",
+    "question": "Show me the code-wise total debit entries amount and credit entries amount for the latest reporting date available.",
+    "sql": "SELECT code, SUM(db_amt) AS total_debit_amt, SUM(cr_amt) AS total_credit_amt FROM cims_ale_q_anx_1_b WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_1_b) GROUP BY code"
+  },
+  {
+    "table": "cims_ale_q_anx_1_bal",
+    "question": "What is the total balance held in current accounts with banks outside India as of the latest reporting date?",
+    "sql": "SELECT rdate, SUM(TO_NUMBER(value)) AS total_amount FROM cims_ale_q_anx_1_bal WHERE description = 'With banks Outside India ' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_1_bal) GROUP BY rdate"
+  },
+  {
+    "table": "cims_ale_q_anx_1_bal",
+    "question": "Can you compare the current account balances with banks in India versus with banks outside India for the latest quarter?",
+    "sql": "SELECT description, TO_NUMBER(value) AS amount FROM cims_ale_q_anx_1_bal WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_1_bal) AND description IN ('With banks in India ', 'With banks Outside India ')"
+  },
+  {
+    "table": "cims_ale_q_anx_1_bal",
+    "question": "How has the balance in current accounts with banks in India trended across all reported quarters?",
+    "sql": "SELECT rdate, code, TO_NUMBER(value) AS amount FROM cims_ale_q_anx_1_bal WHERE description = 'With banks in India ' ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_iba",
+    "question": "What is the total loss provision made for Inter Branch Adjustments as reported in the latest return?",
+    "sql": "SELECT description, value AS amount, rdate FROM cims_ale_q_anx_1_loss_pro_iba WHERE description = 'Loss provision made for Inter Branch Adjustments, if any' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_1_loss_pro_iba)"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_iba",
+    "question": "How has the loss provision for Inter Branch Adjustments changed over the last four reporting dates?",
+    "sql": "SELECT rdate, description, value AS amount FROM cims_ale_q_anx_1_loss_pro_iba WHERE description = 'Loss provision made for Inter Branch Adjustments, if any' ORDER BY rdate DESC FETCH FIRST 4 ROWS ONLY"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_iba",
+    "question": "Can you list all reported records for the loss provision line item along with their codes and report dates?",
+    "sql": "SELECT code, description, value AS amount, rdate FROM cims_ale_q_anx_1_loss_pro_iba WHERE description = 'Loss provision made for Inter Branch Adjustments, if any' ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_ind",
+    "question": "What is the reported loss provision amount made for accounts with banks in India as of the latest RDATE?",
+    "sql": "SELECT description, value, rdate FROM cims_ale_q_anx_1_loss_pro_ind WHERE description = 'Loss Provision made for accounts with banks in India, if any ' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_1_loss_pro_ind)"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_ind",
+    "question": "How has the loss provision made for accounts with banks in India trended over the last 4 reporting dates?",
+    "sql": "SELECT * FROM (SELECT rdate, value FROM cims_ale_q_anx_1_loss_pro_ind WHERE description = 'Loss Provision made for accounts with banks in India, if any ' ORDER BY rdate DESC) WHERE ROWNUM <= 4"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_ind",
+    "question": "Can I get the code and amount for the loss provision line item for a specific quarter, say 30-Jun-2026?",
+    "sql": "SELECT code, description, value FROM cims_ale_q_anx_1_loss_pro_ind WHERE description = 'Loss Provision made for accounts with banks in India, if any ' AND rdate = TO_DATE('30-06-2026','DD-MM-YYYY')"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_ovr",
+    "question": "What is the reported loss provision amount made for accounts with banks overseas for the current quarter?",
+    "sql": "SELECT description, value, rdate FROM cims_ale_q_anx_1_loss_pro_ovr WHERE description = 'Loss provision made for accounts with banks overseas, if any' ORDER BY rdate DESC FETCH FIRST 1 ROWS ONLY"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_ovr",
+    "question": "Can you show the quarter-on-quarter trend of the overseas bank accounts loss provision amount over the last four reporting dates?",
+    "sql": "SELECT rdate, value FROM cims_ale_q_anx_1_loss_pro_ovr WHERE description = 'Loss provision made for accounts with banks overseas, if any' ORDER BY rdate DESC FETCH FIRST 4 ROWS ONLY"
+  },
+  {
+    "table": "cims_ale_q_anx_1_loss_pro_ovr",
+    "question": "Retrieve the code and amount recorded against the overseas bank accounts loss provision line item for a specific reporting date of 30-JUN-2026.",
+    "sql": "SELECT code, description, value FROM cims_ale_q_anx_1_loss_pro_ovr WHERE description = 'Loss provision made for accounts with banks overseas, if any' AND rdate = TO_DATE('30-JUN-2026','DD-MON-YYYY')"
+  },
+  {
+    "table": "cims_ale_q_anx_2",
+    "question": "For the latest reporting date available, what is the total number and amount of debit and credit entries across all ageing buckets?",
+    "sql": "SELECT rdate, SUM(db_no) AS total_debit_entries, SUM(db_amt) AS total_debit_amount, SUM(cr_no) AS total_credit_entries, SUM(cr_amt) AS total_credit_amount FROM cims_ale_q_anx_2 WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_2) GROUP BY rdate"
+  },
+  {
+    "table": "cims_ale_q_anx_2",
+    "question": "How has the total debit entries amount trended quarter over quarter for each ageing analysis bucket?",
+    "sql": "SELECT rdate, ac_bnk_ind, SUM(db_amt) AS total_debit_amount FROM cims_ale_q_anx_2 GROUP BY rdate, ac_bnk_ind ORDER BY rdate, ac_bnk_ind"
+  },
+  {
+    "table": "cims_ale_q_anx_2",
+    "question": "Which ageing bucket has the highest net difference between credit and debit entry amounts as of the most recent reporting date?",
+    "sql": "SELECT ac_bnk_ind, SUM(cr_amt) - SUM(db_amt) AS net_credit_debit_diff FROM cims_ale_q_anx_2 WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_anx_2) GROUP BY ac_bnk_ind ORDER BY net_credit_debit_diff DESC"
+  },
+  {
+    "table": "cims_ale_q_gen_info",
+    "question": "For a given bank entity and reporting date, what is the validation status of the ALE quarterly return?",
+    "sql": "SELECT code, rdate, value AS validation_status FROM cims_ale_q_gen_info WHERE description = 'Validation Status ' AND code = :bank_code AND rdate = :rdate"
+  },
+  {
+    "table": "cims_ale_q_gen_info",
+    "question": "List the return name, return version, and return code details submitted for each bank entity as of the latest reporting date.",
+    "sql": "SELECT code, rdate, description, value FROM cims_ale_q_gen_info WHERE description IN ('Return Name', 'Return Version', 'Return Code') AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_gen_info) ORDER BY code, description"
+  },
+  {
+    "table": "cims_ale_q_gen_info",
+    "question": "What is the reporting institution name, bank category, and address recorded for a specific bank code?",
+    "sql": "SELECT code, rdate, description, value FROM cims_ale_q_gen_info WHERE description IN ('Reporting Institution', 'Bank Category', 'Address of Reporting Institution') AND code = :bank_code ORDER BY rdate DESC, description"
+  },
+  {
+    "table": "cims_ale_q_sec2_d1",
+    "question": "For the latest reporting date, what is the total notional principal and how much of it relates to derivatives contracted for hedging purposes, by derivative category?",
+    "sql": "SELECT derivative, nat_prin_tl, nat_pri_out_tl_dr FROM cims_ale_q_sec2_d1 WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_d1) ORDER BY nat_prin_tl DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_d1",
+    "question": "As of the latest quarter, which derivative categories have actual PVBP or VaR utilization exceeding their sanctioned limits?",
+    "sql": "SELECT derivative, pvbp_sanc_lmt, pvbp_actual, var_sanc_lmt, vat_actual FROM cims_ale_q_sec2_d1 WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_d1) AND (pvbp_actual > pvbp_sanc_lmt OR vat_actual > var_sanc_lmt)"
+  },
+  {
+    "table": "cims_ale_q_sec2_d1",
+    "question": "How has the total credit equivalent exposure (current plus potential future) and negative MTM value trended across reporting dates for domestic derivatives?",
+    "sql": "SELECT rdate, SUM(cr_cur_cr_exp) AS total_current_exposure, SUM(cr_ptn_exp) AS total_potential_exposure, SUM(ngt_mtm_val) AS total_negative_mtm FROM cims_ale_q_sec2_d1 GROUP BY rdate ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_d2",
+    "question": "For our overseas operations, what is the total notional principal and the portion contracted purely for hedging purposes across all derivative categories for the quarter-end date of 30-Jun-2026?",
+    "sql": "SELECT derivative, nat_prin_tl, nat_pri_out_tl_dr FROM cims_ale_q_sec2_d2 WHERE rdate = TO_DATE('30-06-2026','DD-MM-YYYY') ORDER BY nat_prin_tl DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_d2",
+    "question": "Which overseas derivative categories are breaching their PVBP/delta/CV01 sanctioned limit based on the actual value recorded as of 30-Jun-2026?",
+    "sql": "SELECT derivative, pvbp_sanc_lmt, pvbp_actual, (pvbp_actual - pvbp_sanc_lmt) AS excess_over_limit FROM cims_ale_q_sec2_d2 WHERE rdate = TO_DATE('30-06-2026','DD-MM-YYYY') AND pvbp_actual > pvbp_sanc_lmt ORDER BY excess_over_limit DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_d2",
+    "question": "Give me a quarter-on-quarter comparison of credit equivalent current credit exposure, potential future exposure and negative MTM value for overseas derivatives with any remarks, for typeid 1 between 31-Mar-2026 and 30-Jun-2026.",
+    "sql": "SELECT rdate, derivative, cr_cur_cr_exp, cr_ptn_exp, ngt_mtm_val, remark FROM cims_ale_q_sec2_d2 WHERE typeid = 1 AND rdate IN (TO_DATE('31-03-2026','DD-MM-YYYY'), TO_DATE('30-06-2026','DD-MM-YYYY')) AND remark IS NOT NULL ORDER BY derivative, rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_e1",
+    "question": "For the current RDATE, what is the total notional principal and gross received amounts (TB, BB, Total) reported against the IRS (Rupee) line item?",
+    "sql": "SELECT item, tl_nat_pri, gross_rec_tb, gross_rec_bb, gross_rec_total FROM cims_ale_q_sec2_e1 WHERE item = '(II) IRS (Rupee)*' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_e1)"
+  },
+  {
+    "table": "cims_ale_q_sec2_e1",
+    "question": "How does the Sub-Total (I) to (IV) compare with the Total (V) + (VI) line in terms of net PVBP01 and the higher of gross received/paid, for the latest reporting date?",
+    "sql": "SELECT item, higher, net_pvbp FROM cims_ale_q_sec2_e1 WHERE item IN ('(V) Sub-Total (I) to (IV)', '(X) Total (V) + (VI)') AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_e1)"
+  },
+  {
+    "table": "cims_ale_q_sec2_e1",
+    "question": "Show the trend of the PVBP 01 of X/Y*100 ratio along with total notional principal across all reported quarters, ordered by date.",
+    "sql": "SELECT rdate, tl_nat_pri, gross_paid_rec_total FROM cims_ale_q_sec2_e1 WHERE item = 'PVBP 01 of X/Y*100' ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_e2",
+    "question": "For the return dated 30-Jun-2026, what is the total notional principal reported against the IRS (Rupee) sub-total line item?",
+    "sql": "SELECT item, tl_nat_pri FROM cims_ale_q_sec2_e2 WHERE item = '(II) IRS (Rupee)*' AND rdate = DATE '2026-06-30'"
+  },
+  {
+    "table": "cims_ale_q_sec2_e2",
+    "question": "Give me a break-up of Trading Book Pays vs Trading Book Receives notional principal for the LIBOR ($) fixed leg item as of the latest RDATE.",
+    "sql": "SELECT item, trade_bnk_pays, trade_bnk_rec, rdate FROM cims_ale_q_sec2_e2 WHERE item = '    (a)  LIBOR ($)' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_e2)"
+  },
+  {
+    "table": "cims_ale_q_sec2_e2",
+    "question": "List all items for the quarter ended 30-Jun-2026 where the Net PVBP01 is negative, along with the higher of gross received or gross paid PVBP.",
+    "sql": "SELECT item, net_pvbp, higher, remark FROM cims_ale_q_sec2_e2 WHERE rdate = DATE '2026-06-30' AND net_pvbp < 0 ORDER BY net_pvbp"
+  },
+  {
+    "table": "cims_ale_q_sec2_f1",
+    "question": "As of the latest reporting date, what is the total notional principal protection bought and sold at the end of the month/quarter for the item 'a) premium paid / received'?",
+    "sql": "SELECT item, at_end_nat_prot_buy, at_end_nat_prot_sell FROM cims_ale_q_sec2_f1 WHERE item = 'a) premium paid / received' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_f1)"
+  },
+  {
+    "table": "cims_ale_q_sec2_f1",
+    "question": "For the latest quarter, compare the April-to-date notional principal protection buyer amount against the at-end-of-quarter buyer amount for the item '(II) Amount of Protection Bought / Sold, of which'",
+    "sql": "SELECT rdate, item, nat_prot_buy, at_end_nat_prot_buy FROM cims_ale_q_sec2_f1 WHERE item = '(II) Amount of Protection Bought / Sold, of which' AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_f1)"
+  },
+  {
+    "table": "cims_ale_q_sec2_f1",
+    "question": "Show the quarter-wise trend of April-to-date notional principal protection sold for physically settled transactions over the last 4 reporting dates",
+    "sql": "SELECT rdate, item, nat_prot_sell FROM cims_ale_q_sec2_f1 WHERE item = '    a) Physically Settled' ORDER BY rdate DESC FETCH FIRST 4 ROWS ONLY"
+  },
+  {
+    "table": "cims_ale_q_sec2_f2",
+    "question": "For the item 'a) premium paid / received', what is the April to Date notional principal protection amount bought and sold, and what is the outstanding notional at the end of the month/quarter?",
+    "sql": "SELECT item, nat_prot_buy, nat_prot_sell, at_end_nat_prot_buy, at_end_nat_prot_sell FROM cims_ale_q_sec2_f2 WHERE item = 'a) premium paid / received'"
+  },
+  {
+    "table": "cims_ale_q_sec2_f2",
+    "question": "As of the latest return date, what is the total end-of-period notional principal protection bought minus sold across all items, to see our net protection position?",
+    "sql": "SELECT rdate, SUM(at_end_nat_prot_buy) AS total_buy, SUM(at_end_nat_prot_sell) AS total_sell, SUM(at_end_nat_prot_buy) - SUM(at_end_nat_prot_sell) AS net_protection FROM cims_ale_q_sec2_f2 WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_f2) GROUP BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_f2",
+    "question": "How has the number of transactions reported under '(I) No. of Transactions,  of which' trended quarter over quarter for both protection bought and protection sold?",
+    "sql": "SELECT rdate, nat_prot_buy, nat_prot_sell FROM cims_ale_q_sec2_f2 WHERE item = '(I) No. of Transactions,  of which' ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_g1_bk_fi",
+    "question": "For the current quarter, what is the total notional amount and current credit exposure booked against each counterparty bank/FI?",
+    "sql": "SELECT name_bk_fi, SUM(nat_amt) AS total_notional_amount, SUM(cur_cr_exp) AS total_current_credit_exposure FROM cims_ale_q_sec2_g1_bk_fi GROUP BY name_bk_fi ORDER BY total_notional_amount DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g1_bk_fi",
+    "question": "Which bank/FI exposures have any 90 days past due amount or actual credit loss reported as of the latest return date?",
+    "sql": "SELECT sr_no, name_bk_fi, \"90_dy_past_amt\", actual_cr_loss, rdate FROM cims_ale_q_sec2_g1_bk_fi WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g1_bk_fi) AND (\"90_dy_past_amt\" > 0 OR actual_cr_loss > 0) ORDER BY actual_cr_loss DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g1_bk_fi",
+    "question": "What is the total potential future exposure and restructured contracts amount reported across all bank/FI counterparties for a specific transaction submission?",
+    "sql": "SELECT transactionid, SUM(pot_fut_exp) AS total_potential_future_exposure, SUM(restruct_cont) AS total_restructured_contracts FROM cims_ale_q_sec2_g1_bk_fi WHERE transactionid = :transactionid GROUP BY transactionid"
+  },
+  {
+    "table": "cims_ale_q_sec2_g1_corp_otr",
+    "question": "For each bank/FI counterparty, what is the total notional amount and current credit exposure reported in the latest submission?",
+    "sql": "SELECT name_bk_fi, SUM(nat_amt) AS total_notional_amt, SUM(cur_cr_exp) AS total_current_credit_exposure FROM cims_ale_q_sec2_g1_corp_otr WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g1_corp_otr) GROUP BY name_bk_fi ORDER BY total_notional_amt DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g1_corp_otr",
+    "question": "Which counterparty exposures have a 90 days past due amount greater than zero, and what is the actual credit loss recorded against them for the latest reporting date?",
+    "sql": "SELECT sr_no, name_bk_fi, \"90_dy_past_amt\", actual_cr_loss FROM cims_ale_q_sec2_g1_corp_otr WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g1_corp_otr) AND \"90_dy_past_amt\" > 0 ORDER BY \"90_dy_past_amt\" DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g1_corp_otr",
+    "question": "How has the total potential future exposure and restructured contracts amount trended across the last four reporting dates?",
+    "sql": "SELECT rdate, SUM(pot_fut_exp) AS total_potential_future_exposure, SUM(restruct_cont) AS total_restructured_contracts FROM cims_ale_q_sec2_g1_corp_otr WHERE rdate IN (SELECT DISTINCT rdate FROM cims_ale_q_sec2_g1_corp_otr ORDER BY rdate DESC FETCH FIRST 4 ROWS ONLY) GROUP BY rdate ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_g2_bk_fi",
+    "question": "For each bank/FI counterparty, what is the total notional amount and current credit exposure reported in the latest quarter?",
+    "sql": "SELECT name_bk_fi, SUM(nat_amt) AS total_notional_amt, SUM(cur_cr_exp) AS total_current_credit_exposure FROM cims_ale_q_sec2_g2_bk_fi WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g2_bk_fi) GROUP BY name_bk_fi ORDER BY total_notional_amt DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g2_bk_fi",
+    "question": "Which bank/FI counterparties have a 90 days past due amount greater than zero, and what is the corresponding actual credit loss for the latest reporting date?",
+    "sql": "SELECT sr_no, name_bk_fi, \"90_dy_past_amt\", actual_cr_loss FROM cims_ale_q_sec2_g2_bk_fi WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g2_bk_fi) AND \"90_dy_past_amt\" > 0 ORDER BY \"90_dy_past_amt\" DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g2_bk_fi",
+    "question": "What is the trend over time of total potential future exposure and restructured contracts across all bank/FI counterparties, quarter by quarter?",
+    "sql": "SELECT rdate, SUM(pot_fut_exp) AS total_potential_future_exposure, SUM(restruct_cont) AS total_restructured_contracts FROM cims_ale_q_sec2_g2_bk_fi GROUP BY rdate ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec2_g2_corp_otr",
+    "question": "For the latest reporting date, what is the total notional amount and current credit exposure booked against each counterparty bank/FI under this corporate OTR derivative return?",
+    "sql": "SELECT name_bk_fi, SUM(nat_amt) AS total_notional_amt, SUM(cur_cr_exp) AS total_current_credit_exposure FROM cims_ale_q_sec2_g2_corp_otr WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g2_corp_otr) GROUP BY name_bk_fi ORDER BY total_notional_amt DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g2_corp_otr",
+    "question": "Which counterparty bank/FI records have any 90 days past due amount or actual credit loss reported as on the latest date, and how much restructuring has occurred against them?",
+    "sql": "SELECT sr_no, name_bk_fi, \"90_dy_past_amt\", actual_cr_loss, restruct_cont FROM cims_ale_q_sec2_g2_corp_otr WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec2_g2_corp_otr) AND (\"90_dy_past_amt\" > 0 OR actual_cr_loss > 0) ORDER BY actual_cr_loss DESC"
+  },
+  {
+    "table": "cims_ale_q_sec2_g2_corp_otr",
+    "question": "How has the total potential future exposure across all counterparty banks/FIs under this return trended quarter over quarter over the last one year?",
+    "sql": "SELECT rdate, SUM(pot_fut_exp) AS total_potential_future_exposure FROM cims_ale_q_sec2_g2_corp_otr WHERE rdate >= ADD_MONTHS(TRUNC(SYSDATE), -12) GROUP BY rdate ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_1a",
+    "question": "As on the latest reporting date, what is the total amount outstanding for each asset category under Global Operations, and what portion of that is held in forex?",
+    "sql": "SELECT assets, gbl_amt_tot, gbl_amt_frx FROM cims_ale_q_sec_1a WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_1a) ORDER BY assets"
+  },
+  {
+    "table": "cims_ale_q_sec_1a",
+    "question": "For the latest quarter, how does the Domestic Operations total amount compare with the Overseas Operations total amount for each asset line item?",
+    "sql": "SELECT assets, dom_amt_tot, ovr_amt_tot, (dom_amt_tot - ovr_amt_tot) AS dom_minus_ovr FROM cims_ale_q_sec_1a WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_1a) ORDER BY assets"
+  },
+  {
+    "table": "cims_ale_q_sec_1a",
+    "question": "What is the quarter-on-quarter trend in the forex-held portion of Global Operations assets over the last four reporting dates?",
+    "sql": "SELECT rdate, assets, gbl_amt_frx FROM cims_ale_q_sec_1a WHERE rdate IN (SELECT rdate FROM (SELECT DISTINCT rdate FROM cims_ale_q_sec_1a ORDER BY rdate DESC) WHERE ROWNUM <= 4) ORDER BY assets, rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_1b",
+    "question": "For the latest reporting date available, what is the total capital and reserves reported under Domestic, Overseas and Global operations?",
+    "sql": "SELECT assets, dom_amt_tot, ovr_amt_tot, gbl_amt_tot FROM cims_ale_q_sec_1b WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_1b) ORDER BY assets"
+  },
+  {
+    "table": "cims_ale_q_sec_1b",
+    "question": "How much of our capital and reserves is held in forex, domestically versus overseas, for each quarter in the current year?",
+    "sql": "SELECT rdate, assets, dom_amt_frx, ovr_amt_frx, gbl_amt_frx FROM cims_ale_q_sec_1b WHERE EXTRACT(YEAR FROM rdate) = EXTRACT(YEAR FROM SYSDATE) ORDER BY rdate, assets"
+  },
+  {
+    "table": "cims_ale_q_sec_1b",
+    "question": "What is the quarter-on-quarter trend in global operations capital and reserves (Rs. Lakh) over the last four reported dates?",
+    "sql": "SELECT rdate, assets, gbl_amt_tot FROM cims_ale_q_sec_1b WHERE rdate IN (SELECT rdate FROM (SELECT DISTINCT rdate FROM cims_ale_q_sec_1b ORDER BY rdate DESC) WHERE ROWNUM <= 4) ORDER BY rdate, assets"
+  },
+  {
+    "table": "cims_ale_q_sec_1c",
+    "question": "For the latest reporting date available, what is the total liability amount outstanding under Global Operations for each liability category?",
+    "sql": "SELECT assets, gbl_amt_tot FROM cims_ale_q_sec_1c WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_1c) ORDER BY gbl_amt_tot DESC"
+  },
+  {
+    "table": "cims_ale_q_sec_1c",
+    "question": "How much of our domestic liabilities are held in foreign currency, and what percentage of total domestic liabilities does this represent, category-wise?",
+    "sql": "SELECT assets, dom_amt_tot, dom_amt_frx, ROUND((dom_amt_frx / dom_amt_tot) * 100, 2) AS pct_forex FROM cims_ale_q_sec_1c WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_1c) AND dom_amt_tot IS NOT NULL AND dom_amt_tot <> 0 ORDER BY pct_forex DESC"
+  },
+  {
+    "table": "cims_ale_q_sec_1c",
+    "question": "How has the total overseas operations liability amount changed over the last four reported quarters for each liability category?",
+    "sql": "SELECT assets, rdate, ovr_amt_tot FROM cims_ale_q_sec_1c WHERE rdate IN (SELECT DISTINCT rdate FROM cims_ale_q_sec_1c ORDER BY rdate DESC FETCH FIRST 4 ROWS ONLY) ORDER BY assets, rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_2a",
+    "question": "As of the latest reporting date, what is the total credit equivalent amount for off-balance sheet exposures across domestic, overseas and global operations?",
+    "sql": "SELECT rdate, SUM(cr_eqv_dom) AS total_cr_eqv_dom, SUM(cr_eqv_os) AS total_cr_eqv_os, SUM(cr_eqv_gobl) AS total_cr_eqv_gobl FROM cims_ale_q_sec_2a WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_2a) GROUP BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_2a",
+    "question": "For each off-balance sheet exposure contract type, what is the book value and credit equivalent for overseas operations, ranked by overseas credit equivalent descending?",
+    "sql": "SELECT contracts, bok_val_os, cr_eqv_os FROM cims_ale_q_sec_2a WHERE rdate = (SELECT MAX(rdate) FROM cims_ale_q_sec_2a) ORDER BY cr_eqv_os DESC"
+  },
+  {
+    "table": "cims_ale_q_sec_2a",
+    "question": "How has the global operations book value for off-balance sheet exposures moved across the last four reporting dates for each contract type?",
+    "sql": "SELECT contracts, rdate, bok_val_gobl FROM cims_ale_q_sec_2a WHERE rdate IN (SELECT DISTINCT rdate FROM cims_ale_q_sec_2a ORDER BY rdate DESC FETCH FIRST 4 ROWS ONLY) ORDER BY contracts, rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_2b",
+    "question": "For the quarter-end date, what is the outstanding notional principal amount (A = B+C) and its trading book vs banking book split for each type of contract/derivative?",
+    "sql": "SELECT contracts, prin_out, trade_out, bank_out FROM cims_ale_q_sec_2b WHERE rdate = :rdate ORDER BY contracts"
+  },
+  {
+    "table": "cims_ale_q_sec_2b",
+    "question": "Which contracts/derivatives had a turnover during the month in the trading book exceeding 100 crore as on a given report date?",
+    "sql": "SELECT contracts, trade_turn_ovr, trade_out FROM cims_ale_q_sec_2b WHERE rdate = :rdate AND trade_turn_ovr > 1000000000 ORDER BY trade_turn_ovr DESC"
+  },
+  {
+    "table": "cims_ale_q_sec_2b",
+    "question": "For a given code and typeid, what is the total credit equivalent outstanding amount, broken down by trading book and banking book, across all contract types?",
+    "sql": "SELECT SUM(cr_prin_amt) AS total_cr_prin_amt, SUM(cr_trade_out) AS total_cr_trade_out, SUM(cr_bank_out) AS total_cr_bank_out FROM cims_ale_q_sec_2b WHERE code = :code AND typeid = :typeid AND rdate = :rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_2c",
+    "question": "For a given reporting date, what is the total outstanding notional principal amount split between trading book and banking book?",
+    "sql": "SELECT rdate, SUM(trade_out) AS total_trading_book_out, SUM(bank_out) AS total_banking_book_out, SUM(prin_out) AS total_principal_out FROM cims_ale_q_sec_2c WHERE rdate = TO_DATE('2026-06-30','YYYY-MM-DD') GROUP BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_2c",
+    "question": "How has the credit equivalent principal amount outstanding (trading book vs banking book) trended over the last four quarters for a given typeid?",
+    "sql": "SELECT rdate, SUM(cr_trade_out) AS cr_trade_out_total, SUM(cr_bank_out) AS cr_bank_out_total, SUM(cr_prin_amt) AS cr_prin_amt_total FROM cims_ale_q_sec_2c WHERE typeid = 1 AND rdate >= ADD_MONTHS(TO_DATE('2026-06-30','YYYY-MM-DD'), -9) GROUP BY rdate ORDER BY rdate"
+  },
+  {
+    "table": "cims_ale_q_sec_2c",
+    "question": "Which contract items had the highest turnover during the month in the principal amount, and how does their turnover compare between trading and banking books?",
+    "sql": "SELECT contracts, prin_turn_ovr, trade_turn_ovr, bank_turn_ovr FROM cims_ale_q_sec_2c WHERE rdate = TO_DATE('2026-06-30','YYYY-MM-DD') ORDER BY prin_turn_ovr DESC"
+  },
+  {
+    "table": "cims_ale_q_signatory",
+    "question": "For a given reporting date and entity code, who is the authorized signatory named for the CIMS ALE quarterly return?",
+    "sql": "SELECT code, rdate, value AS signatory_name FROM cims_ale_q_signatory WHERE description = 'Name' AND rdate = DATE '2026-06-30' AND code = '1234'"
+  },
+  {
+    "table": "cims_ale_q_signatory",
+    "question": "What are the contact details (email, landline and mobile number) captured for the signatory of each entity for the latest reporting date?",
+    "sql": "SELECT code, rdate, description, value FROM cims_ale_q_signatory WHERE description IN ('E-mail Id', 'Landline No.', 'Mobile No.') AND rdate = (SELECT MAX(rdate) FROM cims_ale_q_signatory) ORDER BY code, description"
+  },
+  {
+    "table": "cims_ale_q_signatory",
+    "question": "List the designation and place of the signatory along with the signing date for each bank entity code in the return submitted for a specific quarter?",
+    "sql": "SELECT code, rdate, description, value FROM cims_ale_q_signatory WHERE description IN ('Designation', 'Place', 'Date') AND rdate = DATE '2026-06-30' ORDER BY code, description"
+  }
+]

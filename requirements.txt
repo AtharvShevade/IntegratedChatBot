@@ -50,18 +50,20 @@ rapidfuzz>=3.0.0                # typo-tolerant keyword escape guards in agent
 arelle-release                  # Arelle XBRL toolkit
 pandas>=2.0.0                  # variance DataFrame / CSV export (optional)
 
-# ── SQL Agent (FAISS vector search + BGE embeddings) ────────────────────────
-# Drives the vendored agent under sql_agent/, reached via backend/sql_agent/.
-# See sql_agent/requirements.txt for its own (superset) list.
+# ── SQL Agent (FAISS + BM25 hybrid retrieval, BGE embeddings) ───────────────
+# Drives the self-contained agent under backend/sql_agent/ (engine + prebuilt
+# embeddings/ + config, no separate sql_agent/ checkout or build tooling).
 
 sentence-transformers==2.7.0
-faiss-cpu>=1.7.4
+faiss-cpu>=1.13.0               # bumped from >=1.7.4 — verify shipped .faiss files load under 1.13+ before deploying
+numpy>=2.1.0                    # explicit pin — verify against arelle-release/pandas/scikit-learn before deploying
+rank-bm25>=0.2.2                # lexical fusion signal in src/lexical_search.py, on by default (BM25_SIGNAL_WEIGHT=1.5)
 scipy
 scikit-learn
 tqdm
 regex
 requests>=2.31.0                # sync Ollama calls in sql_generator / selector
-PyYAML>=6.0                     # semantic_layer.yaml (declared joins + metrics)
+PyYAML>=6.0                     # semantic_layer.yaml, business_dictionary.yaml (declared joins + metrics + aliases)
 
 # ── XML / Parsing Utilities ──────────────────────────────────────────────────
 
