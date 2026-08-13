@@ -139,10 +139,13 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
  * @param {string} reportName
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
+ * @param {string} [opts.requestId] - enables Stop: /compare-summary registers
+ *   the task under this id, so POST /stop can cancel the in-flight LLM call
+ *   server-side rather than just abandoning it client-side.
  * @returns {Promise<string>} the summary text, or '' if unavailable.
  */
 export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts = {}) {
-  const { signal } = opts
+  const { signal, requestId } = opts
   try {
     const res = await fetch(`${BASE_URL}/compare-summary`, {
       method: 'POST',
@@ -159,6 +162,7 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
         label_a:     labelA ?? '',
         label_b:     labelB ?? '',
         report_name: reportName ?? '',
+        request_id:  requestId ?? null,
       }),
       signal,
     })

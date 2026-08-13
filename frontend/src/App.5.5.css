@@ -1206,6 +1206,11 @@ html, body, #root {
   text-transform: uppercase; letter-spacing: 0.06em; padding: 8px 12px; text-align: left;
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 2;
+  /* The instance labels wrap to several lines ("28-FEB-2025 (RUN 04:35:05)"),
+     which makes the header row tall. Without an explicit middle alignment the
+     short headers (DIFF, % CHG) sit against the baseline of that tall cell and
+     read as misaligned with CONCEPT. */
+  vertical-align: middle;
 }
 
 .vt-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -1214,6 +1219,9 @@ html, body, #root {
 .variance-table th.vt-num-col { text-align: right; }
 
 .variance-table td {
+  /* Concept names wrap (.vt-concept sets white-space: normal), so body rows
+     vary in height too — centre them for the same reason as the header. */
+  vertical-align: middle;
   padding: 7px 12px; color: var(--text);
   border-bottom: 1px solid rgba(46,51,80,0.5);
   font-family: 'Courier New', monospace; font-size: 0.75rem;
@@ -1271,6 +1279,21 @@ html, body, #root {
   cursor: pointer; transition: background 0.18s, transform 0.12s; white-space: nowrap;
 }
 .vc-visualize-btn:hover { background: rgba(11,92,173,0.16); transform: translateY(-1px); }
+
+/* Stop control for the AI analysis. Sits beside Visualize and only while the
+   summary is generating — the chat's own Stop button governs the /chat
+   request, not this separate background call, so without it a 2-minute
+   generation could not be cancelled at all. Red-tinted to read as an
+   interrupt rather than another action. */
+.variance-summary-actions { display: inline-flex; align-items: center; gap: 8px; }
+.vc-stop-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; font-size: 0.72rem; font-weight: 600;
+  color: #b42318; background: #fee4e2;
+  border: 1px solid rgba(180,35,24,0.25); border-radius: 20px;
+  cursor: pointer; transition: background 0.18s, transform 0.12s; white-space: nowrap;
+}
+.vc-stop-btn:hover { background: rgba(180,35,24,0.16); transform: translateY(-1px); }
 
 /* -- Chart Modal -- */
 .vc-backdrop {
@@ -2696,7 +2719,11 @@ html, body, #root {
   line-height: 1.25;
   padding-left: 8px;
   padding-right: 10px;
-  vertical-align: bottom;
+  /* Was `bottom`, which is what actually pushed DIFF / % CHG to the foot of
+     the header row while the wrapped instance labels filled it — the two read
+     as different rows. Centred, every header sits on the same optical line
+     regardless of how many lines its own text takes. */
+  vertical-align: middle;
 }
 
 /* The values themselves must never wrap: a figure split across two lines

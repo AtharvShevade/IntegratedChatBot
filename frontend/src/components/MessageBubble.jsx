@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import VarianceChartModal from './VarianceChartModal.jsx'
-import { fetchCompareSummary } from '../services/api.js'
+import { fetchCompareSummary, stopRequest } from '../services/api.js'
 
 // ── Download helper ───────────────────────────────────────────────────────────
 function triggerBlobDownload(url, label) {
@@ -1036,6 +1036,7 @@ export default function MessageBubble({
   onExplainCategory,
   batchCategory, batchErrorFilePath, batchFormId, batchReportName,
   allowedActions,
+  noAutoSummary, onSummaryLoaded,
 }) {
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
@@ -1152,6 +1153,8 @@ export default function MessageBubble({
           labelB={labelB}
           llmSummary={llmSummary}
           headerText={text}
+          noAutoSummary={noAutoSummary}
+          onSummaryLoaded={onSummaryLoaded}
         />
       </div>
     )
@@ -1880,7 +1883,7 @@ function fmtPctFin(v) {
   return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
 }
 
-function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
+function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText, noAutoSummary, onSummaryLoaded }) {
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
   const [sortDir,   setSortDir]   = useState('desc')
@@ -1895,17 +1898,84 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
   // here, once the table is already rendered, and fill the panel in when it
   // lands. Only when the inline attempt came back empty — a fast host that
   // beat the 8s budget has already supplied it.
+  //
+  // Three guards, each for a failure this caused in practice:
+  //
+  //   noAutoSummary — messages RESTORED from localStorage must never start
+  //     LLM work. Chat history is persisted with llmSummary:"" (the inline
+  //     call having failed), so without this every page load re-generated a
+  //     summary for every past comparison in the history — which is what
+  //     made explanations appear on their own after a backend restart.
+  //   requestedRef — `rows` is a new array identity on every render, so a
+  //     dependency on it alone re-fired the effect repeatedly. One attempt
+  //     per mount, full stop.
+  //   onSummaryLoaded — hands the text back to App so it is stored on the
+  //     message. Without it the summary is lost on reload and fetched again
+  //     from scratch, forever.
   const [asyncSummary, setAsyncSummary] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
+  const summaryRequestedRef = useRef(false)
+  // Kept in refs so the Stop button can reach the in-flight request: abort()
+  // ends the client wait, and /stop cancels the LLM call server-side (the
+  // endpoint registers the task under this id via _run_cancellable).
+  const summaryAbortRef = useRef(null)
+  const summaryRequestIdRef = useRef(null)
+  // Set ONLY by the Stop button — never by effect cleanup.
+  //
+  // Two separate failures came from tying cancellation to cleanup:
+  //   1. Success updates llmSummary through onSummaryLoaded, and llmSummary
+  //      is a dependency here — so React ran the cleanup, which aborted the
+  //      request that had just succeeded. The guard then skipped
+  //      setSummaryLoading(false), leaving the spinner and Stop button on
+  //      over a summary that had already arrived.
+  //   2. StrictMode (main.jsx) double-invokes effects in development:
+  //      mount → cleanup → mount. The cleanup cancelled the first request,
+  //      the second mount saw summaryRequestedRef already set and started
+  //      nothing, so the summary never appeared at all under `npm run dev`.
+  //
+  // Nothing needs cancelling on unmount: a setState on an unmounted
+  // component is a no-op in React 18, and onSummaryLoaded updating App is
+  // exactly what should still happen — the summary gets persisted rather
+  // than thrown away because the user scrolled the message out of view.
+  const summaryCancelledRef = useRef(false)
   useEffect(() => {
-    if (llmSummary || !rows?.length) return undefined
+    if (llmSummary || noAutoSummary || !rows?.length) return undefined
+    if (summaryRequestedRef.current) return undefined
+    summaryRequestedRef.current = true
     const controller = new AbortController()
+    summaryAbortRef.current = controller
+    const requestId = (crypto?.randomUUID?.() ?? String(Date.now()))
+    summaryRequestIdRef.current = requestId
     setSummaryLoading(true)
-    fetchCompareSummary(rows, labelA, labelB, (headerText || '').split('\n')[0]?.replace(/^Variance Analysis\s*—\s*/, '') || '', { signal: controller.signal })
-      .then((text) => { if (!controller.signal.aborted) setAsyncSummary(text) })
-      .finally(() => { if (!controller.signal.aborted) setSummaryLoading(false) })
-    return () => controller.abort()
-  }, [llmSummary, rows, labelA, labelB, headerText])
+    const reportName = (headerText || '').split('\n')[0]?.replace(/^Variance Analysis\s*—\s*/, '') || ''
+    fetchCompareSummary(rows, labelA, labelB, reportName, { signal: controller.signal, requestId })
+      .then((text) => {
+        if (summaryCancelledRef.current) return
+        // Loading is cleared in the SAME callback as the result, so the two
+        // can never be separated by a re-render: success, empty and error
+        // all land here (fetchCompareSummary resolves to '' rather than
+        // throwing), so every path clears the spinner exactly once.
+        setSummaryLoading(false)
+        setAsyncSummary(text)
+        // Persist even an empty result: it records that the attempt was
+        // made, so a reload doesn't try again — and it releases the
+        // deferred feedback prompt / action menu in App.
+        onSummaryLoaded?.(text)
+      })
+    // No cleanup: see summaryCancelledRef above. Only Stop cancels.
+    return undefined
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [llmSummary, noAutoSummary])
+
+  const handleStopSummary = () => {
+    summaryCancelledRef.current = true
+    summaryAbortRef.current?.abort()
+    if (summaryRequestIdRef.current) stopRequest(summaryRequestIdRef.current)
+    setSummaryLoading(false)
+    // Record the attempt so it is not restarted on the next render/reload,
+    // and so the deferred follow-up menu is released.
+    onSummaryLoaded?.('')
+  }
   const summaryText = llmSummary || asyncSummary
   const SEV_ORDER = { critical: 4, high: 3, medium: 2, low: 1 }
   const sortedRows = useMemo(() => {
@@ -2014,7 +2084,22 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
               </span>
             )}
           </div>
-          <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
+          <div className="variance-summary-actions">
+            {/* The summary runs for minutes on a CPU host, and until now there
+                was no way out of it: the chat's own Stop button only governs
+                the main /chat request, and this is a separate background
+                call. Aborts the fetch AND cancels the LLM work server-side. */}
+            {summaryLoading && (
+              <button
+                className="vc-stop-btn"
+                onClick={handleStopSummary}
+                title="Stop generating the AI analysis"
+              >
+                ■ Stop
+              </button>
+            )}
+            <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
+          </div>
         </div>
         {summaryText ? (
           <div className="variance-summary-text">

@@ -62,7 +62,18 @@ function _loadHistory() {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Restored history is READ-ONLY as far as the backend is concerned:
+        // re-rendering an old message must never kick off new work. Variance
+        // messages are saved with llmSummary:"" whenever the inline 8s
+        // attempt failed, and without this flag the AI-summary effect saw
+        // that empty value on every page load and re-generated a summary for
+        // every past comparison — explanations appearing on their own after
+        // a backend restart, with no user action at all.
+        return parsed.map((m) => (
+          m && m.resultType === 'variance_table' ? { ...m, noAutoSummary: true } : m
+        ))
+      }
     }
   } catch {
     // Corrupted data — start fresh
@@ -78,6 +89,11 @@ export default function App() {
   const inputRef       = useRef(null)
   const sessionId      = useRef(_uid || crypto.randomUUID())
   const pollIntervalRef = useRef(null)
+  // Set when a variance table is pushed while its AI summary is still being
+  // generated; flushed by handleSummaryLoaded once the summary settles (or
+  // the user stops it), so "Was this helpful?" and the next-action menu never
+  // land on top of an analysis that is still being written.
+  const pendingFollowUpRef = useRef(null)
   // Tracks the in-flight request so the Stop button can abort it client-side
   // and tell the backend to cancel the matching asyncio task.
   const activeRequestRef = useRef(null)
@@ -247,7 +263,23 @@ const _pushResult = (result, extra = {}) => {
   // 'db_result'), so this is a reliable discriminator, not text matching.
   const isDbQa = result.result_type === 'db_qa_result'
 
-  if (isTerminal && !jobId) {
+  // A variance table whose AI summary is still being generated is not
+  // finished yet: the panel below it is actively filling in. Dropping
+  // "Was this helpful?" and the next-action menu underneath it at the usual
+  // 800ms buries the analysis the user is waiting for, and asks them to rate
+  // a result they cannot see. Hold both until the summary settles —
+  // handleSummaryLoaded fires on success, on an empty result, AND on Stop,
+  // so every path still reaches the follow-up.
+  const awaitingSummary = result.result_type === 'variance_table' && !result.llm_summary
+  if (awaitingSummary) {
+    // The originating user message is resolved at FLUSH time, from the live
+    // list — not captured here — so the follow-up carries the same query it
+    // would have had on the 800ms path.
+    pendingFollowUpRef.current = {
+      intent: resultMsg.feedbackIntent || null,
+      resultType: resultMsg.resultType || null,
+    }
+  } else if (isTerminal && !jobId) {
     // Feedback must render before the action menu. A single scheduled state
     // update appends both in the correct array order in one go — two
     // independent setTimeouts (previously 1000ms for feedback, 800ms for the
@@ -555,6 +587,38 @@ const pollForErrors = (jobId) => {
 
 
 
+  // ── AI variance summary arrived (fetched after the table) ────────────────
+  // Store it on the message so it survives a reload — and so the fetch is
+  // never repeated. noAutoSummary is set even for an empty result: that
+  // records "we already tried", which is what stops the next page load from
+  // asking the model all over again.
+  const handleSummaryLoaded = (idx, text) => {
+    const followUp = pendingFollowUpRef.current
+    pendingFollowUpRef.current = null
+    setMessages((prev) => {
+      const updated = prev.map((m, i) => (
+        i === idx ? { ...m, llmSummary: text || m.llmSummary || '', noAutoSummary: true } : m
+      ))
+      // Deferred from _pushResult: the comparison is only really finished now
+      // that the analysis has stopped writing. Guarded against a double
+      // append if this fires twice for the same message.
+      if (!followUp) return updated
+      if (updated[updated.length - 1]?.role === 'feedback_prompt'
+          || updated[updated.length - 1]?.role === 'action_menu') return updated
+      const lastUser = [...updated].reverse().find((m) => m.role === 'user')
+      return [
+        ...updated,
+        {
+          role: 'feedback_prompt',
+          query: lastUser?.text || null,
+          intent: followUp.intent,
+          resultType: followUp.resultType,
+        },
+        { role: 'action_menu' },
+      ]
+    })
+  }
+
   // ── Feedback after completed action ──────────────────────────────────────
   const handleFeedback = (response, context = {}) => {
     sendFeedback(response === 'yes' ? 'up' : 'down', {
@@ -618,6 +682,7 @@ const pollForErrors = (jobId) => {
           onCompare={handleCompareInstances}
           onFeedback={handleFeedback}
           onExplainCategory={handleExplainCategory}
+          onSummaryLoaded={handleSummaryLoaded}
           allowedActions={allowedActions}
         />
       </main>

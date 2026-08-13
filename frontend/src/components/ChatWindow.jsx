@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import MessageBubble from './MessageBubble.jsx'
 
-export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback, onExplainCategory, allowedActions }) {
+export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback, onExplainCategory, onSummaryLoaded, allowedActions }) {
   const bottomRef = useRef(null)
 
   // Auto-scroll to the latest message whenever messages change
@@ -27,6 +27,10 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           labelA={msg.labelA}
           labelB={msg.labelB}
           llmSummary={msg.llmSummary}
+          // Set on messages restored from localStorage — history must never
+          // start new LLM work on page load. See VarianceTableBlock.
+          noAutoSummary={msg.noAutoSummary}
+          onSummaryLoaded={(text) => onSummaryLoaded?.(idx, text)}
           instancesData={msg.instancesData}
           downloadUrl={msg.downloadUrl}
           downloadLabel={msg.downloadLabel}
