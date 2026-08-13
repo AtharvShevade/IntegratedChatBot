@@ -1236,9 +1236,30 @@ def _card_details_sections(evidence: dict, llm_text: dict | None) -> list[dict]:
     return sections
 
 
+def _emphasis_terms(evidence: dict) -> list[str]:
+    """The detail names and concept label this card's prose will contain.
+
+    Taken from the taxonomy-resolved labels rather than matched out of the
+    sentence, so a name is highlighted because it IS a detail name — these
+    labels ("Date and Time of Occurrence Type") are otherwise indistinguishable
+    from the surrounding wording.
+    """
+    terms = [a["label"] for a in _card_axes(evidence)]
+    terms += _unexpected_axis_labels(evidence)
+    concept = (evidence.get("concept_label") or "").strip()
+    if concept:
+        terms.append(concept)
+    return [t for t in terms if t]
+
+
 def build_card_sections(evidence: dict, llm_text: dict | None = None) -> list[dict]:
     """The v2 unified error card for one dimension error."""
-    sections: list[dict] = [error_card.headline(_card_headline(evidence))]
+    terms = _emphasis_terms(evidence)
+    ops = list(error_card.RELATION_PHRASES)
+
+    sections: list[dict] = [
+        error_card.attach_emphasis(error_card.headline(_card_headline(evidence)), terms, ops),
+    ]
 
     locator_items = _card_locator_items(evidence)
     if locator_items:
@@ -1246,7 +1267,7 @@ def build_card_sections(evidence: dict, llm_text: dict | None = None) -> list[di
 
     rule_text = _card_rule_text(evidence)
     if rule_text:
-        sections.append(error_card.rule(rule_text))
+        sections.append(error_card.attach_emphasis(error_card.rule(rule_text), terms, ops))
 
     rows = _card_matrix_rows(evidence)
     if rows:
@@ -1264,9 +1285,18 @@ def build_card_sections(evidence: dict, llm_text: dict | None = None) -> list[di
                              "text": "The generated return file shows this figure carries no "
                                      "details at all."})
 
-    sections.append(error_card.fix(_card_fix_steps(evidence, llm_text)))
+    sections.append(error_card.attach_emphasis(
+        error_card.fix(_card_fix_steps(evidence, llm_text)), terms, ops))
 
-    drawer = error_card.details(_card_details_sections(evidence, llm_text))
+    drawer_sections = _card_details_sections(evidence, llm_text)
+    # "What Is Wrong" restates the same detail names as the body, so it gets
+    # the same treatment — the drawer is where the reader goes when the summary
+    # was not enough, which is exactly when legibility matters most.
+    for section in drawer_sections:
+        if section.get("kind") in ("points", "values"):
+            error_card.attach_emphasis(section, terms, ops)
+
+    drawer = error_card.details(drawer_sections)
     if drawer:
         sections.append(drawer)
     return sections

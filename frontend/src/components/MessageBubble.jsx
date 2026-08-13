@@ -263,6 +263,57 @@ function _parseFormulaExplanationBlocks(text) {
   return parsed
 }
 
+// Split `text` on the backend-supplied `terms` (concept/detail labels) and
+// `ops` (the relation being asserted), returning an array of plain strings and
+// {text, cls} objects to style.
+//
+// Concept labels here contain digits, commas, dots and parentheses — "5. Other
+// Non-food Credit, if any, please specify" — so a sentence built from two of
+// them reads as one undifferentiated run. Styling the labels makes the relation
+// between them ("must be less than") fall out as the connective.
+function _splitEmphasis(text, terms, ops) {
+  const marks = [
+    ...(terms || []).map(t => ({ t, cls: 'error-card-term' })),
+    ...(ops   || []).map(t => ({ t, cls: 'error-card-op'   })),
+  ].filter(m => m.t && m.t.length > 1)
+  if (marks.length === 0) return [text]
+
+  // Longest first: a regex alternation takes the FIRST branch that matches, so
+  // "equal to" listed ahead of "greater than or equal to" would stop the longer
+  // phrase ever matching whole. (The backend sorts too; not relying on it.)
+  marks.sort((a, b) => b.t.length - a.t.length)
+
+  // These are data, not patterns — every metacharacter must be escaped or a
+  // label like "III. Non-Food Credit ( 1 to 5)" throws on an unbalanced group.
+  const pattern = marks
+    .map(m => m.t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')
+
+  const classOf = new Map(marks.map(m => [m.t.toLowerCase(), m.cls]))
+  // A capturing group makes split() keep the delimiters it matched.
+  return text.split(new RegExp(`(${pattern})`, 'g'))
+    .filter(piece => piece !== '')
+    .map(piece => {
+      const cls = classOf.get(piece.toLowerCase())
+      return cls ? { text: piece, cls } : piece
+    })
+}
+
+// Prose with the labels and relation words styled. Falls back to a plain string
+// when the section carries no hints, so v1 sections render exactly as before.
+function RichText({ text, terms, ops }) {
+  const parts = useMemo(
+    () => _splitEmphasis(text || '', terms, ops), [text, terms, ops],
+  )
+  return (
+    <>
+      {parts.map((p, i) =>
+        typeof p === 'string' ? p : <span key={i} className={p.cls}>{p.text}</span>,
+      )}
+    </>
+  )
+}
+
 // Per-row verdict glyph for a `matrix` section. Kept as a lookup rather than a
 // chain of ternaries so an unknown status renders as blank space instead of
 // throwing — a future status value degrades, it does not break the card.
@@ -291,11 +342,15 @@ function ErrorCardMatrix({ section }) {
       <div className="error-card-matrix-scroll">
         <table className="error-card-matrix">
           <thead>
+            {/* Headers carry the same column classes as their cells so the
+                alignment rules apply to both — a right-aligned column of
+                numbers under a left-aligned header is harder to read, not
+                easier. */}
             <tr>
               <th className="error-card-matrix-status" aria-label="Status" />
-              <th>{cols.label || 'Item'}</th>
-              <th>{cols.expected || 'Expected'}</th>
-              <th>{cols.actual || 'Actual'}</th>
+              <th className="error-card-matrix-label">{cols.label || 'Item'}</th>
+              <th className="error-card-matrix-expected">{cols.expected || 'Expected'}</th>
+              <th className="error-card-matrix-actual">{cols.actual || 'Actual'}</th>
             </tr>
           </thead>
           <tbody>
@@ -314,10 +369,20 @@ function ErrorCardMatrix({ section }) {
                 >
                   <td className="error-card-matrix-status">{status.glyph}</td>
                   <td className="error-card-matrix-label">{r.label}</td>
-                  <td className="error-card-matrix-expected">{r.expected}</td>
+                  {/* An empty cell leaves the reader asking "which column is
+                      that number in?" — every row gets a mark in every column
+                      so the columns stay readable as vertical stripes. */}
+                  <td className="error-card-matrix-expected">
+                    {r.expected
+                      ? <span className="error-card-matrix-num">{r.expected}</span>
+                      : <span className="error-card-matrix-empty">—</span>}
+                  </td>
                   <td className="error-card-matrix-actual">
-                    {r.actual}
-                    {r.note && <em className="error-card-matrix-note"> ({r.note})</em>}
+                    {/* The value is wrapped so it can be told not to break;
+                        an amount split mid-digit ("₹125,619,592,00 / 0") is
+                        unreadable and looks like a different number. */}
+                    <span className="error-card-matrix-num">{r.actual}</span>
+                    {r.note && <em className="error-card-matrix-note">{r.note}</em>}
                   </td>
                 </tr>
               )
@@ -339,14 +404,27 @@ function ErrorCardMatrix({ section }) {
 // The v1 cases are left untouched so flipping the backend flag needs no
 // frontend change; v2's `details` drawer nests v1 sections and renders them
 // through this same component.
+// v2-only section kinds. Their presence marks the container as a unified error
+// card, so card-level styling (vertical rhythm, spacing) can target it without
+// touching the legacy layout — which shares this component AND this container.
+const _CARD_KINDS = ['locator', 'matrix', 'fix', 'details']
+
 export function FormulaErrorSections({ sections }) {
   if (!Array.isArray(sections) || sections.length === 0) return null
+  // The `details` drawer re-enters this component with v1 sections nested
+  // inside it, so those correctly do NOT get the class — the drawer keeps its
+  // own tighter spacing rather than inheriting the card's.
+  const isCard = sections.some(s => _CARD_KINDS.includes(s.kind))
   return (
-    <div className="formula-error-body">
+    <div className={isCard ? 'formula-error-body error-card-body' : 'formula-error-body'}>
       {sections.map((s, i) => {
         switch (s.kind) {
           case 'headline':
-            return <h4 key={i} className="formula-error-title">❌ {s.text}</h4>
+            return (
+              <h4 key={i} className="formula-error-title">
+                ❌ <RichText text={s.text} terms={s.terms} ops={s.ops} />
+              </h4>
+            )
 
           // ── v2 kinds ──────────────────────────────────────────────────────
           case 'locator':
@@ -374,7 +452,11 @@ export function FormulaErrorSections({ sections }) {
               <div key={i} className="formula-error-section formula-error-fix">
                 <div className="formula-error-section-heading">{s.heading}</div>
                 <ul className="formula-error-points">
-                  {(s.steps || []).map((step, j) => <li key={j}>{step}</li>)}
+                  {(s.steps || []).map((step, j) => (
+                    <li key={j}>
+                      <RichText text={step} terms={s.terms} ops={s.ops} />
+                    </li>
+                  ))}
                 </ul>
               </div>
             )
@@ -396,11 +478,19 @@ export function FormulaErrorSections({ sections }) {
           // drawer above.
           case 'rule':
             return (
-              <div key={i} className="formula-error-section">
+              // error-card-rule is a spacing hook only. It is applied
+              // unconditionally, but the CSS targets it as a DIRECT child of
+              // .error-card-body — so a rule section nested in the details
+              // drawer (or a legacy v1 body) is unaffected.
+              <div key={i} className="formula-error-section error-card-rule">
                 <div className="formula-error-section-heading">{s.heading}</div>
                 {s.mono
                   ? <code className="formula-error-mono-block">{s.text}</code>
-                  : <p className="formula-error-rule-text">{s.text}</p>}
+                  : (
+                    <p className="formula-error-rule-text">
+                      <RichText text={s.text} terms={s.terms} ops={s.ops} />
+                    </p>
+                  )}
               </div>
             )
           case 'values':
@@ -440,7 +530,11 @@ export function FormulaErrorSections({ sections }) {
               >
                 <div className="formula-error-section-heading">{s.heading}</div>
                 <ul className="formula-error-points">
-                  {(s.bullets || []).map((b, j) => <li key={j}>{b}</li>)}
+                  {(s.bullets || []).map((b, j) => (
+                    <li key={j}>
+                      <RichText text={b} terms={s.terms} ops={s.ops} />
+                    </li>
+                  ))}
                 </ul>
               </div>
             )
@@ -1906,7 +2000,20 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
           own terms; only the summary TEXT waits on the LLM. */}
       <div className="variance-summary">
         <div className="variance-summary-header">
-          <div className="variance-summary-label">AI Analysis</div>
+          <div className="variance-summary-label">
+            AI Analysis
+            {/* The summary arrives on a SECOND request that can take ~140s on a
+                CPU-hosted Ollama. A static line of text gave no sign anything
+                was still happening, so a stalled panel and a working one looked
+                identical. The state is shown in the header AND in the body: the
+                header so it is visible even when the body is scrolled past. */}
+            {summaryLoading && (
+              <span className="variance-summary-status">
+                <span className="variance-summary-spinner" aria-hidden="true" />
+                generating
+              </span>
+            )}
+          </div>
           <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
         </div>
         {summaryText ? (
@@ -1915,11 +2022,28 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText }) {
               {summaryText.replace(/^AI\s+Summary:\s*/i, '').split('\n').map((l) => l.replace(/^•\s*/, '- ')).join('\n')}
             </ReactMarkdown>
           </div>
+        ) : summaryLoading ? (
+          // role/aria-live so a screen reader announces the wait rather than
+          // landing on a panel that appears empty.
+          <div
+            className="variance-summary-text variance-summary-loading"
+            role="status"
+            aria-live="polite"
+          >
+            {/* Skeleton lines rather than a lone spinner: they show the shape of
+                what is coming, so the panel reads as filling in rather than as
+                a placeholder that might never resolve. */}
+            <span className="variance-summary-skeleton" aria-hidden="true">
+              <i /><i /><i />
+            </span>
+            <span className="variance-summary-loading-text">
+              Analysing the variance… this can take a minute or two.
+              The table and chart above are ready now.
+            </span>
+          </div>
         ) : (
           <div className="variance-summary-text variance-summary-empty">
-            {summaryLoading
-              ? 'Analysing the variance… this can take a minute or two. The table and chart above are ready now.'
-              : 'AI analysis is unavailable for this comparison. The variance table and chart above are complete.'}
+            AI analysis is unavailable for this comparison. The variance table and chart above are complete.
           </div>
         )}
       </div>

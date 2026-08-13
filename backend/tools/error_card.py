@@ -138,6 +138,80 @@ def fix(steps: list[str], heading: str = "Fix") -> dict:
     return {"kind": "fix", "heading": heading, "steps": [s for s in steps if s]}
 
 
+# ── Emphasis inside prose ────────────────────────────────────────────────────
+#
+# Concept labels in this domain are long and contain digits, commas, dots and
+# parentheses — "5. Other Non-food Credit, if any, please specify", "III.
+# Non-Food Credit ( 1 to 5)". Dropped into a sentence they are indistinguishable
+# from the sentence's own wording, so
+#
+#   5. Other Non-food Credit, if any, please specify must be less than III.
+#   Non-Food Credit ( 1 to 5)
+#
+# reads as one undifferentiated run and the reader cannot see where a label ends
+# and the RULE begins.
+#
+# Rather than wrap the labels in markup (which would leak into the plain-text
+# form and into every non-HTML consumer), a section may carry the exact
+# substrings to highlight. The renderer finds and styles them; the text itself
+# is unchanged, so sections_to_text() output is byte-identical either way.
+#
+#   "terms" — concept/axis labels          -> rendered bold
+#   "ops"   — the relation being asserted  -> rendered in the accent colour
+#
+# With the labels bold, the relation word falls out naturally as the connective
+# between them, which is exactly the distinction the reader needs.
+
+# Relational wording the card itself composes, beyond the operator meanings the
+# formula AST supplies. Longest forms first is handled by _dedup_longest_first.
+RELATION_PHRASES: tuple[str, ...] = (
+    "is exactly equal to", "exactly equal to",
+    "higher than", "lower than", "over by", "short by",
+    "are missing from this figure", "is missing from this figure",
+    "not provided", "not established", "not reported",
+    "is not one of the allowed options", "not one of the allowed options",
+    "is not written in the required format", "not written in the required format",
+    "does not belong to it", "not required for this figure",
+)
+
+
+def _dedup_longest_first(values) -> list[str]:
+    """Unique, non-trivial, longest-first.
+
+    Longest-first is load-bearing: the renderer builds one alternation out of
+    these, and a regex alternation matches the FIRST branch that succeeds. With
+    "equal to" ahead of "greater than or equal to", the longer phrase would
+    never match as a whole.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values or ():
+        text = (value or "").strip()
+        # Single characters and empty strings would match everywhere.
+        if len(text) < 2 or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+    out.sort(key=len, reverse=True)
+    return out
+
+
+def attach_emphasis(section: dict, terms=(), ops=()) -> dict:
+    """Attach highlight hints to a prose-bearing section, in place.
+
+    Absent keys mean "highlight nothing", so this is safe to skip and safe to
+    call with empty input — the renderer treats a section without them exactly
+    as it did before.
+    """
+    cleaned_terms = _dedup_longest_first(terms)
+    cleaned_ops = _dedup_longest_first(ops)
+    if cleaned_terms:
+        section["terms"] = cleaned_terms
+    if cleaned_ops:
+        section["ops"] = cleaned_ops
+    return section
+
+
 def details(sections: list[dict], heading: str = "Technical details") -> dict:
     """The collapsed drawer holding the full legacy sections.
 

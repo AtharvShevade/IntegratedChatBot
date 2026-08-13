@@ -189,6 +189,37 @@ export default function VarianceChartModal({ rows, labelA, labelB, onClose }) {
     entry.sign_change ? COLOR_SIGN : entry.significant ? COLOR_HIGH : COLOR_A
   const barFillB = (entry) =>
     entry.sign_change ? '#FCD34D' : entry.significant ? '#FBBF24' : COLOR_B
+  const pctFill  = (entry) =>
+    entry.sign_change ? COLOR_SIGN
+      : entry.significant ? COLOR_HIGH
+      : (entry.pct_display ?? 0) >= 0 ? COLOR_POS : COLOR_NEG
+
+  // The colour of a bar is decided PER ROW, on <Cell>. Recharts' <Legend> and
+  // its tooltip dots read the SERIES-level `fill` instead — which these bars
+  // never set — so both rendered black while the chart itself was salmon and
+  // yellow, and the legend swatch told the reader nothing.
+  //
+  // Since there is no single series colour, use the one the reader actually
+  // sees most of: the most frequent cell fill. That keeps the swatch honest
+  // when a few rows differ, instead of picking row 0's colour and being wrong
+  // for the majority.
+  const dominantFill = (fillOf, fallback) => {
+    const tally = new Map()
+    for (const entry of chartData) {
+      const colour = fillOf(entry)
+      tally.set(colour, (tally.get(colour) ?? 0) + 1)
+    }
+    let best = fallback
+    let bestCount = 0
+    for (const [colour, count] of tally) {
+      if (count > bestCount) { best = colour; bestCount = count }
+    }
+    return best
+  }
+
+  const legendFillA   = dominantFill(barFillA, COLOR_A)
+  const legendFillB   = dominantFill(barFillB, COLOR_B)
+  const legendFillPct = dominantFill(pctFill,  COLOR_POS)
 
   const aKey = effectiveLog && chartType !== 'pct' ? `${labelA}_log` : labelA
   const bKey = effectiveLog && chartType !== 'pct' ? `${labelB}_log` : labelB
@@ -366,14 +397,11 @@ const sharedYAxis = (
         {sharedTooltip}
         <Legend wrapperStyle={{ fontSize: 12, paddingBottom: 10 }} verticalAlign="top" />
         <ReferenceLine x={0} stroke="rgba(100,120,160,0.3)" />   {/* ← x not y */}
-        <Bar dataKey="pct_display" name="% Change" radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
+        {/* `fill` is for the LEGEND swatch and tooltip dot only — the <Cell>
+            children below still decide each bar's actual colour. */}
+        <Bar dataKey="pct_display" name="% Change" fill={legendFillPct} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
           {chartData.map((entry, i) => (
-            <Cell
-              key={i}
-              fill={entry.sign_change ? COLOR_SIGN
-                   : entry.significant ? COLOR_HIGH
-                   : (entry.pct_display ?? 0) >= 0 ? COLOR_POS : COLOR_NEG}
-            />
+            <Cell key={i} fill={pctFill(entry)} />
           ))}
         </Bar>
       </BarChart>
@@ -388,12 +416,15 @@ const sharedYAxis = (
           {sharedTooltip}
           {sharedLegend}
           <ReferenceLine x={0} stroke="rgba(100,120,160,0.3)" />   {/* ← x not y */}
-          <Bar dataKey={aKey} name={labelA} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
+          {/* `fill` is for the LEGEND swatch and tooltip dot only — the <Cell>
+              children below still decide each bar's actual colour. Without it
+              Recharts falls back to black for both. */}
+          <Bar dataKey={aKey} name={labelA} fill={legendFillA} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
             {chartData.map((entry, i) => (
               <Cell key={i} fill={barFillA(entry)} opacity={entry.significant ? 1 : 0.85} />
             ))}
           </Bar>
-          <Bar dataKey={bKey} name={labelB} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
+          <Bar dataKey={bKey} name={labelB} fill={legendFillB} radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={600}>
             {chartData.map((entry, i) => (
               <Cell key={i} fill={barFillB(entry)} opacity={entry.significant ? 1 : 0.75} />
             ))}

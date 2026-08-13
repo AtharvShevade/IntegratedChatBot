@@ -339,6 +339,73 @@ class TestPeriodDecoding:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# 4b — prose emphasis hints
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestEmphasis:
+    """The card tells the UI which substrings are labels and which are the
+    relation, so a sentence built from two long taxonomy labels can be read.
+    The hints are metadata — the text itself must be untouched."""
+
+    def _formula_with_awkward_labels(self):
+        # Real labels from the corpus: digits, dots, commas and parentheses,
+        # i.e. every character that makes a label indistinguishable from prose
+        # and every character that would break an unescaped regex.
+        return _formula_case(
+            "$V1 < $V2", {"V1": ["0"], "V2": ["0"]},
+            {"V1": "5. Other Non-food Credit, if any, please specify",
+             "V2": "III. Non-Food Credit ( 1 to 5)"},
+        )
+
+    def test_rule_sentence_carries_both_labels_and_the_relation(self):
+        rule, comparison, result, labels = self._formula_with_awkward_labels()
+        section = _by_kind(
+            fe.build_card_sections(rule, comparison, result, labels), "rule")
+
+        assert "5. Other Non-food Credit, if any, please specify" in section["terms"]
+        assert "III. Non-Food Credit ( 1 to 5)" in section["terms"]
+        assert "less than" in section["ops"]
+
+    def test_terms_are_longest_first(self):
+        """The renderer builds one regex alternation from these, and an
+        alternation takes the first branch that matches — so a shorter term
+        listed first would stop a longer one containing it ever matching."""
+        rule, comparison, result, labels = self._formula_with_awkward_labels()
+        section = _by_kind(
+            fe.build_card_sections(rule, comparison, result, labels), "rule")
+        for group in ("terms", "ops"):
+            lengths = [len(t) for t in section[group]]
+            assert lengths == sorted(lengths, reverse=True), group
+
+    def test_hints_never_alter_the_text(self):
+        """Emphasis is metadata, not markup: no sentinel characters may be
+        injected, so the plain-text form stays byte-identical."""
+        rule, comparison, result, labels = self._formula_with_awkward_labels()
+        section = _by_kind(
+            fe.build_card_sections(rule, comparison, result, labels), "rule")
+        assert section["text"] == fe._readable_rule_sentence(comparison, labels)
+
+        text = fe.render_card(rule, comparison, result, labels)
+        for marker in ("<b>", "**", "⁨", "⁩", "«", "»"):
+            assert marker not in text, marker
+
+    def test_dimension_card_marks_the_detail_names(self):
+        sections = de.build_card_sections(_missing_axes_evidence())
+        headline = _by_kind(sections, "headline")
+        assert "Type of criminal" in headline["terms"]
+        assert "Date and Time of Occurrence Type" in headline["terms"]
+
+    def test_single_characters_are_never_offered_as_terms(self):
+        """A one-character term would match all over the sentence."""
+        rule, comparison, result, labels = _formula_case(
+            "$V1 = $V2", {"V1": ["1"], "V2": ["2"]}, {"V1": "A", "V2": "Cash"},
+        )
+        section = _by_kind(
+            fe.build_card_sections(rule, comparison, result, labels), "headline")
+        assert "A" not in section.get("terms", [])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 5 — the rollback actually rolls back
 # ═════════════════════════════════════════════════════════════════════════════
 

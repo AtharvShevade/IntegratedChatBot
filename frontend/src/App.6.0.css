@@ -2630,8 +2630,9 @@ html, body, #root {
   padding: 10px 12px 10px 34px;
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-   UNIFIED ERROR CARD (v2)  â€”  backend flag: ERROR_CARD_V2
+
+/* ============================================================================
+   UNIFIED ERROR CARD (v2)  --  backend flag: ERROR_CARD_V2
 
    One layout for BOTH formula and dimension validation errors:
        headline / locator / rule / matrix / fix / details
@@ -2641,9 +2642,54 @@ html, body, #root {
    selectors match anything, and the old appearance returns untouched.
    To remove the redesign entirely, delete this block from both App.5.5.css
    and App.6.0.css. See doc/ERROR_CARD_V2.md.
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-/* â”€â”€ Where: the locator strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+   Comments here are deliberately ASCII-only: this block is appended by
+   tooling, and box-drawing characters were corrupted once already by a
+   codepage mismatch on the way in.
+   ============================================================================ */
+
+/* -- Vertical rhythm ------------------------------------------------------
+   The sections are steps in one reading order (what broke -> where -> the
+   rule -> the numbers -> the fix), so each needs enough air to read as its
+   own step. .formula-error-body's own 10px gap is tuned for the legacy
+   layout and ran these blocks together.
+
+   Scoped to .error-card-body, which FormulaErrorSections adds only when v2
+   section kinds are present -- so the legacy sections, and the v1 sections
+   nested inside the details drawer, keep their existing tighter spacing. */
+.error-card-body {
+  gap: 18px;
+}
+
+/* WHERE and RULE are the two points where the reader changes mode: from
+   locating the problem to understanding the constraint, then from the
+   constraint to the evidence. A little extra separation at each. */
+.error-card-body > .error-card-locator {
+  margin-bottom: 4px;
+}
+
+.error-card-body > .error-card-rule {
+  margin-bottom: 4px;
+}
+
+/* -- Card width -----------------------------------------------------------
+   Every error message renders its OWN .error-panel-wrapper, and that wrapper
+   shrink-wraps to its content -- so the two error types sized themselves
+   independently and came out different widths. A formula card was the wide
+   one: its WHERE strip inherits .formula-error-kv-grid, whose auto-fit tracks
+   have a minimum of clamp(200px, 26vw, 300px), so three locator items demand
+   roughly 3 x 300px + gaps (~950px) before the grid will wrap at all. A
+   dimension card, with less in its locator, shrank to well under that.
+
+   Pinning the wrapper to ONE width makes every error card -- formula or
+   dimension -- render identically, because both are plain block children that
+   then fill it. Change the 760px below to resize both together. */
+.error-panel-wrapper {
+  width: 100%;
+  max-width: min(760px, 92vw);
+}
+
+/* -- Where: the locator strip --------------------------------------------- */
 .error-card-locator {
   background: rgba(106, 13, 173, 0.04);
   border-left: 3px solid rgba(106, 13, 173, 0.35);
@@ -2657,7 +2703,52 @@ html, body, #root {
   word-break: break-all;
 }
 
-/* â”€â”€ The expected-vs-actual table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* With the wrapper capped, three 300px tracks no longer fit and would force a
+   horizontal overflow. A smaller minimum lets the locator reflow to two rows
+   instead of overflowing. Scoped to the v2 card's locator so the legacy
+   sections' own kv-grids are untouched. */
+.error-card-locator .formula-error-kv-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  column-gap: 16px;
+  row-gap: 10px;
+}
+
+/* -- No overlapping text --------------------------------------------------
+   Grid and flex items default to `min-width: auto`, which refuses to shrink
+   below their content's minimum size. Combined with .formula-error-kv-label's
+   `flex: 0 0 auto` (shrink disabled), a long label -- e.g. "Aggregate minimum
+   deposit required to be kept with RBI:" -- could not shrink OR wrap, so it
+   overflowed its grid track and painted on top of the neighbouring column
+   instead of reflowing.
+
+   Two things are needed, and both are required: an explicit `min-width: 0` so
+   the track is allowed to shrink at all, and a wrap rule so the text has
+   somewhere to go once it does. Stacking label above value (column direction)
+   gives a long label the full track width rather than making it compete with
+   its own value for the same line -- which is already how these rows render
+   once they wrap, so the appearance does not change.
+
+   Scoped to the v2 card's own containers, so the legacy sections keep their
+   existing behaviour when ERROR_CARD_V2=0. */
+.error-card-locator .formula-error-kv-row,
+.error-card-details-body .formula-error-kv-row {
+  min-width: 0;
+  flex-direction: column;
+  row-gap: 1px;
+}
+
+.error-card-locator .formula-error-kv-label,
+.error-card-locator .formula-error-kv-value,
+.error-card-details-body .formula-error-kv-label,
+.error-card-details-body .formula-error-kv-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* -- The expected-vs-actual table ------------------------------------------ */
 /* Wide content scrolls inside its own box so the chat bubble itself never
    scrolls horizontally. */
 .error-card-matrix-scroll {
@@ -2686,7 +2777,7 @@ html, body, #root {
 }
 
 .error-card-matrix td {
-  padding: 5px 10px 5px 0;
+  padding: 7px 10px 7px 0;
   border-bottom: 1px solid #f0f1f4;
   vertical-align: top;
 }
@@ -2695,7 +2786,8 @@ html, body, #root {
   border-bottom: none;
 }
 
-/* Fixed narrow gutter so every label starts at the same x regardless of glyph. */
+/* Fixed narrow gutter so every label starts at the same x regardless of the
+   status glyph in front of it. */
 .error-card-matrix-status,
 .error-card-matrix th.error-card-matrix-status {
   width: 1.6em;
@@ -2704,26 +2796,65 @@ html, body, #root {
   font-weight: 700;
 }
 
+/* Only the LABEL column may break mid-word. Applying that to every cell broke
+   amounts mid-digit ("Rs 125,619,592,00" / "0" on the next line), which reads
+   as a different number entirely -- the one thing a financial table must
+   never do. */
 .error-card-matrix-label {
   font-weight: 600;
   color: #1f2937;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* -- Telling the columns apart --------------------------------------------
+   With a wrapping label on the left and two numeric columns on the right, it
+   was not obvious which number belonged to which column -- an empty EXPECTED
+   cell made the reported amount look like it might be the expected one.
+   Three things fix it together: amounts never wrap, both numeric columns are
+   right-aligned so they read as clean vertical stripes, and a hairline
+   divider separates the prose column from the numeric ones. */
+.error-card-matrix-num {
+  white-space: nowrap;
+}
+
+.error-card-matrix-expected,
+.error-card-matrix-actual,
+.error-card-matrix thead th.error-card-matrix-expected,
+.error-card-matrix thead th.error-card-matrix-actual {
+  text-align: right;
+  white-space: nowrap;
 }
 
 .error-card-matrix-expected {
   color: #4b5563;
+  border-left: 1px solid #edeff2;
+  padding-left: 12px;
 }
 
 .error-card-matrix-actual {
   color: #1f2937;
 }
 
+/* Placeholder for "no expectation applies to this row" -- visible enough to
+   anchor the column, quiet enough not to read as a value. */
+.error-card-matrix-empty {
+  color: #c3c7cd;
+}
+
+/* The qualifier ("over by ...", "total of 14 reported values") goes under its
+   amount rather than beside it, so it can wrap freely without ever pushing
+   the number itself onto two lines. */
 .error-card-matrix-note {
+  display: block;
+  white-space: normal;
+  margin-top: 1px;
   color: #6b7280;
   font-size: 0.92em;
   font-style: italic;
 }
 
-/* Per-row verdict. Colour is never the ONLY signal â€” the check/cross glyph
+/* Per-row verdict. Colour is never the ONLY signal -- the check/cross glyph
    carries the same meaning for colour-blind readers and in monochrome print. */
 .error-card-row-ok .error-card-matrix-status      { color: #1f7a34; }
 .error-card-row-bad .error-card-matrix-status     { color: #c0392b; }
@@ -2746,14 +2877,14 @@ html, body, #root {
 /* The result row of a formula: a consequence of the rows above, not a peer. */
 .error-card-row-emphasis td {
   border-top: 2px solid #d7dae0;
-  padding-top: 7px;
+  padding-top: 8px;
   font-weight: 700;
 }
 
-/* â”€â”€ The collapsed technical drawer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* -- The collapsed technical drawer ---------------------------------------- */
 .error-card-details {
   border-top: 1px solid #e8eaee;
-  padding-top: 8px;
+  padding-top: 10px;
 }
 
 .error-card-details-summary {
@@ -2791,86 +2922,200 @@ html, body, #root {
   margin-top: 8px;
 }
 
-/* ── Card width ─────────────────────────────────────────────────────────────
-   Every error message renders its OWN .error-panel-wrapper, and that wrapper
-   shrink-wraps to its content — so the two error types sized themselves
-   independently and came out different widths. A formula card was the wide
-   one: its WHERE strip inherits .formula-error-kv-grid, whose auto-fit tracks
-   have a minimum of clamp(200px, 26vw, 300px), so three locator items demand
-   roughly 3 x 300px + gaps (~950px) before the grid will wrap at all. A
-   dimension card, with less in its locator, shrank to well under that.
-
-   Pinning the wrapper to ONE width makes every error card — formula or
-   dimension — render identically, because both are plain block children that
-   then fill it. Change the 760px below to resize both together. */
-.error-panel-wrapper {
-  width: 100%;
-  max-width: min(760px, 92vw);
-}
-
-/* With the wrapper capped, three 300px tracks no longer fit and would force a
-   horizontal overflow. A smaller minimum lets the locator reflow to two rows
-   instead of overflowing. Scoped to the v2 card's locator so the legacy
-   sections' own kv-grids are untouched. */
-.error-card-locator .formula-error-kv-grid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
-  column-gap: 16px;
-}
-
-/* ── No overlapping text ────────────────────────────────────────────────────
-   Grid and flex items default to `min-width: auto`, which refuses to shrink
-   below their content's minimum size. Combined with .formula-error-kv-label's
-   `flex: 0 0 auto` (shrink disabled), a long label — e.g. "Aggregate minimum
-   deposit required to be kept with RBI:" — could not shrink OR wrap, so it
-   overflowed its grid track and painted on top of the neighbouring column
-   instead of reflowing.
-
-   Two things are needed, and both are required: an explicit `min-width: 0`
-   so the track is allowed to shrink at all, and a wrap rule so the text has
-   somewhere to go once it does. Stacking label above value (column direction)
-   gives a long label the full track width rather than making it compete with
-   its own value for the same line — which is already how these rows render
-   once they wrap, so the appearance does not change.
-
-   Scoped to the v2 card's own containers, so the legacy sections keep their
-   existing behaviour when ERROR_CARD_V2=0. */
-.error-card-locator .formula-error-kv-row,
-.error-card-details-body .formula-error-kv-row {
-  min-width: 0;
-  flex-direction: column;
-  row-gap: 1px;
-}
-
-.error-card-locator .formula-error-kv-label,
-.error-card-locator .formula-error-kv-value,
-.error-card-details-body .formula-error-kv-label,
-.error-card-details-body .formula-error-kv-value {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-/* The matrix scrolls rather than overlaps (its wrapper is overflow-x: auto),
-   but long concept labels still need an explicit break opportunity so a cell
-   wraps inside its column instead of widening it indefinitely. */
-.error-card-matrix th,
-.error-card-matrix td {
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-
-/* Headline and fix steps are plain prose, but concept names in this domain
-   run long and contain no spaces in places ("CIMS_MPD03_CRR_LAYOUT3_HM"). */
+/* Concept names in this domain run long and contain no spaces in places
+   ("CIMS_MPD03_CRR_LAYOUT3_HM"). */
 .error-card-details-body .formula-error-rule-text,
 .error-card-details-body .formula-error-points li {
   overflow-wrap: anywhere;
+}
+
+/* -- Labels vs. relation inside prose -------------------------------------
+   Taxonomy labels ("5. Other Non-food Credit, if any, please specify") carry
+   their own digits, commas and parentheses, so a sentence made of two of them
+   reads as one run and the reader cannot see where a label ends and the rule
+   begins. The label gets weight and a faint tint; the relation between the
+   labels gets the card's accent colour. Two different signals, because they
+   are two different things -- and with the labels marked, the relation reads
+   as the connective it is. */
+.error-card-term {
+  font-weight: 700;
+  /* A tint rather than weight alone: the headline is already bold, so extra
+     weight there would be invisible. */
+  background: rgba(31, 41, 55, 0.06);
+  border-radius: 3px;
+  padding: 0 3px;
+  /* Long labels must still break across lines inside their own highlight. */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.error-card-op {
+  font-weight: 600;
+  color: #6a0dad;
+  white-space: nowrap;
+}
+
+/* Inside the red headline the neutral tint reads as a smudge -- key the
+   highlight off the surrounding colour instead. */
+.formula-error-title .error-card-term {
+  background: rgba(192, 57, 43, 0.10);
+}
+
+.formula-error-title .error-card-op {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* Likewise in the green FIX block. */
+.formula-error-fix .error-card-term {
+  background: rgba(31, 122, 52, 0.12);
+}
+
+.formula-error-fix .error-card-op {
+  color: #1f7a34;
 }
 
 @media (max-width: 480px) {
   .error-card-matrix { font-size: 0.8em; }
   .error-card-matrix td,
   .error-card-matrix thead th { padding-right: 6px; }
+  .error-card-body { gap: 14px; }
 }
 
+/* ============================================================================
+   VARIANCE PANEL -- column sizing + AI-analysis loading state
+
+   Comments are ASCII-only on purpose: this block is appended by tooling and
+   box-drawing characters were corrupted once by a codepage mismatch.
+   ============================================================================ */
+
+/* -- Instance column width ------------------------------------------------
+   The two instance columns were sized by their HEADER text
+   ("28-FEB-2025 (RUN 04:35:05)"), not by the values under them ("2.97M").
+   .variance-table sets `white-space: nowrap` for every cell, so a 26-character
+   header could not break and each column claimed roughly 230px to display
+   content that needs about 60px -- squeezing the concept column and pushing
+   Diff / % Chg off the visible area.
+
+   Letting ONLY these headers wrap fixes it: there is a natural break before
+   "(RUN", so the header becomes two short lines. `width: 1%` is the reliable
+   way to say "shrink this column to its content" in an auto-layout table --
+   max-width alone is not honoured on table cells. */
+.variance-table th.vt-num-col {
+  white-space: normal;
+  width: 1%;
+  max-width: 110px;
+  line-height: 1.25;
+  padding-left: 8px;
+  padding-right: 10px;
+  vertical-align: bottom;
+}
+
+/* The values themselves must never wrap: a figure split across two lines
+   reads as a different number. */
+.variance-table td.vt-num {
+  white-space: nowrap;
+  padding-left: 8px;
+  padding-right: 10px;
+}
+
+/* With the instance columns narrowed, the concept column takes the freed
+   space instead of leaving it as dead margin. */
+.variance-table th.vt-concept-col {
+  width: auto;
+}
+
+/* -- AI analysis: loading state -------------------------------------------
+   The summary is a second request that can take ~140s on a CPU-hosted Ollama.
+   Previously the only cue was a static sentence, so "still working" and
+   "silently gave up" looked identical. */
+
+/* Header chip -- visible even when the body text is scrolled out of view. */
+.variance-summary-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 1px 8px 1px 6px;
+  border-radius: 99px;
+  background: rgba(19, 164, 112, 0.12);
+  color: #0b8f66;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.variance-summary-spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid rgba(11, 143, 102, 0.30);
+  border-top-color: #0b8f66;
+  border-radius: 50%;
+  /* `rotate` is the app's existing spinner keyframe (see .spin). */
+  animation: rotate 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+.variance-summary-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Skeleton lines: they show the SHAPE of what is coming, so the panel reads
+   as filling in rather than as a placeholder that may never resolve. */
+.variance-summary-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.variance-summary-skeleton i {
+  display: block;
+  height: 9px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(19, 164, 112, 0.10) 25%,
+    rgba(19, 164, 112, 0.20) 37%,
+    rgba(19, 164, 112, 0.10) 63%
+  );
+  background-size: 400% 100%;
+  animation: va-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Ragged widths so it reads as text, not as a progress bar. */
+.variance-summary-skeleton i:nth-child(1) { width: 92%; }
+.variance-summary-skeleton i:nth-child(2) { width: 78%; animation-delay: 0.15s; }
+.variance-summary-skeleton i:nth-child(3) { width: 85%; animation-delay: 0.30s; }
+
+@keyframes va-shimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+.variance-summary-loading-text {
+  font-style: italic;
+  opacity: 0.85;
+  animation: va-breathe 2.2s ease-in-out infinite;
+}
+
+@keyframes va-breathe {
+  0%, 100% { opacity: 0.62; }
+  50%      { opacity: 1; }
+}
+
+/* Anyone who has asked the OS to reduce motion gets the same information
+   without the movement -- the state is still legible from the chip and text. */
+@media (prefers-reduced-motion: reduce) {
+  .variance-summary-spinner,
+  .variance-summary-skeleton i,
+  .variance-summary-loading-text {
+    animation: none;
+  }
+  .variance-summary-spinner { border-top-color: rgba(11, 143, 102, 0.30); }
+}

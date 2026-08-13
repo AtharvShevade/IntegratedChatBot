@@ -1327,6 +1327,31 @@ def _card_details_sections_formula(comparison, result, by_var, labels, unit,
     return sections
 
 
+def _emphasis_terms_formula(comparison, labels: dict[str, str]) -> list[str]:
+    """The business labels this rule's prose will contain.
+
+    Taken from the resolved label map rather than from the sentence text, so a
+    label is highlighted because it IS a label — not because it happened to
+    look like one.
+    """
+    if comparison is None:
+        return []
+    terms = [labels.get(var) for var in comparison.variables()]
+    # Aggregated fact labels appear in the matrix and can appear in prose too.
+    terms += list(labels.get("_aggregated_fact_labels") or [])
+    return [t for t in terms if t]
+
+
+def _emphasis_ops_formula() -> list[str]:
+    """Every relation the card or the AST could assert.
+
+    The whole set is offered rather than just this rule's operator: the
+    renderer highlights only what it actually finds, and a nested expression
+    can restate more than one relation in a single sentence.
+    """
+    return list(formula_expression.OPERATOR_MEANING.values()) + list(error_card.RELATION_PHRASES)
+
+
 def build_card_sections(
     rule: dict, comparison, result: dict | None, labels: dict[str, str],
     llm_text: dict | None = None,
@@ -1341,8 +1366,15 @@ def build_card_sections(
         by_var.setdefault(fact["var"], []).append(fact)
     unit = next((f["unit"] for f in facts if f.get("unit")), "")
 
+    terms = _emphasis_terms_formula(comparison, labels)
+    ops = _emphasis_ops_formula()
+
     sections: list[dict] = [
-        error_card.headline(_card_headline_formula(rule, comparison, result, labels, unit)),
+        error_card.attach_emphasis(
+            error_card.headline(
+                _card_headline_formula(rule, comparison, result, labels, unit)),
+            terms, ops,
+        ),
     ]
 
     locator_items = _card_locator_items_formula(rule, by_var, labels)
@@ -1351,7 +1383,8 @@ def build_card_sections(
 
     rule_sentence = _readable_rule_sentence(comparison, labels)
     if rule_sentence:
-        sections.append(error_card.rule(rule_sentence))
+        sections.append(error_card.attach_emphasis(
+            error_card.rule(rule_sentence), terms, ops))
 
     rows = _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule)
     if rows:
@@ -1369,11 +1402,22 @@ def build_card_sections(
                      f"the first is shown above."),
         })
 
-    sections.append(error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text)))
-
-    drawer = error_card.details(_card_details_sections_formula(
-        comparison, result, by_var, labels, unit, rule, llm_text,
+    sections.append(error_card.attach_emphasis(
+        error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text)),
+        terms, ops,
     ))
+
+    drawer_sections = _card_details_sections_formula(
+        comparison, result, by_var, labels, unit, rule, llm_text,
+    )
+    # "Why It Failed" restates the same labels and relation as the body, so it
+    # gets the same treatment — the drawer is where the reader goes when the
+    # summary was not enough, which is exactly when legibility matters most.
+    for section in drawer_sections:
+        if section.get("kind") == "points":
+            error_card.attach_emphasis(section, terms, ops)
+
+    drawer = error_card.details(drawer_sections)
     if drawer:
         sections.append(drawer)
     return sections
