@@ -31,7 +31,8 @@ from decimal import Decimal, InvalidOperation
 
 from backend.tools import error_file_shape as shape
 from backend.tools import (
-    error_card, error_llm, formula_expression, message_cleaner, taxonomy_index,
+    error_card, error_llm, formula_expression, formula_kind, message_cleaner,
+    taxonomy_index,
 )
 
 logger = logging.getLogger(__name__)
@@ -353,7 +354,7 @@ def resolve_labels(
             # and printing it tells the user nothing about which figure is
             # meant. Saying the validation output did not name it is both
             # honest and more useful.
-            label, source = "a value the validation output does not name", "unnamed"
+            label, source = _UNNAMED_LABEL, "unnamed"
 
         hint = _qualification_hint(meta.get("dimensional_qualification") or [])
         if hint and hint.lower() not in label.lower():
@@ -361,6 +362,22 @@ def resolve_labels(
 
         labels[var] = label
         sources[var] = source
+
+    # The rule's own terminology for the figure it constrains, when the
+    # validator states it and the assertion name confirms it.
+    _prefer_rule_terminology(labels, sources, comparison, rule, message_lhs)
+
+    # Variables the cascade above could not name — either because they have no
+    # row in the table, or because their side of the formula is not additive
+    # and the existing message split therefore never ran for them.
+    _name_unlabelled_variables(
+        labels, sources, comparison, by_var,
+        instances[0].get("business_message", ""),
+    )
+
+    # Still unnamed after every naming source: say what the value DOES in the
+    # rule rather than repeating that it has no name. See _apply_role_labels.
+    _apply_role_labels(labels, sources, comparison, by_var, index)
 
     _prefer_message_when_labels_collide(
         labels, sources, lhs_vars, rhs_vars, message_lhs, message_rhs,
@@ -378,6 +395,63 @@ def resolve_labels(
     return labels, sources
 
 
+# Shortest message-derived name that can be trusted as a substring match against
+# an assertion id. Below this, a coincidental hit is likely ("Total", "Amount").
+_MIN_RULE_TERM_CHARS = 12
+
+
+def _flat(text: str) -> str:
+    """Case-folded, whitespace-collapsed text — for matching a human-written
+    phrase against another human-written phrase.
+
+    Deliberately NOT punctuation-stripped or space-stripped. A compacted match
+    ("totaltermloanssanctioned") also hits camel-case assertion IDS like
+    'Sec-8_SectoralCredit_TotalTermLoansSanctionedAndTotalTermLoansDisbursed',
+    which embed concept names without being a statement of the rule — and on
+    those files the taxonomy label is the better name, not the message's.
+    """
+    import re as _re
+    return _re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def _prefer_rule_terminology(labels, sources, comparison, rule, message_lhs) -> None:
+    """Use the rule's OWN name for the figure it constrains, when the validator
+    message names it and the assertion label confirms that name.
+
+    R061 is the case: the assertion is literally
+
+        TCE as % of Capital Funds = TCE * 100/ ([Regulatory Capital …])
+
+    and its message repeats "TCE as % of Capital Funds", while the taxonomy
+    label for the same concept is "Aggregate credit exposure as percentage of
+    capital funds". Both are correct, but only one is the terminology the rule,
+    the message and the form all use, so a headline built from the other reads
+    as though it were about a different figure.
+
+    Deliberately narrow. It applies to the LEFT-hand variable only, and only
+    when the message's wording is present in the assertion name — two
+    independent sources agreeing. A label with no such corroboration keeps
+    whatever the taxonomy cascade produced, so nothing else in the corpus moves.
+    """
+    if not message_lhs or comparison is None or not comparison.lhs_vars:
+        return
+    var = comparison.lhs_vars[0]
+    current = labels.get(var) or ""
+    if current == message_lhs:
+        return
+    term = _flat(message_lhs)
+    if len(term) < _MIN_RULE_TERM_CHARS or " " not in term:
+        return
+    name = _flat(rule.get("rule_name", ""))
+    # The assertion must STATE the name, not merely contain its letters: an
+    # identifier has no spaces, so requiring the spaced phrase verbatim is what
+    # separates 'TCE as % of Capital Funds = …' from 'Sec-8_SectoralCredit_…'.
+    if " " not in name or term not in name:
+        return
+    labels[var] = message_lhs
+    sources[var] = "rule_name"
+
+
 def _message_label(var, lhs_vars, rhs_vars, message_lhs, message_rhs) -> tuple[str, str] | None:
     if var in lhs_vars and message_lhs:
         return message_lhs, "message"
@@ -386,6 +460,353 @@ def _message_label(var, lhs_vars, rhs_vars, message_lhs, message_rhs) -> tuple[s
         if position < len(message_rhs):
             return message_rhs[position], "message"
     return None
+
+
+# The honest last resort when no source names a variable. Reached far less often
+# now that the two resolvers below run, but never removed: printing a raw '$V8'
+# tells the reader nothing, and inventing a name would be worse than either.
+_UNNAMED_LABEL = "a value not named in the validation output"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Two additional, strictly-gated label sources.
+#
+# Both exist because the existing message split (message_cleaner.split_operands)
+# is driven by `rhs.signed_variables()`, which is [] for any right-hand side
+# that is not purely additive. Every ratio, percentage and weighted-average rule
+# therefore reached the fallback with no name at all, even when the validator's
+# own message spelled every operand out:
+#
+#   '"TCE as % of Capital Funds" = TCE * 100/ ([Regulatory Capital (Tier I +
+#    Tier II) of Previous March) + (Capital Infusion during the period)]'
+#
+# Neither resolver ever runs for a variable that already has a label, and both
+# refuse the whole message unless the operand count matches the formula exactly
+# — the same arity gate the existing message path uses. A mismatch keeps the
+# previous behaviour rather than assigning names by guesswork.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ENUMERATED_FIELD_RE = __import__("re").compile(r"\d+\s*[.)]\s*([^;]+?)\s*(?=;|$)")
+
+
+def _enumerated_message_fields(message: str) -> list[str]:
+    """Field names from a '1.Foo; 2.Bar; 3.Baz;' enumeration, or [].
+
+    This is the shape the validator uses for mandatory-field rules, whose
+    variables have no rows in the error table at all — so this is the ONLY
+    source that can name them.
+    """
+    import re as _re
+    text = _re.sub(r"\s+", " ", message or "").strip()
+    if not text:
+        return []
+    names = [_tidy_operand(n) for n in _ENUMERATED_FIELD_RE.findall(text)]
+    names = [n for n in names if n]
+    if len(names) < 2:
+        return []
+    if not all(message_cleaner.looks_like_label(n) for n in names):
+        return []
+    return names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Semantic role fallback.
+#
+# When no source can NAME a variable, the previous fallback repeated one
+# sentence for every such operand:
+#
+#   "… must be equal to the total of a value not named in the validation output
+#    + the total of a value not named in the validation output"
+#
+# which tells the reader nothing and, with two or more of them, reads as if the
+# same value appeared twice. The role a variable plays in its own formula IS
+# evidence — an operand of a sum is a component, an operand of `empty()` is a
+# required field — so that is what is said instead. Nothing here is invented:
+# every phrase below is a statement about the parsed expression, not about the
+# taxonomy or the filing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Every phrase the role fallback can produce, so a fallback label can be told
+# apart from a real business name later (the LLM must not be required to quote
+# one, and a naming source must still be allowed to overwrite it).
+_ROLE_PHRASES = (
+    "Component amount", "Component value", "Reported total", "Reported value",
+    "Required value", "Value checked by this rule",
+)
+
+_CURRENCY_UNITS = frozenset(_CURRENCY_SYMBOLS)
+
+
+def _is_fallback_label(label: str) -> bool:
+    text = (label or "").strip()
+    if not text:
+        return True
+    if text.startswith(_UNNAMED_LABEL):
+        return True
+    return any(text.startswith(phrase) for phrase in _ROLE_PHRASES)
+
+
+def _role_phrase(var, comparison, kind, by_var) -> str:
+    """What this variable DOES in its rule, in two or three words."""
+    if kind == formula_kind.MANDATORY:
+        return "Required value"
+
+    has_facts = bool(by_var.get(var))
+    on_the_left = comparison is not None and var in (comparison.lhs_vars or [])
+
+    if on_the_left:
+        return "Reported total" if kind == formula_kind.AGGREGATE else "Reported value"
+
+    if formula_kind.describes_a_calculation(kind):
+        # A monetary operand of a calculation is an amount; a rate or a count
+        # inside the same expression is not, and calling it one would be wrong.
+        monetary = any((f.get("unit") or "").strip().upper() in _CURRENCY_UNITS
+                       for f in by_var.get(var, []))
+        return "Component amount" if monetary else "Component value"
+
+    if has_facts:
+        return "Reported value"
+    return "Value checked by this rule"
+
+
+def _context_member_hint(var, by_var, index) -> str:
+    """A dimensional qualifier taken from the fact's own context id, resolved
+    through the taxonomy — 'asof_20260630_InfrastructureSectorMember' ->
+    'Infrastructure Sector'.
+
+    Only segments the TAXONOMY can name are used. Without an index this returns
+    "", because CamelCase-splitting an unrecognised segment would dress up a
+    guess as a name. The period segments are skipped: they are not what
+    distinguishes one operand from another.
+    """
+    if index is None:
+        return ""
+    seen: list[str] = []
+    for fact in by_var.get(var, []) or []:
+        for token in (fact.get("context") or "").split("_"):
+            token = token.strip()
+            if not token or token.isdigit() or token.lower() in ("asof", "fromto"):
+                continue
+            try:
+                label = _strip_role_suffix((index.concept_label(token) or "").strip())
+            except Exception:                      # a broken index must not break the card
+                label = ""
+            if label and label not in seen:
+                seen.append(label)
+    return ", ".join(seen[:2])
+
+
+def _apply_role_labels(labels, sources, comparison, by_var, index=None) -> None:
+    """Give every still-unnamed variable a role phrase, numbered when several
+    share one, in the order the formula references them.
+
+    Numbering matters: two operands labelled identically read as one value
+    counted twice, and it is also what stops _disambiguate() from pinning a raw
+    context segment onto them.
+    """
+    kind = formula_kind.classify(comparison)
+    # With no parsed expression there is no formula order to follow, so the
+    # variables are taken in the order the error file listed them. They still
+    # get a role — "a value this rule checks" is true of every one of them.
+    ordered = comparison.variables() if comparison is not None else list(by_var)
+    targets = [v for v in ordered if _is_fallback_label(labels.get(v, ""))]
+    if not targets:
+        return
+
+    phrases = {var: _role_phrase(var, comparison, kind, by_var) for var in targets}
+    counts: dict[str, int] = {}
+    for phrase in phrases.values():
+        counts[phrase] = counts.get(phrase, 0) + 1
+
+    used: dict[str, int] = {}
+    for var in targets:
+        phrase = phrases[var]
+        if counts[phrase] > 1:
+            used[phrase] = used.get(phrase, 0) + 1
+            phrase = f"{phrase} {used[phrase]}"
+        hint = _context_member_hint(var, by_var, index)
+        if hint and hint.lower() not in phrase.lower():
+            phrase = f"{phrase} ({hint})"
+        labels[var] = phrase
+        sources[var] = "role"
+
+
+_ARITHMETIC_SPLIT_CHARS = "+*/×÷"
+
+
+def _split_top_level(text: str) -> list[str]:
+    """Split on arithmetic operators that are not inside brackets.
+
+    Depth is clamped at zero because these messages are routinely unbalanced
+    ('([A (x + y) of March) + (B)]'), and a negative depth would make every
+    later operator look nested and split nothing.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for ch in text or "":
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if depth == 0 and ch in _ARITHMETIC_SPLIT_CHARS:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return [p for p in (p.strip() for p in parts) if p]
+
+
+def _tidy_operand(text: str) -> str:
+    """Trim quotes and the unmatched brackets left behind by splitting through
+    a message whose own bracketing is unbalanced."""
+    candidate = (text or "").strip().strip("\"'`“” \t")
+    for _ in range(8):
+        before = candidate
+        if candidate.count("(") > candidate.count(")") and candidate.startswith("("):
+            candidate = candidate[1:].strip()
+        if candidate.count(")") > candidate.count("(") and candidate.endswith(")"):
+            candidate = candidate[:-1].strip()
+        if candidate.count("[") > candidate.count("]") and candidate.startswith("["):
+            candidate = candidate[1:].strip()
+        if candidate.count("]") > candidate.count("[") and candidate.endswith("]"):
+            candidate = candidate[:-1].strip()
+        candidate = candidate.strip("\"'`“” \t")
+        if candidate == before:
+            break
+    return candidate.strip(" -–—:")
+
+
+def _operand_names_from_message(message: str, expected: int) -> list[str]:
+    """The right-hand operand names a formula-shaped validator message states,
+    in the order they appear, or [] when they cannot be recovered confidently.
+
+    Returns [] unless exactly *expected* usable names come out — an off-by-one
+    would silently attach the wrong business name to a figure, which is worse
+    than leaving it unnamed.
+    """
+    import re as _re
+    text = message_cleaner.normalise_message(message)
+    if not text or expected <= 0:
+        return []
+
+    # The statement's own '=' separates the reported figure from the expression
+    # that produces it; only the right side names the operands.
+    head, sep, tail = text.partition("=")
+    body = tail if sep and tail.strip() else text
+
+    chunks = _flatten_operands(body)
+    names: list[str] = []
+    for chunk in chunks:
+        cleaned = _tidy_operand(chunk)
+        if not cleaned:
+            continue
+        # Bare scale factors ('100', '10000') are part of the arithmetic, not
+        # operands anyone reported.
+        if not _re.search(r"[A-Za-z]", cleaned):
+            continue
+        names.append(cleaned)
+
+    if len(names) != expected:
+        return []
+    if not all(message_cleaner.looks_like_label(n) for n in names):
+        return []
+    return names
+
+
+def _strip_enclosing_bracket(text: str) -> str:
+    """The inside of a chunk that is wholly wrapped in one bracket pair, or "".
+
+    Bracket TYPES are deliberately not matched against each other: these
+    messages mix them freely and unbalanced ('([A) + (B)]'), so pairing by type
+    would refuse to open the very groups that need opening. Depth alone is
+    enough to tell "this whole chunk is one group" from "this chunk contains
+    several".
+    """
+    candidate = (text or "").strip()
+    if len(candidate) < 3 or candidate[0] not in "([{":
+        return ""
+    depth = 0
+    for i, ch in enumerate(candidate):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                # Closed before the end -> the chunk is a group followed by
+                # more text, not one enclosing group.
+                return candidate[1:i].strip() if i == len(candidate) - 1 else ""
+    # Never closed (the messages are routinely unbalanced): still one group.
+    return candidate[1:].strip()
+
+
+def _flatten_operands(text: str, depth: int = 0) -> list[str]:
+    """Operand chunks of *text*, descending through bracket groups that hold
+    more than one operand."""
+    if depth > 6:
+        return [text]
+    out: list[str] = []
+    for part in _split_top_level(text):
+        inner = _tidy_operand(part)
+        sub = _split_top_level(inner)
+        if len(sub) > 1:
+            for piece in sub:
+                out.extend(_flatten_operands(piece, depth + 1))
+            continue
+        # A single chunk that is one big bracket group ('([A) + (B)]') hides its
+        # operators one level down; open it and try again.
+        unwrapped = _tidy_operand(_strip_enclosing_bracket(inner))
+        if unwrapped and unwrapped != inner and len(_split_top_level(unwrapped)) > 1:
+            out.extend(_flatten_operands(unwrapped, depth + 1))
+            continue
+        out.append(inner or part)
+    return out
+
+
+def _name_unlabelled_variables(labels, sources, comparison, by_var, message) -> None:
+    """Fill in variables the cascade left unnamed, from the validator message.
+
+    Two cases, both gated on an exact count match:
+
+      * variables with NO row in the error table (mandatory-field rules, whose
+        message enumerates the fields);
+      * variables on a non-additive right-hand side (ratio / percentage /
+        weighted average), whose operands the message states in formula order.
+
+    A variable that already resolved keeps its label; nothing here overwrites a
+    taxonomy- or backtracking-derived name.
+    """
+    if comparison is None or not message:
+        return
+
+    def named(var: str) -> bool:
+        """A role phrase counts as UNNAMED here: a real business name from the
+        message must still be able to replace it."""
+        return not _is_fallback_label(labels.get(var, ""))
+
+    all_vars = comparison.variables()
+
+    # ── mandatory-style: nothing in the table at all ────────────────────────
+    unrowed = [v for v in all_vars if not by_var.get(v) and not named(v)]
+    if unrowed:
+        fields = _enumerated_message_fields(message)
+        if len(fields) == len(unrowed):
+            for var, name in zip(unrowed, fields):
+                labels[var] = name
+                sources[var] = "message_fields"
+
+    # ── non-additive right-hand side ────────────────────────────────────────
+    rhs_vars = comparison.rhs_vars
+    if not rhs_vars or all(named(v) for v in rhs_vars):
+        return
+    names = _operand_names_from_message(message, len(rhs_vars))
+    if not names:
+        return
+    for var, name in zip(rhs_vars, names):
+        if not named(var):
+            labels[var] = name
+            sources[var] = "message_operands"
 
 
 # A business name has a lowercase letter and either a space or enough length to
@@ -629,7 +1050,7 @@ def _rule_sentence(comparison, labels: dict[str, str]) -> str:
     return f"{lhs} must be {meaning} {rhs}"
 
 
-def _how_to_fix(comparison, result: dict, labels: dict[str, str]) -> str:
+def _how_to_fix(comparison, result: dict, labels: dict[str, str], kind: str = "") -> str:
     if result is None or comparison is None:
         return ("Review the values involved in this check in the source data and revalidate "
                 "the return.")
@@ -641,14 +1062,69 @@ def _how_to_fix(comparison, result: dict, labels: dict[str, str]) -> str:
                     f"revalidate the return.")
         return ("Review the values this rule checks in the source data so the condition is "
                 "met, then regenerate and revalidate the return.")
+    if kind == formula_kind.COUNT:
+        return (f"Check how many {_count_subject(comparison, labels)} are present in the "
+                f"source data, then regenerate and revalidate the return.")
     lhs_label = labels.get(comparison.lhs_vars[0], "the total") if comparison.lhs_vars else "the total"
-    rhs_labels = [labels.get(v, v) for v in comparison.rhs_vars]
+    rhs_labels = [_label_of(labels, v) for v in comparison.rhs_vars]
     if len(rhs_labels) > 1:
-        return (f"Check {lhs_label} against its components ({_join(rhs_labels)}) in the source "
+        # "components" is only true of an addition. A ratio's operands are not
+        # components of it, and calling them that misdescribes the rule.
+        basis = ("its components"
+                 if kind in ("", formula_kind.UNKNOWN, formula_kind.AGGREGATE)
+                 else "the values it is calculated from")
+        return (f"Check {lhs_label} against {basis} ({_join(rhs_labels)}) in the source "
                 f"data, correct whichever is wrong, then regenerate and revalidate the return.")
     other = rhs_labels[0] if rhs_labels else "the compared value"
     return (f"Review {lhs_label} and {other} in the source data to determine which needs "
             f"correcting, then regenerate and revalidate the return.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Record-count rules.
+#
+# `count($V1) >= 50` constrains HOW MANY $V1 rows exist, not the value of any of
+# them. Describing it with the ordinary comparison wording produced
+#
+#   "Sector code is 40 lower than the required number of values."
+#
+# which reads as a statement about the sector code itself — a field that has no
+# numeric magnitude at all. Everything below only rewords the same three figures
+# the engine already produced (the count, the limit, the gap).
+#
+# Nothing here claims the rule checks UNIQUENESS: fn:count counts rows, and no
+# wording in this module says otherwise unless the expression itself says so.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_COUNT_REQUIREMENT = {
+    ">=": ("at least {n}", "required"),
+    ">":  ("more than {n}", "required"),
+    "<=": ("at most {n}", "allowed"),
+    "<":  ("fewer than {n}", "allowed"),
+    "=":  ("exactly {n}", "required"),
+    "!=": ("a number other than {n}", "required"),
+    "<>": ("a number other than {n}", "required"),
+}
+
+
+def _count_requirement(operator: str, limit) -> tuple[str, str]:
+    """('at least 50', 'required') for the rule's own operator and limit."""
+    template, verb = _COUNT_REQUIREMENT.get(operator or "=", ("{n}", "required"))
+    return template.format(n=_format_amount(limit, "")), verb
+
+
+def _record_noun(count) -> str:
+    try:
+        return "record" if Decimal(str(count)) == 1 else "records"
+    except (InvalidOperation, TypeError, ValueError):
+        return "records"
+
+
+def _count_subject(comparison, labels) -> str:
+    """'Sector code records' — what is being counted, in the plural."""
+    counted = comparison.lhs_vars[0] if comparison and comparison.lhs_vars else ""
+    label = _label_of(labels, counted) if counted else ""
+    return f"{label} records" if label else "records"
 
 
 def _join(items: list[str]) -> str:
@@ -813,13 +1289,13 @@ def _reported_value_items(comparison, by_var, labels, unit, rule) -> list[dict]:
     items: list[dict] = []
     aggregated = labels.get("_aggregated_fact_labels")
 
-    business_labels = [labels.get(v, v) for v in comparison.variables()]
+    business_labels = [_label_of(labels, v) for v in comparison.variables()]
     labels_are_ambiguous = len(set(business_labels)) < len(business_labels)
 
     def emit(var: str, sign: int = 1) -> None:
         facts = by_var.get(var, [])
         prefix = "" if sign > 0 else "less "
-        label = f"{prefix}{labels.get(var, var)}"
+        label = f"{prefix}{_label_of(labels, var)}"
         if not facts:
             items.append({"label": label, "value": "not reported"})
             return
@@ -862,12 +1338,12 @@ def _plain_fact_items(comparison, by_var, labels, unit, rule) -> list[dict]:
     """Every bound fact, in the order the expression references it — used for
     rules that produce a verdict rather than two comparable totals."""
     items: list[dict] = []
-    business_labels = [labels.get(v, v) for v in comparison.variables()]
+    business_labels = [_label_of(labels, v) for v in comparison.variables()]
     ambiguous = len(set(business_labels)) < len(business_labels)
     for var in comparison.variables():
         for fact in by_var.get(var, []):
             entry = {
-                "label": labels.get(var, var),
+                "label": _label_of(labels, var),
                 "value": _format_amount(_decimal_or_none(fact.get("value")),
                                         fact.get("unit") or unit),
             }
@@ -880,24 +1356,47 @@ def _plain_fact_items(comparison, by_var, labels, unit, rule) -> list[dict]:
     return items
 
 
-def _comparison_items(comparison, result: dict, labels: dict[str, str], unit: str) -> list[dict]:
+def _comparison_items(comparison, result: dict, labels: dict[str, str], unit: str,
+                      kind: str = "", raw_pair: tuple | None = None) -> list[dict]:
     """The two compared sides plus the difference, with raw and rounded kept
-    apart so a rounded figure is never presented as the reported one."""
+    apart so a rounded figure is never presented as the reported one.
+
+    *kind* names the row after what the rule actually computes ("Calculated
+    ratio", "Calculated total"). It defaults to "" — the v1 sections pass
+    nothing and keep the original "Calculated/Combined" wording exactly.
+    """
     rounded = bool(result.get("rounding_changed_a_value"))
     is_combination = (
         len(comparison.rhs_vars) > 1
         or (comparison.rhs is not None and comparison.rhs.uses_aggregation())
     )
-    right_label = "Calculated/Combined" if is_combination else "Compared with"
+    right_label = (formula_kind.expected_column(kind)
+                   or ("Calculated/Combined" if is_combination else "Compared with"))
 
     def side(raw, compared) -> str:
+        if raw is not None and compared is not None and (raw < 0) != (compared < 0):
+            # The rule compares absolute values; pairing '-0.0279' with '0.0279'
+            # as if one rounded to the other states a falsehood about the sign.
+            return _format_amount(compared, unit)
         if rounded and raw is not None and raw != compared:
-            return f"{_format_amount(raw, unit)} → rounds to {_format_amount(compared, unit)}"
+            raw_text = _format_precise(raw, unit)
+            compared_text = _format_amount(compared, unit)
+            # The two can differ in the 12th decimal and still format
+            # identically; "0.0599 → rounds to 0.0599" says nothing.
+            if raw_text != compared_text:
+                return f"{raw_text} → rounds to {compared_text}"
         return _format_amount(compared, unit)
 
+    # *raw_pair* carries the de-scaled (business-level) operand values for a
+    # rule whose expression multiplies by 10,000 internally. Without it this
+    # block reported "Reported: 300 → rounds to 0.03" — 300 being the scaled
+    # intermediate, not anything the filer entered.
+    lhs_raw, rhs_raw = raw_pair if raw_pair is not None else (
+        result.get("lhs_raw"), result.get("rhs_raw"))
+
     items = [
-        {"label": "Reported", "value": side(result.get("lhs_raw"), result["lhs_value"])},
-        {"label": right_label, "value": side(result.get("rhs_raw"), result["rhs_value"])},
+        {"label": "Reported", "value": side(lhs_raw, result["lhs_value"])},
+        {"label": right_label, "value": side(rhs_raw, result["rhs_value"])},
     ]
     if not result.get("values_equal"):
         items.append({
@@ -914,7 +1413,8 @@ def _comparison_items(comparison, result: dict, labels: dict[str, str], unit: st
     return items
 
 
-def _why_failed_points(comparison, result, labels, unit, llm_text) -> list[str]:
+def _why_failed_points(comparison, result, labels, unit, llm_text,
+                       kind: str = "", concise: bool = False) -> list[str]:
     """Short, self-contained statements rather than one dense paragraph.
 
     Built from the AST and the verified result, so the wording adapts to the
@@ -932,24 +1432,45 @@ def _why_failed_points(comparison, result, labels, unit, llm_text) -> list[str]:
         return ["The values needed to check this rule could not be read from the "
                 "validation output, so the size of the difference is not available."]
     if result.get("boolean_only"):
-        return _boolean_points(comparison, result, labels)
+        return _boolean_points(comparison, result, labels, kind)
 
     points: list[str] = []
     lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
-    lhs_label = labels.get(lhs_var, "The reported value")
-    rhs_labels = [labels.get(v, v) for v in comparison.rhs_vars]
+    lhs_label = labels.get(lhs_var) or "The reported value"
+    rhs_labels = [_label_of(labels, v) for v in comparison.rhs_vars]
+
+    # How the right-hand side should be NAMED in prose. Formula-type-aware:
+    # "the sum of the component values" is only true of an addition, and saying
+    # it of a ratio or a weighted average misdescribes the rule. "" from
+    # formula_kind means "nothing better to offer" and keeps the v1 wording.
+    subject_phrase = formula_kind.result_subject(kind) or (
+        "the combined value" if len(rhs_labels) > 1
+        else (rhs_labels[0] if rhs_labels else "the compared value")
+    )
+
+    if kind == formula_kind.COUNT:
+        return _count_points(comparison, result, labels, concise)
 
     lhs_raw = result.get("lhs_raw")
     rhs_raw = result.get("rhs_raw")
-    points.append(f"{lhs_label} is reported as "
-                  f"{_format_amount(lhs_raw if lhs_raw is not None else result['lhs_value'], unit)}.")
 
-    if len(rhs_labels) > 1:
-        points.append(f"{_join(rhs_labels)} together come to "
-                      f"{_format_amount(rhs_raw if rhs_raw is not None else result['rhs_value'], unit)}.")
-    elif rhs_labels:
-        points.append(f"{rhs_labels[0]} is reported as "
-                      f"{_format_amount(rhs_raw if rhs_raw is not None else result['rhs_value'], unit)}.")
+    # *concise* is set only by the v2 card, whose matrix already prints every
+    # one of these figures immediately above this block. Repeating them there
+    # made the reader check the same two numbers three times (matrix,
+    # Comparison, Why It Failed). v1 keeps the full sequence.
+    if not concise:
+        points.append(f"{lhs_label} is reported as "
+                      f"{_format_amount(lhs_raw if lhs_raw is not None else result['lhs_value'], unit)}.")
+
+        if len(rhs_labels) > 1:
+            combined = _format_amount(rhs_raw if rhs_raw is not None else result['rhs_value'], unit)
+            if formula_kind.describes_a_calculation(kind) and kind != formula_kind.AGGREGATE:
+                points.append(f"{_join(rhs_labels)} give {subject_phrase} of {combined}.")
+            else:
+                points.append(f"{_join(rhs_labels)} together come to {combined}.")
+        elif rhs_labels:
+            points.append(f"{rhs_labels[0]} is reported as "
+                          f"{_format_amount(rhs_raw if rhs_raw is not None else result['rhs_value'], unit)}.")
 
     if result.get("rounding_changed_a_value"):
         step = result.get("rounding_step")
@@ -961,12 +1482,11 @@ def _why_failed_points(comparison, result, labels, unit, llm_text) -> list[str]:
         )
 
     meaning = formula_expression.OPERATOR_MEANING.get(result["operator"], result["operator"])
-    subject = "the combined value" if len(rhs_labels) > 1 else (rhs_labels[0] if rhs_labels else "the compared value")
-    points.append(f"The rule requires {lhs_label} to be {meaning} {subject}.")
+    points.append(f"The rule requires {lhs_label} to be {meaning} {subject_phrase}.")
 
     if result.get("passes"):
         points.append("Re-checking the reported values satisfies that condition, so the "
-                      "underlying data may already have been corrected.")
+                      "reason this check failed is not visible in the values shown.")
     elif result.get("values_equal"):
         points.append("The two values are exactly equal, which does not satisfy the "
                       "condition this rule requires.")
@@ -977,7 +1497,36 @@ def _why_failed_points(comparison, result, labels, unit, llm_text) -> list[str]:
     return points
 
 
-def _boolean_points(comparison, result, labels) -> list[str]:
+def _count_points(comparison, result, labels, concise: bool = False) -> list[str]:
+    """Points for a record-count rule.
+
+    Stated as a count throughout: the field being counted has no numeric
+    magnitude, so "Sector code is 40 lower" is not a fact about anything.
+    """
+    points: list[str] = []
+    subject = _count_subject(comparison, labels)
+    phrase, verb = _count_requirement(result.get("operator", ""), result["rhs_value"])
+
+    if not concise:
+        points.append(f"{_format_amount(result['lhs_value'], '')} {subject} "
+                      f"are reported.")
+    points.append(f"The rule requires {phrase}.")
+
+    if result.get("passes"):
+        points.append("Re-checking the reported values satisfies that condition, so the "
+                      "reason this check failed is not visible in the values shown.")
+    elif result.get("values_equal"):
+        points.append(f"The number reported is exactly {phrase.split(' ')[-1]}, which "
+                      f"does not satisfy the condition this rule requires.")
+    else:
+        short = result.get("relationship") == "lhs_less"
+        direction = "fewer" if short else "more"
+        points.append(f"That is {_format_amount(abs(result['difference']), '')} "
+                      f"{direction} than {verb}, so the check fails.")
+    return points
+
+
+def _boolean_points(comparison, result, labels, kind: str = "") -> list[str]:
     """Points for a rule that yields a verdict rather than two comparable
     numbers — a presence check, a conditional, or a boolean combination.
 
@@ -988,12 +1537,16 @@ def _boolean_points(comparison, result, labels) -> list[str]:
     """
     points: list[str] = []
     condition = _readable_rule_sentence(comparison, labels)
+    if kind == formula_kind.MANDATORY:
+        # "it is not the case that X is not reported" is a literal reading of
+        # empty() that helps nobody. Same plain sentence the Rule section uses.
+        condition = "every value this rule checks is reported"
 
     if condition:
         points.append(f"This rule requires that {condition}.")
     if result.get("passes"):
         points.append("Re-checking the reported values satisfies that condition, so the "
-                      "underlying data may already have been corrected.")
+                      "reason this check failed is not visible in the values shown.")
     else:
         missing = result.get("missing_vars") or []
         named = [labels.get(v) for v in missing if labels.get(v)]
@@ -1004,11 +1557,11 @@ def _boolean_points(comparison, result, labels) -> list[str]:
     return points or ["The reported data does not satisfy the condition this rule checks."]
 
 
-def _how_to_fix_points(comparison, result, labels, llm_text) -> list[str]:
+def _how_to_fix_points(comparison, result, labels, llm_text, kind: str = "") -> list[str]:
     llm_points = _llm_points((llm_text or {}).get("how_to_fix"))
     if llm_points:
         return llm_points
-    return [_how_to_fix(comparison, result, labels)]
+    return [_how_to_fix(comparison, result, labels, kind)]
 
 
 def _llm_points(text: str | None) -> list[str]:
@@ -1032,10 +1585,78 @@ def _decimal_or_none(value):
         return None
 
 
+def _fact_display(fact: dict, unit: str) -> str:
+    """One fact's value as the card should show it.
+
+    A reported value that is not a number is still a REPORTED value: the corpus
+    carries dates, codes and category names, and _format_amount() renders every
+    one of them as "not reported" because _decimal_or_none() returns None. That
+    tells the reader their filing is missing something it actually contains.
+    """
+    number = _decimal_or_none(fact.get("value"))
+    if number is not None:
+        return _format_amount(number, fact.get("unit") or unit)
+    raw = str(fact.get("value") or "").strip()
+    return raw or "not reported"
+
+
 def _unit_of(by_var, var, default) -> str:
     for fact in by_var.get(var, []):
         if fact.get("unit"):
             return fact["unit"]
+    return default
+
+
+def _label_of(labels: dict[str, str], var: str) -> str:
+    """A variable's business label, never its raw id.
+
+    `labels.get(var, var)` returned 'V1' for any variable the cascade could not
+    name — which is exactly the internal handle resolve_labels exists to keep
+    out of the user's sight. It surfaced on mandatory-field rules, whose
+    variables have no rows and so never entered the label map at all.
+    """
+    return labels.get(var) or _UNNAMED_LABEL
+
+
+def _card_unit(facts: list[dict], kind: str) -> str:
+    """Fallback unit for facts that carry none of their own.
+
+    For a ratio, a percentage or a weighted average there is NO such fallback:
+    the result of dividing two rupee amounts is not rupees. Inheriting a
+    monetary unit from whichever fact in the table happened to declare one
+    first is what printed a percentage as '₹0.03' and a rounding step as
+    'nearest ₹0.0001'. Each fact still shows its own declared unit, so nothing
+    that was correctly labelled loses its symbol.
+    """
+    if formula_kind.is_unitless(kind):
+        return ""
+    units = {(f.get("unit") or "").strip() for f in facts}
+    if len(units) == 1:
+        # Homogeneous table — every fact already agrees, so the shared unit is
+        # a safe default and behaviour is unchanged for the monetary rules that
+        # make up most of the corpus.
+        return units.pop()
+    # Mixed table: some facts declare a unit and some do not. Lending one
+    # fact's unit to another is precisely how '$1.9969' was printed for a
+    # ratio sitting beside a dollar amount.
+    return ""
+
+
+def _result_unit(comparison, by_var: dict, default: str, kind: str) -> str:
+    """Unit for the compared / expected / difference figures.
+
+    Taken from the LEFT-hand variable's own facts — that variable is the figure
+    the rule constrains, and on a ratio rule its unit differs from the monetary
+    components it is derived from.
+    """
+    if formula_kind.is_unitless(kind) or kind == formula_kind.COUNT:
+        # A count of rows has no unit, whatever the counted facts are measured
+        # in — "₹10 records" would be nonsense.
+        return ""
+    if comparison is not None and comparison.lhs_vars:
+        own = _unit_of(by_var, comparison.lhs_vars[0], "")
+        if own:
+            return own
     return default
 
 
@@ -1073,7 +1694,7 @@ def _where_to_check_items(by_var, labels, rule) -> list[dict]:
         if not location or location in seen:
             continue
         seen.add(location)
-        items.append({"label": labels.get(var, var), "value": location})
+        items.append({"label": _label_of(labels, var), "value": location})
     return items
 
 
@@ -1117,7 +1738,7 @@ def _is_combination(comparison) -> bool:
     )
 
 
-def _expected_cell(comparison, result, unit: str) -> str:
+def _expected_cell(comparison, result, unit: str, kind: str = "") -> str:
     """The Expected cell for the result row.
 
     For a non-equality operator the threshold alone would be ambiguous
@@ -1126,6 +1747,10 @@ def _expected_cell(comparison, result, unit: str) -> str:
     """
     amount = _format_amount(result["rhs_value"], unit)
     operator = result.get("operator", "=")
+    if kind == formula_kind.COUNT:
+        # "at least 50" is what the rule says; "greater than or equal to 50" is
+        # the same requirement restated in operator language.
+        return _count_requirement(operator, result["rhs_value"])[0]
     if operator in ("=", "eq"):
         return amount
     meaning = formula_expression.OPERATOR_MEANING.get(operator, operator)
@@ -1134,7 +1759,7 @@ def _expected_cell(comparison, result, unit: str) -> str:
 
 def _fact_rows(var, by_var, labels, unit, rule, *, sign: int = 1,
                status: str = error_card.STATUS_NEUTRAL,
-               aggregated=None) -> list[dict]:
+               aggregated=None, absent_mode: str = "required") -> list[dict]:
     """Matrix rows for ONE variable — the same fact/aggregate/multi-value
     handling _reported_value_items() applies, expressed as table rows.
 
@@ -1144,18 +1769,26 @@ def _fact_rows(var, by_var, labels, unit, rule, *, sign: int = 1,
     """
     facts = by_var.get(var, [])
     prefix = "" if sign > 0 else "less "
-    label = f"{prefix}{labels.get(var, var)}"
+    label = f"{prefix}{_label_of(labels, var)}"
 
     if not facts:
+        # Two different situations that read identically as "not reported":
+        #   required    — the rule exists to demand this value (a mandatory
+        #                 field check), so its absence IS the error;
+        #   unavailable — the rule needs the value to compute a result and the
+        #                 validation output simply does not carry it. Calling
+        #                 that "not reported" asserts something about the
+        #                 filing that the evidence does not support.
+        if absent_mode == "unavailable":
+            return [error_card.row(label, "", "— not available in the validation output",
+                                   error_card.STATUS_UNKNOWN)]
         return [error_card.row(label, "must be reported", "— not reported",
                                error_card.STATUS_BAD)]
 
     if len(facts) > 1 and aggregated and len(aggregated) == len(facts):
         return [
             error_card.row(
-                f"{prefix}{name}", "",
-                _format_amount(_decimal_or_none(fact.get("value")), fact.get("unit") or unit),
-                status,
+                f"{prefix}{name}", "", _fact_display(fact, unit), status,
             )
             for fact, name in zip(facts, aggregated)
         ]
@@ -1169,13 +1802,64 @@ def _fact_rows(var, by_var, labels, unit, rule, *, sign: int = 1,
 
     fact = facts[0]
     return [error_card.row(
-        label, "",
-        _format_amount(_decimal_or_none(fact.get("value")), fact.get("unit") or unit),
+        label, "", _fact_display(fact, unit),
         status, note=_entered_note(fact, rule),
     )]
 
 
-def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule) -> list[dict]:
+def _fill_literal_expectation(rows, comparison, result, labels, unit) -> None:
+    """Put the rule's own fixed limit in the Expected cell of the left-hand
+    variable's row, when the rule compares against a constant.
+
+    Only ever states what the expression literally says ("greater than or equal
+    to 0.1"). No verdict is attached: the row keeps whatever status it had,
+    because a value that could not be read as a number cannot be judged.
+    """
+    if comparison is None or comparison.rhs is None or not comparison.operator:
+        return
+    if comparison.rhs.variables():
+        return                                  # not a fixed limit
+    if result is not None and not result.get("boolean_only"):
+        return                                  # the result row already says it
+    meaning = formula_expression.OPERATOR_MEANING.get(
+        comparison.operator, comparison.operator)
+    try:
+        limit = formula_expression.describe(comparison.rhs)
+    except Exception:                           # pragma: no cover - safety net
+        return
+    if not limit:
+        return
+    lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
+    target = _label_of(labels, lhs_var) if lhs_var else ""
+    for row in rows:
+        if target and row.get("label") == target and not row.get("expected"):
+            row["expected"] = f"{meaning} {limit}"
+            return
+
+
+def _uncomparable_threshold_note(comparison, result, by_var, labels) -> str:
+    """The reported value exists but is not a plain number, so the rule could
+    not be re-checked here. Says exactly that, and nothing about pass or fail.
+    """
+    if comparison is None or result is not None or not comparison.operator:
+        return ""
+    if comparison.rhs is None or comparison.rhs.variables():
+        return ""
+    lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
+    facts = by_var.get(lhs_var) or []
+    if not facts:
+        return ""
+    raw = str(facts[0].get("value") or "").strip()
+    if not raw or _decimal_or_none(raw) is not None:
+        return ""
+    label = _label_of(labels, lhs_var)
+    return (f"{label} is reported as “{raw}”, which is not a plain number in the "
+            f"validation output, so this check could not be re-calculated here. "
+            f"The reported value and the rule's limit are shown above for comparison.")
+
+
+def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule,
+                              kind: str = "") -> list[dict]:
     """Components first, then the result row that carries the verdict.
 
     Reading order is deliberately 'here are the parts -> here is the total that
@@ -1183,9 +1867,22 @@ def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule) ->
     to fix it.
     """
     if comparison is None:
-        return []
+        # The expression could not be parsed, so there is no expectation to
+        # state — but the facts the error file reported are still evidence, and
+        # showing them beats showing nothing. Every row is neutral: without the
+        # rule there is no verdict to attach to any of them.
+        rows: list[dict] = []
+        for var, facts in by_var.items():
+            for fact in facts:
+                rows.append(error_card.row(
+                    _label_of(labels, var), "", _fact_display(fact, unit),
+                    error_card.STATUS_NEUTRAL,
+                    note=_entered_note(fact, rule),
+                ))
+        return rows
 
     aggregated = labels.get("_aggregated_fact_labels")
+    absent_mode = formula_kind.absent_operand_means(kind)
 
     # ── verdict-style rules (presence checks, conditionals, boolean combos) ──
     # There are no two comparable totals, so there is no result row; the table
@@ -1196,7 +1893,14 @@ def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule) ->
         for var in comparison.variables():
             status = error_card.STATUS_BAD if var in missing else error_card.STATUS_NEUTRAL
             rows += _fact_rows(var, by_var, labels, unit, rule,
-                               status=status, aggregated=aggregated)
+                               status=status, aggregated=aggregated,
+                               absent_mode=absent_mode)
+        # A rule that compares against a fixed limit HAS a stateable
+        # expectation even when the reported value could not be turned into a
+        # number (the corpus reports '12.54%' with the sign attached, which
+        # _to_decimal correctly refuses). Leaving the Expected column blank
+        # then loses the one thing the rule does say.
+        _fill_literal_expectation(rows, comparison, result, labels, unit)
         return rows
 
     rows = []
@@ -1205,32 +1909,42 @@ def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule) ->
     signed = comparison.rhs.signed_variables() if comparison.rhs is not None else []
     for var, sign in (signed or [(v, 1) for v in comparison.rhs_vars]):
         rows += _fact_rows(var, by_var, labels, unit, rule, sign=sign,
-                           aggregated=aggregated)
+                           aggregated=aggregated, absent_mode=absent_mode)
 
     # A left side built from several variables is shown term by term too;
     # otherwise the single left variable IS the result row below.
     if len(comparison.lhs_vars) > 1:
         for var in comparison.lhs_vars:
-            rows += _fact_rows(var, by_var, labels, unit, rule, aggregated=aggregated)
+            rows += _fact_rows(var, by_var, labels, unit, rule, aggregated=aggregated,
+                               absent_mode=absent_mode)
 
     # ── the result row ───────────────────────────────────────────────────────
     lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
     result_label = (labels.get(lhs_var) if len(comparison.lhs_vars) == 1 else "") \
         or "Total of the above"
+    if kind == formula_kind.COUNT:
+        result_label = _count_subject(comparison, labels)
+
+    # The compared figures carry the LEFT-hand variable's unit, not whichever
+    # component happened to declare one first.
+    result_unit = _result_unit(comparison, by_var, unit, kind)
 
     note = ""
-    if not result.get("values_equal"):
+    if not result.get("values_equal") and not result.get("passes"):
         # formula_expression.evaluate() reports "lhs_greater" / "lhs_less" /
-        # "lhs_equal" (or "n/a" when the sides were not comparable).
+        # "lhs_equal" (or "n/a" when the sides were not comparable). The gap is
+        # only a shortfall/excess when the rule was actually breached — on a
+        # threshold the reported value clears by design, and "over by" would
+        # read as a fault.
         direction = "short by" if result.get("relationship") == "lhs_less" else "over by"
-        note = f"{direction} {_format_amount(abs(result['difference']), unit)}"
+        note = f"{direction} {_format_amount(abs(result['difference']), result_unit)}"
     if result.get("rounding_changed_a_value"):
         note = (note + ", " if note else "") + "after rounding"
 
     rows.append(error_card.row(
         result_label,
-        _expected_cell(comparison, result, unit),
-        _format_amount(result["lhs_value"], unit),
+        _expected_cell(comparison, result, result_unit, kind),
+        _format_amount(result["lhs_value"], result_unit),
         error_card.STATUS_OK if result.get("passes") else error_card.STATUS_BAD,
         note=note,
         emphasis=True,
@@ -1238,7 +1952,16 @@ def _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule) ->
     return rows
 
 
-def _card_headline_formula(rule, comparison, result, labels, unit) -> str:
+def rows_expected(comparison, by_var: dict) -> bool:
+    """Whether the matrix will actually list the values a mandatory rule names.
+    Without rows to point at, "listed below" would point at nothing."""
+    if comparison is None:
+        return bool(by_var)
+    return bool(comparison.variables())
+
+
+def _card_headline_formula(rule, comparison, result, labels, unit,
+                           kind: str = "", by_var: dict | None = None) -> str:
     """A headline that states the gap, not the category.
 
     v1 says '<RuleName> did not pass validation', which tells the reader only
@@ -1252,33 +1975,378 @@ def _card_headline_formula(rule, comparison, result, labels, unit) -> str:
         return fallback
 
     if result.get("passes"):
-        return ("This rule now passes on the reported values — the underlying data may "
-                "already have been corrected.")
+        # Requirement: do NOT declare the validator wrong, and do not imply the
+        # data was already fixed. State the inconsistency; the note section
+        # below names the possible causes.
+        return ("The reported values appear to satisfy this rule, but the validator "
+                "reported it as failed.")
 
     if result.get("boolean_only"):
         missing = [labels.get(v) for v in (result.get("missing_vars") or []) if labels.get(v)]
+        if not missing and kind == formula_kind.MANDATORY and by_var is not None:
+            # A mandatory-field rule states its requirement through empty(),
+            # which never populates missing_vars — the absent values are the
+            # expression's variables that have no row in the table at all.
+            missing = [labels[v] for v in comparison.variables()
+                       if not by_var.get(v) and labels.get(v)]
         if missing:
-            verb = "is" if len(missing) == 1 else "are"
-            return f"{_join(missing)} {verb} not reported, and this rule requires it."
+            # Six field names read as a wall, and a list of role phrases says
+            # nothing at all — in both cases the count is the headline and the
+            # names are already one row each in the matrix below.
+            if len(missing) > 3 or any(_is_fallback_label(m) for m in missing):
+                noun, verb = ("value", "is") if len(missing) == 1 else ("values", "are")
+                return f"{len(missing)} required {noun} {verb} not reported."
+            verb, pronoun = ("is", "it") if len(missing) == 1 else ("are", "them")
+            return f"{_join(missing)} {verb} not reported, and this rule requires {pronoun}."
         return fallback
 
     lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
     lhs_label = labels.get(lhs_var) or "The reported value"
-    rhs_labels = [labels.get(v, v) for v in comparison.rhs_vars]
+    rhs_labels = [_label_of(labels, v) for v in comparison.rhs_vars]
 
-    if _is_combination(comparison) and rhs_labels:
-        subject = "the sum of its parts"
-    elif rhs_labels:
-        subject = rhs_labels[0]
-    else:
-        subject = "the value this rule requires"
+    if kind == formula_kind.COUNT:
+        # The subject is the NUMBER of rows, not the field being counted.
+        reported = _format_amount(result["lhs_value"], "")
+        phrase, verb = _count_requirement(result.get("operator", ""), result["rhs_value"])
+        noun = _record_noun(result["lhs_value"])
+        label = _label_of(labels, lhs_var) if lhs_var else ""
+        return (f"{reported} {label} {noun} are reported, but {phrase} are {verb}."
+                if label else
+                f"{reported} {noun} are reported, but {phrase} are {verb}.")
+
+    # "the sum of its parts" is only true of an addition. formula_kind returns
+    # "" for a shape it cannot place, which keeps the previous wording.
+    subject = formula_kind.result_subject(kind)
+    if not subject:
+        if _is_combination(comparison) and rhs_labels:
+            subject = "the sum of its parts"
+        elif rhs_labels:
+            subject = rhs_labels[0]
+        else:
+            subject = "the value this rule requires"
 
     if result.get("values_equal"):
         return f"{lhs_label} is exactly equal to {subject}, which this rule does not allow."
 
-    gap = _format_amount(abs(result["difference"]), unit)
+    gap = _format_amount(abs(result["difference"]),
+                         _result_unit(comparison, by_var or {}, unit, kind))
     direction = "lower" if result.get("relationship") == "lhs_less" else "higher"
     return f"{lhs_label} is {gap} {direction} than {subject}."
+
+
+# Longest calculation line still worth showing. Past this the substituted
+# arithmetic is harder to follow than the values listed above it.
+_MAX_CALCULATION_CHARS = 320
+
+
+def _format_precise(value, unit: str = "", places: int = 10) -> str:
+    """Like _format_amount but keeping enough decimals to show an unrounded
+    ratio.
+
+    _format_amount trims at four decimals, which is exactly the tolerance these
+    rules round to — so the unrounded ratio and the rounded one printed
+    identically ('0.0279 = 0.0279') and the rounding step looked like a no-op.
+    """
+    if value is None:
+        return "not reported"
+    try:
+        dec = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return _format_amount(value, unit)
+    if dec == dec.to_integral_value():
+        return _format_amount(dec, unit)
+    try:
+        text = f"{dec:,.{places}f}".rstrip("0").rstrip(".")
+    except (InvalidOperation, ValueError):
+        return _format_amount(dec, unit)
+    symbol = _CURRENCY_SYMBOLS.get((unit or "").strip().upper())
+    if symbol:
+        return f"{symbol}{text}"
+    unit_text = (unit or "").strip()
+    if unit_text and unit_text.upper() not in ("PURE", "INF"):
+        return f"{text} {unit_text}"
+    return text
+
+
+def _raw_values_by_var(by_var: dict) -> dict[str, list[str]]:
+    return {var: [f.get("value", "") for f in facts] for var, facts in by_var.items()}
+
+
+def _value_of(node, by_var: dict):
+    """The value of one sub-expression, computed by the SAME public evaluator
+    the verdict came from.
+
+    Used only to show a business-level figure for an expression whose internal
+    ×10,000 scaling has been peeled off for display. Nothing about the verdict,
+    the compared values or the difference is taken from here — those stay
+    exactly as formula_expression.evaluate() reported them for the WHOLE rule.
+    Re-deriving the arithmetic by hand instead would be a second implementation
+    of the semantics this module is not allowed to own.
+    """
+    if node is None:
+        return None
+    try:
+        probe = formula_expression.Comparison(
+            operator="=", lhs=node,
+            rhs=formula_expression.FormulaNode(kind="num", value=Decimal(0)),
+            source="", boolean_only=False,
+        )
+        evaluated = formula_expression.evaluate(probe, _raw_values_by_var(by_var))
+    except Exception as exc:                    # never let a display aid raise
+        logger.debug("[formula_error] sub-expression value unavailable: %s", exc)
+        return None
+    if not evaluated:
+        return None
+    value = evaluated.get("lhs_value")
+    return value if isinstance(value, Decimal) else None
+
+
+def _internal_scaling_hidden(comparison, kind: str) -> bool:
+    """Whether this rule's expression carries scaling that the user-facing
+    calculation should leave out.
+
+    True only when peeling the wrappers actually changes the tree — so an
+    aggregate like `round($V2 div 100000)*100000`, whose core() is already the
+    bare variable, is completely unaffected.
+    """
+    if comparison is None or comparison.rhs is None:
+        return False
+    if not formula_kind.describes_a_calculation(kind):
+        return False
+    business = formula_kind.business_node(comparison.rhs)
+    return _node_text(business) != _node_text(comparison.rhs.core())
+
+
+def _scaling_factor_text(result: dict) -> str:
+    """The internal scale factor named from the rounding step the engine already
+    reported (a step of 0.0001 is produced by a ×10,000), or a neutral phrase
+    when the step is not a clean reciprocal."""
+    step = result.get("rounding_step") if result else None
+    try:
+        if step is not None and 0 < Decimal(str(step)) < 1:
+            factor = Decimal(1) / Decimal(str(step))
+            if factor == factor.to_integral_value():
+                return f"{factor:,.0f}"
+    except (InvalidOperation, TypeError, ArithmeticError, ZeroDivisionError):
+        pass
+    return "a fixed factor"
+
+
+def _node_text(node) -> str:
+    """A structural fingerprint for comparing two subtrees cheaply."""
+    if node is None:
+        return ""
+    parts = [node.kind, node.op, node.name, str(node.value)]
+    return "|".join(parts) + "(" + ",".join(_node_text(a) for a in node.args) + ")"
+
+
+def _calculation_points(comparison, result, by_var, labels, unit, kind) -> list[str]:
+    """The rule's own arithmetic with the reported figures substituted in.
+
+    Built by handing formula_expression.describe() a value map instead of a
+    label map — the SAME renderer that produces the rule sentence, so there is
+    no second expression printer to keep in step with the grammar.
+
+    Returns [] rather than a partial line whenever any operand has no reported
+    value: a calculation with a hole in it would either mislead or invite the
+    reader to assume a zero.
+    """
+    if comparison is None or result is None or result.get("boolean_only"):
+        return []
+    if comparison.rhs is None or not formula_kind.describes_a_calculation(kind):
+        return []
+
+    # For a rule whose expression carries an internal ×10,000 (a precision
+    # device, not part of the ratio), the user-facing line is built from the
+    # de-scaled tree so the reader is not asked to read 279.0095 as a ratio.
+    # The rounded expectation and the reported value still come straight from
+    # the engine's result, unchanged.
+    hides_scaling = _internal_scaling_hidden(comparison, kind)
+    core = formula_kind.business_node(comparison.rhs) if hides_scaling else comparison.rhs.core()
+    needed = core.variables()
+    # One operand renders as a bare figure ('194 = 194'), which restates the
+    # matrix row above it. The breakdown of a single aggregated variable is
+    # already carried there as "total of N reported values".
+    if len(needed) < 2:
+        return []
+
+    values: dict[str, str] = {}
+    for var in needed:
+        total = _var_total(by_var, var)
+        if total is None:
+            return []                     # never invent, never assume zero
+        values[var] = _format_amount(total, _unit_of(by_var, var, unit))
+
+    # phrase_vars suppresses describe()'s "the total of …" narration: the value
+    # substituted for an aggregated variable IS already its total.
+    expression = formula_expression.describe(core, values, set(needed))
+    if not expression:
+        return []
+
+    result_unit = _result_unit(comparison, by_var, unit, kind)
+
+    if hides_scaling:
+        # The de-scaled expression's own value, from the same evaluator.
+        business = _value_of(core, by_var)
+        calculated = (_format_precise(business, result_unit) if business is not None
+                      else _format_amount(result["rhs_value"], result_unit))
+    else:
+        raw = result.get("rhs_raw")
+        calculated = _format_amount(raw if raw is not None else result["rhs_value"], result_unit)
+
+    line = f"{expression} = {calculated}"
+    if len(line) > _MAX_CALCULATION_CHARS:
+        return []
+
+    points = [line]
+    if result.get("rounding_changed_a_value") or hides_scaling:
+        step = result.get("rounding_step")
+        step_text = f" to the nearest {_format_amount(step, result_unit)}" if step else ""
+        points.append(
+            f"Rounded{step_text}: "
+            f"{_format_amount(result['rhs_value'], result_unit)} expected, "
+            f"{_format_amount(result['lhs_value'], result_unit)} reported."
+        )
+    return points
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What the rule checks, from the validator's own message.
+#
+# Used when the expression could not be parsed. The previous fallback said only
+# "This rule's expression could not be interpreted here", which is honest but
+# throws away the one thing that IS available: the validator states the rule in
+# business language. Restating that is not evaluation and invents nothing — the
+# expected value is still never shown.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MAX_RULE_MESSAGE_CHARS = 400
+
+_AGGREGATOR_WORDS = {"max": "the larger of", "maximum": "the larger of",
+                     "min": "the smaller of", "minimum": "the smaller of"}
+
+_AGGREGATOR_RE = __import__("re").compile(
+    r"\b(max|maximum|min|minimum)\s*\(", __import__("re").IGNORECASE)
+
+
+def _message_rule_points(message: str) -> list[str]:
+    """The validator's rule statement as readable bullets, or [].
+
+    A MAX(a, b) / MIN(a, b) group is opened into "the larger of:" plus one
+    bullet per alternative, because that is the part of these messages a reader
+    most often has to unpick. Anything the split cannot handle confidently is
+    left as the validator's own sentence — never rewritten into a claim it did
+    not make.
+    """
+    text = message_cleaner.normalise_message(message)
+    if not text or len(text) > _MAX_RULE_MESSAGE_CHARS:
+        return []
+
+    match = _AGGREGATOR_RE.search(text)
+    if not match:
+        return [text]
+
+    inner, after = _balanced_group(text, match.end() - 1)
+    if inner is None:
+        return [text]
+
+    alternatives = [_tidy_operand(part) for part in _split_top_level_commas(inner)]
+    alternatives = [a for a in alternatives if a and message_cleaner.looks_like_label(a)]
+    if len(alternatives) < 2:
+        return [text]
+
+    lead = (text[:match.start()].strip() + " "
+            + _AGGREGATOR_WORDS[match.group(1).lower()]).strip()
+    points = [f"{lead}:"] + list(alternatives)
+    tail = (after or "").strip(" .")
+    if tail and message_cleaner.looks_like_label(tail):
+        points.append(tail)
+    return points
+
+
+def _balanced_group(text: str, open_at: int) -> tuple[str | None, str]:
+    """(inside, remainder) for the bracket group opening at *open_at*."""
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1:i], text[i + 1:]
+    return None, ""
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts, current, depth = [], [], 0
+    for ch in text or "":
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return [p for p in (p.strip() for p in parts) if p]
+
+
+def _unavailable_operand_note(comparison, by_var, labels, kind) -> str:
+    """A note naming the operands the validation output does not carry.
+
+    Stated only when at least one operand IS present — when nothing at all was
+    parsed the card has a different problem, and this sentence would misdescribe
+    it. Never invents the missing figure, and never calls it zero.
+    """
+    if comparison is None or not formula_kind.describes_a_calculation(kind):
+        return ""
+    variables = comparison.variables()
+    absent = [v for v in variables if not by_var.get(v)]
+    if not absent or len(absent) == len(variables):
+        return ""
+    named = [labels[v] for v in absent if labels.get(v)]
+    if not named:
+        return ""
+    subject = formula_kind.result_subject(kind) or "the expected value"
+    verb = "is" if len(named) == 1 else "are"
+    return (f"{_join(named)} {verb} not available in the validation output, so "
+            f"{subject} cannot be independently calculated from the values shown here.")
+
+
+def _validator_disagreement_note(result, comparison=None, labels=None,
+                                 unit: str = "") -> str:
+    """The validator failed this rule but the displayed values satisfy it.
+
+    The validator is never declared wrong. The two figures are named — "12.54
+    satisfies the displayed threshold (greater than or equal to 0.1)" — and the
+    possible causes are listed, because the validator works on an internal
+    representation the error file does not show.
+    """
+    if not result or not result.get("passes"):
+        return ""
+
+    detail = ""
+    if comparison is not None and not result.get("boolean_only"):
+        reported = _format_amount(result.get("lhs_value"), unit)
+        meaning = formula_expression.OPERATOR_MEANING.get(
+            result.get("operator", ""), result.get("operator", ""))
+        required = _format_amount(result.get("rhs_value"), unit)
+        if reported and required and meaning:
+            label = ""
+            if comparison.lhs_vars and labels:
+                label = _label_of(labels, comparison.lhs_vars[0])
+            subject = f"The reported {label}" if label else "The reported value"
+            detail = (f"{subject} ({reported}) satisfies the displayed requirement "
+                      f"({meaning} {required}), but the validator reported this check "
+                      f"as failed. ")
+
+    return (detail or "The values shown here satisfy this rule, but the validator "
+                      "reported it as failed. ") + (
+        "The discrepancy may be due to the underlying value, its scaling, precision or "
+        "representation, or to another value used during validation — check the source "
+        "data before changing the reported figures.")
 
 
 def _card_locator_items_formula(rule, by_var, labels) -> list[dict]:
@@ -1298,7 +2366,7 @@ def _card_locator_items_formula(rule, by_var, labels) -> list[dict]:
 
 
 def _card_details_sections_formula(comparison, result, by_var, labels, unit,
-                                   rule, llm_text) -> list[dict]:
+                                   rule, llm_text, kind: str = "") -> list[dict]:
     """The drawer — the breakdown the card body no longer leads with.
 
     Nothing here is new and nothing here is lost: it is v1's Comparison block
@@ -1308,14 +2376,36 @@ def _card_details_sections_formula(comparison, result, by_var, labels, unit,
     sections: list[dict] = []
 
     if comparison is not None and result is not None and not result.get("boolean_only"):
-        comparison_items = _comparison_items(comparison, result, labels, unit)
+        # De-scaled operand values for a rule that multiplies by 10,000
+        # internally; None keeps the engine's own raw pair, so aggregates and
+        # every other shape are untouched.
+        raw_pair = None
+        if _internal_scaling_hidden(comparison, kind):
+            raw_pair = (_value_of(formula_kind.business_node(comparison.lhs), by_var),
+                        _value_of(formula_kind.business_node(comparison.rhs), by_var))
+        comparison_items = _comparison_items(
+            comparison, result, labels,
+            _result_unit(comparison, by_var, unit, kind), kind, raw_pair,
+        )
         if comparison_items:
             sections.append({"kind": "values", "heading": "Comparison",
                              "items": comparison_items})
+            if raw_pair is not None:
+                comparison_items.append({
+                    "label": "Note",
+                    "value": (f"the rule scales both sides by "
+                              f"{_scaling_factor_text(result)} before rounding; that "
+                              f"scaling is a precision device and is not shown above"),
+                })
 
     sections.append({
         "kind": "points", "heading": "Why It Failed",
-        "bullets": _why_failed_points(comparison, result, labels, unit, llm_text),
+        # concise: the card body's matrix has already printed both figures and
+        # the gap, so this block states what the rule required and how the
+        # values fell short rather than repeating the numbers a third time.
+        "bullets": _why_failed_points(comparison, result, labels,
+                                      _result_unit(comparison, by_var, unit, kind),
+                                      llm_text, kind, concise=True),
     })
 
     instances = rule.get("instances") or []
@@ -1364,7 +2454,12 @@ def build_card_sections(
     by_var: dict[str, list[dict]] = {}
     for fact in facts:
         by_var.setdefault(fact["var"], []).append(fact)
-    unit = next((f["unit"] for f in facts if f.get("unit")), "")
+
+    # What KIND of check this is, decided once from the AST and threaded into
+    # every wording decision below. UNKNOWN keeps the previous wording, so an
+    # unrecognised shape is a no-op rather than a regression.
+    kind = formula_kind.classify(comparison)
+    unit = _card_unit(facts, kind)
 
     terms = _emphasis_terms_formula(comparison, labels)
     ops = _emphasis_ops_formula()
@@ -1372,7 +2467,8 @@ def build_card_sections(
     sections: list[dict] = [
         error_card.attach_emphasis(
             error_card.headline(
-                _card_headline_formula(rule, comparison, result, labels, unit)),
+                _card_headline_formula(rule, comparison, result, labels, unit,
+                                       kind, by_var)),
             terms, ops,
         ),
     ]
@@ -1382,16 +2478,67 @@ def build_card_sections(
         sections.append(error_card.locator(locator_items))
 
     rule_sentence = _readable_rule_sentence(comparison, labels)
+    if kind == formula_kind.MANDATORY and rows_expected(comparison, by_var):
+        # "it is not the case that X is not reported and it is not the case
+        # that Y is not reported" is a literal reading of empty() that no
+        # reader benefits from. The matrix lists exactly which values.
+        rule_sentence = "Every value listed below must be reported."
     if rule_sentence:
         sections.append(error_card.attach_emphasis(
             error_card.rule(rule_sentence), terms, ops))
+    elif comparison is None:
+        # No parsed expression, so no restatement from the AST — but the
+        # validator's own message describes the rule, and saying what is being
+        # checked beats saying only that we could not read the formula.
+        message_points = _message_rule_points(
+            instance.get("business_message", ""))
+        if message_points:
+            sections.append({"kind": "points", "heading": "What the rule checks",
+                             "bullets": message_points})
 
-    rows = _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule)
+    rows = _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule, kind)
     if rows:
         sections.append(error_card.matrix(
             rows, heading="Values",
             label_col="Item", expected_col="Expected", actual_col="You reported",
         ))
+
+    # The rule's arithmetic with the reported figures substituted in, so the
+    # reader never has to reconstruct it from the rows above. Emitted as a
+    # "points" section: the UI already renders that kind, and it stays out of
+    # the headline/locator/rule/matrix/fix/details spine both error types share.
+    calculation = _calculation_points(comparison, result, by_var, labels, unit, kind)
+    if calculation:
+        sections.append(error_card.attach_emphasis(
+            {"kind": "points", "heading": "Calculation", "bullets": calculation},
+            terms, ops,
+        ))
+
+    unavailable = _unavailable_operand_note(comparison, by_var, labels, kind)
+    if unavailable:
+        sections.append({"kind": "note", "text": unavailable})
+
+    if comparison is None:
+        # Says WHY there is no expected column, instead of leaving the reader
+        # to wonder. Nothing is guessed about the rule, and no expected value
+        # is shown or implied.
+        sections.append({"kind": "note", "text": (
+            "The expression could not be independently calculated from the available "
+            "formula representation, so the expected value is not shown. The values "
+            "the validation output reported are listed above."
+            if facts else
+            "The expression could not be independently calculated from the available "
+            "formula representation, so the expected value is not shown."
+        )})
+
+    uncomparable = _uncomparable_threshold_note(comparison, result, by_var, labels)
+    if uncomparable:
+        sections.append({"kind": "note", "text": uncomparable})
+
+    disagreement = _validator_disagreement_note(
+        result, comparison, labels, _result_unit(comparison, by_var, unit, kind))
+    if disagreement:
+        sections.append({"kind": "note", "text": disagreement})
 
     # Batch scope belongs in the body, not the drawer: a reader who fixes the
     # one shown item needs to know another eleven are waiting.
@@ -1403,12 +2550,12 @@ def build_card_sections(
         })
 
     sections.append(error_card.attach_emphasis(
-        error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text)),
+        error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text, kind)),
         terms, ops,
     ))
 
     drawer_sections = _card_details_sections_formula(
-        comparison, result, by_var, labels, unit, rule, llm_text,
+        comparison, result, by_var, labels, unit, rule, llm_text, kind,
     )
     # "Why It Failed" restates the same labels and relation as the body, so it
     # gets the same treatment — the drawer is where the reader goes when the
@@ -1438,6 +2585,53 @@ def render_card(
 # SECTION 5 — LLM payload
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Vocabulary guidance handed to the model alongside the verified facts. It
+# constrains WORDING only — every number and the verdict itself are computed
+# before this payload is built and are not the model's to change.
+_LLM_KIND_GUIDANCE_DEFAULT = (
+    "Describe this as a comparison between the reported value and the value the rule "
+    "requires. Do not call it a sum or a total unless the rule adds values together."
+)
+
+_LLM_KIND_GUIDANCE = {
+    formula_kind.AGGREGATE: (
+        "This rule adds values together. 'sum of the component values' and "
+        "'calculated total' are correct here."
+    ),
+    formula_kind.RATIO: (
+        "This rule DIVIDES one value by another. Call the result a ratio or a "
+        "calculated value. Never call it a sum, a total, or 'the sum of its parts', "
+        "and never attach a currency symbol to it."
+    ),
+    formula_kind.PERCENTAGE: (
+        "This rule computes a PERCENTAGE. Call the result a calculated percentage. "
+        "Never call it a sum or a total, and never attach a currency symbol to it."
+    ),
+    formula_kind.WEIGHTED_AVERAGE: (
+        "This rule computes a WEIGHTED AVERAGE. Call the result a calculated weighted "
+        "average. Never call it a sum or a total, and never attach a currency symbol "
+        "to it."
+    ),
+    formula_kind.EQUALITY: (
+        "This rule requires two reported values to match. Say they must be equal."
+    ),
+    formula_kind.THRESHOLD: (
+        "This rule sets a limit. State it as the reported value having to stay above "
+        "or below the given figure, using the operator meaning supplied."
+    ),
+    formula_kind.COUNT: (
+        "This rule counts reported records. Talk about the number of values reported."
+    ),
+    formula_kind.MANDATORY: (
+        "This rule requires values to be present. Say the required values are missing."
+    ),
+    formula_kind.CONDITIONAL: (
+        "This rule applies a condition. Explain the condition in plain words; do not "
+        "call the result a sum or a total."
+    ),
+}
+
+
 def build_llm_payload(rule, comparison, result, labels) -> tuple[dict, list[str]] | None:
     if comparison is None or result is None or result.get("boolean_only"):
         return None
@@ -1459,9 +2653,10 @@ def build_llm_payload(rule, comparison, result, labels) -> tuple[dict, list[str]
         return str(out) if seen else None
 
     lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
-    lhs_label = labels.get(lhs_var, lhs_var)
+    lhs_label = _label_of(labels, lhs_var) if lhs_var else ""
     signed = comparison.rhs.signed_variables() if comparison.rhs is not None else []
     terms = signed or [(v, 1) for v in comparison.rhs_vars]
+    kind = formula_kind.classify(comparison)
 
     def describe_var(var: str, side: str, sign: int) -> dict:
         """One variable's COMPLETE binding: its own facts, each with the value,
@@ -1477,7 +2672,7 @@ def build_llm_payload(rule, comparison, result, labels) -> tuple[dict, list[str]
             "variable": var,
             "side": side,
             "sign": "plus" if sign > 0 else "minus",
-            "label": labels.get(var, var),
+            "label": _label_of(labels, var),
             "concept_name": (var_facts[0].get("concept") if var_facts else "") or "",
             "total_value": total(var),
             "facts": [
@@ -1495,7 +2690,12 @@ def build_llm_payload(rule, comparison, result, labels) -> tuple[dict, list[str]
     variables = [describe_var(lhs_var, "left", 1)] if lhs_var else []
     variables += [describe_var(v, "right", s) for v, s in terms]
 
-    required = [lhs_label] + [labels.get(v, v) for v, _s in terms]
+    required = [lhs_label] + [_label_of(labels, v) for v, _s in terms]
+    # A label the cascade could not resolve is not a term the model can be
+    # required to quote — demanding it would reject every answer.
+    # A role phrase ("Component amount 1") is not a business name the model can
+    # be required to quote verbatim — demanding it would reject every answer.
+    required = [t for t in required if t and not _is_fallback_label(t)]
 
     payload = {
         "formula": comparison.source,
@@ -1503,7 +2703,14 @@ def build_llm_payload(rule, comparison, result, labels) -> tuple[dict, list[str]
         "operator_meaning": result["operator_meaning"],
         "relationship": result["relationship"],
         "relationship_meaning": _relationship_sentence(
-            result["relationship"], lhs_label, [labels.get(v, v) for v, _s in terms]),
+            result["relationship"], lhs_label, [_label_of(labels, v) for v, _s in terms]),
+
+        # What the rule DOES, so the model does not describe a ratio or a
+        # weighted average as a sum. The verdict and every figure below are
+        # still the backend's — this only constrains vocabulary.
+        "formula_type": kind,
+        "how_to_describe_the_calculation": _LLM_KIND_GUIDANCE.get(
+            kind, _LLM_KIND_GUIDANCE_DEFAULT),
 
         # Per-variable bindings — the authoritative fact-to-variable mapping.
         "variables": variables,
@@ -1548,7 +2755,7 @@ def build_llm_payload(rule, comparison, result, labels) -> tuple[dict, list[str]
         v["concept_name"] for v in variables
         if v.get("concept_name") and v["concept_name"] not in (v.get("label") or "")
     ]
-    return payload, [t for t in required if t]
+    return payload, required
 
 
 def _relationship_sentence(relationship: str, lhs_label: str, rhs_labels: list[str]) -> str:
