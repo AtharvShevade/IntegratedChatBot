@@ -47,12 +47,12 @@ def _deterministic(monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build(expression, values, *, message="", units=None, concepts=None,
-          name="Rule", instances=1):
+          name="Rule", instances=1, context=None):
     units = units or {}
     concepts = concepts or {}
     facts = [
         {"var": var, "value": value, "unit": units.get(var, ""),
-         "context": f"ctx_{var}", "concept": concepts.get(var, "")}
+         "context": context or f"ctx_{var}", "concept": concepts.get(var, "")}
         for var, entries in values.items() for value in entries
     ]
     rule = {
@@ -1001,7 +1001,9 @@ class TestRuleNameTerminology:
     def test_the_whole_card_uses_one_name_for_the_figure(self):
         _labels, _sources, sections = self._resolve(self._rule())
         rule_text = next(s for s in sections if s["kind"] == "rule")["text"]
-        assert rule_text.startswith("TCE as % of Capital Funds must be equal to")
+        # The ratio sentence is now business-worded ("must equal … divided by …"),
+        # so the assertion is on the subject, not on the AST connective.
+        assert rule_text.startswith("TCE as % of Capital Funds must equal")
         row = next(s for s in sections if s["kind"] == "matrix")["rows"][-1]
         assert row["label"] == "TCE as % of Capital Funds"
 
@@ -1048,6 +1050,217 @@ class TestRuleNameTerminology:
         row = next(s for s in sections if s["kind"] == "matrix")["rows"][-1]
         assert row["expected"] == "0" and row["actual"] == "0.02"
         assert row["note"] == "over by 0.02"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 13 — the Rule sentence in business words
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestBusinessRuleSentence:
+    """The Rule line was the last place formula structure leaked: describe()
+    is a faithful AST printer, core() cannot peel abs() or if, and it repeats
+    whatever label each variable holds."""
+
+    def test_a_ratio_is_stated_with_words_not_symbols(self):
+        built = build(
+            "round($V4*10000) div 10000 = round((($V1) div ($V5+$V6))*10000) div 10000",
+            {"V4": ["0.02"], "V1": ["0"], "V5": ["309671000000"], "V6": ["0"]},
+            message=_R061_MESSAGE,
+            concepts={"V4": "AggregateCreditExposureAsPercentageOfCapitalFunds"},
+        )
+        text = section(built, "rule")["text"]
+        assert text == ("TCE as % of Capital Funds must equal TCE divided by the total "
+                        "of Regulatory Capital (Tier I + Tier II) of Previous March and "
+                        "Capital Infusion during the period (April to date).")
+        for leak in ("÷", "×", "round", "abs", "10,000", "10000"):
+            assert leak not in text, leak
+
+    def test_an_unlabelled_operand_yields_no_sentence_rather_than_a_raw_id(self):
+        assert fe._words(fx.parse_formula("$V1 = $V2 div $V3").rhs,
+                         {"V2": "Income"}) is None
+
+    def test_the_existing_sentence_stands_when_the_shape_is_not_modelled(self):
+        """Equality and aggregate are deliberately not rewritten — their AST
+        sentences already name every component and leak nothing."""
+        for expression, values in (
+            ("$V1 = $V2", {"V1": ["1"], "V2": ["2"]}),
+            ("$V1 = $V2 + $V3", {"V1": ["9"], "V2": ["4"], "V3": ["3"]}),
+        ):
+            built = build(expression, values,
+                          concepts={"V1": "Alpha", "V2": "Beta", "V3": "Gamma"})
+            assert fe._business_rule_sentence(
+                built["comparison"], built["labels"], built["kind"],
+                {}) == "", expression
+            assert section(built, "rule")["text"] == fe._readable_rule_sentence(
+                built["comparison"], built["labels"])
+
+
+class TestAggregateIsUntouched:
+    """R025 is a verified-good output. This pass must not move it."""
+
+    def _built(self):
+        return build(
+            "round($V2 div 100000)*100000 = round((sum($V1)+sum($V3)) div 100000)*100000",
+            {"V2": ["1004500000"], "V1": ["402000000"], "V3": ["401200000"]},
+            units={"V1": "INR", "V2": "INR", "V3": "INR"},
+            concepts={"V2": "LimitTotal", "V1": "LimitA", "V3": "LimitB"},
+        )
+
+    def test_the_rule_sentence_is_still_the_ast_restatement(self):
+        built = self._built()
+        assert section(built, "rule")["text"] == (
+            "Limit Total must be equal to the total of Limit A + the total of Limit B")
+
+    def test_the_calculation_and_figures_are_unchanged(self):
+        built = self._built()
+        assert heading(built, "Calculation")["bullets"] == [
+            "₹402,000,000 + ₹401,200,000 = ₹803,200,000"]
+        assert built["result"]["rhs_value"] == Decimal("803200000")
+        assert rows(built)[-1]["note"] == "over by ₹201,300,000"
+
+    def test_why_it_failed_still_states_the_requirement(self):
+        """The requirement bullet is only dropped where the Rule line restates
+        it in business words — which aggregate deliberately does not."""
+        why = heading(self._built(), "Why It Failed")["bullets"]
+        assert any("The rule requires" in b for b in why)
+
+
+class TestConditionalBranch:
+    """R034 — the facts had already settled which branch applies."""
+
+    def _built(self, hqla="0"):
+        return build(
+            "round($V1*10000) div 10000 = (if ($V2=0 or $V3=0) then 0 "
+            "else round(($V2 div $V3)*10000) div 10000)",
+            {"V1": ["1.9969"], "V2": [hqla], "V3": ["75190000"]},
+            units={"V3": "USD"},
+            concepts={"V1": "LiquidityCoverageRatio",
+                      "V2": "TotalStockOfHighQualityLiquidAssets",
+                      "V3": "NetCashOutflowsWeightedAmount"},
+        )
+
+    def test_the_rule_states_the_relationship_not_the_scaffolding(self):
+        text = section(self._built(), "rule")["text"]
+        assert text == ("Liquidity Coverage Ratio must equal Total Stock Of High "
+                        "Quality Liquid Assets divided by Net Cash Outflows Weighted "
+                        "Amount.")
+        for leak in ("if ", "otherwise", "then", "× 10,000", "÷ 10,000"):
+            assert leak not in text, leak
+
+    def test_the_calculation_names_the_condition_that_actually_held(self):
+        bullets = heading(self._built(), "Calculation")["bullets"]
+        assert bullets[0] == ("Because Total Stock Of High Quality Liquid Assets is "
+                              "equal to 0, this rule requires Liquidity Coverage Ratio "
+                              "to be 0.")
+        assert bullets[-1] == "1.9969 was reported."
+        assert not any("otherwise" in b for b in bullets)
+
+    def test_the_other_branch_shows_its_arithmetic(self):
+        bullets = heading(self._built(hqla="150000000"), "Calculation")["bullets"]
+        joined = " ".join(bullets)
+        assert "150,000,000 ÷ $75,190,000" in joined
+        assert "× 10,000" not in joined
+
+    def test_the_engines_verdict_is_unchanged(self):
+        built = self._built()
+        engine = fx.evaluate(
+            fx.parse_formula("round($V1*10000) div 10000 = (if ($V2=0 or $V3=0) then 0 "
+                             "else round(($V2 div $V3)*10000) div 10000)"),
+            {"V1": ["1.9969"], "V2": ["0"], "V3": ["75190000"]})
+        for key in ("lhs_value", "rhs_value", "difference", "passes"):
+            assert built["result"][key] == engine[key], key
+
+
+class TestWeightedAverageWording:
+    """R096 — five variables resolving to two labels named those two four
+    times, which reads as one value counted twice."""
+
+    def _built(self):
+        return build(
+            "round($V6*10000) div 10000 = round(((( $V1 * $V2 )+( $V3 * $V4 ))"
+            " div( $V1 + $V3 ))*10000) div 10000",
+            {"V6": ["0.06"], "V1": ["356802987000"], "V2": ["0.06"],
+             "V3": ["2297563000"], "V4": ["0.05"]},
+            units={"V1": "INR", "V3": "INR"},
+            concepts={"V6": "WeightedAverageInterestRate",
+                      "V1": "AmountOutstandingTermDeposit", "V2": "WeightedAverageInterestRate",
+                      "V3": "AmountOutstandingTermDeposit", "V4": "WeightedAverageInterestRate"},
+            # One shared context — nothing in the evidence separates the five
+            # facts, which is exactly the case positions exist for.
+            context="asof_20260630",
+        )
+
+    def test_the_rule_describes_the_weighting_instead_of_repeating_labels(self):
+        text = section(self._built(), "rule")["text"]
+        assert text == ("Weighted Average Interest Rate must equal the weighted average "
+                        "of the component rates, using each Amount Outstanding Term "
+                        "Deposit as its weight.")
+        assert text.count("Amount Outstanding Term Deposit") == 1
+
+    def test_colliding_component_labels_are_separated_by_position(self):
+        labels = [r["label"] for r in rows(self._built())[:-1]]
+        assert labels == ["Amount Outstanding Term Deposit 1",
+                          "Weighted Average Interest Rate 1",
+                          "Amount Outstanding Term Deposit 2",
+                          "Weighted Average Interest Rate 2"]
+
+    def test_the_constrained_figure_is_not_numbered(self):
+        """It is the subject of every sentence; an index would read as though
+        it were one of the components."""
+        assert rows(self._built())[-1]["label"] == "Weighted Average Interest Rate"
+
+    def test_the_arithmetic_is_unchanged(self):
+        built = self._built()
+        assert heading(built, "Calculation")["bullets"][0] == (
+            "(₹356,802,987,000 × 0.06 + ₹2,297,563,000 × 0.05) ÷ "
+            "(₹356,802,987,000 + ₹2,297,563,000) = 0.0599")
+        assert built["result"]["rhs_value"] == Decimal("0.0599")
+
+
+class TestCountRuleSentence:
+    def test_the_rule_states_the_requirement_not_the_function(self):
+        built = build("count($V1) >= 50", {"V1": ["101"] * 10},
+                      concepts={"V1": "SectorCode"})
+        assert section(built, "rule")["text"] == (
+            "At least 50 Sector Code records must be reported.")
+        assert "number of reported values" not in built["text"]
+
+    def test_a_maximum_uses_a_permissive_modal(self):
+        built = build("count($V1) <= 5", {"V1": ["7"] * 7},
+                      concepts={"V1": "BranchCode"})
+        assert section(built, "rule")["text"] == (
+            "At most 5 Branch Code records may be reported.")
+
+    def test_a_count_against_a_reported_figure_keeps_the_existing_sentence(self):
+        """Only a literal limit can be stated this way."""
+        built = build("count($V1) >= $V2", {"V1": ["1"] * 3, "V2": ["5"]},
+                      concepts={"V1": "SectorCode", "V2": "RequiredMinimum"})
+        assert fe._count_rule_sentence(built["comparison"], built["labels"]) == ""
+
+
+class TestFixWordingPerKind:
+    def test_ratio(self):
+        built = build("$V1 = $V2 div $V3", {"V1": ["2"], "V2": ["10"], "V3": ["5"]},
+                      concepts={"V1": "Ratio", "V2": "Income", "V3": "Assets"})
+        fix = section(built, "fix")["steps"][0]
+        assert "the values it is calculated from (Income and Assets)" in fix
+        assert "does not match the one calculated from them" in fix
+
+    def test_weighted_average(self):
+        built = build(
+            "$V6 = (($V1 * $V2) + ($V3 * $V4)) div ($V1 + $V3)",
+            {"V6": ["0.06"], "V1": ["100"], "V2": ["0.06"],
+             "V3": ["50"], "V4": ["0.05"]},
+            concepts={"V6": "Rate", "V1": "AmountA", "V2": "RateA",
+                      "V3": "AmountB", "V4": "RateB"})
+        assert "the amounts and the rates used to calculate Rate" in (
+            section(built, "fix")["steps"][0])
+
+    def test_aggregate_fix_is_unchanged(self):
+        built = build("$V1 = $V2 + $V3", {"V1": ["9"], "V2": ["4"], "V3": ["3"]},
+                      concepts={"V1": "Total", "V2": "PartA", "V3": "PartB"})
+        assert "against its components (Part A and Part B)" in (
+            section(built, "fix")["steps"][0])
 
 
 CORPUS = Path(r"D:\Repo(new)\Instance")

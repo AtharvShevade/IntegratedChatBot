@@ -883,14 +883,31 @@ class TestFactBindingUnit:
         for var in comparison.variables():
             assert "context" in sources[var]
 
-    def test_labels_stay_identical_when_nothing_distinguishes_them(self):
-        """No fabricated qualifier: identical contexts must not invent one."""
+    def test_nothing_distinguishing_yields_positions_not_a_fabricated_name(self):
+        """No fabricated qualifier: identical contexts must not invent one.
+
+        CONTRACT CHANGE (collision numbering): the labels used to be left
+        identical here, which read as one value repeated five times — measured
+        on a weighted-average rule whose five variables resolved to two names,
+        producing "Amount outstanding × Weighted average rate + Amount
+        outstanding × Weighted average rate". They are now separated by
+        POSITION, which invents no business meaning: every label still carries
+        the same concept name, with an index appended.
+        """
         rule = self._rule()
         for fact in rule["instances"][0]["facts"]:
             fact["context"] = "asof_1_SameMember"
         comparison, _result = fe.evaluate_instance(rule, rule["instances"][0])
-        labels, _sources = fe.resolve_labels(rule, comparison)
-        assert len({labels[v] for v in comparison.variables()}) == 1
+        labels, sources = fe.resolve_labels(rule, comparison)
+        shown = [labels[v] for v in comparison.variables()]
+        # One concept underneath …
+        assert len({fe._base_label(l) for l in shown}) == 1, shown
+        # … and every fact still separable.
+        assert len(set(shown)) == len(shown), shown
+        # The index is declared as positional, never as derived meaning.
+        numbered = [v for v in comparison.variables()
+                    if labels[v] != fe._base_label(labels[v])]
+        assert numbered and all("position" in sources[v] for v in numbered)
 
     def test_context_is_shown_only_when_labels_cannot_distinguish_the_facts(self):
         """Raw context ids are internal detail. They appear only in the one
@@ -903,13 +920,17 @@ class TestFactBindingUnit:
         text = fe.render_explanation(rule, comparison, result, labels)
         assert all(f["context"] not in text for f in rule["instances"][0]["facts"])
 
-        # Identical contexts -> no qualifier can be derived -> show the context.
+        # Identical contexts -> no qualifier can be derived. The facts are now
+        # separated by position instead, so the raw context id is no longer
+        # needed to tell them apart and stays out of the user's sight.
         for fact in rule["instances"][0]["facts"]:
             fact["context"] = "asof_1_SameMember"
         comparison, result = fe.evaluate_instance(rule, rule["instances"][0])
         labels, _ = fe.resolve_labels(rule, comparison)
         text = fe.render_explanation(rule, comparison, result, labels)
-        assert "asof_1_SameMember" in text
+        assert "asof_1_SameMember" not in text
+        assert len({labels[v] for v in comparison.variables()}) == len(
+            comparison.variables())
 
     def test_raw_and_rounded_are_both_reported(self):
         rule = self._rule()

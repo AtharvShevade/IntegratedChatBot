@@ -40,6 +40,7 @@ from backend.tools.report_lookup import (
     find_matching_reports,
     fuzzy_report_suggestions,
     get_available_instances,
+    get_failed_instances,              # ← Explain Report Errors shortcut
     get_form_id_by_name,
     get_instance_by_date,
     get_instance_by_dtc,
@@ -49,6 +50,7 @@ from backend.tools.report_lookup import (
     get_report_status_exact,
     get_report_status_exact_fast,      # ← new
     _FAILED_STATUSES,
+    _SUPPORTED_ERROR_CATEGORIES,       # ← Explain Report Errors: "is there a breakdown?"
     _get_download_info,
     get_instances_by_form_id,
     _safe_status,
@@ -250,6 +252,8 @@ STAGE_CMP_REPORT    = "AWAITING_CMP_REPORT"         # compare: picking report fr
 STAGE_CMP_FILE     = "AWAITING_CMP_FILE"            # compare: confirming which 2 instances
 STAGE_PREV_DATES   = "AWAITING_PREV_DATES_CONFIRM"  # status: yes/no for previous dates
 STAGE_RETURN_QA = "AWAITING_RETURN_QA_SELECTION"  # db_qa: picking a return from disambiguation (any return-scoped intent)
+STAGE_ERR_REPORT   = "AWAITING_ERR_REPORT"        # explain errors: picking report from disambiguation
+STAGE_ERR_INSTANCE = "AWAITING_ERR_INSTANCE"      # explain errors: picking a FAILED instance
 
 # In-memory session store per session_id
 _session_context: dict[str, dict[str, Any]] = {}
@@ -600,6 +604,7 @@ def _is_staged_session(session: dict[str, Any] | None) -> bool:
         STAGE_RUN, STAGE_SCHED_REPORT, STAGE_SCHED_RPT_DATE, STAGE_SCHED_DT, STAGE_SCHED_CONFIRM,
         STAGE_SCHED_NAME, STAGE_CMP_REPORT, STAGE_CMP_FILE, STAGE_PREV_DATES,
         STAGE_RETURN_QA,
+        STAGE_ERR_REPORT, STAGE_ERR_INSTANCE,
     }
     return awaiting_state in staged_states
 
@@ -608,10 +613,15 @@ def _parse_dtc_from_label(text: str) -> str | None:
     """Extract the DTC portion from a formatted instance label.
 
     Expects the format produced by _fmt_instance_label:
-        'Generated On: <DTC> | Reporting Date: <date>'
+        'Initiated On: <DTC> | Reporting Date: <date>'
     Returns the DTC string, or None if the format is not recognised.
+
+    The older 'Generated On:' spelling is still accepted so labels already
+    rendered into a user's chat history (App.jsx persists messages to
+    localStorage) keep resolving after the rename — otherwise their next click
+    would silently fail to match and the picker would re-prompt.
     """
-    m = re.search(r'Generated On:\s*(.+?)\s*\|', text)
+    m = re.search(r'(?:Initiated|Generated) On:\s*(.+?)\s*\|', text)
     return m.group(1).strip() if m else None
 
 
@@ -908,9 +918,12 @@ async def decide(
     # -- Status: date selection -----------------------------------------------
     if not is_reset and session.get("awaiting") == STAGE_DATE:
         # IMPORTANT: check for the formatted instance label FIRST.
-        # Labels like "Generated On: X | Reporting Date: Y" contain the word
-        # "Generated" which falsely triggers _looks_like_new_query (generate stem).
-        # This is the same issue as STAGE_CMP_FILE with the word "run".
+        # Labels are now "Initiated On: X | Reporting Date: Y", which no longer
+        # trips _looks_like_new_query — but the OLD "Generated On:" spelling
+        # does (the word "Generated" stem-matches 'gene' in _GEN_STEMS), and
+        # _parse_dtc_from_label still accepts it for labels sitting in a user's
+        # saved chat history. So the label-first order still matters.
+        # Same class of issue as STAGE_CMP_FILE with the word "run".
         dtc_from_label = _parse_dtc_from_label(user_query)
         if dtc_from_label:
             form_id     = session["pending_form_id"]
@@ -1546,6 +1559,119 @@ async def decide(
             session = {}
         else:
             return await _run_comparison(session, user_query, session_id)
+
+    # -- Explain errors: return disambiguation ---------------------------------
+    if not is_reset and session.get("awaiting") == STAGE_ERR_REPORT:
+        if _looks_like_new_query(user_query):
+            if session_id:
+                _session_context.pop(session_id, None)
+            session = {}
+        else:
+            pending_options: list[str] = session.get("pending_options", [])
+            raw_input = user_query.strip()
+
+            resolved_name: str | None = None
+            if raw_input.isdigit():
+                idx = int(raw_input) - 1
+                if 0 <= idx < len(pending_options):
+                    resolved_name = pending_options[idx]
+                else:
+                    opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(pending_options))
+                    return _build(
+                        intent="get_status", report_name=None,
+                        response_text=(
+                            f"Please enter a number between 1 and {len(pending_options)}.\n\n"
+                            f"{opts_text}"
+                        ),
+                        result_type="disambiguation",
+                        options=pending_options,
+                    )
+
+            if resolved_name is None:
+                raw_lower = raw_input.lower()
+                keyword_match = next(
+                    (name for name in pending_options
+                     if raw_lower in name.lower() or name.lower() in raw_lower),
+                    None,
+                )
+                resolved_name = keyword_match if keyword_match else raw_input
+
+            if session_id:
+                _session_context.pop(session_id, None)
+            auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status")
+            if auth_err:
+                return auth_err
+            return _handle_explain_errors(
+                report_ident=resolved_name,
+                session_id=session_id,
+                allowed_form_ids=allowed_form_ids,
+            )
+
+    # -- Explain errors: failed-instance selection -----------------------------
+    if not is_reset and session.get("awaiting") == STAGE_ERR_INSTANCE:
+        # IMPORTANT: parse the instance label FIRST, exactly as STAGE_DATE does.
+        # Current labels ("Initiated On: …") are safe, but the legacy
+        # "Generated On: …" spelling — still accepted by _parse_dtc_from_label
+        # for labels in a user's saved chat history — trips the generate stem
+        # inside _looks_like_new_query, which would misread the user's own
+        # click as a fresh generate query.
+        failed_instances: list[dict] = session.get("pending_failed_instances", [])
+        form_id     = session.get("pending_form_id", "")
+        return_name = session.get("pending_return_name", "")
+
+        dtc_pick = _parse_dtc_from_label(user_query)
+
+        if not dtc_pick:
+            # Numeric / substring pick against the list we already showed —
+            # no re-query needed. Deliberately no raw-date fallback: one
+            # reporting date can cover several runs of differing status, which
+            # cannot honour the failed-only contract of this shortcut.
+            raw_input = user_query.strip()
+            if raw_input.isdigit():
+                idx = int(raw_input) - 1
+                if 0 <= idx < len(failed_instances):
+                    dtc_pick = failed_instances[idx]["dtc"]
+            else:
+                raw_lower = raw_input.lower()
+                if raw_lower:
+                    hit = next(
+                        (i for i in failed_instances if raw_lower in i["label"].lower()),
+                        None,
+                    )
+                    if hit:
+                        dtc_pick = hit["dtc"]
+
+        if dtc_pick:
+            return _explain_errors_for_instance(
+                form_id=form_id,
+                dtc=dtc_pick,
+                return_name=return_name,
+                session_id=session_id,
+            )
+
+        if _looks_like_new_query(user_query):
+            if session_id:
+                _session_context.pop(session_id, None)
+            session = {}
+        else:
+            # Re-display the SAME failed-only list; keep the stage intact.
+            # Wording and payload mirror the STAGE_DATE re-prompt so the
+            # dropdown behaves identically to the status flow's.
+            available = failed_instances or get_failed_instances(
+                form_id, limit=_EXPLAIN_ERR_MAX_INSTANCES
+            )
+            return _build(
+                intent="get_status",
+                report_name=return_name,
+                response_text=(
+                    f"'{user_query.strip()}' did not match any instance for {return_name}. "
+                    "Please select one of the available instances:"
+                ),
+                result_type="date_selection",
+                options=[i["label"] for i in available],
+                instances_data=[{"label": i["label"], "status": i["status"]} for i in available],
+                data=_instance_picker_data(available),
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # HIERARCHICAL INTENT FAST-PATHS
@@ -2246,6 +2372,307 @@ async def _handle_compare(report_ident: str, session_id: str | None, allowed_for
     return await _compare_with_name(matches[0].get("Name", report_ident), session_id)
 
 
+# ---------------------------------------------------------------------------
+# Explain Report Errors shortcut
+#
+# A focused ENTRY POINT into the error explanation flow that already exists,
+# nothing more:
+#
+#   Return -> FAILED instances only -> select instance -> existing flow
+#
+# There is deliberately no explanation logic here. The terminal response is
+# produced by the same _get_instance_by_dtc_fast_with_bg_job + _from_result
+# pair the status flow uses, so error_category_counts / job_id / has_more /
+# category selection / batching / background polling all behave identically.
+#
+# The status flow itself is untouched: it keeps calling
+# get_available_instances (every status), while this shortcut calls
+# get_failed_instances (failed only).
+# ---------------------------------------------------------------------------
+
+_EXPLAIN_ERR_MAX_INSTANCES = 10
+
+# At or below this many failed instances the picker stays the EXPANDED row list
+# (the status flow's InstanceDropdown — every row visible, status dot, "Select"
+# button). Above it the list would run down the whole panel, so the frontend
+# collapses it into a searchable dropdown instead.
+#
+# Signalled as data["use_search_dropdown"], set ONLY by this flow and only above
+# the threshold. The Check Report Status flow never sets it, so it keeps the
+# expanded list at every instance count — unchanged.
+_EXPLAIN_ERR_LIST_MAX = 5
+
+# Must stay byte-identical to the note _get_download_info._try_error already
+# emits when a recorded ErrorDocPath is absent from disk, so both no-error-file
+# outcomes read the same to the user. Guarded by
+# test_both_no_error_file_cases_produce_the_same_message.
+_ERROR_FILE_NOT_FOUND = "Error file not found."
+
+
+def _handle_explain_errors(
+    report_ident: str,
+    session_id: str | None,
+    allowed_form_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Entry point for the Explain Report Errors shortcut — resolves the return.
+
+    Same resolution ladder as _handle_compare (find_matching_reports -> auth
+    filter -> fuzzy suggestions), then hands off to _explain_errors_for_form.
+    Synchronous: nothing on this path is async.
+    """
+    matches = find_matching_reports(report_ident)
+    all_matches = matches
+    if allowed_form_ids is not None:
+        matches = [m for m in matches if m.get("Id", "").strip() in allowed_form_ids]
+
+    if not matches:
+        suggestions = fuzzy_report_suggestions(report_ident)
+        if allowed_form_ids is not None:
+            suggestions = _filter_names_by_auth(suggestions, allowed_form_ids)
+        if suggestions:
+            opts_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(suggestions))
+            if session_id:
+                _session_context[session_id] = {
+                    "awaiting": STAGE_ERR_REPORT, "pending_options": suggestions,
+                }
+            return _build(
+                intent="get_status", report_name=None,
+                response_text=(
+                    f"No exact match for '{report_ident}'. Did you mean:\n\n"
+                    f"{opts_text}\n\nReply with the number."
+                ),
+                result_type="disambiguation", options=suggestions,
+            )
+        if allowed_form_ids is not None and all_matches:
+            return _build(
+                intent="get_status", report_name=None,
+                response_text="You are not authorised to access this report.",
+                result_type="error",
+            )
+        return _build(
+            intent="get_status", report_name=None,
+            response_text=f"No matching reports found for '{report_ident}'.",
+            result_type="error",
+        )
+
+    if len(matches) > 1:
+        names = list(dict.fromkeys(m.get("Name", "") for m in matches if m.get("Name")))
+        opts_text = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+        if session_id:
+            _session_context[session_id] = {
+                "awaiting": STAGE_ERR_REPORT, "pending_options": names,
+            }
+        return _build(
+            intent="get_status", report_name=None,
+            response_text=(
+                f"I found {len(names)} matching reports. Which one's errors do you want explained?\n\n"
+                f"{opts_text}\n\nReply with the number or part of the name."
+            ),
+            result_type="disambiguation", options=names,
+        )
+
+    match = matches[0]
+    return _explain_errors_for_form(
+        form_id=match.get("Id", "").strip(),
+        return_name=match.get("Name", report_ident),
+        session_id=session_id,
+    )
+
+
+def _explain_errors_for_form(
+    form_id: str,
+    return_name: str,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """List this return's FAILED instances only, and offer them for selection.
+
+    Zero failed instances -> a terminal message (nothing to explain).
+    Exactly one          -> skip the dropdown and go straight to the
+                            explanation flow; there is nothing to choose.
+    Two or more          -> the same date_selection dropdown the status flow
+                            uses, but populated from get_failed_instances.
+    """
+    if not form_id:
+        return _build(
+            intent="get_status", report_name=return_name,
+            response_text=(
+                f"Report '{return_name}' could not be resolved to a ReturnId. "
+                "Please check the report name and try again."
+            ),
+            result_type="error",
+        )
+
+    failed = get_failed_instances(form_id, limit=_EXPLAIN_ERR_MAX_INSTANCES)
+    logger.info(
+        "[EXPLAIN_ERRORS] form_id=%r return=%r failed_instances=%d session=%s",
+        form_id, return_name, len(failed), session_id,
+    )
+
+    if not failed:
+        if session_id:
+            _session_context.pop(session_id, None)
+        return _build(
+            intent="get_status", report_name=return_name,
+            response_text=(
+                f"Good news — {return_name} has no failed instances, so there are no "
+                "errors to explain.\n\n"
+                "Use \"Check report status\" if you want to see its other instances."
+            ),
+            result_type="final",
+        )
+
+    if len(failed) == 1:
+        # Nothing to choose between — go straight into the explanation flow.
+        return _explain_errors_for_instance(
+            form_id=form_id,
+            dtc=failed[0]["dtc"],
+            return_name=return_name,
+            session_id=session_id,
+        )
+
+    if session_id:
+        _session_context[session_id] = {
+            "awaiting":                 STAGE_ERR_INSTANCE,
+            "pending_form_id":          form_id,
+            "pending_return_name":      return_name,
+            "pending_failed_instances": failed,
+        }
+    # Byte-for-byte the same date_selection payload the status flow's
+    # STAGE_PREV_DATES "Yes" path emits — same result_type, same prompt wording,
+    # same option/label format, same instances_data shape — so the existing
+    # InstanceDropdown renders it and the existing selection handling applies.
+    # The ONLY difference is the data: get_failed_instances instead of
+    # get_available_instances.
+    #
+    # options[i] and instances_data[i]["label"] are built from the SAME list, so
+    # they are string-identical — InstanceDropdown looks its status dot up as
+    # statusMap[opt] and drops the dot silently if they ever diverge.
+    return _build(
+        intent="get_status", report_name=return_name,
+        response_text=f"Select a reporting instance for '{return_name}':",
+        result_type="date_selection",
+        options=[i["label"] for i in failed],
+        instances_data=[{"label": i["label"], "status": i["status"]} for i in failed],
+        data=_instance_picker_data(failed),
+    )
+
+
+def _instance_picker_data(instances: list[dict]) -> dict | None:
+    """{"use_search_dropdown": True} for a LONG list, else None.
+
+    At or below _EXPLAIN_ERR_LIST_MAX the payload is left exactly as the status
+    flow's, so the existing expanded InstanceDropdown renders it — every row
+    visible with its status dot and the Select button. Above the threshold the
+    frontend collapses the same options into a searchable dropdown so a long
+    list does not run down the whole panel.
+
+    Returning None (rather than a False flag) below the threshold is what keeps
+    the short-list payload byte-identical to the status flow's.
+    """
+    return ({"use_search_dropdown": True}
+            if len(instances) > _EXPLAIN_ERR_LIST_MAX else None)
+
+
+def _explain_errors_for_instance(
+    form_id: str,
+    dtc: str,
+    return_name: str,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Hand the selected failed instance to the EXISTING error explanation flow.
+
+    This is the whole handoff. _get_instance_by_dtc_fast_with_bg_job already
+    kicks off the background enrichment thread and sets job_id, and
+    _from_result's "final" branch already publishes status_code /
+    error_category_counts / is_4000_series / form_id into `data` — which is
+    exactly what ErrorSummaryPanel, /explain-category, ExplainNextErrorsButton
+    and the /status-errors poller consume. Nothing new is computed here.
+
+    _ask_another_date is deliberately NOT reused: it sets STAGE_PREV_DATES and
+    returns "ask_previous", dropping the user into the status flow's "check
+    another reporting date?" loop backed by the UNFILTERED instance list —
+    which would offer successful runs and break the failed-only contract.
+    """
+    result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc, return_name)
+
+    if result.get("type") != "final":
+        if session_id:
+            _session_context.pop(session_id, None)
+        return _build(
+            intent="get_status", report_name=return_name,
+            response_text=result.get(
+                "message", f"No instance found for '{dtc}' in {return_name}."
+            ),
+            result_type="error",
+        )
+
+    # get_instance_by_dtc_fast does not carry form_id, but _from_result reads
+    # result.get("form_id", "") into data["form_id"], which ErrorSummaryPanel
+    # needs to build its /explain-category request. The status flow only gets
+    # this via _ask_another_date's form_id parameter.
+    result["form_id"] = form_id
+
+    # ── "Error file not found." whenever no breakdown can be produced ────────
+    #
+    # THREE distinct states leave a failed instance with nothing to explain, and
+    # in the original code only the first said so:
+    #
+    #  1. ErrorDocPath recorded, file absent on disk
+    #     -> _try_error returns the note dict, status_note = "Error file not
+    #        found.", counts = {}.  Already worked.
+    #
+    #  2. ErrorDocPath empty / no basename
+    #     -> _try_error returns None and the caller falls back to
+    #        status_note = "", counts = {}.  Silent: rendered as a bare status
+    #        block. (Measured: 16 failed instances, e.g. form 2029's
+    #        09-Apr-2026 runs.)
+    #
+    #  3. File EXISTS and parses, but yields no explainable category
+    #     -> counts is TRUTHY (it always carries error_file_path, sometimes
+    #        html_category) while every supported category is absent/zero.
+    #        Silent AND worse: because counts is truthy, _from_result publishes
+    #        it and the frontend renders an EMPTY ErrorSummaryPanel with no
+    #        chips. (Measured: 3 failed instances — form 2033's 25-May-2026 run,
+    #        form 2036's and 4005's 11-Aug-2026 runs.)
+    #
+    # So the test cannot be "is there an error_file_path" — it has to be "is
+    # there an actual breakdown to show", which is what the user sees. Counts
+    # are cleared in that case so the panel cannot render at all, satisfying
+    # "no Error Summary panel and no Formula/Dimension/XBRL categories when
+    # there is nothing to explain".
+    #
+    # Normalised HERE, not in _get_download_info / _get_error_counts, because
+    # both are shared with the Check Report Status flow, which must not change.
+    # status_note is set BEFORE _from_result so the message is appended by the
+    # one code path that already handled state 1 — it can never be duplicated
+    # or double-spaced.
+    if result.get("status_code") in _FAILED_STATUSES:
+        counts = result.get("error_category_counts") or {}
+        has_breakdown = any(counts.get(c) for c in _SUPPORTED_ERROR_CATEGORIES)
+        if not has_breakdown:
+            logger.info(
+                "[EXPLAIN_ERRORS] nothing explainable for form_id=%r dtc=%r — "
+                "error_file_path=%r counts=%r status_note=%r — reporting "
+                "'Error file not found.'",
+                form_id, dtc, counts.get("error_file_path", ""),
+                {k: v for k, v in counts.items() if k != "error_file_path"},
+                result.get("status_note", ""),
+            )
+            # Drop the residual error_file_path/html_category keys so
+            # _from_result omits error_category_counts entirely and the panel
+            # cannot render an empty shell.
+            result["error_category_counts"] = {}
+            if not (result.get("status_note") or "").strip():
+                result["status_note"] = _ERROR_FILE_NOT_FOUND
+
+    if session_id:
+        _session_context.pop(session_id, None)
+
+    resp = _from_result(result, intent="get_status", session_id=session_id)
+    resp.setdefault("data", {})["report_name"] = return_name
+    return resp
+
+
 async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any]:
     """Resolve Report ID → scan instance folder → present selection.
 
@@ -2601,7 +3028,7 @@ def _from_result(
             f"Status                : {status}"
         )
         if run_time:
-            text += f"\nGenerated On          : {run_time}"
+            text += f"\nInitiated On          : {run_time}"
         if job_id:
             error_count = result.get("error_count", 0)
             if error_count > 0:
@@ -2663,7 +3090,7 @@ def _from_result(
             f"Reporting Date : {result['reporting_date']}\n"
         )
         if dtc:
-            text += f"Generated On   : {dtc}\n"
+            text += f"Initiated On   : {dtc}\n"
         text += f"Status         : {result['status']}"
         if job_id:
             error_count = result.get("error_count", 0)
@@ -2793,7 +3220,7 @@ def _ask_another_date(
         f"Reporting Date : {result['reporting_date']}\n"
     )
     if dtc:
-        text += f"Generated On   : {dtc}\n"
+        text += f"Initiated On   : {dtc}\n"
     text += f"Status         : {result['status']}"
     error_messages = result.get("error_messages", [])
     if error_messages:

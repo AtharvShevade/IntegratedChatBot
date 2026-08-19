@@ -252,7 +252,7 @@ _FRIENDLY_NAMES: dict[str, str] = {
     "AuditType":        "Action",
     "Remark":           "Remark",
     "ReportingDate":    "Reporting Date",
-    "GeneratedOn":      "Generated On",
+    "GeneratedOn":      "Initiated On",
     "Email":            "Email",
     "DeptId":           "Department ID",
     "UserCount":        "User Count",

@@ -49,16 +49,34 @@ _SENSITIVE_FIELDS = {
     "RefreshToken", "RefreshTokenExpiryTime",
 }
 
-# Human-readable status labels for XML_InstanceLog Status codes (5.5).
-_SUBMISSION_STATUS_LABELS_5_5: dict[str, str] = {
-    "0": "New / Pending",
-    "1": "In Progress",
-    "2": "Submitted",
-    "3": "Validated",
-    "4": "Rejected",
-    "9": "Approved",
-    "11": "Audited",
-}
+# Human-readable status labels for XML_InstanceLog Status codes.
+#
+# DERIVED from report_lookup._STATUS_LABELS — the single source of truth, which
+# is itself aligned with the iDEAL application's own status dictionary:
+#
+#     Failed 3/5/8/10 · Rejected 12 · Approved 9 · InProcess 6 · ApprovalPending 11
+#
+# This module previously carried its OWN table over the same InstanceLog codes,
+# and it disagreed with that source on almost every one of them:
+#
+#     code  this module (old)   report_lookup / application
+#       3   "Validated"         Failed
+#       4   "Rejected"          (not a recognised code)
+#      11   "Audited"           Approval Pending
+#       2   "Submitted"         (not a recognised code)
+#
+# So a run that Check Report Status called "Failed" was reported as "Validated"
+# by the Retrieve-data-from-database flow, for the same row. Deriving removes
+# the possibility of the two screens disagreeing again.
+#
+# Keyed by string because InstanceLog rows carry Status as raw XML text; the
+# source map is keyed by int. Unmapped codes fall back to the raw code at the
+# call site rather than being invented here.
+def _submission_status_labels() -> dict[str, str]:
+    # Imported inside the function so module import order stays unconstrained;
+    # report_lookup does not import db_qa, so there is no cycle either way.
+    from backend.tools.report_lookup import _STATUS_LABELS
+    return {str(code): label for code, label in _STATUS_LABELS.items()}
 
 # Status-code interpretation is version-independent (see the matching note
 # in backend/tools/report_lookup.py): 6.0's InstanceLog.Status used to come
@@ -67,7 +85,7 @@ _SUBMISSION_STATUS_LABELS_5_5: dict[str, str] = {
 # That service is no longer the source of truth — 6.0's InstanceLog now
 # uses the SAME codes as 5.5's XML_InstanceLog.xml, so the 5.5 mapping
 # below is the single source of truth for both versions.
-SUBMISSION_STATUS_LABELS: dict[str, str] = _SUBMISSION_STATUS_LABELS_5_5
+SUBMISSION_STATUS_LABELS: dict[str, str] = _submission_status_labels()
 
 
 def _safe(record: dict) -> dict:

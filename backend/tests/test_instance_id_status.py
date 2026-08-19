@@ -137,17 +137,17 @@ class TestSubmissionStatusByGuidHandler:
 
         result = asyncio.run(_run())
         assert result["found"]
-        # Uses report_lookup._STATUS_LABELS' vocabulary (Not Started/In
+        # Uses report_lookup._STATUS_LABELS' vocabulary (In Queue/In
         # Progress/Success/Failed/...), NOT db_qa's own broader
         # SUBMISSION_STATUS_LABELS ("New / Pending") — so the same
         # submission reads identically whether looked up by name or by id.
-        assert "Not Started" in result["summary"]
+        assert "In Queue" in result["summary"]
 
     def test_only_curated_fields_shown_not_full_raw_dump(self):
         # Regression test for a real bug: the answer used to dump every
         # raw InstanceLog attribute (Dtc, Fileuploaddt, Reportstartdt,
         # Isextract, Iscims, Isaudited, Approveddt, Cimsuploaddt, ...) —
-        # only Return / Reporting Date / Status / Generated On should
+        # only Return / Reporting Date / Status / Initiated On should
         # appear, matching the report-name-based status flow's compact
         # view.
         async def _run():
@@ -166,7 +166,7 @@ class TestSubmissionStatusByGuidHandler:
 
         data = asyncio.run(_run())
         assert set(data["cols"]) == {"ReturnName", "ReportingDate", "StatusLabel", "GeneratedOn"}
-        assert data["headers"] == ["Return", "Reporting Date", "Status", "Generated On"]
+        assert data["headers"] == ["Return", "Reporting Date", "Status", "Initiated On"]
 
     def test_non_owner_denied_ownership_not_permission_error(self):
         # Scope resolves to "self" (allowed — no PermissionError), but the
@@ -311,7 +311,7 @@ class TestReportLookupStatusByRow:
         result = get_report_status_by_id_fast(_REAL_GUID)
         assert result["report_name"] == "CIMS_ROR"
         assert result["reporting_date"] == "31-Mar-2026"
-        assert result["status"] == "Not Started"  # Status="0" via _STATUS_LABELS
+        assert result["status"] == "In Queue"  # Status="0" via _STATUS_LABELS
 
 
 @_need_5_5
@@ -330,7 +330,7 @@ class TestGuidStatusFullPipelineViaDecide:
         assert "CIMS_ROR" in text
         assert "Reporting Date" in text
         assert "Status" in text
-        assert "Generated On" in text
+        assert "Initiated On" in text
 
     def test_non_owner_denied_via_form_auth(self):
         result = asyncio.run(

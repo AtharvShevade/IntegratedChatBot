@@ -21,6 +21,7 @@ STAGE_GEN_REPORT   = "GEN_REPORT"
 STAGE_SCHED_REPORT = "SCHED_REPORT"
 STAGE_CMP_REPORT   = "CMP_REPORT"
 STAGE_DB_QUERY     = "DB_QUERY"
+STAGE_ERR_REPORT   = "ERR_REPORT"
 
 # Action labels shown as clickable buttons
 GUIDED_ACTIONS: list[str] = [
@@ -29,6 +30,7 @@ GUIDED_ACTIONS: list[str] = [
     "Schedule a report",
     "Perform comparative analysis",
     "Retrieve data from database",
+    "Explain Report Errors",
 ]
 
 # ── Central action → permission mapping ────────────────────────────────────────
@@ -269,6 +271,24 @@ async def guided_step(
         logger.info("[GUIDED_COMPARE_LOOKUP] input=%r session=%s", msg, session_id)
         return await _handle_compare(report_ident=msg, session_id=session_id, allowed_form_ids=allowed_form_ids)
 
+    if stage == STAGE_ERR_REPORT:
+        # Failed-instance-only entry point into the EXISTING error explanation
+        # flow. _handle_explain_errors runs find_matching_reports + fuzzy
+        # suggestions — no LLM, same resolution ladder as _handle_compare.
+        #
+        # Deliberately no Request ID (Instance ID) branch like STAGE_STATUS_REPORT
+        # above: a Request ID identifies exactly ONE run, so "list this return's
+        # failed instances" is meaningless for it, and jumping straight to that
+        # run would bypass the failed-only filter that is the point of this
+        # shortcut.
+        logger.info("[GUIDED_ERR_LOOKUP] input=%r session=%s", msg, session_id)
+        from backend.agent import _handle_explain_errors
+        return _handle_explain_errors(
+            report_ident=msg,
+            session_id=session_id,
+            allowed_form_ids=allowed_form_ids,
+        )
+
     if stage == STAGE_DB_QUERY:
         logger.info("[GUIDED_DB_QUERY] input=%r session=%s", msg, session_id)
         from backend.agent.db_qa_router import (
@@ -368,6 +388,17 @@ def _handle_action_selected(
             _guided_sessions[session_id] = {"stage": STAGE_CMP_REPORT}
         return _build(
             response_text="Enter the report name, ReturnId, or short name to compare (e.g. CIMS_RAQ, R009, RAQ):",
+            result_type="guided_input",
+            options=[],
+        )
+
+    if action == "Explain Report Errors":
+        # Read-only, so deliberately NOT in _ACTIONS_REQUIRING_INSTANCE_GENERATION
+        # — same permission class as Check report status / Compare / DB Q&A.
+        if session_id:
+            _guided_sessions[session_id] = {"stage": STAGE_ERR_REPORT}
+        return _build(
+            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_ROR, R149, RAQ):",
             result_type="guided_input",
             options=[],
         )

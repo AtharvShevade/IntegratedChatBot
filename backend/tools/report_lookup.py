@@ -114,19 +114,65 @@ _INSTANCE_LOG_ATTR_5_5 = {
 def _instance_log_attrs() -> dict[str, str]:
     return _INSTANCE_LOG_ATTR_5_5
 
+# Display labels, aligned with the iDEAL application's own status dictionary so
+# the two screens never describe the same row differently:
+#
+#     { "Failed",          [3, 5, 8, 10] }
+#     { "Rejected",        [12] }
+#     { "Approved",        [9] }
+#     { "InProcess",       [6] }
+#     { "ApprovalPending", [11] }
+#     { "Submitted",       [9] }
+#
+# Note the .NET structure is name -> codes (a FILTER definition), so one code
+# may appear under two names — 9 is both "Approved" and "Submitted". A display
+# map is the other direction and must pick one; see the note on 9 below.
+#
+# Codes 0 and 2 are absent from the .NET dictionary but DO occur in real
+# InstanceLog data (0: 62 rows across both repos, 2: 1 row), so they keep local
+# wording rather than falling through to "Unknown".
 _STATUS_LABELS_5_5: dict[int, str] = {
-    11: "Success",
+    # Generated successfully and now awaiting approval. Previously labelled
+    # "Success", which read as terminal and did not match the application.
+    11: "Approval Pending",
     3:  "Failed",
     5:  "Failed",
     8:  "Failed",
     10: "Failed",
+    # 13 is not in the application's dictionary and has never been observed in
+    # real data, but is kept as Failed so a future status-13 row still gets its
+    # error file and still appears in Explain Report Errors (see the sets below).
     13: "Failed",
-    4:  "In Progress",
-    6:  "In Progress",
+    # Code 4 is deliberately NOT mapped. It is absent from the application's
+    # dictionary and has never been observed; labelling it "In Progress" was a
+    # local invention, so it now resolves to "Unknown" — the honest answer —
+    # rather than asserting a state the application does not recognise.
+    6:  "In Process",
     9:  "Approved",
     12: "Rejected",
-    0:  "Not Started",
+    # Status 0 = the run has been requested but has not begun. Worded "In
+    # Queue" to match what the iDEAL application page shows the user for the
+    # same row; "Not Started" read as a different state to users looking at
+    # both screens. Display-only — routing uses the int sets below, never this
+    # string. Frontend mirror: getStatusMeta in MessageBubble.jsx.
+    0:  "In Queue",
 }
+# These two sets drive BEHAVIOUR, not wording, and are deliberately not a
+# mirror of the label map:
+#
+#   _FAILED_STATUSES  -> offer the error file, count error categories, and
+#                        populate the Explain Report Errors picker.
+#   _SUCCESS_STATUSES -> offer the rendered Excel file.
+#
+# 11 keeps its membership here even though it is now labelled "Approval
+# Pending" rather than "Success": a status-11 row has RenderedExcelDocPath
+# populated, so the render download must still be offered. The label describes
+# the workflow state; this set describes which artefact exists.
+#
+# 13 is retained as failed although the application's dictionary omits it. It
+# has never been observed in either repo, so retaining it costs nothing, while
+# dropping it would mean a status-13 row silently stopped offering its error
+# file and vanished from Explain Report Errors.
 _FAILED_STATUSES_5_5:  frozenset[int] = frozenset({3, 5, 8, 10, 13})
 _SUCCESS_STATUSES_5_5: frozenset[int] = frozenset({9, 11})
 
@@ -4215,7 +4261,17 @@ def _get_download_info(row: dict, form_id: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _fmt_instance_label(dtc: str, reporting_date: str) -> str:
-    return f"Generated On: {dtc} | Reporting Date: {reporting_date}"
+    """The instance-picker label.
+
+    DTC is when the request was INITIATED (the instance-log row's creation
+    time), not when a document was generated — a queued or not-yet-started run
+    has a DTC but has generated nothing. Hence "Initiated On".
+
+    Parsed back by backend.agent._parse_dtc_from_label, which accepts the older
+    "Generated On:" spelling too so labels already sitting in a user's chat
+    history keep resolving.
+    """
+    return f"Initiated On: {dtc} | Reporting Date: {reporting_date}"
 
 
 def get_available_instances(form_id: str) -> list[dict]:
@@ -4230,6 +4286,41 @@ def get_available_instances(form_id: str) -> list[dict]:
         }
         for r in rows if r.get("DTC", "").strip() or r.get("ReportingDate", "").strip()
     ]
+
+
+def get_failed_instances(form_id: str, limit: int = 10) -> list[dict]:
+    """The most recent FAILED-status instances for a form, newest first.
+
+    Byte-for-byte the same dict shape as get_available_instances — including
+    `status` as the RAW XML string — so the existing date_selection dropdown
+    receives identical data and renders identically. The only differences
+    between the two helpers are the filter and the limit.
+
+    Filtering is done on the PARSED int (_safe_status) even though the raw
+    string is what gets returned: comparing the raw string against the int
+    members of _FAILED_STATUSES silently matches nothing.
+
+    Used only by the "Explain Report Errors" shortcut, which is failed-only by
+    definition. The status flow keeps using get_available_instances and still
+    shows every status.
+    """
+    rows = [r for r in get_instances_by_form_id(form_id)
+            if _safe_status(r) in _FAILED_STATUSES]
+    rows.sort(key=_dtc_sort_key, reverse=True)
+    failed = [
+        {
+            "dtc":            r.get("DTC", "").strip(),
+            "reporting_date": r.get("ReportingDate", "").strip(),
+            "status":         r.get("Status", "").strip(),
+            "label":          _fmt_instance_label(r.get("DTC", "").strip(), r.get("ReportingDate", "").strip()),
+        }
+        for r in rows if r.get("DTC", "").strip() or r.get("ReportingDate", "").strip()
+    ]
+    logger.info(
+        "[report_lookup] get_failed_instances(form_id=%r): failed=%d returned=%d limit=%d",
+        form_id, len(failed), min(len(failed), max(0, limit)), limit,
+    )
+    return failed[:limit]
 
 
 def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:

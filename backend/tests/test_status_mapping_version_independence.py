@@ -37,20 +37,41 @@ from backend.db_qa import xml_store
 class TestReportLookupStatusMapping:
     def test_known_5_5_codes_resolve(self):
         expected = {
-            0: "Not Started",
+            0: "In Queue",
             3: "Failed",
-            4: "In Progress",
             5: "Failed",
-            6: "In Progress",
+            6: "In Process",
             8: "Failed",
             9: "Approved",
             10: "Failed",
-            11: "Success",
+            11: "Approval Pending",
             12: "Rejected",
             13: "Failed",
         }
         for code, label in expected.items():
             assert report_lookup.map_status(code) == label
+
+    def test_code_4_is_not_mapped(self):
+        """4 is absent from the iDEAL application's status dictionary and has
+        never been observed in real InstanceLog data. Labelling it
+        "In Progress" was a local invention, so it must resolve to Unknown
+        rather than assert a state the application does not recognise."""
+        assert 4 not in report_lookup._STATUS_LABELS
+        assert report_lookup.map_status(4) == "Unknown"
+
+    def test_labels_match_the_ideal_application_dictionary(self):
+        """The application's own dictionary is the source of truth:
+            Failed 3/5/8/10 | Rejected 12 | Approved 9
+            InProcess 6     | ApprovalPending 11
+        Compared case- and space-insensitively since .NET uses PascalCase.
+        (9 is listed there as both Approved and Submitted; a display map must
+        pick one and we show Approved.)"""
+        dotnet = {3: "Failed", 5: "Failed", 8: "Failed", 10: "Failed",
+                  12: "Rejected", 9: "Approved", 6: "InProcess",
+                  11: "ApprovalPending"}
+        for code, label in dotnet.items():
+            ours = report_lookup.map_status(code).replace(" ", "").lower()
+            assert ours == label.replace(" ", "").lower(), code
 
     def test_old_xbrlgeneration_service_codes_are_unknown_not_mislabeled(self):
         """60/25/45/55/70/etc. were the temporary/incorrect service's own
@@ -72,21 +93,39 @@ class TestReportLookupStatusMapping:
         assert not hasattr(report_lookup, "_SUCCESS_STATUSES_6_0")
 
 
-# ── xml_store: db_qa's broader SUBMISSION_STATUS_LABELS vocabulary ──────────
+# ── xml_store: SUBMISSION_STATUS_LABELS is DERIVED, never a second table ────
 
 class TestXmlStoreSubmissionStatusLabels:
-    def test_known_5_5_codes_resolve(self):
+    def test_derived_from_report_lookup(self):
+        """db_qa used to carry its own table over the same InstanceLog codes
+        that disagreed with report_lookup on nearly all of them (3 ->
+        "Validated" rather than Failed, 4 -> "Rejected", 11 -> "Audited"), so
+        one row could be "Failed" in Check Report Status and "Validated" in
+        Retrieve-data-from-database. It is now derived, so the two cannot
+        diverge again."""
+        assert xml_store.SUBMISSION_STATUS_LABELS == {
+            str(code): label for code, label in report_lookup._STATUS_LABELS.items()
+        }
+
+    def test_known_codes_resolve_to_the_application_vocabulary(self):
         expected = {
-            "0": "New / Pending",
-            "1": "In Progress",
-            "2": "Submitted",
-            "3": "Validated",
-            "4": "Rejected",
+            "0": "In Queue",
+            "3": "Failed",
+            "6": "In Process",
             "9": "Approved",
-            "11": "Audited",
+            "11": "Approval Pending",
+            "12": "Rejected",
         }
         for code, label in expected.items():
             assert xml_store.SUBMISSION_STATUS_LABELS.get(code) == label
+
+    def test_contradictory_legacy_labels_are_gone(self):
+        """These are the exact wordings that disagreed with the application."""
+        assert "Validated" not in xml_store.SUBMISSION_STATUS_LABELS.values()
+        assert "Audited" not in xml_store.SUBMISSION_STATUS_LABELS.values()
+        assert "New / Pending" not in xml_store.SUBMISSION_STATUS_LABELS.values()
+        assert xml_store.SUBMISSION_STATUS_LABELS.get("3") != "Validated"
+        assert "4" not in xml_store.SUBMISSION_STATUS_LABELS
 
     def test_old_xbrlgeneration_service_codes_are_unmapped(self):
         for stale_code in ("60", "25", "45", "55", "70", "20", "30", "40", "50"):
@@ -94,6 +133,7 @@ class TestXmlStoreSubmissionStatusLabels:
 
     def test_no_separate_6_0_status_table_exists(self):
         assert not hasattr(xml_store, "_SUBMISSION_STATUS_LABELS_6_0")
+        assert not hasattr(xml_store, "_SUBMISSION_STATUS_LABELS_5_5")
 
 
 # ── Version independence: flipping IS_V6 must not change either table ───────

@@ -732,6 +732,13 @@ const pollForErrors = (jobId) => {
             </button>
           )}
         </form>
+        {/* AI disclaimer — required on every AI-facing surface. Kept inside the
+            input bar so it stays pinned below the composer and is visible on
+            every screen, rather than scrolling away with the conversation. */}
+        <p className="ai-disclaimer">
+          AI-generated responses may be inaccurate — please verify important
+          details against the application before acting on them.
+        </p>
       </footer>
     </div>
   )

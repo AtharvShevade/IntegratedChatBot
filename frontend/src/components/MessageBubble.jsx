@@ -1116,6 +1116,32 @@ export default function MessageBubble({
     )
   }
 
+  // Long instance list -> collapsed, searchable dropdown instead of the
+  // expanded row list, which would otherwise run down the whole panel.
+  //
+  // Gated on data.use_search_dropdown, which ONLY the Explain Report Errors
+  // flow sets, and only above its threshold (backend:
+  // _instance_picker_data / _EXPLAIN_ERR_LIST_MAX = 5). The Check Report Status
+  // flow never sets it, so it keeps the expanded InstanceDropdown at every
+  // instance count — unchanged.
+  if (!isUser && resultType === 'date_selection' && data?.use_search_dropdown && options?.length > 0) {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <div className="assistant-msg-block">
+          <div className="bubble assistant-bubble">
+            <BubbleText text={text} />
+          </div>
+          <ReportSearchDropdown
+            options={options}
+            onSelect={onSuggestion}
+            placeholder="Select a reporting instance"
+          />
+        </div>
+      </div>
+    )
+  }
+
   if (!isUser && resultType === 'date_selection' && options?.length > 0) {
     return (
       <div className="bubble-row assistant">
@@ -1356,13 +1382,25 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
 // ── Status metadata helper ────────────────────────────────────────────────────
 function getStatusMeta(code) {
   const n = parseInt(code, 10)
-  if (n === 11)                       return { label: 'Success',     color: '#00C853' }
+  // Labels mirror report_lookup._STATUS_LABELS, which is aligned with the
+  // iDEAL application's own status dictionary. Colours are unchanged: bright
+  // green = generated, awaiting approval; dark green = approved.
+  if (n === 11)                       return { label: 'Approval Pending', color: '#00C853' }
   if (n === 9)                        return { label: 'Approved',    color: '#006400' }
   if ([3, 5, 8, 10, 13].includes(n)) return { label: 'Failed',      color: '#FF4D4F' }
-  if ([4, 6].includes(n))             return { label: 'In Progress', color: '#FF9800' }
-  if (n === 0)                        return { label: 'Not Started', color: '#FFD600' }
+  // 6 only — code 4 is not in the application's status dictionary and falls
+  // through to Unknown, matching report_lookup._STATUS_LABELS.
+  if (n === 6)                        return { label: 'In Process',  color: '#FF9800' }
+  // "In Queue" mirrors report_lookup._STATUS_LABELS[0] and the wording the
+  // iDEAL application page uses for the same row.
+  if (n === 0)                        return { label: 'In Queue',    color: '#FFD600' }
   return { label: 'Unknown', color: '#9E9E9E' }
 }
+
+// Canonical legend, built from getStatusMeta itself so the swatches can never
+// drift from the dots they explain. One representative code per distinct
+// status; order runs healthy -> in-flight -> failed.
+const STATUS_LEGEND = [11, 9, 4, 0, 3].map((code) => getStatusMeta(code))
 
 // ── Instance Dropdown ─────────────────────────────────────────────────────────
 function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
@@ -1398,7 +1436,26 @@ function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
         <button className="instance-dropdown-btn" onClick={() => onSelect?.(selected)}>
           Select ›
         </button>
+        {hasStatus && <StatusLegend />}
       </div>
+    </div>
+  )
+}
+
+// ── Status colour legend ──────────────────────────────────────────────────────
+// Explains the coloured dots. Rendered from STATUS_LEGEND, which is itself
+// derived from getStatusMeta, so a colour or wording change in one place
+// updates both the dots and this legend.
+function StatusLegend() {
+  return (
+    <div className="status-legend" role="note">
+      <span className="status-legend-title">Status</span>
+      {STATUS_LEGEND.map((meta) => (
+        <span className="status-legend-item" key={meta.label}>
+          <span className="status-dot" style={{ background: meta.color }} />
+          {meta.label}
+        </span>
+      ))}
     </div>
   )
 }
@@ -1410,6 +1467,7 @@ const SUGGESTION_GROUPS = [
   { label: '🗓️ Schedule a report',            action: 'Schedule a report' },
   { label: '📊 Perform comparative analysis', action: 'Perform comparative analysis' },
   { label: '🗄️ Retrieve data from database', action: 'Retrieve data from database' },
+  { label: '❌ Explain Report Errors',        action: 'Explain Report Errors' },
 ]
 
 // Filter SUGGESTION_GROUPS by the backend-resolved allowed-actions list
@@ -1436,6 +1494,7 @@ function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions }) {
           <li><strong>Scheduling</strong> reports for a future date and time</li>
           <li>Performing <strong>comparative analysis</strong> on report instances</li>
           <li>Retrieving data from the <strong>database</strong></li>
+          <li><strong>Explaining errors</strong> in a failed report instance</li>
         </ul>
         <p className="welcome-subtext">Click a category to use guided mode, or type freely:</p>
         <div className="welcome-suggestion-groups">
@@ -1458,23 +1517,53 @@ function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions }) {
 }
 
 // ── Feedback Prompt ───────────────────────────────────────────────────────────
+// How long the prompt stays on screen when the user doesn't answer. The
+// depleting bar under the buttons is driven by the SAME value via the
+// --feedback-timeout custom property, so the bar and the unmount can't drift.
+const FEEDBACK_TIMEOUT_MS = 6500
+
 function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
   const [answered, setAnswered] = useState(false)
+  // Self-hides once the timer elapses. The message deliberately STAYS in App's
+  // message array — it is only hidden visually — so the array order
+  // (result -> feedback_prompt -> action_menu) and App's
+  // "last message is a feedback_prompt" de-duplication guards are untouched.
+  const [expired, setExpired] = useState(false)
+
+  useEffect(() => {
+    if (answered) return              // answered: stop the timer, keep it shown
+    const t = setTimeout(() => setExpired(true), FEEDBACK_TIMEOUT_MS)
+    return () => clearTimeout(t)
+  }, [answered])
+
   const handleClick = (response) => {
     if (answered) return
-    setAnswered(true)
+    setAnswered(true)                 // cancels the timer via the effect cleanup
     onFeedback?.(response, { query, intent, resultType })
   }
+
+  if (expired) return null
+
   return (
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
-      <div className="assistant-msg-block">
+      <div
+        className={`assistant-msg-block${answered ? '' : ' feedback-timed'}`}
+        style={answered ? undefined : { '--feedback-timeout': `${FEEDBACK_TIMEOUT_MS}ms` }}
+      >
         <div className="bubble assistant-bubble">Was this helpful?</div>
         {!answered && (
-          <div className="feedback-actions">
-            <button className="feedback-btn feedback-yes" onClick={() => handleClick('yes')}>👍 Yes</button>
-            <button className="feedback-btn feedback-no"  onClick={() => handleClick('no')}>👎 No</button>
-          </div>
+          <>
+            <div className="feedback-actions">
+              <button className="feedback-btn feedback-yes" onClick={() => handleClick('yes')}>👍 Yes</button>
+              <button className="feedback-btn feedback-no"  onClick={() => handleClick('no')}>👎 No</button>
+            </div>
+            {/* Timer indicator: a full-width bar that depletes to zero over
+                FEEDBACK_TIMEOUT_MS, so the prompt visibly reads as temporary. */}
+            <div className="feedback-timer" aria-hidden="true">
+              <div className="feedback-timer-fill" />
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -1526,7 +1615,9 @@ function ActionMenu({ onGuidedAction, allowedActions }) {
 }
 
 // ── Report Search Dropdown ────────────────────────────────────────────────────
-function ReportSearchDropdown({ options, onSelect }) {
+// `placeholder` defaults to the report-name wording so every existing call
+// site (report disambiguation) is unchanged; the instance picker passes its own.
+function ReportSearchDropdown({ options, onSelect, placeholder = 'Select Report Name' }) {
   const [query,    setQuery]    = useState('')
   const [isOpen,   setIsOpen]   = useState(false)
   const [selected, setSelected] = useState(null)
@@ -1552,7 +1643,7 @@ function ReportSearchDropdown({ options, onSelect }) {
       >
         {selected
           ? <span className="rsd-value">{selected}</span>
-          : <span className="rsd-placeholder">Select Report Name</span>
+          : <span className="rsd-placeholder">{placeholder}</span>
         }
         <span className="rsd-arrow">{isOpen ? '▲' : '▼'}</span>
       </div>
@@ -2146,6 +2237,7 @@ const GUIDED_ACTION_META = {
   'Schedule a report':              { icon: '🗓️', desc: 'Schedule a report to run at a future date/time' },
   'Perform comparative analysis':   { icon: '📊', desc: 'Compare two report instances period-over-period' },
   'Retrieve data from database':    { icon: '🗄️', desc: 'Query the database using plain English' },
+  'Explain Report Errors':          { icon: '❌', desc: 'See why a report instance failed validation' },
 }
 
 function GuidedMenuCard({ text, options, onSelect }) {

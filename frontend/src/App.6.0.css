@@ -840,10 +840,83 @@ html, body, #root {
 .instance-listbox-item.selected   { background: rgba(1,90,170,0.12); color: #015aaa; }
 
 .status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; display: inline-block; box-shadow: 0 0 4px rgba(0,0,0,0.4); }
+
+/* Status colour legend — explains the dots above it. Rendered by
+   StatusLegend in MessageBubble.jsx from the same getStatusMeta map that
+   colours the dots, so the two can never disagree. */
+.status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+.status-legend-title {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+.status-legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+/* AI disclaimer — pinned under the composer, deliberately low-contrast so it
+   informs without competing with the conversation. */
+.ai-disclaimer {
+  margin: 6px 4px 0;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: center;
+  opacity: 0.6;
+}
 .instance-listbox-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Feedback prompt ─────────────────────────────────────────────────────── */
 .feedback-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* ── Feedback prompt auto-dismiss timer ─────────────────────────────────────
+   The prompt is shown for ~5.5s then unmounts itself (MessageBubble's
+   FeedbackPrompt). These rules only draw the countdown; the duration comes
+   from --feedback-timeout, set inline from FEEDBACK_TIMEOUT_MS so the bar and
+   the unmount always share one source of truth. Applied only while
+   .feedback-timed is present, i.e. never once the user has answered. */
+.feedback-timer {
+  height: 2px;
+  margin-top: 8px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.07);
+  overflow: hidden;
+}
+.feedback-timer-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.35;
+  transform-origin: left center;
+  animation: feedback-timer-deplete var(--feedback-timeout, 5500ms) linear forwards;
+}
+@keyframes feedback-timer-deplete {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+/* Fade the whole block out over the final moments so it doesn't pop away. */
+.feedback-timed {
+  animation: feedback-timed-fade var(--feedback-timeout, 5500ms) linear forwards;
+}
+@keyframes feedback-timed-fade {
+  0%, 85% { opacity: 1; }
+  100%    { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the prompt fully legible; it still disappears on the JS timer. */
+  .feedback-timed { animation: none; }
+  .feedback-timer-fill { animation-duration: var(--feedback-timeout, 5500ms); }
+}
 .feedback-btn { border-radius: 8px; border: 1px solid transparent; font-size: 0.85rem; font-weight: 600; padding: 7px 20px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
 .feedback-yes { background: #13a470;
     border-color: #0c8d4e; color: #fff; }

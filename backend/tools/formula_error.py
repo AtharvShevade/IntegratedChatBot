@@ -382,7 +382,8 @@ def resolve_labels(
     _prefer_message_when_labels_collide(
         labels, sources, lhs_vars, rhs_vars, message_lhs, message_rhs,
     )
-    _disambiguate(labels, sources, by_var, index)
+    _disambiguate(labels, sources, by_var, index,
+                  protect=set(lhs_vars) if len(lhs_vars) == 1 else None)
     if aggregated:
         labels["_aggregated_fact_labels"] = aggregated  # type: ignore[assignment]
     # Variables whose label came from the message AND that the formula
@@ -857,7 +858,7 @@ def _prefer_message_when_labels_collide(
 
 def _disambiguate(
     labels: dict[str, str], sources: dict[str, str],
-    by_var: dict[str, list[dict]], index=None,
+    by_var: dict[str, list[dict]], index=None, protect: set[str] | None = None,
 ) -> None:
     """When several variables resolve to the SAME label, qualify each one from
     evidence that actually differs between them.
@@ -887,11 +888,38 @@ def _disambiguate(
         return
 
     qualifiers = _context_qualifiers(colliding, by_var, index)
-    for var in colliding:
+    unresolved: list[str] = []
+    for var in [v for v in by_var if v in colliding] + sorted(colliding - set(by_var)):
         qualifier = qualifiers.get(var) or _backtracking_qualifier(by_var.get(var))
         if qualifier:
             labels[var] = f"{labels[var]} — {qualifier}"
             sources[var] = f"{sources.get(var, '')}+context"
+        else:
+            unresolved.append(var)
+
+    # Nothing in the evidence separates these. Numbering them is not a claim
+    # about what they are — it is the minimum needed to stop five identical
+    # labels reading as one value counted five times, which is exactly how the
+    # weighted-average rule came out ("Amount outstanding × Weighted average
+    # rate + Amount outstanding × Weighted average rate"). Positions follow the
+    # order the error file listed the facts, so they are stable across runs.
+    still_colliding: dict[str, int] = {}
+    for var in unresolved:
+        still_colliding[labels[var]] = still_colliding.get(labels[var], 0) + 1
+    used: dict[str, int] = {}
+    for var in unresolved:
+        if var in (protect or ()):
+            # The figure the rule constrains is already distinguished by its
+            # role — it is the subject of every sentence on the card — and
+            # "Weighted average interest rate 1 is 0.0001 higher than …" reads
+            # as though it were one of the components.
+            continue
+        label = labels[var]
+        if still_colliding.get(label, 0) < 2:
+            continue
+        used[label] = used.get(label, 0) + 1
+        labels[var] = f"{label} {used[label]}"
+        sources[var] = f"{sources.get(var, '')}+position"
 
 
 def _context_qualifiers(
@@ -1050,6 +1078,369 @@ def _rule_sentence(comparison, labels: dict[str, str]) -> str:
     return f"{lhs} must be {meaning} {rhs}"
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# The Rule sentence, in business words rather than AST syntax.
+#
+# WHY THIS EXISTS
+# ---------------
+# _rule_sentence() above renders the parsed tree through
+# formula_expression.describe(), which is a faithful AST printer. Faithful is
+# the problem:
+#
+#   * core() peels round/floor/ceiling/number and constant scaling, but NOT
+#     abs() and NOT if — so `round(($V2 div $V3)*10000) div 10000` inside a
+#     conditional reaches the reader complete with "× 10,000 ÷ 10,000";
+#   * it prints operators as symbols (×, ÷, +);
+#   * count() prints as "the number of reported values for X", which describes
+#     the function rather than the requirement;
+#   * it repeats whatever label each variable carries, so a weighted average
+#     whose five variables resolve to two labels names those two four times.
+#
+# Everything below composes a sentence from the resolved labels instead, one
+# shape at a time, and returns "" the moment it is not certain — the caller
+# then keeps _readable_rule_sentence() exactly as it is today.
+#
+# DELIBERATELY NOT HANDLED: aggregate and equality. Their existing sentences
+# ("… must be equal to the total of A + the total of B") name every component
+# correctly and leak no implementation syntax, and the aggregate case is a
+# verified-good output that must not move.
+# ═════════════════════════════════════════════════════════════════════════════
+
+_WORD_OPERATORS = {
+    "+": "plus", "-": "minus", "*": "multiplied by",
+    "div": "divided by", "idiv": "divided by",
+}
+
+# Wrappers that carry no business meaning of their own once the rule is stated
+# in words: the rounding is reported separately and abs() is a comparison
+# detail, not part of what the figure IS.
+_TRANSPARENT_FUNCS = frozenset({"round", "floor", "ceiling", "number", "abs", "sum"})
+
+_MAX_WORD_DEPTH = 4
+
+
+def _is_additive(node) -> bool:
+    return node is not None and node.kind == "binop" and node.op in ("+", "-")
+
+
+def _words(node, labels: dict[str, str], depth: int = 0) -> str | None:
+    """One subtree in business words, or None when it cannot be said safely.
+
+    None is returned for any shape this renderer does not model — a nested
+    conditional, an unknown function, a variable with no label. The caller
+    treats None as "keep the existing sentence", so an unmodelled expression is
+    never half-translated.
+    """
+    if node is None or depth > _MAX_WORD_DEPTH:
+        return None
+
+    if node.kind == "num":
+        return _format_amount(node.value, "")
+    if node.kind == "str":
+        return f"“{node.name}”"
+    if node.kind == "var":
+        # Never a raw variable id: an unnamed operand means the sentence cannot
+        # be built, not that 'V4' should be printed.
+        return labels.get(node.name) or None
+    if node.kind == "func":
+        if node.name in _TRANSPARENT_FUNCS and len(node.args) == 1:
+            return _words(node.args[0], labels, depth)
+        return None
+    if node.kind == "unary":
+        inner = _words(node.args[0], labels, depth + 1) if node.args else None
+        return f"minus {inner}" if inner else None
+    if node.kind == "binop" and node.op in _WORD_OPERATORS:
+        left, right = node.args
+        left_text = _grouped_words(left, labels, depth + 1, node.op)
+        right_text = _grouped_words(right, labels, depth + 1, node.op)
+        if not left_text or not right_text:
+            return None
+        return f"{left_text} {_WORD_OPERATORS[node.op]} {right_text}"
+    return None
+
+
+def _grouped_words(node, labels, depth: int, parent_op: str) -> str | None:
+    """An operand of *parent_op*, phrased so the grouping is unambiguous.
+
+    An additive group under a division reads as a total — "divided by the total
+    of A and B" — which says what brackets would say without stacking a second
+    set of parentheses inside labels that already contain their own.
+    """
+    if parent_op in ("div", "idiv", "*") and _is_additive(node):
+        parts = _additive_word_terms(node, labels, depth)
+        if parts is None:
+            return None
+        return f"the total of {_join(parts)}"
+    return _words(node, labels, depth)
+
+
+def _additive_word_terms(node, labels, depth: int) -> list[str] | None:
+    """The terms of a '+' chain as separate phrases, or None. Any subtraction
+    makes a plain list wrong, so those fall back to the general renderer."""
+    if node is None or depth > _MAX_WORD_DEPTH:
+        return None
+    if node.kind == "binop" and node.op == "+":
+        left = _additive_word_terms(node.args[0], labels, depth + 1)
+        right = _additive_word_terms(node.args[1], labels, depth + 1)
+        if left is None or right is None:
+            return None
+        return left + right
+    if node.kind == "binop" and node.op == "-":
+        return None
+    single = _words(node, labels, depth)
+    return [single] if single else None
+
+
+# ── conditional branch resolution ────────────────────────────────────────────
+
+def _condition_holds(node, by_var: dict) -> bool | None:
+    """Whether one condition is true on the reported facts, or None.
+
+    Evaluated by the SAME public evaluator the verdict came from, as a
+    boolean-only comparison. Nothing about the rule's own verdict, values or
+    difference is taken from here — this only decides which branch of an
+    if/then/else the explanation should describe.
+    """
+    if node is None:
+        return None
+    try:
+        probe = formula_expression.Comparison(
+            operator="", lhs=node, rhs=None, source="", boolean_only=True)
+        evaluated = formula_expression.evaluate(probe, _raw_values_by_var(by_var))
+    except Exception as exc:                       # a display aid must not raise
+        logger.debug("[formula_error] condition not resolvable: %s", exc)
+        return None
+    if not evaluated:
+        return None
+    passes = evaluated.get("passes")
+    return bool(passes) if isinstance(passes, bool) else None
+
+
+def _if_node(rhs):
+    """The if/then/else at the top of *rhs* once wrappers are peeled, or None."""
+    node = formula_kind.business_node(rhs)
+    if node is not None and node.kind == "if" and len(node.args) == 3:
+        return node
+    return None
+
+
+def _applied_branch(rhs, by_var: dict):
+    """(branch, reasons) — the branch the reported facts select, and the parts
+    of the condition that made it so. (None, []) when it cannot be resolved."""
+    node = _if_node(rhs)
+    if node is None:
+        return None, []
+    holds = _condition_holds(node.args[0], by_var)
+    if holds is None:
+        return None, []
+    reasons = _true_conditions(node.args[0], by_var) if holds else []
+    return (node.args[1] if holds else node.args[2]), reasons
+
+
+def _true_conditions(condition, by_var: dict) -> list:
+    """The individual disjuncts of an `or` condition that actually hold.
+
+    A rule guarded by "if A = 0 or B = 0" fails for a specific reason, and
+    naming the one that applies is the difference between explaining the outcome
+    and reciting the condition.
+    """
+    if condition is None:
+        return []
+    if condition.kind == "binop" and condition.op == "or":
+        out = []
+        for side in condition.args:
+            out.extend(_true_conditions(side, by_var))
+        return out
+    return [condition] if _condition_holds(condition, by_var) else []
+
+
+def _substantive_branch(node):
+    """The branch that carries the rule's actual calculation — the one that is
+    not a bare constant. None when both or neither are."""
+    then_branch, else_branch = node.args[1], node.args[2]
+    then_const = not then_branch.variables()
+    else_const = not else_branch.variables()
+    if then_const and not else_const:
+        return else_branch
+    if else_const and not then_const:
+        return then_branch
+    return None
+
+
+# ── the sentence ─────────────────────────────────────────────────────────────
+
+def _business_rule_sentence(comparison, labels: dict[str, str], kind: str,
+                            by_var: dict) -> str:
+    """The rule in business words for the shapes we classify confidently, or ""
+    to keep the existing AST restatement."""
+    if comparison is None:
+        return ""
+    if comparison.boolean_only and kind == formula_kind.CONDITIONAL:
+        return _boolean_conditional_sentence(comparison, labels, by_var)
+    if comparison.rhs is None or not comparison.operator:
+        return ""
+    lhs_vars = comparison.lhs_vars
+    if len(lhs_vars) != 1:
+        return ""
+    subject = labels.get(lhs_vars[0])
+    if not subject:
+        return ""
+
+    if kind == formula_kind.COUNT:
+        sentence = _count_rule_sentence(comparison, labels)
+    elif kind == formula_kind.WEIGHTED_AVERAGE:
+        sentence = _weighted_average_rule_sentence(comparison, labels, subject)
+    elif kind in (formula_kind.RATIO, formula_kind.PERCENTAGE):
+        body = _words(formula_kind.business_node(comparison.rhs), labels)
+        sentence = f"{subject} must equal {body}." if body else ""
+    elif kind == formula_kind.CONDITIONAL:
+        sentence = _conditional_rule_sentence(comparison, labels, subject)
+    else:
+        return ""
+
+    if not sentence or len(sentence) > _MAX_RULE_SENTENCE_CHARS:
+        return ""
+    return sentence
+
+
+def _count_rule_sentence(comparison, labels) -> str:
+    """'At least 50 Sector Code records must be reported.'
+
+    Only for a literal limit — a count compared against another reported figure
+    is a different statement and is left to the existing sentence.
+    """
+    rhs = comparison.rhs
+    if rhs is None or rhs.kind != "num" or rhs.value is None:
+        return ""
+    phrase, verb = _count_requirement(comparison.operator, rhs.value)
+    subject = _count_subject(comparison, labels)
+    if not subject or subject == "records":
+        return ""
+    modal = "must be reported" if verb == "required" else "may be reported"
+    return f"{phrase[:1].upper()}{phrase[1:]} {subject} {modal}."
+
+
+def _base_label(label: str | None) -> str:
+    """A label without the positional suffix _disambiguate() may have added.
+
+    'Amount outstanding term deposit 2' -> 'Amount outstanding term deposit'.
+    The suffix exists to tell two identically-named facts apart in a table; it
+    is not part of the concept, and a sentence about what they all ARE should
+    not be defeated by it.
+    """
+    import re as _re
+    return _re.sub(r"\s+\d+$", "", (label or "").strip()).strip()
+
+
+def _weighted_average_rule_sentence(comparison, labels, subject: str) -> str:
+    """'X must equal the weighted average of the component rates, using each
+    Amount outstanding as its weight.'
+
+    The weights are the variables the denominator adds up; the rates are the
+    other factor in each numerator product. Naming the operands individually is
+    what produced "Amount outstanding × Weighted average rate + Amount
+    outstanding × Weighted average rate" — the same two labels four times.
+    """
+    node = formula_kind.business_node(comparison.rhs)
+    if node is None or node.kind != "binop" or node.op not in ("div", "idiv"):
+        return ""
+    numerator, denominator = node.args
+    weight_vars = denominator.variables()
+    if len(weight_vars) < 2:
+        return ""
+    weight_labels = {_base_label(labels.get(v)) for v in weight_vars}
+    if None in weight_labels or "" in weight_labels or not weight_labels:
+        return ""
+    weight = (weight_labels.pop() if len(weight_labels) == 1
+              else "component amount")
+    return (f"{subject} must equal the weighted average of the component rates, "
+            f"using each {weight} as its weight.")
+
+
+# A condition that did NOT hold is far clearer stated as its own negation
+# ("is greater than or equal to 0") than as a denial of the original
+# ("is less than 0 does not hold here").
+_NEGATED_OPERATOR = {"<": ">=", "<=": ">", ">": "<=", ">=": "<",
+                     "=": "!=", "!=": "=", "<>": "="}
+
+
+def _describe_requirement(node, labels) -> str:
+    """One branch of a conditional in business language.
+
+    A branch is often itself a comparison whose sides carry the rule's own
+    ÷1,000 ×1,000 scaling. business_node() peels a bare expression but not a
+    comparison, so each side is peeled separately here — otherwise the scaling
+    reappears in the very sentence written to remove it.
+    """
+    node = formula_kind.business_node(node)
+    if node is None:
+        return ""
+    if node.kind == "binop" and node.op in formula_expression.COMPARISON_OPERATORS:
+        left = formula_expression.describe(formula_kind.business_node(node.args[0]), labels)
+        right = formula_expression.describe(formula_kind.business_node(node.args[1]), labels)
+        meaning = formula_expression.OPERATOR_MEANING.get(node.op, node.op)
+        return f"{left} is {meaning} {right}" if left and right else ""
+    return formula_expression.describe(node, labels)
+
+
+def _negated_condition_text(condition, labels) -> str:
+    """The condition restated as its own opposite, or "" when it cannot be
+    negated exactly (an `or` chain has no single negation to state)."""
+    if condition is None or condition.kind != "binop":
+        return ""
+    flipped = _NEGATED_OPERATOR.get(condition.op)
+    if not flipped:
+        return ""
+    left = formula_expression.describe(formula_kind.business_node(condition.args[0]), labels)
+    right = formula_expression.describe(formula_kind.business_node(condition.args[1]), labels)
+    meaning = formula_expression.OPERATOR_MEANING.get(flipped, flipped)
+    return f"{left} is {meaning} {right}" if left and right else ""
+
+
+def _boolean_conditional_sentence(comparison, labels, by_var: dict) -> str:
+    """A conditional rule that yields a verdict rather than two comparable
+    figures — 'if A is less than 0 then X = 0, otherwise X = Y'.
+
+    Only the branch the reported facts actually select is stated, so the reader
+    is told what this rule required of THEIR data instead of being handed the
+    rule's whole decision tree.
+    """
+    node = _if_node(comparison.lhs)
+    if node is None:
+        return ""
+    holds = _condition_holds(node.args[0], by_var)
+    if holds is None:
+        return ""
+    requirement = _describe_requirement(node.args[1] if holds else node.args[2], labels)
+    if not requirement:
+        return ""
+
+    if holds:
+        reasons = [t for t in (_describe_requirement(r, labels)
+                               for r in _true_conditions(node.args[0], by_var)) if t]
+        if not reasons:
+            return ""
+        return f"Because {' and '.join(reasons)}, this rule requires that {requirement}."
+
+    negated = _negated_condition_text(node.args[0], labels)
+    if not negated:
+        return ""
+    return f"Because {negated}, this rule requires that {requirement}."
+
+
+def _conditional_rule_sentence(comparison, labels, subject: str) -> str:
+    """The relationship the rule enforces, taken from the branch that actually
+    calculates something — not the if/then/else scaffolding around it."""
+    node = _if_node(comparison.rhs)
+    if node is None:
+        return ""
+    branch = _substantive_branch(node)
+    if branch is None:
+        return ""
+    body = _words(formula_kind.business_node(branch), labels)
+    return f"{subject} must equal {body}." if body else ""
+
+
 def _how_to_fix(comparison, result: dict, labels: dict[str, str], kind: str = "") -> str:
     if result is None or comparison is None:
         return ("Review the values involved in this check in the source data and revalidate "
@@ -1067,6 +1458,22 @@ def _how_to_fix(comparison, result: dict, labels: dict[str, str], kind: str = ""
                 f"source data, then regenerate and revalidate the return.")
     lhs_label = labels.get(comparison.lhs_vars[0], "the total") if comparison.lhs_vars else "the total"
     rhs_labels = [_label_of(labels, v) for v in comparison.rhs_vars]
+
+    if kind == formula_kind.WEIGHTED_AVERAGE and rhs_labels:
+        return (f"Check the amounts and the rates used to calculate {lhs_label} in the "
+                f"source data, correct whichever is wrong, then regenerate and "
+                f"revalidate the return.")
+    if kind in (formula_kind.RATIO, formula_kind.PERCENTAGE) and rhs_labels:
+        noun = "percentage" if kind == formula_kind.PERCENTAGE else "value"
+        return (f"Check {lhs_label} and the values it is calculated from "
+                f"({_join(rhs_labels)}) in the source data — the reported {noun} does "
+                f"not match the one calculated from them. Then regenerate and "
+                f"revalidate the return.")
+    if kind == formula_kind.CONDITIONAL and rhs_labels:
+        return (f"Check {lhs_label} and the values this rule's condition depends on "
+                f"({_join(rhs_labels)}) in the source data, correct whichever is wrong, "
+                f"then regenerate and revalidate the return.")
+
     if len(rhs_labels) > 1:
         # "components" is only true of an addition. A ratio's operands are not
         # components of it, and calling them that misdescribes the rule.
@@ -1414,7 +1821,9 @@ def _comparison_items(comparison, result: dict, labels: dict[str, str], unit: st
 
 
 def _why_failed_points(comparison, result, labels, unit, llm_text,
-                       kind: str = "", concise: bool = False) -> list[str]:
+                       kind: str = "", concise: bool = False,
+                       omit_requirement: bool = False,
+                       rule_sentence: str = "") -> list[str]:
     """Short, self-contained statements rather than one dense paragraph.
 
     Built from the AST and the verified result, so the wording adapts to the
@@ -1432,7 +1841,7 @@ def _why_failed_points(comparison, result, labels, unit, llm_text,
         return ["The values needed to check this rule could not be read from the "
                 "validation output, so the size of the difference is not available."]
     if result.get("boolean_only"):
-        return _boolean_points(comparison, result, labels, kind)
+        return _boolean_points(comparison, result, labels, kind, rule_sentence)
 
     points: list[str] = []
     lhs_var = comparison.lhs_vars[0] if comparison.lhs_vars else ""
@@ -1481,8 +1890,12 @@ def _why_failed_points(comparison, result, labels, unit, llm_text,
             f"{_format_amount(result['rhs_value'], unit)}."
         )
 
-    meaning = formula_expression.OPERATOR_MEANING.get(result["operator"], result["operator"])
-    points.append(f"The rule requires {lhs_label} to be {meaning} {subject_phrase}.")
+    if not omit_requirement:
+        # Suppressed when the card's Rule line already states the requirement in
+        # business words — saying it twice, once in each vocabulary, is the
+        # repetition this section is meant to avoid.
+        meaning = formula_expression.OPERATOR_MEANING.get(result["operator"], result["operator"])
+        points.append(f"The rule requires {lhs_label} to be {meaning} {subject_phrase}.")
 
     if result.get("passes"):
         points.append("Re-checking the reported values satisfies that condition, so the "
@@ -1526,7 +1939,8 @@ def _count_points(comparison, result, labels, concise: bool = False) -> list[str
     return points
 
 
-def _boolean_points(comparison, result, labels, kind: str = "") -> list[str]:
+def _boolean_points(comparison, result, labels, kind: str = "",
+                    rule_sentence: str = "") -> list[str]:
     """Points for a rule that yields a verdict rather than two comparable
     numbers — a presence check, a conditional, or a boolean combination.
 
@@ -1536,7 +1950,12 @@ def _boolean_points(comparison, result, labels, kind: str = "") -> list[str]:
     'A or B' forms, and they mean different things).
     """
     points: list[str] = []
-    condition = _readable_rule_sentence(comparison, labels)
+    # The card supplies its own business-worded sentence when it has one, so
+    # the drawer does not re-print the raw if/then/otherwise beneath it.
+    condition = rule_sentence or _readable_rule_sentence(comparison, labels)
+    if rule_sentence:
+        points.append(rule_sentence)
+        condition = ""
     if kind == formula_kind.MANDATORY:
         # "it is not the case that X is not reported" is a literal reading of
         # empty() that helps nobody. Same plain sentence the Rule section uses.
@@ -2156,6 +2575,10 @@ def _calculation_points(comparison, result, by_var, labels, unit, kind) -> list[
     if comparison.rhs is None or not formula_kind.describes_a_calculation(kind):
         return []
 
+    if kind == formula_kind.CONDITIONAL:
+        return _conditional_calculation_points(comparison, result, by_var, labels,
+                                               unit, kind)
+
     # For a rule whose expression carries an internal ×10,000 (a precision
     # device, not part of the ratio), the user-facing line is built from the
     # de-scaled tree so the reader is not asked to read 279.0095 as a ratio.
@@ -2293,6 +2716,64 @@ def _split_top_level_commas(text: str) -> list[str]:
     return [p for p in (p.strip() for p in parts) if p]
 
 
+def _conditional_calculation_points(comparison, result, by_var, labels, unit,
+                                    kind) -> list[str]:
+    """The calculation for a conditional rule — the branch that ACTUALLY
+    applies, not the if/then/else scaffolding.
+
+    Rendering the whole conditional produced
+
+        if 0 is equal to 0 or $75,190,000 is equal to 0 then 0, otherwise
+        0 ÷ $75,190,000 × 10,000 ÷ 10,000 = 0
+
+    when the facts had already settled the question: the first operand is 0, so
+    the rule requires 0. Which branch applies is decided by the same public
+    evaluator, and the compared figures below still come from the engine's own
+    result for the whole rule.
+    """
+    branch, reasons = _applied_branch(comparison.rhs, by_var)
+    if branch is None:
+        return []
+
+    result_unit = _result_unit(comparison, by_var, unit, kind)
+    subject = _label_of(labels, comparison.lhs_vars[0]) if comparison.lhs_vars else "this value"
+
+    points: list[str] = []
+    reason_text = " and ".join(
+        t for t in (_describe_requirement(r, labels) for r in reasons) if t)
+    if reason_text:
+        points.append(f"Because {reason_text}, this rule requires {subject} to be "
+                      f"{_format_amount(result['rhs_value'], result_unit)}.")
+
+    if branch.variables():
+        # The applied branch does compute something — show it with the reported
+        # figures substituted, de-scaled the same way every other kind is.
+        core = formula_kind.business_node(branch)
+        needed = core.variables()
+        values: dict[str, str] = {}
+        for var in needed:
+            total = _var_total(by_var, var)
+            if total is None:
+                values = {}
+                break
+            values[var] = _format_amount(total, _unit_of(by_var, var, unit))
+        if values:
+            expression = formula_expression.describe(core, values, set(needed))
+            business = _value_of(core, by_var)
+            if expression and business is not None:
+                line = f"{expression} = {_format_precise(business, result_unit)}"
+                if len(line) <= _MAX_CALCULATION_CHARS:
+                    points.append(line)
+    elif not points:
+        # A constant branch with no stateable reason still has a requirement.
+        points.append(f"This rule requires {subject} to be "
+                      f"{_format_amount(result['rhs_value'], result_unit)}.")
+
+    if points:
+        points.append(f"{_format_amount(result['lhs_value'], result_unit)} was reported.")
+    return points
+
+
 def _unavailable_operand_note(comparison, by_var, labels, kind) -> str:
     """A note naming the operands the validation output does not carry.
 
@@ -2366,7 +2847,9 @@ def _card_locator_items_formula(rule, by_var, labels) -> list[dict]:
 
 
 def _card_details_sections_formula(comparison, result, by_var, labels, unit,
-                                   rule, llm_text, kind: str = "") -> list[dict]:
+                                   rule, llm_text, kind: str = "",
+                                   omit_requirement: bool = False,
+                                   rule_sentence: str = "") -> list[dict]:
     """The drawer — the breakdown the card body no longer leads with.
 
     Nothing here is new and nothing here is lost: it is v1's Comparison block
@@ -2405,7 +2888,9 @@ def _card_details_sections_formula(comparison, result, by_var, labels, unit,
         # values fell short rather than repeating the numbers a third time.
         "bullets": _why_failed_points(comparison, result, labels,
                                       _result_unit(comparison, by_var, unit, kind),
-                                      llm_text, kind, concise=True),
+                                      llm_text, kind, concise=True,
+                                      omit_requirement=omit_requirement,
+                                      rule_sentence=rule_sentence),
     })
 
     instances = rule.get("instances") or []
@@ -2477,7 +2962,10 @@ def build_card_sections(
     if locator_items:
         sections.append(error_card.locator(locator_items))
 
-    rule_sentence = _readable_rule_sentence(comparison, labels)
+    # A business-worded sentence for the shapes we classify confidently; ""
+    # means "not certain", and the AST restatement below stands unchanged.
+    business_sentence = _business_rule_sentence(comparison, labels, kind, by_var)
+    rule_sentence = business_sentence or _readable_rule_sentence(comparison, labels)
     if kind == formula_kind.MANDATORY and rows_expected(comparison, by_var):
         # "it is not the case that X is not reported and it is not the case
         # that Y is not reported" is a literal reading of empty() that no
@@ -2556,6 +3044,8 @@ def build_card_sections(
 
     drawer_sections = _card_details_sections_formula(
         comparison, result, by_var, labels, unit, rule, llm_text, kind,
+        omit_requirement=bool(business_sentence),
+        rule_sentence=business_sentence,
     )
     # "Why It Failed" restates the same labels and relation as the body, so it
     # gets the same treatment — the drawer is where the reader goes when the
