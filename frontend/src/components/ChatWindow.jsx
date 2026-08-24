@@ -24,6 +24,8 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           sqlData={msg.sqlData}
           dbQaData={msg.dbQaData}
           varianceData={msg.varianceData}
+          varianceAll={msg.varianceAll}
+          varianceMeta={msg.varianceMeta}
           labelA={msg.labelA}
           labelB={msg.labelB}
           llmSummary={msg.llmSummary}

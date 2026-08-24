@@ -30,7 +30,13 @@ class ChatResponse(BaseModel):
     need_clarification: bool = False
     result_type: str = ""  # final | variance_table | disambiguation | date_selection | error | stopped | ""
     options: list[str] = []
-    variance_data:    list[dict] = []
+    variance_data:    list[dict] = []   # TABLE dataset — top 30 rows
+    # CHART dataset — every comparable row. Deliberately separate from
+    # variance_data so the visualisation is never handed the table's slice.
+    variance_all:     list[dict] = []
+    # Coverage counts for the comparison (compared / concepts / dimensional /
+    # significant / …) so the UI can state what the chart actually represents.
+    variance_meta:    dict       = {}
     variance_label_a: str        = ""
     variance_label_b: str        = ""
     llm_summary:      str        = ""

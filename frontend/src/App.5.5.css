@@ -1309,8 +1309,254 @@ html, body, #root {
 .vt-num      { text-align: right; }
 .vt-sev-cell { text-align: center; width: 36px; padding: 4px 6px !important; }
 
-.vt-pos { color: #4ade80; }
-.vt-neg { color: #f87171; }
+
+
+/* Direction glyph beside the difference — carries the same meaning as the
+   colour, so the table still reads correctly in print and for colour-blind
+   users, where hue alone would not. */
+/* ── Direction chips: difference and % change ────────────────────────────────
+   Two tints per direction — a stronger chip for the % change and a lighter one
+   for the absolute difference — so the eye lands on the rate first and the
+   amount second, without either losing its colour.
+
+   Values are AA-contrast on a light ground. The previous #4ade80 / #f87171
+   were chosen for a dark surface and rendered almost colourless here. */
+.vt-pos { color: #15803D; }
+.vt-neg { color: #B91C1C; }
+.vt-neutral { color: #4B5563; }
+
+.vt-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+  flex: none;
+}
+.vc-tip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.vt-pct,
+.vt-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.45;
+}
+/* % change — the primary signal, so the stronger tint. */
+.vt-pct.vt-pos     { background: #DCFCE7; color: #15803D; }
+.vt-pct.vt-neg     { background: #FEE2E2; color: #B91C1C; }
+.vt-pct.vt-neutral { background: #F3F4F6; color: #4B5563; }
+/* Absolute difference — same hue, lighter, so it reads as supporting detail. */
+.vt-delta.vt-pos     { background: #F0FDF4; color: #166534; }
+.vt-delta.vt-neg     { background: #FEF2F2; color: #991B1B; }
+.vt-delta.vt-neutral { background: #F9FAFB; color: #4B5563; }
+
+/* Sign-reversal rows get an amber left edge on the concept cell — a reversal
+   is a different fact from a large decrease and shouldn't share red. */
+.vt-row-sign-change .vt-concept {
+  box-shadow: inset 3px 0 0 #D97706;
+}
+
+.vt-dir-arrow { display: inline-block; font-weight: 700; }
+
+/* Coverage line above the variance table — states 30-of-N rather than letting
+   the table just stop. */
+.variance-coverage {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  opacity: 0.78;
+  margin: 0 0 8px;
+  padding: 7px 11px;
+  border-left: 2px solid var(--secondary, #0B5CAD);
+  background: rgba(11, 92, 173, 0.06);
+  border-radius: 0 3px 3px 0;
+}
+.variance-coverage b { font-weight: 700; opacity: 1; }
+
+/* ── Chart modal: coverage, filters, paging, export ──────────────────────── */
+/* ── Summary cards: FIXED, never scrollable ─────────────────────────────────
+   Wraps onto more rows rather than clipping or scrolling, so every metric is
+   visible at once. Each card carries its own label — a strip of bare numbers
+   communicates nothing. */
+.vc-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 10px;
+  overflow: visible;          /* explicit: this section must never scroll */
+}
+.vc-sum-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 104px;
+  flex: 0 1 auto;
+  padding: 8px 14px;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 5px;
+  background: rgba(128, 128, 128, 0.05);
+}
+.vc-sum-label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.68;
+  white-space: nowrap;
+}
+.vc-sum-val {
+  font-size: 1.28rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Period legend — identity (blue/purple) kept apart from direction ────── */
+.vc-period-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 4px 0 6px;
+  font-size: 0.74rem;
+}
+.vc-pl-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.vc-pl-item em { font-style: normal; opacity: 0.6; font-size: 0.68rem; }
+.vc-pl-swatch { width: 13px; height: 13px; border-radius: 3px; display: inline-block; flex: none; }
+.vc-pl-sep {
+  width: 1px; height: 15px;
+  background: rgba(128, 128, 128, 0.3);
+  display: inline-block;
+}
+
+/* ── Chart wrapper — positioning context for the corner download button ─── */
+.vc-chart-wrap { position: relative; }
+/* Download sits in its own row under the chart. As an absolute overlay it
+   covered the x-axis and the final rows of data. Graphite, deliberately
+   outside the data palette: blue is the current-period bar and green/red are
+   direction, so an action button in those hues would read as a legend key. */
+.vc-download-btn-main {
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 6px 13px;
+  border-radius: 6px;
+  border: 1px solid #1E293B;
+  background: #1E293B;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, transform 0.12s;
+}
+.vc-download-btn-main:hover { background: #0F172A; transform: translateY(-1px); }
+.vc-download-btn-main:active { transform: none; }
+.vc-download-btn-main:focus-visible { outline: 2px solid #60A5FA; outline-offset: 2px; }
+
+.vc-tooltip-zero {
+  margin-top: 5px;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: #B45309;
+}
+
+
+
+.vc-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 0;
+}
+.vc-filter-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.vc-chip {
+  font-size: 0.72rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.vc-chip:hover { border-color: var(--secondary, #0B5CAD); }
+.vc-chip.active {
+  background: var(--secondary, #0B5CAD);
+  border-color: var(--secondary, #0B5CAD);
+  color: #fff;
+  font-weight: 600;
+}
+/* Legend + filter chips on the left, concept search on the right — one band
+   instead of three stacked rows. */
+.vc-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px 8px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+  flex-wrap: wrap;
+}
+/* min-width:0 lets the chip rows wrap inside the flex child instead of forcing
+   the search field off the row. */
+.vc-filterbar-main { flex: 1 1 420px; min-width: 0; }
+.vc-search-col {
+  flex: 0 0 clamp(240px, 34%, 430px);
+  display: flex;
+  align-items: center;
+}
+.vc-search {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  font-size: 0.82rem;
+  padding: 10px 16px;
+  /* Pill: a search field reads as one at a glance, and the rounded form
+     distinguishes it from the square filter chips beside it. */
+  border-radius: 999px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  outline-offset: 2px;
+}
+.vc-search::placeholder { opacity: 0.6; }
+.vc-search:hover { border-color: rgba(128, 128, 128, 0.55); }
+.vc-search:focus {
+  border-color: #60A5FA;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
+}
+.vc-download-btn {
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--secondary, #0B5CAD);
+  background: transparent;
+  color: var(--secondary, #0B5CAD);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.vc-download-btn:hover { background: var(--secondary, #0B5CAD); color: #fff; }
+.vc-chip:focus-visible,
+.vc-download-btn:focus-visible,
+.vc-search:focus-visible {
+  outline: 2px solid var(--secondary, #0B5CAD);
+  outline-offset: 2px;
+}
+
 
 .vt-row-sign-change td { background: rgba(251,146,60,0.07); }
 .vt-row-alt:not(.vt-row-sig):not(.vt-row-sign-change) td { background: rgba(255,255,255,0.018); }
@@ -1380,7 +1626,7 @@ html, body, #root {
 .vc-modal {
   background: #ffffff; border-radius: 16px;
   box-shadow: 0 24px 64px rgba(0,0,0,0.28);
-  width: min(860px, 95vw); max-height: 90vh; overflow-y: auto;
+  width: min(1280px, 96vw); max-height: 92vh; overflow-y: auto;
   display: flex; flex-direction: column;
   animation: vc-slide-in 0.22s cubic-bezier(0.34,1.56,0.64,1);
 }

@@ -2673,6 +2673,86 @@ def _explain_errors_for_instance(
     return resp
 
 
+_VARIANCE_TABLE_ROWS = 30
+
+
+def _serialize_variance_rows(rows: list[dict], label_a: str, label_b: str) -> list[dict]:
+    """One variance row → the JSON shape the frontend consumes.
+
+    This used to be an inline six-key dict duplicated at both comparison call
+    sites, and it DROPPED five fields compute_variance had already computed:
+    context_key, unit, anomaly_flags, sign_change and severity. Both the
+    variance table and the chart modal are written to read all five — the
+    sign-reversal highlight, the anomaly badge, the unit in the tooltip and
+    the severity chip are all coded and styled — so every one of those
+    features was silently inert, reading undefined. Nothing new is computed
+    here; the data was being thrown away one line before it was needed.
+    """
+    return [
+        {
+            "concept":       r["concept"],          # display label, incl. [member]
+            "concept_base":  r.get("concept_base", r["concept"]),
+            "val_a":         r[label_a],
+            "val_b":         r[label_b],
+            "diff":          r["diff"],
+            "pct_change":    r["pct_change"],
+            "significant":   r["significant"],
+            "context_key":   r.get("context_key", ""),
+            "unit":          r.get("unit", ""),
+            "anomaly_flags": r.get("anomaly_flags", []),
+            "sign_change":   r.get("sign_change", False),
+            "severity":      r.get("severity", ""),
+        }
+        for r in rows
+    ]
+
+
+def _build_variance_payload(
+    facts_a: list[dict], label_a: str,
+    facts_b: list[dict], label_b: str,
+) -> tuple[list[dict], list[dict], list[dict], dict, str]:
+    """Compare EVERYTHING once, then derive the table slice from that result.
+
+    Returns (all_rows_raw, all_serialized, table_serialized, meta, text_table).
+
+    The ordering matters and is the whole point: compute_variance is called
+    with top_n=None so alignment and scoring cover every comparable pair, and
+    the 30-row table is a slice taken AFTERWARDS. The chart therefore receives
+    the complete set while the table keeps its existing size — and there is no
+    second, hidden cap anywhere on the chart path.
+    """
+    # Function-local, matching how the comparison call sites already import
+    # this module (Arelle pulls in a heavy dependency tree at import time).
+    from backend.tools.xbrl_comparator import (
+        compute_variance, format_variance_table, variance_meta,
+    )
+
+    # `stats` collects the intersection bookkeeping compute_variance already
+    # does internally, so the UI can state how many facts were excluded for
+    # existing in only one period rather than leaving it to a debug log.
+    stats: dict = {}
+    all_rows = compute_variance(
+        facts_a, label_a, facts_b, label_b, top_n=None, stats=stats,
+    )
+    table_rows = all_rows[:_VARIANCE_TABLE_ROWS]
+    meta = {**variance_meta(all_rows, facts_a, facts_b, len(table_rows)), **stats}
+    logger.info(
+        "[VARIANCE] compared=%d concepts=%d dimensional=%d significant=%d "
+        "table=%d facts_a=%d facts_b=%d one_sided_excluded=%d",
+        meta["compared"], meta["concepts"], meta["dimensional"],
+        meta["significant"], meta["table_rows"], meta["facts_a"], meta["facts_b"],
+        meta.get("one_sided", 0),
+    )
+    return (
+        all_rows,
+        _serialize_variance_rows(all_rows, label_a, label_b),
+        _serialize_variance_rows(table_rows, label_a, label_b),
+        meta,
+        # The plain-text chat table stays the top-30 view it has always been.
+        format_variance_table(table_rows, label_a, label_b),
+    )
+
+
 async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any]:
     """Resolve Report ID → scan instance folder → present selection.
 
@@ -2818,25 +2898,22 @@ async def _run_comparison(
             return _build(intent="compare_reports", report_name=name,
                           response_text="Unable to perform the comparison right now. Please try again.",
                           result_type="error")
-        variance_rows = compute_variance(facts_a, label_a, facts_b, label_b)
-        table = format_variance_table(variance_rows, label_a, label_b)
-        serialized = [
-            {
-                "concept":     r["concept"],
-                "val_a":       r[label_a],
-                "val_b":       r[label_b],
-                "diff":        r["diff"],
-                "pct_change":  r["pct_change"],
-                "significant": r["significant"],
-            }
-            for r in variance_rows
-        ]
-        llm_summary = await generate_llm_summary(variance_rows, label_a, label_b, name)
+        (variance_rows, all_serialized, table_serialized, v_meta, table) = (
+            _build_variance_payload(facts_a, label_a, facts_b, label_b)
+        )
+        # The narrative describes the ranked TOP slice, not all N rows \u2014 a
+        # full set would not fit a prompt. variance_meta is what tells the
+        # user how much was actually compared.
+        llm_summary = await generate_llm_summary(
+            variance_rows[:_VARIANCE_TABLE_ROWS], label_a, label_b, name,
+        )
         return _build(intent="compare_reports", report_name=name,
                       response_text=(f"Variance Analysis \u2014 {name}\n"
                                      f"Comparing: {label_a}  vs  {label_b}\n\n{table}"),
                       result_type="variance_table",
-                      variance_data=serialized,
+                      variance_data=table_serialized,
+                      variance_all=all_serialized,
+                      variance_meta=v_meta,
                       variance_label_a=label_a,
                       variance_label_b=label_b,
                       llm_summary=llm_summary)
@@ -2906,20 +2983,12 @@ async def _run_comparison(
             result_type="error",
         )
 
-    variance_rows = compute_variance(facts_a, label_a, facts_b, label_b)
-    table = format_variance_table(variance_rows, label_a, label_b)
-    serialized = [
-        {
-            "concept":     r["concept"],
-            "val_a":       r[label_a],
-            "val_b":       r[label_b],
-            "diff":        r["diff"],
-            "pct_change":  r["pct_change"],
-            "significant": r["significant"],
-        }
-        for r in variance_rows
-    ]
-    llm_summary = await generate_llm_summary(variance_rows, label_a, label_b, name)
+    (variance_rows, all_serialized, table_serialized, v_meta, table) = (
+        _build_variance_payload(facts_a, label_a, facts_b, label_b)
+    )
+    llm_summary = await generate_llm_summary(
+        variance_rows[:_VARIANCE_TABLE_ROWS], label_a, label_b, name,
+    )
 
     return _build(
         intent="compare_reports", report_name=name,
@@ -2929,7 +2998,9 @@ async def _run_comparison(
             f"{table}"
         ),
         result_type="variance_table",
-        variance_data=serialized,
+        variance_data=table_serialized,
+        variance_all=all_serialized,
+        variance_meta=v_meta,
         variance_label_a=label_a,
         variance_label_b=label_b,
         llm_summary=llm_summary,
@@ -4068,6 +4139,8 @@ def _build(
     schedule_time: str | None = None,
     reporting_date_out: str | None = None,
     variance_data:    list[dict] | None = None,
+    variance_all:     list[dict] | None = None,
+    variance_meta:    dict | None = None,
     variance_label_a: str | None = None,
     variance_label_b: str | None = None,
     llm_summary:      str | None = None,
@@ -4103,6 +4176,12 @@ def _build(
         out["variance_label_a"] = variance_label_a or ""
         out["variance_label_b"] = variance_label_b or ""
         out["llm_summary"]      = llm_summary or ""
+    # Set independently of variance_data: the chart's dataset (ALL comparable
+    # rows) and the coverage counts must never be gated on the table's slice.
+    if variance_all is not None:
+        out["variance_all"] = variance_all
+    if variance_meta is not None:
+        out["variance_meta"] = variance_meta
     if instances_data is not None:
         out["instances_data"] = instances_data
     if error_details:

@@ -1,0 +1,1155 @@
+<title>Xia Pipeline Atlas</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  /* ── Tokens: complete light palette on bare :root ───────────────────────── */
+  :root {
+    --paper:    #F5F7F9;
+    --surface:  #FFFFFF;
+    --sunken:   #EDF0F4;
+    --ink:      #101720;
+    --muted:    #5B6573;
+    --faint:    #8C97A6;
+    --rule:     #D5DCE4;
+    --rule-soft:#E4E9EF;
+    --accent:   #1B4F9C;
+    --accent-bg:#E8EEF8;
+    --fail:     #C0343A;
+    --ok:       #0E7245;
+    --warn:     #9C5606;
+
+    --measure: 68ch;
+    --band:    1160px;
+
+    --f-sans:  'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    --f-serif: 'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+    --f-mono:  'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  }
+
+  /* System-dark: redefine tokens only. Guarded so an explicit light choice wins. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:    #0E1218;
+      --surface:  #151B24;
+      --sunken:   #1B222D;
+      --ink:      #E3E9F1;
+      --muted:    #9AA6B6;
+      --faint:    #6E7B8C;
+      --rule:     #28313E;
+      --rule-soft:#1F2833;
+      --accent:   #7CADF5;
+      --accent-bg:#17253A;
+      --fail:     #F0787C;
+      --ok:       #4FC98B;
+      --warn:     #E0A257;
+    }
+  }
+
+  /* Explicit dark choice wins in the other direction. */
+  :root[data-theme="dark"] {
+    --paper:    #0E1218;
+    --surface:  #151B24;
+    --sunken:   #1B222D;
+    --ink:      #E3E9F1;
+    --muted:    #9AA6B6;
+    --faint:    #6E7B8C;
+    --rule:     #28313E;
+    --rule-soft:#1F2833;
+    --accent:   #7CADF5;
+    --accent-bg:#17253A;
+    --fail:     #F0787C;
+    --ok:       #4FC98B;
+    --warn:     #E0A257;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: var(--band);
+    margin: 0 auto;
+    padding: 0 28px 96px;
+  }
+
+  /* ── Masthead ───────────────────────────────────────────────────────────── */
+  .mast {
+    padding: 64px 0 28px;
+    border-bottom: 2px solid var(--ink);
+    display: grid;
+    gap: 20px;
+  }
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+  .mast h1 {
+    font-family: var(--f-sans);
+    font-weight: 700;
+    font-size: clamp(2.1rem, 5vw, 3.3rem);
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+    margin: 0;
+    max-width: 24ch;
+  }
+  .standfirst {
+    font-family: var(--f-serif);
+    font-size: 1.09rem;
+    line-height: 1.62;
+    color: var(--muted);
+    max-width: var(--measure);
+    margin: 0;
+  }
+  .mast-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    font-family: var(--f-mono);
+    font-size: 12px;
+    color: var(--faint);
+    padding-top: 4px;
+  }
+  .mast-meta b { color: var(--ink); font-weight: 500; }
+
+  /* ── Contents ───────────────────────────────────────────────────────────── */
+  .toc {
+    margin: 34px 0 0;
+    padding: 22px 26px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px 32px;
+  }
+  .toc h2 {
+    grid-column: 1 / -1;
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    margin: 0;
+  }
+  .toc a {
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 14.5px;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    border-bottom: 1px solid transparent;
+    padding-bottom: 1px;
+  }
+  .toc a span {
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    color: var(--accent);
+    flex: none;
+  }
+  .toc a:hover { border-bottom-color: var(--accent); }
+
+  /* ── Sections ───────────────────────────────────────────────────────────── */
+  section { padding-top: 62px; }
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    border-top: 1px solid var(--rule);
+    padding-top: 16px;
+    margin-bottom: 26px;
+  }
+  .sec-head .marker {
+    font-family: var(--f-mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    flex: none;
+    padding-top: 6px;
+  }
+  .sec-head h2 {
+    font-size: clamp(1.4rem, 2.6vw, 1.85rem);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    line-height: 1.18;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  p, ul, ol { max-width: var(--measure); }
+  p {
+    font-family: var(--f-serif);
+    font-size: 1.02rem;
+    line-height: 1.68;
+    margin: 0 0 1.05em;
+  }
+  ul, ol { margin: 0 0 1.15em; padding-left: 1.25em; }
+  li { font-family: var(--f-serif); font-size: 1.02rem; line-height: 1.62; margin-bottom: 0.45em; }
+  a { color: var(--accent); }
+  strong { font-weight: 600; }
+  h3 {
+    font-size: 1.06rem;
+    font-weight: 600;
+    letter-spacing: -0.008em;
+    margin: 34px 0 12px;
+  }
+
+  code, .mono {
+    font-family: var(--f-mono);
+    font-size: 0.875em;
+    background: var(--sunken);
+    padding: 0.13em 0.4em;
+    border-radius: 2px;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  td code, th code { background: none; padding: 0; font-size: 0.88em; }
+
+  /* ── Callouts ───────────────────────────────────────────────────────────── */
+  .note {
+    max-width: var(--measure);
+    margin: 0 0 1.2em;
+    padding: 16px 20px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+  }
+  .note.caution { border-left-color: var(--warn); }
+  .note p { margin: 0; font-size: 0.97rem; }
+  .note p + p { margin-top: 0.7em; }
+  .note .tag {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 7px;
+    font-weight: 500;
+  }
+  .note.caution .tag { color: var(--warn); }
+
+  /* ── Tables ─────────────────────────────────────────────────────────────── */
+  .tw { overflow-x: auto; margin: 0 0 30px; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 16px; vertical-align: top; border-bottom: 1px solid var(--rule-soft); }
+  thead th {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    background: var(--sunken);
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, td.k { font-variant-numeric: tabular-nums; font-family: var(--f-mono); font-size: 13px; white-space: nowrap; }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no  { color: var(--faint); }
+
+  .pill {
+    display: inline-block;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 2.5px 8px;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .pill.rag { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+
+  /* ── Figures ────────────────────────────────────────────────────────────── */
+  figure {
+    margin: 34px 0 38px;
+    padding: 26px 24px 18px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+  }
+  figure .fig-scroll { overflow-x: auto; }
+  figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+  figcaption {
+    font-family: var(--f-sans);
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--muted);
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule-soft);
+    max-width: 82ch;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* SVG primitives */
+  .n-box   { fill: var(--sunken);  stroke: var(--rule); stroke-width: 1; }
+  .n-key   { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.4; }
+  .n-plain { fill: none; stroke: var(--rule); stroke-width: 1; }
+  .n-dash  { fill: none; stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 3; }
+  .lbl     { fill: var(--ink); font-family: 'IBM Plex Sans', sans-serif; font-size: 12.5px; font-weight: 500; }
+  .lbl-s   { fill: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; }
+  .lbl-a   { fill: var(--accent); font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; font-weight: 500; }
+  .lbl-t   { fill: var(--ink); font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; }
+  .flow    { stroke: var(--ink); stroke-width: 1.3; fill: none; }
+  .flow-a  { stroke: var(--accent); stroke-width: 1.7; fill: none; }
+  .flow-w  { stroke: var(--warn); stroke-width: 1.5; fill: none; }
+  .flow-f  { stroke: var(--faint); stroke-width: 1; fill: none; stroke-dasharray: 4 3; }
+  .ah      { fill: var(--ink); }
+  .ah-a    { fill: var(--accent); }
+  .ah-w    { fill: var(--warn); }
+
+  /* ── Footer ─────────────────────────────────────────────────────────────── */
+  .foot {
+    margin-top: 70px;
+    padding-top: 20px;
+    border-top: 2px solid var(--ink);
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    color: var(--faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 26px;
+  }
+
+  a:focus-visible, .toc a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+  @media (max-width: 620px) {
+    .wrap { padding: 0 18px 72px; }
+    .mast { padding-top: 44px; }
+    .sec-head { gap: 10px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">iDEAL · XBRL Intelligent Assistant</p>
+    <h1>Xia Pipeline Atlas</h1>
+    <p class="standfirst">
+      Every data source, retrieval stage, embedding index and model in the assistant — traced
+      from the code rather than the design docs. Six capabilities, four models, one embedding
+      instance, seven vector indexes, and exactly two places where retrieval actually happens.
+    </p>
+    <div class="mast-meta">
+      <span>Traced <b>20 Aug 2026</b></span>
+      <span>Runtime <b>FastAPI + React 18</b></span>
+      <span>Inference <b>Ollama, on-premise</b></span>
+      <span>Vectors <b>FAISS IndexFlatIP</b></span>
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="Contents">
+    <h2>Contents</h2>
+    <a href="#map"><span>01</span> System map</a>
+    <a href="#sources"><span>02</span> Data sources</a>
+    <a href="#models"><span>03</span> Model inventory</a>
+    <a href="#embeddings"><span>04</span> Embedding substrate</a>
+    <a href="#sql"><span>A</span> Text-to-SQL retrieval</a>
+    <a href="#errors"><span>B</span> Grounded error explanation</a>
+    <a href="#intent"><span>C</span> Tiered intent routing</a>
+    <a href="#guards"><span>05</span> Guardrails</a>
+    <a href="#obs"><span>06</span> Two observations</a>
+  </nav>
+
+  <!-- ══ 01 SYSTEM MAP ══════════════════════════════════════════════════════ -->
+  <section id="map">
+    <div class="sec-head"><span class="marker">01</span><h2>Where retrieval is, and isn&rsquo;t</h2></div>
+
+    <p>
+      The assistant presents six capabilities. Only two of them perform retrieval. That distinction
+      is the single most useful thing to hold in mind while reading the rest of this page: the
+      status, error, comparison and generation flows are deterministic pipelines over XML and
+      XBRL files, and reach a model only to phrase an answer that has already been computed.
+    </p>
+
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1080 470" role="img" aria-label="Request routing map showing that of six capabilities, only Retrieve data from database and DB Q&amp;A intent matching query the FAISS embedding substrate; the other four resolve deterministically from XML and XBRL files.">
+          <defs>
+            <marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah"/>
+            </marker>
+            <marker id="m1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-a"/>
+            </marker>
+          </defs>
+
+          <!-- entry -->
+          <rect x="20" y="196" width="132" height="52" rx="3" class="n-box"/>
+          <text x="86" y="217" text-anchor="middle" class="lbl">User message</text>
+          <text x="86" y="234" text-anchor="middle" class="lbl-s">chat or menu click</text>
+
+          <line x1="152" y1="222" x2="212" y2="222" class="flow" marker-end="url(#m1)"/>
+
+          <!-- router -->
+          <rect x="212" y="180" width="128" height="84" rx="3" class="n-key"/>
+          <text x="276" y="208" text-anchor="middle" class="lbl">Router</text>
+          <text x="276" y="226" text-anchor="middle" class="lbl-s">decide() /</text>
+          <text x="276" y="240" text-anchor="middle" class="lbl-s">guided_step()</text>
+
+          <!-- six capability rows -->
+          <g>
+            <rect x="424" y="26" width="238" height="42" rx="3" class="n-box"/>
+            <text x="440" y="52" class="lbl">Check report status</text>
+            <rect x="424" y="80" width="238" height="42" rx="3" class="n-box"/>
+            <text x="440" y="106" class="lbl">Explain report errors</text>
+            <rect x="424" y="134" width="238" height="42" rx="3" class="n-box"/>
+            <text x="440" y="160" class="lbl">Comparative analysis</text>
+            <rect x="424" y="188" width="238" height="42" rx="3" class="n-box"/>
+            <text x="440" y="214" class="lbl">Generate instance</text>
+            <rect x="424" y="242" width="238" height="42" rx="3" class="n-box"/>
+            <text x="440" y="268" class="lbl">Schedule a report</text>
+
+            <rect x="424" y="308" width="238" height="46" rx="3" class="n-key"/>
+            <text x="440" y="336" class="lbl">Retrieve data from DB</text>
+            <rect x="424" y="366" width="238" height="46" rx="3" class="n-key"/>
+            <text x="440" y="394" class="lbl">DB Q&amp;A intent match</text>
+          </g>
+
+          <!-- router fan-out -->
+          <path d="M340 200 C 386 200, 386 47, 424 47" class="flow" marker-end="url(#m1)"/>
+          <path d="M340 208 C 386 208, 386 101, 424 101" class="flow" marker-end="url(#m1)"/>
+          <path d="M340 216 C 386 216, 386 155, 424 155" class="flow" marker-end="url(#m1)"/>
+          <path d="M340 224 C 386 224, 386 209, 424 209" class="flow" marker-end="url(#m1)"/>
+          <path d="M340 232 C 386 232, 386 263, 424 263" class="flow" marker-end="url(#m1)"/>
+          <path d="M340 240 C 386 240, 386 331, 424 331" class="flow-a" marker-end="url(#m1a)"/>
+          <path d="M340 248 C 386 248, 386 389, 424 389" class="flow-a" marker-end="url(#m1a)"/>
+
+          <!-- deterministic sink -->
+          <rect x="760" y="62" width="196" height="96" rx="3" class="n-plain"/>
+          <text x="858" y="90" text-anchor="middle" class="lbl-t">DETERMINISTIC</text>
+          <text x="858" y="112" text-anchor="middle" class="lbl-s">XML repo · error files</text>
+          <text x="858" y="128" text-anchor="middle" class="lbl-s">taxonomy · XBRL instance</text>
+          <text x="858" y="146" text-anchor="middle" class="lbl-s">no embeddings</text>
+
+          <path d="M662 47  C 712 47,  716 90, 760 96"  class="flow" marker-end="url(#m1)"/>
+          <path d="M662 101 C 712 101, 716 104, 760 108" class="flow" marker-end="url(#m1)"/>
+          <path d="M662 155 C 712 155, 716 118, 760 120" class="flow" marker-end="url(#m1)"/>
+          <path d="M662 209 C 712 209, 716 132, 760 132" class="flow" marker-end="url(#m1)"/>
+          <path d="M662 263 C 712 263, 716 146, 760 144" class="flow" marker-end="url(#m1)"/>
+
+          <!-- retrieval sink -->
+          <rect x="760" y="306" width="196" height="106" rx="3" class="n-key"/>
+          <text x="858" y="334" text-anchor="middle" class="lbl-t">RETRIEVAL</text>
+          <text x="858" y="356" text-anchor="middle" class="lbl-s">BGE-large embeddings</text>
+          <text x="858" y="372" text-anchor="middle" class="lbl-s">7 FAISS indexes</text>
+          <text x="858" y="390" text-anchor="middle" class="lbl-s">+ BM25 lexical</text>
+
+          <path d="M662 331 C 712 331, 716 344, 760 348" class="flow-a" marker-end="url(#m1a)"/>
+          <path d="M662 389 C 712 389, 716 376, 760 372" class="flow-a" marker-end="url(#m1a)"/>
+
+          <text x="700" y="292" text-anchor="middle" class="lbl-a">2 of 6</text>
+          <text x="700" y="34"  text-anchor="middle" class="lbl-s">4 of 6</text>
+
+          <!-- LLM strip -->
+          <line x1="20" y1="444" x2="1060" y2="444" class="flow-f"/>
+          <text x="20" y="464" class="lbl-s">All six may call a model — but only to phrase, classify or generate; never to decide what the data says.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Only two capabilities query the embedding substrate.</b> The other four resolve entirely
+        from the XML repository, validation error files and taxonomy packages. A model is involved
+        in all six, but downstream of the answer — phrasing it, not finding it.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══ 02 DATA SOURCES ════════════════════════════════════════════════════ -->
+  <section id="sources">
+    <div class="sec-head"><span class="marker">02</span><h2>Data sources</h2></div>
+
+    <p>
+      Repo root is <code>BASE_REPO_PATH</code>, resolved <em>per request</em> on version 6.0 so a
+      tenant-scoped path is never frozen at import time. Filenames differ between 5.5 and 6.0;
+      the loader degrades to an empty result and a log line rather than raising.
+    </p>
+
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>Source</th><th>Path or origin</th><th>Consumed by</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Returns master</td><td class="k">DataBase/Returns.xml · Return.xml</td><td>Name / ReturnId / short-name resolution, fuzzy matching</td></tr>
+          <tr><td>Instance log</td><td class="k">DataBase/XML_InstanceLog.xml</td><td>Status, DTC, reporting date, and the <code>ErrorDocPath</code> / <code>InstanceDocPath</code> / <code>RenderedExcelDocPath</code> pointers</td></tr>
+          <tr><td>Auth &amp; masters</td><td class="k">XML_User · Dept · Role · RoleAccess · Option · Period · SchedulerQueue</td><td>Role-based access, maker/checker gating, DB Q&amp;A entity answers</td></tr>
+          <tr><td>Validation error files</td><td class="k">ErrorDocPath → *.html | *.xml</td><td>All three error-explanation engines</td></tr>
+          <tr><td>XBRL instance documents</td><td class="k">Instance/&lt;form_id&gt;/*.xml</td><td>Comparative analysis via Arelle; optional depth for dimension errors</td></tr>
+          <tr><td>Rendered output</td><td class="k">Render/&lt;form_id&gt;/*.html</td><td>Download link for success &amp; approved runs</td></tr>
+          <tr><td>Return taxonomy metadata</td><td class="k">Json/&lt;form_id&gt;/*.json</td><td>Formula-error label priority #1 — <code>validation_rules[]</code>, <code>concepts[]</code></td></tr>
+          <tr><td>XBRL taxonomy packages</td><td class="k">DataBase/ · conf/ · confCims/</td><td>Label &amp; definition linkbases, hypercubes, typed vs explicit axes, allowed members</td></tr>
+          <tr><td>Oracle database</td><td class="k">DB_HOST / DB_SERVICE</td><td>SQL execution and row-label sampling</td></tr>
+          <tr><td>Retrieval artefacts</td><td class="k">sql_agent/embeddings/ · db_qa/intents/output/</td><td>All vector search — prebuilt, shipped as data</td></tr>
+          <tr><td>Oracle DDL</td><td class="k">sql_agent/data/schema.sql</td><td>Authoritative column types for the SQL prompt</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <span class="tag">Discovery by content</span>
+      <p>
+        Taxonomy folders are located by <em>inspecting XML for dimensional arcroles</em> and ranked
+        by evidence — never matched by filename. This exists because
+        <code>DataBase/&lt;form_id&gt;/Taxonomy</code> sometimes holds a different return&rsquo;s files;
+        one measured case had an <code>mpd07</code> folder serving an <code>mpd03</code> filing.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ 03 MODELS ══════════════════════════════════════════════════════════ -->
+  <section id="models">
+    <div class="sec-head"><span class="marker">03</span><h2>Model inventory</h2></div>
+
+    <p>
+      Four models, all served locally. Nothing on a live path reaches an external API.
+    </p>
+
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>Model</th><th>Served as</th><th>Role</th><th>Settings</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>phi3:mini</b></td><td class="k">Ollama</td>
+            <td>Intent &amp; entity extraction · intent disambiguation · DB Q&amp;A beautification · conversational fallback</td>
+            <td class="k">OLLAMA_EXTRACT_MODEL</td>
+          </tr>
+          <tr>
+            <td><b>llama3.1:latest</b></td><td class="k">Ollama</td>
+            <td>Error-explanation phrasing (formula, dimension, schema) · comparative-analysis narrative</td>
+            <td class="k">temp 0.3 · num_predict 450</td>
+          </tr>
+          <tr>
+            <td><b>sqlcoder-7b-2</b><br><span class="mono" style="background:none;padding:0">Q5_K_M</span></td><td class="k">Ollama</td>
+            <td>Text-to-SQL generation only</td>
+            <td class="k">temp 0.0 · num_predict 512 · num_ctx 8192 · keep_alive 30m</td>
+          </tr>
+          <tr>
+            <td><b>BAAI/bge-large-en</b></td><td class="k">sentence-transformers, in-process</td>
+            <td>Every embedding — schema retrieval and intent matching alike</td>
+            <td class="k">EMBED_MODEL</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The SQL agent&rsquo;s <code>OLLAMA_URL</code> defaults to a <strong>remote proxy</strong>
+      (<code>3.109.51.228/OllamaProxy</code>); every other path defaults to
+      <code>127.0.0.1:11434</code>. Its prompt style is <code>"ddl"</code> — a real
+      <code>CREATE TABLE</code> block in SQLCoder&rsquo;s own training format, not a prose column list.
+    </p>
+
+    <div class="note caution">
+      <span class="tag">Dead configuration</span>
+      <p>
+        <code>backend/config/llm_models.yml</code> enumerates Llama2 7B/13B/70B,
+        <code>gpt-4o</code>, <code>text-embedding-3-small</code> and a routing priority. <b>No module
+        reads it.</b> It is planning documentation. Given the on-premise security posture, having
+        <code>openai_gpt4o</code> and <code>OPENAI_API_KEY</code> sitting in a config file is worth
+        deleting or clearly marking non-live before someone reads it as architecture.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ 04 EMBEDDINGS ══════════════════════════════════════════════════════ -->
+  <section id="embeddings">
+    <div class="sec-head"><span class="marker">04</span><h2>Embedding substrate</h2></div>
+
+    <p>
+      One model, one in-process instance, shared by both retrieval subsystems.
+      <code>db_qa</code> deliberately imports <code>sql_agent.vectorizer</code>&rsquo;s
+      SentenceTransformer rather than loading a second copy of BGE-large into memory.
+    </p>
+
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1020 400" role="img" aria-label="A single BGE-large instance embeds documents with no prefix at index-build time and queries with BGE's instruction prefix at query time; both pass through identical text normalisation into seven FAISS inner-product indexes.">
+          <defs>
+            <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah"/>
+            </marker>
+            <marker id="m2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-a"/>
+            </marker>
+          </defs>
+
+          <!-- doc side -->
+          <rect x="18" y="40" width="196" height="58" rx="3" class="n-box"/>
+          <text x="34" y="64" class="lbl">Documents</text>
+          <text x="34" y="82" class="lbl-s">schema · concepts · labels</text>
+          <text x="34" y="118" class="lbl-a">no prefix</text>
+
+          <!-- query side -->
+          <rect x="18" y="272" width="196" height="58" rx="3" class="n-box"/>
+          <text x="34" y="296" class="lbl">Query</text>
+          <text x="34" y="314" class="lbl-s">user question</text>
+          <text x="34" y="256" class="lbl-a">&ldquo;Represent this sentence for&hellip;&rdquo;</text>
+
+          <!-- normalise -->
+          <rect x="262" y="152" width="176" height="66" rx="3" class="n-plain"/>
+          <text x="350" y="178" text-anchor="middle" class="lbl">normalize_text()</text>
+          <text x="350" y="196" text-anchor="middle" class="lbl-s">lowercase · collapse ws</text>
+          <text x="350" y="210" text-anchor="middle" class="lbl-s">strip trailing punctuation</text>
+
+          <path d="M214 69  C 244 69,  238 152, 262 168" class="flow" marker-end="url(#m2)"/>
+          <path d="M214 301 C 244 301, 238 218, 262 202" class="flow-a" marker-end="url(#m2a)"/>
+
+          <!-- model -->
+          <rect x="486" y="146" width="184" height="78" rx="3" class="n-key"/>
+          <text x="578" y="174" text-anchor="middle" class="lbl">BAAI/bge-large-en</text>
+          <text x="578" y="193" text-anchor="middle" class="lbl-s">single shared instance</text>
+          <text x="578" y="210" text-anchor="middle" class="lbl-s">L2-normalised output</text>
+          <line x1="438" y1="185" x2="486" y2="185" class="flow" marker-end="url(#m2)"/>
+
+          <!-- indexes -->
+          <text x="742" y="34" class="lbl-t">FAISS · IndexFlatIP</text>
+          <text x="742" y="50" class="lbl-s">inner product on unit vectors = cosine</text>
+
+          <g>
+            <rect x="742" y="66"  width="260" height="30" rx="3" class="n-box"/>
+            <text x="756" y="86" class="lbl-s">table_index</text><text x="988" y="86" text-anchor="end" class="lbl-s">candidate tables</text>
+            <rect x="742" y="102" width="260" height="30" rx="3" class="n-box"/>
+            <text x="756" y="122" class="lbl-s">column_index</text><text x="988" y="122" text-anchor="end" class="lbl-s">column shortlist</text>
+            <rect x="742" y="138" width="260" height="30" rx="3" class="n-key"/>
+            <text x="756" y="158" class="lbl-s">concept_index</text><text x="988" y="158" text-anchor="end" class="lbl-s">table + column binding</text>
+            <rect x="742" y="174" width="260" height="30" rx="3" class="n-box"/>
+            <text x="756" y="194" class="lbl-s">member_index</text><text x="988" y="194" text-anchor="end" class="lbl-s">dimension members</text>
+            <rect x="742" y="210" width="260" height="30" rx="3" class="n-key"/>
+            <text x="756" y="230" class="lbl-s">row_label_index</text><text x="988" y="230" text-anchor="end" class="lbl-s">exact WHERE literals</text>
+            <rect x="742" y="246" width="260" height="30" rx="3" class="n-box"/>
+            <text x="756" y="266" class="lbl-s">qa_index</text><text x="988" y="266" text-anchor="end" class="lbl-s">question → SQL precedent</text>
+            <rect x="742" y="292" width="260" height="30" rx="3" class="n-box"/>
+            <text x="756" y="312" class="lbl-s">intent_exemplar_index</text><text x="988" y="312" text-anchor="end" class="lbl-s">intent classification</text>
+          </g>
+
+          <path d="M670 176 C 706 176, 706 81,  742 81"  class="flow" marker-end="url(#m2)"/>
+          <path d="M670 180 C 706 180, 706 117, 742 117" class="flow" marker-end="url(#m2)"/>
+          <path d="M670 184 C 706 184, 706 153, 742 153" class="flow" marker-end="url(#m2)"/>
+          <path d="M670 188 C 706 188, 706 189, 742 189" class="flow" marker-end="url(#m2)"/>
+          <path d="M670 192 C 706 192, 706 225, 742 225" class="flow" marker-end="url(#m2)"/>
+          <path d="M670 196 C 706 196, 706 261, 742 261" class="flow" marker-end="url(#m2)"/>
+          <path d="M670 200 C 706 200, 706 307, 742 307" class="flow" marker-end="url(#m2)"/>
+
+          <line x1="742" y1="336" x2="1002" y2="336" class="flow-f"/>
+          <text x="742" y="356" class="lbl-s">Indexes 1&ndash;6: sql_agent/embeddings/ &nbsp;·&nbsp; Index 7: db_qa/intents/output/</text>
+          <text x="742" y="374" class="lbl-s">Prebuilt and shipped as data — no build step runs in this repo.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>The asymmetry is the mechanism.</b> BGE requires its instruction prefix on the
+        <em>query</em> side only; documents are embedded bare. <code>normalize_text()</code> runs
+        identically on both sides so the two are never compared asymmetrically — changing
+        <code>EMBED_MODEL</code> to a non-BGE model without clearing <code>QUERY_PREFIX</code>
+        would silently degrade every lookup, because the prefix becomes noise prepended to each query.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══ PIPELINE A ═════════════════════════════════════════════════════════ -->
+  <section id="sql">
+    <div class="sec-head"><span class="marker">A</span><h2>Text-to-SQL retrieval</h2></div>
+
+    <p>
+      The only full RAG pipeline in the system. Oracle&rsquo;s schema is far too large to place in a
+      prompt, so retrieval recalls broadly, a deterministic selector narrows hard, and generation
+      sees exactly one table.
+    </p>
+
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1080 486" role="img" aria-label="Text-to-SQL pipeline: relative time resolution, hybrid dense plus BM25 retrieval producing eight candidate tables, a deterministic selector narrowing to one table, DDL prompt assembly, SQLCoder generation, then a validate-and-correct loop of up to three rounds against Oracle before execution.">
+          <defs>
+            <marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah"/>
+            </marker>
+            <marker id="m3w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-w"/>
+            </marker>
+            <marker id="m3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-a"/>
+            </marker>
+          </defs>
+
+          <!-- stage 1 -->
+          <rect x="16" y="112" width="150" height="70" rx="3" class="n-box"/>
+          <text x="30" y="136" class="lbl-a">STAGE 1</text>
+          <text x="30" y="155" class="lbl">Time resolution</text>
+          <text x="30" y="172" class="lbl-s">&ldquo;last quarter&rdquo; → dates</text>
+          <text x="30" y="196" class="lbl-s">deterministic, pre-LLM</text>
+
+          <line x1="166" y1="147" x2="212" y2="147" class="flow" marker-end="url(#m3)"/>
+
+          <!-- stage 2 retrieval -->
+          <rect x="212" y="60" width="188" height="174" rx="3" class="n-key"/>
+          <text x="226" y="84" class="lbl-a">STAGE 2</text>
+          <text x="226" y="103" class="lbl">Hybrid retrieval</text>
+          <text x="226" y="127" class="lbl-s">dense · BGE → FAISS ×6</text>
+          <text x="226" y="145" class="lbl-s">sparse · BM25 lexical</text>
+          <text x="226" y="163" class="lbl-s">alias · section refs</text>
+          <line x1="226" y1="176" x2="386" y2="176" class="flow-f"/>
+          <text x="226" y="196" class="lbl-s">score fusion</text>
+          <text x="226" y="216" class="lbl-t">SHORTLIST_K = 8</text>
+
+          <line x1="400" y1="147" x2="452" y2="147" class="flow" marker-end="url(#m3)"/>
+          <text x="426" y="138" text-anchor="middle" class="lbl-s">recall</text>
+
+          <!-- stage 3 selector -->
+          <rect x="452" y="88" width="166" height="118" rx="3" class="n-box"/>
+          <text x="466" y="112" class="lbl-a">STAGE 3</text>
+          <text x="466" y="131" class="lbl">Selector</text>
+          <text x="466" y="150" class="lbl-s">deterministic heuristic</text>
+          <text x="466" y="167" class="lbl-s">no LLM call</text>
+          <text x="466" y="192" class="lbl-t">8 → 1 table</text>
+
+          <line x1="618" y1="147" x2="668" y2="147" class="flow" marker-end="url(#m3)"/>
+          <text x="643" y="138" text-anchor="middle" class="lbl-s">precision</text>
+
+          <!-- stage 4 prompt -->
+          <rect x="668" y="76" width="164" height="142" rx="3" class="n-box"/>
+          <text x="682" y="100" class="lbl-a">STAGE 4</text>
+          <text x="682" y="119" class="lbl">DDL prompt</text>
+          <text x="682" y="140" class="lbl-s">CREATE TABLE block</text>
+          <text x="682" y="157" class="lbl-s">types · NOT NULL · PK</text>
+          <text x="682" y="174" class="lbl-s">14 row labels as</text>
+          <text x="682" y="188" class="lbl-s">column comments</text>
+          <text x="682" y="208" class="lbl-s">+ resolved dates</text>
+
+          <line x1="832" y1="147" x2="884" y2="147" class="flow" marker-end="url(#m3)"/>
+
+          <!-- stage 5 gen -->
+          <rect x="884" y="100" width="180" height="94" rx="3" class="n-key"/>
+          <text x="898" y="124" class="lbl-a">STAGE 5</text>
+          <text x="898" y="143" class="lbl">sqlcoder-7b-2</text>
+          <text x="898" y="161" class="lbl-s">temp 0.0 · 512 tok</text>
+          <text x="898" y="178" class="lbl-s">num_ctx 8192</text>
+
+          <!-- stage 6 validate -->
+          <rect x="628" y="300" width="436" height="112" rx="3" class="n-box"/>
+          <text x="646" y="324" class="lbl-a">STAGE 6</text>
+          <text x="646" y="343" class="lbl">Validate → correct</text>
+          <text x="646" y="364" class="lbl-s">BANNED_KEYWORDS · delete / update / drop / insert / alter</text>
+          <text x="646" y="381" class="lbl-s">Oracle dry run</text>
+          <text x="646" y="400" class="lbl-t">MAX_CORRECTION_RETRIES = 3</text>
+
+          <path d="M974 194 L 974 300" class="flow" marker-end="url(#m3)"/>
+          <text x="984" y="250" class="lbl-s">candidate SQL</text>
+
+          <!-- correction loop back -->
+          <path d="M628 356 C 560 356, 560 214, 884 156" class="flow-w" marker-end="url(#m3w)"/>
+          <text x="590" y="268" class="lbl-s" style="fill:var(--warn)">re-prompt: schema</text>
+          <text x="590" y="284" class="lbl-s" style="fill:var(--warn)">+ bad SQL + reason</text>
+
+          <!-- execute -->
+          <rect x="316" y="322" width="150" height="68" rx="3" class="n-box"/>
+          <text x="330" y="348" class="lbl">Execute</text>
+          <text x="330" y="366" class="lbl-s">Oracle · DB_MAX_ROWS</text>
+          <line x1="628" y1="356" x2="466" y2="356" class="flow" marker-end="url(#m3)"/>
+          <text x="547" y="346" text-anchor="middle" class="lbl-s">passes</text>
+
+          <rect x="112" y="322" width="150" height="68" rx="3" class="n-box"/>
+          <text x="126" y="348" class="lbl">phi3:mini</text>
+          <text x="126" y="366" class="lbl-s">beautify table</text>
+          <line x1="316" y1="356" x2="262" y2="356" class="flow" marker-end="url(#m3)"/>
+
+          <text x="16" y="446" class="lbl-s">Circuit breaker: 3 s connect timeout + 30 s &ldquo;recently down&rdquo; cache, so an Ollama outage fails in ~0 ms rather than hanging 300 s per request.</text>
+          <text x="16" y="466" class="lbl-s">TOP_K_TABLES = 3 · TOP_K_COLUMNS = 5 · keep_alive 30 m</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Recall wide, narrow hard, then generate.</b> Two decisions here are recorded in-code as
+        measured regressions. Feeding all eight candidates to the model made it <code>JOIN</code>
+        every one and invent a foreign key to do it. And the selector <em>used</em> to make its own
+        LLM call — it cost 75–135 s per request, often more than generation itself, because two 7B
+        models did not co-reside in the Ollama host&rsquo;s memory and reloaded on every alternating call.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══ PIPELINE B ═════════════════════════════════════════════════════════ -->
+  <section id="errors">
+    <div class="sec-head"><span class="marker">B</span><h2>Grounded error explanation</h2></div>
+
+    <p>
+      Not retrieval. Three parsers assemble verified evidence from the error file, the taxonomy and
+      — when the run recorded one — the XBRL instance document. Only then does a model see anything,
+      and what it returns is re-checked against that same evidence before the user sees it.
+    </p>
+
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1060 428" role="img" aria-label="Error explanation pipeline: deterministic parsing and taxonomy resolution build a verified payload, llama3.1 phrases it, then is_grounded re-checks the phrasing against the payload and rejects wholesale to a deterministic template on any invented number, label or contradiction.">
+          <defs>
+            <marker id="m4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah"/>
+            </marker>
+            <marker id="m4w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-w"/>
+            </marker>
+            <marker id="m4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-a"/>
+            </marker>
+          </defs>
+
+          <!-- inputs -->
+          <rect x="14" y="30" width="176" height="34" rx="3" class="n-box"/>
+          <text x="28" y="52" class="lbl-s">error file · html / xml</text>
+          <rect x="14" y="72" width="176" height="34" rx="3" class="n-box"/>
+          <text x="28" y="94" class="lbl-s">taxonomy linkbases</text>
+          <rect x="14" y="114" width="176" height="34" rx="3" class="n-box"/>
+          <text x="28" y="136" class="lbl-s">Json/&lt;form_id&gt;</text>
+          <rect x="14" y="156" width="176" height="34" rx="3" class="n-plain"/>
+          <text x="28" y="178" class="lbl-s">instance doc · optional</text>
+
+          <!-- parsers -->
+          <rect x="242" y="24" width="196" height="172" rx="3" class="n-box"/>
+          <text x="256" y="48" class="lbl-t">DETERMINISTIC</text>
+          <text x="256" y="72" class="lbl">Formula</text>
+          <text x="256" y="89" class="lbl-s">AST → Decimal eval</text>
+          <text x="256" y="106" class="lbl-s">5-level label cascade</text>
+          <text x="256" y="130" class="lbl">Dimension</text>
+          <text x="256" y="147" class="lbl-s">hypercube vs observed</text>
+          <text x="256" y="171" class="lbl">Schema</text>
+          <text x="256" y="188" class="lbl-s">cell · value · type</text>
+
+          <path d="M190 47  C 216 47,  218 70, 242 76"  class="flow" marker-end="url(#m4)"/>
+          <path d="M190 89  C 216 89,  218 96, 242 100" class="flow" marker-end="url(#m4)"/>
+          <path d="M190 131 C 216 131, 218 118, 242 124" class="flow" marker-end="url(#m4)"/>
+          <path d="M190 173 C 216 173, 218 146, 242 150" class="flow-f" marker-end="url(#m4)"/>
+
+          <!-- payload -->
+          <rect x="490" y="60" width="172" height="100" rx="3" class="n-key"/>
+          <text x="576" y="86" text-anchor="middle" class="lbl">Verified payload</text>
+          <text x="576" y="106" text-anchor="middle" class="lbl-s">every number, label,</text>
+          <text x="576" y="121" text-anchor="middle" class="lbl-s">verdict already computed</text>
+          <text x="576" y="145" text-anchor="middle" class="lbl-a">no raw html · no files</text>
+          <line x1="438" y1="110" x2="490" y2="110" class="flow" marker-end="url(#m4)"/>
+
+          <!-- llm -->
+          <rect x="714" y="66" width="150" height="88" rx="3" class="n-box"/>
+          <text x="789" y="94" text-anchor="middle" class="lbl">llama3.1</text>
+          <text x="789" y="113" text-anchor="middle" class="lbl-s">phrase only</text>
+          <text x="789" y="130" text-anchor="middle" class="lbl-s">never compute</text>
+          <line x1="662" y1="110" x2="714" y2="110" class="flow" marker-end="url(#m4)"/>
+
+          <!-- gate -->
+          <rect x="714" y="222" width="150" height="86" rx="3" class="n-key"/>
+          <text x="789" y="250" text-anchor="middle" class="lbl">is_grounded()</text>
+          <text x="789" y="269" text-anchor="middle" class="lbl-s">re-check against</text>
+          <text x="789" y="285" text-anchor="middle" class="lbl-s">the same payload</text>
+          <path d="M789 154 L 789 222" class="flow" marker-end="url(#m4)"/>
+
+          <!-- payload feeds the gate too -->
+          <path d="M576 160 C 576 265, 640 265, 714 265" class="flow-a" marker-end="url(#m4a)"/>
+          <text x="600" y="258" class="lbl-a">ground truth</text>
+
+          <!-- reject reasons -->
+          <rect x="900" y="196" width="150" height="138" rx="3" class="n-plain"/>
+          <text x="914" y="220" class="lbl-t" style="fill:var(--warn)">REJECT ON</text>
+          <text x="914" y="242" class="lbl-s">number not in payload</text>
+          <text x="914" y="260" class="lbl-s">missing business label</text>
+          <text x="914" y="278" class="lbl-s">leaked $V1 / $V2 id</text>
+          <text x="914" y="296" class="lbl-s">contradicts the maths</text>
+          <text x="914" y="314" class="lbl-s">unknown member name</text>
+          <line x1="864" y1="265" x2="900" y2="265" class="flow-f"/>
+
+          <!-- outcomes -->
+          <rect x="490" y="222" width="172" height="42" rx="3" class="n-box"/>
+          <text x="576" y="248" text-anchor="middle" class="lbl">Accept phrasing</text>
+          <line x1="714" y1="245" x2="662" y2="245" class="flow" marker-end="url(#m4)"/>
+
+          <rect x="490" y="286" width="172" height="56" rx="3" class="n-box"/>
+          <text x="576" y="310" text-anchor="middle" class="lbl">Deterministic template</text>
+          <text x="576" y="328" text-anchor="middle" class="lbl-s">correct, less fluent</text>
+          <path d="M714 290 C 690 290, 686 312, 662 314" class="flow-w" marker-end="url(#m4w)"/>
+
+          <!-- user -->
+          <rect x="242" y="252" width="196" height="46" rx="3" class="n-key"/>
+          <text x="340" y="280" text-anchor="middle" class="lbl">User-facing explanation</text>
+          <line x1="490" y1="243" x2="438" y2="266" class="flow" marker-end="url(#m4)"/>
+          <line x1="490" y1="314" x2="438" y2="288" class="flow" marker-end="url(#m4)"/>
+
+          <text x="14" y="382" class="lbl-s">Batched at _MAX_EXPLAIN = 3 per request, paginated by offset; long runs enrich in a background thread polled via /status-errors/&lt;job_id&gt;.</text>
+          <text x="14" y="404" class="lbl-s">The model is optional throughout — with Ollama unreachable, every explanation still renders from its template.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>The reject path is the point.</b> Because the payload is also the grader, output is never
+        <em>less than correct</em> — only sometimes less fluent. The numeric check is the
+        highest-consequence one: a figure that is not in the payload cannot reach a regulatory filing
+        explanation, which is exactly the failure mode a generative summary would otherwise introduce.
+      </figcaption>
+    </figure>
+
+    <h3>What each error type actually needs</h3>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Error type</th><th>Evidence assembled</th><th>Taxonomy required</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>Formula</b></td>
+            <td>Expression AST + <code>Decimal</code> evaluation; label cascade JSON → linkbase → backtracking row/column → business message → CamelCase</td>
+            <td class="no">No — degrades label quality only</td>
+          </tr>
+          <tr>
+            <td><b>Dimension</b></td>
+            <td>Concept, context, axis from the file; hypercube, typed vs explicit, allowed members from the definition linkbase; observed values from the instance document</td>
+            <td class="yes">Yes, for a specific answer</td>
+          </tr>
+          <tr>
+            <td><b>XBRL schema</b></td>
+            <td>Cell, entered value, expected type; root-cause grouping by file + line; static datatype-example table</td>
+            <td class="no">Never read</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══ PIPELINE C ═════════════════════════════════════════════════════════ -->
+  <section id="intent">
+    <div class="sec-head"><span class="marker">C</span><h2>Tiered intent routing</h2></div>
+
+    <p>
+      Free-text questions fall through four tiers, each running only if the previous found nothing.
+      A guided-menu click bypasses all of it — the button <em>is</em> the intent, so no model is called.
+    </p>
+
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1040 400" role="img" aria-label="Four-tier intent classification: regex rules, then BGE embedding similarity against exemplars with score thresholds, then narrow phi3-mini disambiguation, then fall-through to the SQL agent.">
+          <defs>
+            <marker id="m5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah"/>
+            </marker>
+            <marker id="m5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-a"/>
+            </marker>
+          </defs>
+
+          <rect x="16" y="24" width="150" height="46" rx="3" class="n-box"/>
+          <text x="30" y="46" class="lbl">Question</text>
+          <text x="30" y="62" class="lbl-s">free text</text>
+
+          <!-- tier 1 -->
+          <rect x="216" y="18" width="230" height="58" rx="3" class="n-box"/>
+          <text x="232" y="40" class="lbl-a">TIER 1 · regex</text>
+          <text x="232" y="60" class="lbl-s">ordered rules — order IS the tie-break</text>
+          <line x1="166" y1="47" x2="216" y2="47" class="flow" marker-end="url(#m5)"/>
+
+          <!-- tier 2 -->
+          <rect x="216" y="112" width="230" height="94" rx="3" class="n-key"/>
+          <text x="232" y="134" class="lbl-a">TIER 2 · embedding</text>
+          <text x="232" y="154" class="lbl-s">BGE → intent_exemplar_index</text>
+          <text x="232" y="174" class="lbl-t">MIN_SCORE 0.80</text>
+          <text x="232" y="194" class="lbl-t">CONFIDENT 0.85</text>
+          <path d="M331 76 L 331 112" class="flow" marker-end="url(#m5)"/>
+          <text x="341" y="98" class="lbl-s">no rule matched</text>
+
+          <!-- tier 3 -->
+          <rect x="216" y="242" width="230" height="70" rx="3" class="n-box"/>
+          <text x="232" y="264" class="lbl-a">TIER 3 · phi3:mini</text>
+          <text x="232" y="284" class="lbl-s">narrow: choose among N candidates</text>
+          <text x="232" y="302" class="lbl-s">only when top-1 and top-2 are close</text>
+          <path d="M331 206 L 331 242" class="flow" marker-end="url(#m5)"/>
+          <text x="341" y="228" class="lbl-s">ambiguous</text>
+
+          <!-- tier 4 -->
+          <rect x="216" y="344" width="230" height="42" rx="3" class="n-plain"/>
+          <text x="232" y="370" class="lbl-s">TIER 4 · fall through → SQL agent</text>
+          <path d="M331 312 L 331 344" class="flow" marker-end="url(#m5)"/>
+          <text x="341" y="333" class="lbl-s">below 0.80</text>
+
+          <!-- resolved -->
+          <rect x="540" y="112" width="176" height="94" rx="3" class="n-key"/>
+          <text x="628" y="146" text-anchor="middle" class="lbl">Resolved intent</text>
+          <text x="628" y="167" text-anchor="middle" class="lbl-s">+ params, target_type</text>
+          <text x="628" y="185" text-anchor="middle" class="lbl-s">+ tier recorded</text>
+
+          <path d="M446 47  C 494 47,  500 112, 540 132" class="flow" marker-end="url(#m5)"/>
+          <path d="M446 159 L 540 159" class="flow-a" marker-end="url(#m5a)"/>
+          <path d="M446 277 C 494 277, 500 206, 540 186" class="flow" marker-end="url(#m5)"/>
+
+          <!-- noise floor panel -->
+          <rect x="770" y="24" width="254" height="182" rx="3" class="n-plain"/>
+          <text x="786" y="48" class="lbl-t">BGE COSINE NOISE FLOOR</text>
+          <text x="786" y="72" class="lbl-s">measured against these exemplars</text>
+
+          <rect x="786" y="88" width="222" height="22" rx="2" class="n-box"/>
+          <text x="796" y="103" class="lbl-s">out-of-domain</text>
+          <text x="998" y="103" text-anchor="end" class="lbl-s">0.67 – 0.79</text>
+
+          <rect x="786" y="116" width="222" height="22" rx="2" class="n-box" style="stroke:var(--warn)"/>
+          <text x="796" y="131" class="lbl-s" style="fill:var(--warn)">overlap — risk band</text>
+          <text x="998" y="131" text-anchor="end" class="lbl-s" style="fill:var(--warn)">0.79 – 0.83</text>
+
+          <rect x="786" y="144" width="222" height="22" rx="2" class="n-key"/>
+          <text x="796" y="159" class="lbl-s">genuine paraphrase</text>
+          <text x="998" y="159" text-anchor="end" class="lbl-s">0.83 – 0.92</text>
+
+          <text x="786" y="190" class="lbl-s">Cosine is not a 0–1 relatedness scale here.</text>
+
+          <text x="540" y="250" class="lbl-s">Report-workflow intents (status / generate / schedule / compare) resolve earlier still, by</text>
+          <text x="540" y="268" class="lbl-s">fuzzy keyword + stem matching at threshold 78 — before any model is called.</text>
+          <text x="540" y="296" class="lbl-s">Guided-menu clicks skip every tier: the button carries the intent.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Thresholds sit in an empirically measured gap.</b> Clearly out-of-domain queries — &ldquo;tell
+        me a joke&rdquo;, gibberish — scored 0.67–0.79 against these exemplars, while genuine in-domain
+        paraphrases scored 0.83–0.92. The 0.79–0.83 overlap is the known risk band, and the reason
+        <code>MIN_SCORE</code> is 0.80 rather than something intuitive like 0.5.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ══ 05 GUARDRAILS ══════════════════════════════════════════════════════ -->
+  <section id="guards">
+    <div class="sec-head"><span class="marker">05</span><h2>Guardrails</h2></div>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>Guarantee</th><th>Enforced by</th></tr></thead>
+        <tbody>
+          <tr><td>No database writes</td><td><code>BANNED_KEYWORDS</code> in the SQL generator — <code>delete</code>, <code>update</code>, <code>drop</code>, <code>insert</code>, <code>truncate</code>, <code>alter</code>, <code>create</code>, <code>exec</code> — and no write path exists</td></tr>
+          <tr><td>No invented figures</td><td><code>is_grounded()</code> numeric-token check against the verified payload; rejection falls back to template</td></tr>
+          <tr><td>No hallucinated SQL</td><td>Deterministic table selection, Oracle dry run, three correction rounds</td></tr>
+          <tr><td>Role-based access</td><td><code>RoleAccess.xml</code> → <code>allowed_form_ids</code> filter; <code>can_generate_instance()</code> gates the menu <em>and</em> is re-checked server-side</td></tr>
+          <tr><td>Approvals stay in the application</td><td>The assistant is read-only for workflow state</td></tr>
+          <tr><td>No external inference</td><td>All four models local or on-prem; no live path reaches a managed API</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══ 06 OBSERVATIONS ════════════════════════════════════════════════════ -->
+  <section id="obs">
+    <div class="sec-head"><span class="marker">06</span><h2>Two observations from the trace</h2></div>
+
+    <h3>The <code>OLLAMA_MODEL</code> collision is real, and handled — with one gap</h3>
+
+    <p>
+      Three subsystems read the same environment variable with three different defaults. Left
+      unmanaged, importing the SQL agent would leave SQLCoder in the process environment and hand
+      error explanation a model that can only emit SQL. The bootstrap prevents exactly that.
+    </p>
+
+    <figure>
+      <div class="fig-scroll">
+        <svg viewBox="0 0 1000 300" role="img" aria-label="The sql_agent bootstrap applies its own OLLAMA_MODEL, lets src.config snapshot it at import, then restores the process environment so the error-explanation and conversational paths keep reading their own defaults.">
+          <defs>
+            <marker id="m6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah"/>
+            </marker>
+            <marker id="m6w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <polygon points="0,1 10,5 0,9" class="ah-w"/>
+            </marker>
+          </defs>
+
+          <text x="16" y="30" class="lbl-t">ONE VARIABLE · THREE DEFAULTS</text>
+
+          <rect x="16" y="48" width="228" height="40" rx="3" class="n-box"/>
+          <text x="30" y="66" class="lbl-s">services/llm_service.py</text>
+          <text x="234" y="80" text-anchor="end" class="lbl-a">phi3:mini</text>
+
+          <rect x="16" y="96" width="228" height="40" rx="3" class="n-box"/>
+          <text x="30" y="114" class="lbl-s">tools/error_llm.py</text>
+          <text x="234" y="128" text-anchor="end" class="lbl-a">llama3.1:latest</text>
+
+          <rect x="16" y="144" width="228" height="40" rx="3" class="n-key"/>
+          <text x="30" y="162" class="lbl-s">sql_agent/src/config.py</text>
+          <text x="234" y="176" text-anchor="end" class="lbl-a">sqlcoder-7b-2</text>
+
+          <!-- bootstrap sequence -->
+          <rect x="320" y="60" width="176" height="60" rx="3" class="n-box"/>
+          <text x="408" y="84" text-anchor="middle" class="lbl">1 · apply</text>
+          <text x="408" y="103" text-anchor="middle" class="lbl-s">_setenv() SQL model</text>
+
+          <rect x="320" y="140" width="176" height="60" rx="3" class="n-box"/>
+          <text x="408" y="164" text-anchor="middle" class="lbl">2 · snapshot</text>
+          <text x="408" y="183" text-anchor="middle" class="lbl-s">import src.config</text>
+
+          <rect x="320" y="220" width="176" height="60" rx="3" class="n-key"/>
+          <text x="408" y="244" text-anchor="middle" class="lbl">3 · restore</text>
+          <text x="408" y="263" text-anchor="middle" class="lbl-s">_restore_env()</text>
+
+          <line x1="244" y1="164" x2="320" y2="110" class="flow" marker-end="url(#m6)"/>
+          <path d="M408 120 L 408 140" class="flow" marker-end="url(#m6)"/>
+          <path d="M408 200 L 408 220" class="flow" marker-end="url(#m6)"/>
+
+          <!-- outcome -->
+          <rect x="572" y="120" width="200" height="80" rx="3" class="n-box"/>
+          <text x="672" y="150" text-anchor="middle" class="lbl">Process env clean</text>
+          <text x="672" y="170" text-anchor="middle" class="lbl-s">tools keep reading</text>
+          <text x="672" y="186" text-anchor="middle" class="lbl-s">their own defaults</text>
+          <line x1="496" y1="250" x2="572" y2="190" class="flow" marker-end="url(#m6)"/>
+
+          <!-- the gap -->
+          <rect x="572" y="222" width="412" height="62" rx="3" class="n-plain" style="stroke:var(--warn)"/>
+          <text x="588" y="244" class="lbl-t" style="fill:var(--warn)">RESIDUAL GAP</text>
+          <text x="588" y="264" class="lbl-s">_setenv(override=False) — a real OLLAMA_MODEL in the environment</text>
+          <text x="588" y="278" class="lbl-s">wins, and points Text-to-SQL at whatever it names.</text>
+          <path d="M672 200 L 672 222" class="flow-w" marker-end="url(#m6w)"/>
+
+          <text x="820" y="70" class="lbl-s">src/config.py snapshots every value</text>
+          <text x="820" y="86" class="lbl-s">into module constants at import, so</text>
+          <text x="820" y="102" class="lbl-s">restoring immediately is safe.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>The isolation is deliberate, not incidental</b> — <code>_restore_env()</code>&rsquo;s own
+        docstring states that leaving SQLCoder in the environment &ldquo;would silently hand those
+        features a model that can only emit SQL.&rdquo; The gap worth closing: because a real
+        environment variable wins over the bootstrap&rsquo;s value, setting
+        <code>OLLAMA_MODEL=llama3.1:latest</code> globally in deployment would quietly point
+        Text-to-SQL at a non-SQL model. A dedicated <code>SQL_AGENT_OLLAMA_MODEL</code> would remove
+        the ambiguity.
+      </figcaption>
+    </figure>
+
+    <h3>Retrieval artefacts have no build step in this repo</h3>
+    <p>
+      All seven indexes plus <code>schema.json</code>, <code>description_samples.json</code>,
+      <code>semantic_layer.yaml</code>, <code>concept_map.json</code> and
+      <code>business_dictionary.yaml</code> are shipped as prebuilt data. Refreshing them means
+      replacing the folder contents and restarting — there is no rebuild path in the runtime package,
+      and <code>EMBEDDING_DIR</code> must never point at build-time tooling. Worth knowing before
+      anyone plans a schema change: the index refresh is an out-of-band artefact drop, not a
+      deploy-time step.
+    </p>
+  </section>
+
+  <div class="foot">
+    <span>Xia Pipeline Atlas</span>
+    <span>Traced from source · 20 Aug 2026</span>
+    <span>4 models · 1 embedding instance · 7 FAISS indexes · 2 retrieval paths</span>
+  </div>
+
+</div>

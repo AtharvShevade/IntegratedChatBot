@@ -223,6 +223,11 @@ const _pushResult = (result, extra = {}) => {
     resultType: result.result_type || "",
     sqlData: _sqlData,
     varianceData: result.variance_data || [],
+    // Chart dataset — EVERY comparable row. Kept separate from varianceData
+    // (the 30-row table slice) so the visualisation is never fed the table's
+    // truncation. Falls back to varianceData only if an older backend omits it.
+    varianceAll: result.variance_all || result.variance_data || [],
+    varianceMeta: result.variance_meta || {},
     labelA: result.variance_label_a || "",
     labelB: result.variance_label_b || "",
     llmSummary: result.llm_summary || "",

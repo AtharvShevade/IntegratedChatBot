@@ -1027,7 +1027,7 @@ function BubbleText({ text, errorDetails }) {
 // ── MessageBubble (main export) ───────────────────────────────────────────────
 export default function MessageBubble({
   role, text, data, options, resultType, sqlData, dbQaData,
-  varianceData, labelA, labelB, llmSummary, instancesData,
+  varianceData, varianceAll, varianceMeta, labelA, labelB, llmSummary, instancesData,
   downloadUrl, downloadLabel, statusNote,
   errorDetails,
   errorMessages,
@@ -1175,6 +1175,8 @@ export default function MessageBubble({
         <div className="avatar assistant-avatar">AI</div>
         <VarianceTableBlock
           rows={varianceData}
+          allRows={varianceAll}
+          meta={varianceMeta}
           labelA={labelA}
           labelB={labelB}
           llmSummary={llmSummary}
@@ -1965,16 +1967,62 @@ function fmtRaw(v) {
   if (v === null || v === undefined) return '—'
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 })
 }
+// Percentage change — always a percentage, never a multiplier.
+//
+// An earlier version rendered very large ratios as "203x" on the grounds that a
+// five-digit percentage is hard to read. That is a judgement call the reader
+// should not have forced on them: the column is headed "% Chg", so it shows a
+// percentage at every magnitude. Compact suffixes keep it short without
+// changing what it is.
+//
+//    < 1,000%      +324.71%      two decimals — the precise figure
+//    < 1,000,000%  +387,976%     grouped integer
+//    >= 1,000,000% +3.88M%       compact, still a percentage
+//
+// The exact unrounded value is always in the cell tooltip.
 function fmtPctFin(v) {
   if (v === null || v === undefined) return 'N/A'
   const abs = Math.abs(v)
-  if (abs > 100_000) return `${v > 0 ? '+' : ''}Extreme ${v > 0 ? '↑' : '↓'}`
-  if (abs > 10_000)  return `${v > 0 ? '+' : ''}Very High`
-  if (abs > 1_000)   return `${v > 0 ? '+' : ''}>1,000%`
-  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+  const sign = v > 0 ? '+' : v < 0 ? '-' : ''
+  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(2)}B%`
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(2)}M%`
+  if (abs >= 1e3) return `${sign}${Math.round(abs).toLocaleString()}%`
+  return `${sign}${abs.toFixed(2)}%`
 }
 
-function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText, noAutoSummary, onSummaryLoaded }) {
+// The full, unrounded figure — always available on hover so the compact form
+// above never hides the real number.
+function pctExactLabel(v) {
+  if (v === null || v === undefined) return 'No % change (zero baseline)'
+  return `Exact change: ${v >= 0 ? '+' : ''}${v.toLocaleString(undefined, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })}%`
+}
+
+// ── Direction of change ───────────────────────────────────────────────────────
+// One helper so the table, the chart and the exported HTML all classify a row
+// the same way. Direction is taken from `diff`, not from pct_change, because a
+// zero baseline leaves pct_change null while the difference is still real.
+//
+//   increase → green  ↑        no change → neutral  →        decrease → red  ↓
+function changeDir(diff) {
+  const d = diff ?? 0
+  if (d > 0) return { cls: 'vt-pos',     arrow: '↑', sign: '+' }
+  if (d < 0) return { cls: 'vt-neg',     arrow: '↓', sign: ''  }
+  return       { cls: 'vt-neutral', arrow: '→', sign: ''  }
+}
+
+// "+841" / "-3649" / "0" — signed, so direction reads without the colour too
+// (colour alone is not accessible, and these tables get printed).
+function fmtSignedFin(v) {
+  const d = v ?? 0
+  const body = fmtFinancial(Math.abs(d))
+  if (d > 0) return `+${body}`
+  if (d < 0) return `-${body}`
+  return '0'
+}
+
+function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, headerText, noAutoSummary, onSummaryLoaded }) {
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
   const [sortDir,   setSortDir]   = useState('desc')
@@ -2094,6 +2142,18 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText, noAu
     <div className="variance-block">
       {title    && <div className="variance-title">{title}</div>}
       {subtitle && <div className="variance-subtitle">{subtitle}</div>}
+      {/* Coverage disclosure. The table has always shown 30 rows and never
+          said so, leaving a reviewer unable to tell 30-of-30 from 30-of-1,000.
+          Counts come from the backend's variance_meta — the real comparison —
+          not from this array's length. */}
+      {meta?.compared > 0 && (
+        <div className="variance-coverage">
+          Table shows <b>{Math.min(meta.table_rows ?? rows.length, meta.compared).toLocaleString()}</b>
+          {' of '}<b>{meta.compared.toLocaleString()}</b> comparable facts
+          {meta.concepts ? <> across <b>{meta.concepts.toLocaleString()}</b> concepts</> : null}
+          , ranked by variance. Visualization covers all {meta.compared.toLocaleString()}.
+        </div>
+      )}
       <div className="variance-table-wrapper">
         <table className="variance-table">
           <thead>
@@ -2107,9 +2167,8 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText, noAu
           </thead>
           <tbody>
             {sortedRows.map((row, rowIdx) => {
-              const isPos   = (row.diff ?? 0) > 0
-              const isNeg   = (row.diff ?? 0) < 0
-              const diffCls = isPos ? 'vt-pos' : isNeg ? 'vt-neg' : ''
+              const dir     = changeDir(row.diff)
+              const diffCls = dir.cls
               const rowCls  = [
                 row.significant  ? 'vt-row-sig' : '',
                 row.sign_change  ? 'vt-row-sign-change' : '',
@@ -2144,8 +2203,22 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText, noAu
                   </td>
                   <td className="vt-num" title={tipA}>{fmtFinancial(row.val_a)}</td>
                   <td className="vt-num" title={tipB}>{fmtFinancial(row.val_b)}</td>
-                  <td className={`vt-num ${diffCls}`} title={tipD}>{fmtFinancial(row.diff)}</td>
-                  <td className={`vt-num ${diffCls}`}>{fmtPctFin(row.pct_change)}</td>
+                  {/* Difference and % change both read as direction-coloured
+                      chips: green up, red down, grey flat. The arrow repeats
+                      the meaning so the column still works in print and for
+                      colour-blind readers, where hue alone would not. */}
+                  <td className="vt-num" title={tipD}>
+                    <span className={`vt-delta ${diffCls}`}>
+                      <span className="vt-dir-arrow" aria-hidden="true">{dir.arrow}</span>
+                      {fmtSignedFin(row.diff)}
+                    </span>
+                  </td>
+                  <td className="vt-num">
+                    <span className={`vt-pct ${diffCls}`} title={pctExactLabel(row.pct_change)}>
+                      <span className="vt-dot" aria-hidden="true" />
+                      {fmtPctFin(row.pct_change)}
+                    </span>
+                  </td>
                 </tr>
               )
             })}
@@ -2224,7 +2297,14 @@ function VarianceTableBlock({ rows, labelA, labelB, llmSummary, headerText, noAu
         )}
       </div>
       {showChart && (
-        <VarianceChartModal rows={rows} labelA={labelA} labelB={labelB} onClose={() => setShowChart(false)} />
+        <VarianceChartModal
+          /* ALL comparable rows — never `rows`, which is the 30-row table slice. */
+          rows={allRows?.length ? allRows : rows}
+          meta={meta}
+          labelA={labelA}
+          labelB={labelB}
+          onClose={() => setShowChart(false)}
+        />
       )}
     </div>
   )

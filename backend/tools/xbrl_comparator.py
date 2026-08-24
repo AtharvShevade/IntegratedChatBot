@@ -796,7 +796,8 @@ def compute_variance(
     label_a: str,
     facts_b: list[dict],
     label_b: str,
-    top_n:   int = 30,
+    top_n:   int | None = 30,
+    stats:   dict | None = None,
 ) -> list[dict]:
     """Align facts on (concept, context_key) and compute diff + % change.
 
@@ -812,6 +813,14 @@ def compute_variance(
     API is fully backward compatible: same signature and return-row structure.
     Rows are enriched with optional extra fields (context_key, unit,
     anomaly_flags) that existing downstream code safely ignores.
+
+    *top_n* caps the RETURNED rows only — every comparable pair is always
+    aligned and scored first, so the cap is a presentation limit and never a
+    limit on the comparison itself. Pass ``top_n=None`` for the complete set
+    (``rows[:None]`` is the whole list, so no branch is needed and the
+    calculation is untouched). The default stays 30 so existing callers are
+    unaffected; the chart path asks for None and the table slices to 30 from
+    that same full result — see backend.agent._serialize_variance_rows.
     """
     import math
 
@@ -973,6 +982,18 @@ def compute_variance(
             "[COMPARE_MISSING] keys only in A=%d, only in B=%d (excluded from variance)",
             only_in_a, only_in_b,
         )
+    # Optional out-parameter so a caller can REPORT the exclusion without this
+    # function changing its return type. `common` is already a strict
+    # intersection, so a fact present in only one period never reaches a row,
+    # never gets a variance, and never lands in an increased/decreased count —
+    # these numbers just make that visible in the UI instead of only in a log.
+    if stats is not None:
+        stats["matched"]    = len(common)
+        stats["only_in_a"]  = only_in_a
+        stats["only_in_b"]  = only_in_b
+        stats["one_sided"]  = only_in_a + only_in_b
+        stats["keys_a"]     = len(map_a)
+        stats["keys_b"]     = len(map_b)
 
     rows: list[dict] = []
     for key in common:
@@ -1051,6 +1072,12 @@ def compute_variance(
 
         row: dict = {
             "concept":       concept + _ctx_suffix,  # includes label for frontend
+            # The bare concept, WITHOUT the dimension suffix. `concept` above
+            # concatenates the two for display, which makes it impossible to
+            # group or count by concept — 'Assets [OneMonth]' and
+            # 'Assets [TwoMonths]' are one concept, not two. Additive only:
+            # nothing existing reads this.
+            "concept_base":  concept,
             label_a:         val_a,
             label_b:         val_b,
             "diff":          diff,
@@ -1080,6 +1107,53 @@ def compute_variance(
 # ---------------------------------------------------------------------------
 # Step 4 – Chat-friendly formatting
 # ---------------------------------------------------------------------------
+
+def variance_meta(
+    all_rows:   list[dict],
+    facts_a:    list[dict],
+    facts_b:    list[dict],
+    table_rows: int,
+) -> dict:
+    """Counts describing what the comparison actually covered.
+
+    Exists so the UI can state "all 1,000 comparable facts across 100
+    concepts" from real numbers rather than implying the table is the whole
+    result. Pure counting over rows already computed — no re-derivation, no
+    second pass over the instances.
+
+    *all_rows* must be the UNCAPPED result (compute_variance(top_n=None)).
+    """
+    concepts = {r.get("concept_base") or r.get("concept", "") for r in all_rows}
+    concepts.discard("")
+    dimensional = sum(
+        1 for r in all_rows
+        if (r.get("context_key") or "BASE") != "BASE"
+    )
+    increases = sum(1 for r in all_rows if (r.get("diff") or 0) > 0)
+    decreases = sum(1 for r in all_rows if (r.get("diff") or 0) < 0)
+    # Rows whose PREVIOUS value is 0. These are fully comparable — the fact was
+    # reported in both periods, the earlier figure was simply zero — but they
+    # have no percentage change (the denominator is zero) and their previous
+    # bar has zero width, so on a chart they look identical to a fact that is
+    # missing from one period. Counting them lets the UI say which it is.
+    zero_baseline = sum(1 for r in all_rows if r.get("pct_change") is None)
+    return {
+        "facts_a":        len(facts_a),
+        "facts_b":        len(facts_b),
+        "compared":       len(all_rows),
+        "concepts":       len(concepts),
+        "dimensional":    dimensional,
+        "base":           len(all_rows) - dimensional,
+        "significant":    sum(1 for r in all_rows if r.get("significant")),
+        "sign_changes":   sum(1 for r in all_rows if r.get("sign_change")),
+        "anomalies":      sum(1 for r in all_rows if r.get("anomaly_flags")),
+        "increases":      increases,
+        "decreases":      decreases,
+        "unchanged":      len(all_rows) - increases - decreases,
+        "zero_baseline":  zero_baseline,
+        "table_rows":     table_rows,
+    }
+
 
 def format_variance_table(
     rows:    list[dict],
