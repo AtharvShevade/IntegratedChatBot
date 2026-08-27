@@ -87,6 +87,13 @@ class CompareSummaryRow(BaseModel):
     diff:        Optional[float]     = None
     pct_change:  Optional[float]     = None
     significant: bool                = False
+    # Regulatory-importance context, echoed back so the ASYNC narrative reads
+    # the same section/tier the table on screen was ranked by. Optional: a
+    # return with no readable taxonomy posts these empty and the prompt falls
+    # back to the plain variance wording.
+    section:         str       = Field("", max_length=256)
+    importance_tier: str       = Field("", max_length=16)
+    mandated_by:     list[str] = Field(default_factory=list, max_length=8)
 
 
 class CompareSummaryRequest(BaseModel):

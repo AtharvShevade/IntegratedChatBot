@@ -158,6 +158,13 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
           diff:        r.diff ?? null,
           pct_change:  r.pct_change ?? null,
           significant: Boolean(r.significant),
+          // Regulatory-importance context, echoed back so the async narrative
+          // names the same supervisory section the table on screen was ranked
+          // by. Empty for a return whose taxonomy could not be read, and the
+          // backend prompt then falls back to plain variance wording.
+          section:         r.section ?? '',
+          importance_tier: r.importance_tier ?? '',
+          mandated_by:     Array.isArray(r.mandated_by) ? r.mandated_by.slice(0, 8) : [],
         })),
         label_a:     labelA ?? '',
         label_b:     labelB ?? '',

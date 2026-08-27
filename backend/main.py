@@ -410,6 +410,11 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
             "diff":        row.diff,
             "pct_change":  row.pct_change,
             "significant": row.significant,
+            # Carried through so the async narrative can name the supervisory
+            # section, exactly as the inline path already does.
+            "section":         row.section,
+            "importance_tier": row.importance_tier,
+            "mandated_by":     row.mandated_by,
         }
         for row in request.rows
     ]

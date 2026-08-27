@@ -66,7 +66,7 @@ class TestArelleParsingDoesNotBlockEventLoop:
 
         monkeypatch.setattr("backend.agent.load_xbrl_facts", _slow_load, raising=False)
         monkeypatch.setattr(xc, "load_xbrl_facts", _slow_load)
-        monkeypatch.setattr(xc, "compute_variance", lambda a, la, b, lb, top_n=None, stats=None: [])
+        monkeypatch.setattr(xc, "compute_variance", lambda a, la, b, lb, top_n=None, stats=None, importance=None: [])
         monkeypatch.setattr(xc, "format_variance_table", lambda rows, la, lb: "table")
         monkeypatch.setattr(xc, "generate_llm_summary", _fake_summary)
 
@@ -105,7 +105,7 @@ class TestArelleParsingDoesNotBlockEventLoop:
             captured.setdefault("paths", []).append(path)
             return [{"concept": "X", "value_num": 1.0}]
 
-        def _compute_variance(facts_a, label_a, facts_b, label_b, top_n=None, stats=None):
+        def _compute_variance(facts_a, label_a, facts_b, label_b, top_n=None, stats=None, importance=None):
             captured["facts_a"] = facts_a
             captured["facts_b"] = facts_b
             return []
@@ -135,7 +135,7 @@ class TestArelleParsingDoesNotBlockEventLoop:
             raise RuntimeError("ollama unreachable")
 
         monkeypatch.setattr(xc, "load_xbrl_facts", _load)
-        monkeypatch.setattr(xc, "compute_variance", lambda a, la, b, lb, top_n=None, stats=None: [])
+        monkeypatch.setattr(xc, "compute_variance", lambda a, la, b, lb, top_n=None, stats=None, importance=None: [])
         monkeypatch.setattr(xc, "format_variance_table", lambda rows, la, lb: "table")
         monkeypatch.setattr(xc, "generate_llm_summary", _raising_summary)
 

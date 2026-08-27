@@ -2702,16 +2702,63 @@ def _serialize_variance_rows(rows: list[dict], label_a: str, label_b: str) -> li
             "anomaly_flags": r.get("anomaly_flags", []),
             "sign_change":   r.get("sign_change", False),
             "severity":      r.get("severity", ""),
+            # Regulatory-importance fields — populated only when the return's
+            # taxonomy yielded an ImportanceIndex. Defaults keep the shape
+            # stable so the frontend never has to test for their existence.
+            "section":         r.get("section", ""),
+            "section_code":    r.get("section_code", ""),
+            "importance":      r.get("importance", None),
+            "importance_tier": r.get("importance_tier", ""),
+            # Whether the return's JSON actually classified this concept.
+            # False means "importance unavailable", which is NOT the same as
+            # tier Low — the UI must never filter an unclassified concept into
+            # a tier bucket or present it as low priority.
+            "importance_matched": bool(r.get("importance_matched", False)),
+            "mandated_by":     r.get("mandated_by", []),
+            "importance_why":  r.get("importance_why", []),
+            "priority":        r.get("priority", None),
         }
         for r in rows
     ]
 
 
+# Tiers the chat table and the AI narrative are limited to. Everything else
+# stays in the dataset and remains reachable from the chart's tier filter —
+# this bounds what is DISPLAYED, never what was compared.
+_HEADLINE_TIERS = ("Critical", "High")
+
+
+def _headline_rows(rows: list[dict]) -> list[dict]:
+    """The Critical/High slice, in the order the rows were already ranked.
+
+    Returns [] when the return has no importance data at all, which the caller
+    must treat as "fall back to the ranked top slice" rather than "nothing is
+    important" — the two look identical in the result and are not the same.
+    Rows the JSON did not classify are never included: unclassified is not a
+    tier, and promoting one here would assert an importance the data lacks.
+    """
+    return [
+        r for r in rows
+        if r.get("importance_matched") and r.get("importance_tier") in _HEADLINE_TIERS
+    ]
+
+
+def _summary_rows(rows: list[dict]) -> list[dict]:
+    """Rows the AI narrative should describe.
+
+    The Critical/High set when there is one, so the narrative and the table
+    agree; otherwise the existing ranked top slice, unchanged.
+    """
+    headline = _headline_rows(rows)
+    return headline or rows[:_VARIANCE_TABLE_ROWS]
+
+
 def _build_variance_payload(
     facts_a: list[dict], label_a: str,
     facts_b: list[dict], label_b: str,
+    form_id: str | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], dict, str]:
-    """Compare EVERYTHING once, then derive the table slice from that result.
+    """Compare EVERYTHING once, then derive every view from that one result.
 
     Returns (all_rows_raw, all_serialized, table_serialized, meta, text_table).
 
@@ -2720,6 +2767,13 @@ def _build_variance_payload(
     the 30-row table is a slice taken AFTERWARDS. The chart therefore receives
     the complete set while the table keeps its existing size — and there is no
     second, hidden cap anywhere on the chart path.
+
+    *form_id* enables the regulatory-importance view: the return's own taxonomy
+    is read for the section, circular mandate and validation weight behind each
+    concept, rows are ranked by that as well as by movement, and the rows are
+    additionally grouped into business sections. It is optional and fails soft
+    — no taxonomy folder means the payload is exactly what it was before, with
+    empty groups and an empty importance report.
     """
     # Function-local, matching how the comparison call sites already import
     # this module (Arelle pulls in a heavy dependency tree at import time).
@@ -2727,15 +2781,33 @@ def _build_variance_payload(
         compute_variance, format_variance_table, variance_meta,
     )
 
+    # Importance is READ from the return's generated taxonomy JSON
+    # (<repo>/JSON/<form_id>.json), never recalculated from the taxonomy here.
+    # The JSON is the single source of truth: it was scored once at generation
+    # time, so a comparison cannot disagree with it, and no taxonomy folder
+    # needs to be present on the serving machine.
+    index = None
+    if form_id:
+        try:
+            from backend.tools.importance_json import get_importance_from_json
+            index = get_importance_from_json(form_id)
+        except Exception as exc:
+            logger.warning(
+                "[VARIANCE] importance JSON unavailable for form_id=%s: %s",
+                form_id, exc,
+            )
+
     # `stats` collects the intersection bookkeeping compute_variance already
     # does internally, so the UI can state how many facts were excluded for
     # existing in only one period rather than leaving it to a debug log.
     stats: dict = {}
     all_rows = compute_variance(
         facts_a, label_a, facts_b, label_b, top_n=None, stats=stats,
+        importance=index,
     )
     table_rows = all_rows[:_VARIANCE_TABLE_ROWS]
     meta = {**variance_meta(all_rows, facts_a, facts_b, len(table_rows)), **stats}
+
     logger.info(
         "[VARIANCE] compared=%d concepts=%d dimensional=%d significant=%d "
         "table=%d facts_a=%d facts_b=%d one_sided_excluded=%d",
@@ -2751,6 +2823,14 @@ def _build_variance_payload(
         # The plain-text chat table stays the top-30 view it has always been.
         format_variance_table(table_rows, label_a, label_b),
     )
+
+
+def _variance_response_text(
+    name: str, label_a: str, label_b: str, table: str,
+) -> str:
+    """The chat body for a comparison: heading plus the concept table."""
+    head = f"Variance Analysis — {name}\nComparing: {label_a}  vs  {label_b}\n\n"
+    return head + table
 
 
 async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any]:
@@ -2827,6 +2907,9 @@ async def _compare_with_name(name: str, session_id: str | None) -> dict[str, Any
             "awaiting":        STAGE_CMP_FILE,
             "cmp_instances":   instances,
             "cmp_return_name": name,
+            # Carried so the comparison can find the return's taxonomy folder
+            # for the regulatory-importance view without a second lookup.
+            "cmp_form_id":     form_id,
             "auto_a":          0,
             "auto_b":          1,
         }
@@ -2852,6 +2935,10 @@ async def _run_comparison(
     name      = session.get("cmp_return_name", "")
     idx_a     = session.get("auto_a", 0)
     idx_b     = session.get("auto_b", 1)
+    # Sessions created before cmp_form_id existed (and any caller that builds
+    # one by hand) still resolve, so the importance view is never lost to a
+    # stale session shape.
+    form_id   = session.get("cmp_form_id") or (get_form_id_by_name(name) if name else None)
 
     raw = user_query.strip().lower()
 
@@ -2899,17 +2986,18 @@ async def _run_comparison(
                           response_text="Unable to perform the comparison right now. Please try again.",
                           result_type="error")
         (variance_rows, all_serialized, table_serialized, v_meta, table) = (
-            _build_variance_payload(facts_a, label_a, facts_b, label_b)
+            _build_variance_payload(facts_a, label_a, facts_b, label_b, form_id)
         )
         # The narrative describes the ranked TOP slice, not all N rows \u2014 a
         # full set would not fit a prompt. variance_meta is what tells the
         # user how much was actually compared.
         llm_summary = await generate_llm_summary(
-            variance_rows[:_VARIANCE_TABLE_ROWS], label_a, label_b, name,
+            _summary_rows(variance_rows), label_a, label_b, name,
         )
         return _build(intent="compare_reports", report_name=name,
-                      response_text=(f"Variance Analysis \u2014 {name}\n"
-                                     f"Comparing: {label_a}  vs  {label_b}\n\n{table}"),
+                      response_text=_variance_response_text(
+                          name, label_a, label_b, table,
+                      ),
                       result_type="variance_table",
                       variance_data=table_serialized,
                       variance_all=all_serialized,
@@ -2984,18 +3072,16 @@ async def _run_comparison(
         )
 
     (variance_rows, all_serialized, table_serialized, v_meta, table) = (
-        _build_variance_payload(facts_a, label_a, facts_b, label_b)
+        _build_variance_payload(facts_a, label_a, facts_b, label_b, form_id)
     )
     llm_summary = await generate_llm_summary(
-        variance_rows[:_VARIANCE_TABLE_ROWS], label_a, label_b, name,
+        _summary_rows(variance_rows), label_a, label_b, name,
     )
 
     return _build(
         intent="compare_reports", report_name=name,
-        response_text=(
-            f"Variance Analysis — {name}\n"
-            f"Comparing: {label_a}  vs  {label_b}\n\n"
-            f"{table}"
+        response_text=_variance_response_text(
+            name, label_a, label_b, table,
         ),
         result_type="variance_table",
         variance_data=table_serialized,
@@ -4182,6 +4268,8 @@ def _build(
         out["variance_all"] = variance_all
     if variance_meta is not None:
         out["variance_meta"] = variance_meta
+    # Set independently too: an empty list is a meaningful answer ("taxonomy
+    # read, nothing to group") and must not be conflated with the key's absence.
     if instances_data is not None:
         out["instances_data"] = instances_data
     if error_details:

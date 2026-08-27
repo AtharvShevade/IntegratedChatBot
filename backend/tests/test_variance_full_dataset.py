@@ -149,7 +149,7 @@ class TestIntersectionOnly:
 
     def test_payload_meta_carries_the_exclusion(self):
         fa, fb = _facts(12, 1.5), _facts(10, 1.0)
-        _raw, all_s, _tbl, meta, _t = agent._build_variance_payload(
+        _raw, all_s, _tbl, meta, _t, *_ = agent._build_variance_payload(
             fa, LABEL_A, fb, LABEL_B,
         )
         assert meta["compared"] == 10
@@ -202,21 +202,21 @@ class TestPayloadSplit:
         return fa, fb, agent._build_variance_payload(fa, LABEL_A, fb, LABEL_B)
 
     def test_table_is_thirty_and_chart_is_everything(self):
-        _, _, (raw, all_s, tbl_s, meta, _text) = self._payload(100)
+        _, _, (raw, all_s, tbl_s, meta, _text, *_) = self._payload(100)
         assert len(raw) == 100
         assert len(all_s) == 100, "visualisation must get every comparable row"
         assert len(tbl_s) == 30, "table keeps its existing 30-row size"
 
     def test_chart_dataset_is_not_the_table_slice(self):
         """The regression this whole change exists to prevent."""
-        _, _, (_raw, all_s, tbl_s, _m, _t) = self._payload(100)
+        _, _, (_raw, all_s, tbl_s, _m, _t, *_) = self._payload(100)
         assert all_s is not tbl_s
         assert len(all_s) > len(tbl_s)
 
     def test_small_comparison_gives_identical_lengths(self):
         """Under 30 rows both datasets are the same size — and that must not
         be mistaken for the truncation bug."""
-        _, _, (_raw, all_s, tbl_s, meta, _t) = self._payload(12)
+        _, _, (_raw, all_s, tbl_s, meta, _t, *_) = self._payload(12)
         assert len(all_s) == len(tbl_s) == 12
         assert meta["compared"] == 12
 
@@ -225,21 +225,21 @@ class TestPayloadSplit:
     def test_enrichment_fields_survive_serialisation(self):
         """These were computed and then dropped, leaving the sign-reversal
         highlight, anomaly badge, unit tooltip and severity chip inert."""
-        _, _, (_raw, all_s, tbl_s, _m, _t) = self._payload(40)
+        _, _, (_raw, all_s, tbl_s, _m, _t, *_) = self._payload(40)
         for dataset, name in ((all_s, "variance_all"), (tbl_s, "variance_data")):
             for field in self.ENRICHMENT:
                 assert field in dataset[0], f"{field} missing from {name}"
 
     def test_core_fields_unchanged(self):
         """Backward compatibility: the six original keys keep their names."""
-        _, _, (_raw, _all, tbl_s, _m, _t) = self._payload(40)
+        _, _, (_raw, _all, tbl_s, _m, _t, *_) = self._payload(40)
         for field in ("concept", "val_a", "val_b", "diff", "pct_change", "significant"):
             assert field in tbl_s[0]
 
     def test_text_table_still_reflects_the_top_slice(self):
         """The plain-text chat table stays the 30-row view it has always been —
         widening it would flood the bubble."""
-        _, _, (_raw, _all, _tbl, _m, text) = self._payload(100)
+        _, _, (_raw, _all, _tbl, _m, text, *_) = self._payload(100)
         assert text.count("\n") < 60
 
 
@@ -252,7 +252,7 @@ class TestChatResponseCarriesBoth:
         """ChatResponse(**result) DROPS undeclared keys, so an undeclared field
         would vanish silently between the agent and the browser."""
         fa, fb = _facts(100, 1.5), _facts(100, 1.0)
-        raw, all_s, tbl_s, meta, text = agent._build_variance_payload(
+        raw, all_s, tbl_s, meta, text, *_ = agent._build_variance_payload(
             fa, LABEL_A, fb, LABEL_B,
         )
         built = agent._build(

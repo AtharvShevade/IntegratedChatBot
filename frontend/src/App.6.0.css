@@ -1306,7 +1306,13 @@ html, body, #root {
   vertical-align: middle;
   padding: 7px 12px; color: var(--text);
   border-bottom: 1px solid rgba(46,51,80,0.5);
-  font-family: 'Courier New', monospace; font-size: 0.75rem;
+  /* Inherit the app's UI font — 'Courier New' was chosen so digits would line
+     up in the numeric columns, but it clashed with the header and read as a
+     different table. tabular-nums gives the same fixed-width digits in the
+     proportional face, so the columns still align and the text looks right. */
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
   background: rgba(255, 255, 255, 0.6);
     backdrop-filter: blur(6px);
     border: 1px solid rgba(255, 255, 255, 0.8);
@@ -1383,17 +1389,6 @@ html, body, #root {
 
 /* Coverage line above the variance table — states 30-of-N rather than letting
    the table just stop. */
-.variance-coverage {
-  font-size: 0.78rem;
-  line-height: 1.5;
-  opacity: 0.78;
-  margin: 0 0 8px;
-  padding: 7px 11px;
-  border-left: 2px solid var(--secondary, #0B5CAD);
-  background: rgba(11, 92, 173, 0.06);
-  border-radius: 0 3px 3px 0;
-}
-.variance-coverage b { font-weight: 700; opacity: 1; }
 
 /* ── Chart modal: coverage, filters, paging, export ──────────────────────── */
 /* ── Summary cards: FIXED, never scrollable ─────────────────────────────────
@@ -1512,11 +1507,33 @@ html, body, #root {
    instead of three stacked rows. */
 .vc-filterbar {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 6px 16px 8px;
+  flex-direction: column;
+  /* Vertical separation between the legend/search band and the
+     filters/ranking band. At 6px the two rows read as one dense block; this
+     gives the search field room to sit apart from the controls below it. */
+  gap: 14px;
+  padding: 8px 16px 10px;
   border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+}
+/* One band of the filter bar: content on the left, its control on the right.
+   Two of these stack — legend/search, then filters/ranking — so the search
+   sits at the top and the Top-N + ranking pair lands directly beneath it,
+   beside the chips it modifies. */
+.vc-fb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+.vc-fb-row > .vc-period-legend { flex: 1 1 420px; min-width: 0; }
+.vc-fb-row > .vc-controls      { flex: 1 1 auto;  min-width: 0; }
+/* The ranking pair hugs the right edge and never stretches. */
+.vc-fb-row > .vc-controls-rank {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-top: 0;
 }
 /* min-width:0 lets the chip rows wrap inside the flex child instead of forcing
    the search field off the row. */
@@ -1637,6 +1654,13 @@ html, body, #root {
   background: #ffffff; border-radius: 16px;
   box-shadow: 0 24px 64px rgba(0,0,0,0.28);
   width: min(1280px, 96vw); max-height: 92vh; overflow-y: auto;
+  /* Reserve the scrollbar gutter whether or not a scrollbar is showing.
+     Without this the modal's own scrollbar appears once the chart is tall
+     enough to overflow and vanishes when a filter empties it — the content
+     box gains ~15px, and every right-aligned control (search, Importance,
+     Ranked by) visibly jumps sideways as you change filters. The gutter is
+     always there now, so the toolbar keeps one fixed position. */
+  scrollbar-gutter: stable;
   display: flex; flex-direction: column;
   animation: vc-slide-in 0.22s cubic-bezier(0.34,1.56,0.64,1);
 }
@@ -3465,3 +3489,217 @@ html, body, #root {
   }
   .variance-summary-spinner { border-top-color: rgba(11, 143, 102, 0.30); }
 }
+
+/* ── Variance chart: Top-N cap + ranking selector ──────────────────────────
+   A second control row under the direction filters. Kept visually lighter
+   than the filter chips (smaller, muted labels) because these change how the
+   chart is DRAWN, not which facts were compared. */
+.vc-controls-rank {
+  gap: 6px 18px;
+  margin-top: 6px;
+}
+.vc-rank-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.vc-rank-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  /* An explicit palette colour, not opacity. These labels previously dimmed
+     an already-muted inherited colour to 60%, which left them barely legible
+     against the panel. slate-700 reads clearly in both themes. */
+  color: var(--text-secondary, #374151);
+  margin-right: 2px;
+  white-space: nowrap;
+}
+.vc-chip-sm {
+  font-size: 0.68rem;
+  padding: 3px 9px;
+}
+
+/* ── Variance chart: coverage caption ──────────────────────────────────────
+   States what the drawn slice is and what it leaves out. Sits directly above
+   the plot so the cap is read before the bars are. */
+.vc-coverage {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 7px 16px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+  opacity: 0.92;
+}
+.vc-coverage b { font-weight: 650; }
+.vc-cov-up   { color: #059669; font-weight: 600; }
+.vc-cov-down { color: #DC2626; font-weight: 600; }
+.vc-cov-note { opacity: 0.62; }
+
+/* ── Variance table: display controls ──────────────────────────────────────
+   Filter chips, concept/dimension search, row-count cap and CSV export. All
+   narrow what is LISTED; the comparison itself is never re-derived. */
+.vt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  /* Everything reads left-to-right from the same edge as the table below.
+     space-between pushed the search and row-count to the far right, so the
+     row had a gap through the middle and the two control groups looked
+     unrelated to each other. */
+  justify-content: flex-start;
+  gap: 8px 14px;
+  padding: 8px 0 10px;
+}
+.vt-filter-group { display: flex; flex-wrap: wrap; gap: 5px; }
+.vt-controls-right {
+  display: flex;
+  /* nowrap: the search field and the row-count belong on ONE line. With wrap
+     they broke onto separate lines whenever the chips left them a narrow
+     column, which is what stacked them vertically. The group as a whole still
+     wraps below the chips — it just never splits down the middle. */
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  /* Sized to its content and left-aligned: it follows the filter chips on the
+     same row, wrapping beneath them at the left edge when space runs out.
+     flex-grow would stretch it back across the row. */
+  flex: 0 1 auto;
+  justify-content: flex-start;
+}
+.vt-chip {
+  font-size: 0.7rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.vt-chip:hover { border-color: var(--secondary, #0B5CAD); }
+.vt-chip.active {
+  background: var(--secondary, #0B5CAD);
+  border-color: var(--secondary, #0B5CAD);
+  color: #fff;
+  font-weight: 600;
+}
+.vt-chip-sm { font-size: 0.66rem; padding: 2px 8px; }
+.vt-search {
+  font-size: 0.76rem;
+  /* Explicit height rather than padding alone, so the field and the row-count
+     select next to it line up exactly — padding-derived heights differ once
+     their font sizes differ, which left the two visibly out of step. */
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  /* Wide enough for a useful fragment of these long concept names, without
+     crowding the filter chips on the same row. */
+  flex: 0 1 300px;
+  min-width: 220px;
+}
+.vt-search:focus { outline: none; border-color: var(--secondary, #0B5CAD); }
+.vt-rowcount-group {
+  display: flex;
+  align-items: center;   /* label centred against the 34px select */
+  gap: 6px;
+  height: 34px;
+  /* Never shrink or wrap: the label and its select are one control. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.vt-rowcount-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary, #374151);
+}
+/* Row-count dropdown — replaces the chip row; the options are mutually
+   exclusive so a select states the current value in less space. */
+.vt-select {
+  font-size: 0.76rem;
+  /* Matches .vt-search exactly — see the note there. */
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 28px 0 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+  /* Inline caret so it inherits the text colour instead of rendering as the
+     OS default, which is invisible on dark. */
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  transition: border-color 0.15s;
+}
+.vt-select:hover { border-color: var(--secondary, #0B5CAD); }
+.vt-select:focus-visible { outline: 2px solid var(--secondary, #0B5CAD); outline-offset: 1px; }
+.vt-select option { background: var(--surface-2, #fff); color: var(--text, #111); }
+
+/* ── Zero-baseline marker ──────────────────────────────────────────────────
+   Not an error and not missing data: the previous value was 0, so no
+   percentage exists. Neutral styling, never the red of a decrease. */
+.vt-pct-zerobase {
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+
+/* ── Mixed-unit warning + row overflow notice ──────────────────────────── */
+.vt-more {
+  font-size: 0.72rem;
+  opacity: 0.75;
+  padding: 6px 0 0;
+}
+.vt-empty {
+  text-align: center;
+  padding: 18px 8px;
+  opacity: 0.7;
+  font-size: 0.78rem;
+}
+.vt-link-btn {
+  background: none;
+  border: none;
+  color: var(--secondary, #0B5CAD);
+  cursor: pointer;
+  font-size: inherit;
+  font-weight: 600;
+  padding: 0 0 0 8px;
+  text-decoration: underline;
+}
+
+/* ── Variance chart: Top-N dropdown ────────────────────────────────────────
+   A select rather than chips: the options are mutually exclusive and only one
+   is ever active, so a dropdown states the current value in less space than
+   four buttons and leaves room for the ranking chips beside it. */
+.vc-select {
+  font-size: 0.7rem;
+  padding: 3px 26px 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+  /* Caret drawn inline so it inherits the text colour in both themes rather
+     than rendering as the OS default, which is invisible on dark. */
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  transition: border-color 0.15s;
+}
+.vc-select:hover        { border-color: var(--secondary, #0B5CAD); }
+.vc-select:focus-visible{ outline: 2px solid var(--secondary, #0B5CAD); outline-offset: 1px; }
+/* The menu itself is OS-rendered — give it explicit colours so it is not
+   white-on-white when the app is in dark mode. */
+.vc-select option { background: var(--surface, #fff); color: var(--text, #111); }
+

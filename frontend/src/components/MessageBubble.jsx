@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react'
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import VarianceChartModal from './VarianceChartModal.jsx'
 import { fetchCompareSummary, stopRequest } from '../services/api.js'
@@ -2022,10 +2022,113 @@ function fmtSignedFin(v) {
   return '0'
 }
 
+// ── Dimensional context → its own column ─────────────────────────────────────
+// context_key is the backend's stable identity for a fact's dimensional
+// combination: "BASE" for an aggregate, otherwise "axis=member" pairs joined
+// by "|". The member is the part a reviewer reads; the axis name is long,
+// repeated on every row, and adds nothing on screen — so it moves to the
+// tooltip and the member becomes the cell.
+//
+//   "BASE"                                        → ""        (aggregate row)
+//   "CurrencyMismatchDurationDimension=OneMonth"  → "OneMonth"
+//   "axis1=val1|axis2=val2"                       → "val1 · val2"
+function dimLabel(contextKey) {
+  if (!contextKey || contextKey === 'BASE') return ''
+  return contextKey
+    .split('|')
+    .map((part) => {
+      const raw = part.includes('=') ? part.slice(part.indexOf('=') + 1) : part
+      // XBRL member names conventionally end in "Member" — noise once the
+      // value is already in a column headed "Dimension".
+      return raw.endsWith('Member') ? raw.slice(0, -6) : raw
+    })
+    .join(' · ')
+}
+
+// The concept WITHOUT its embedded "[member]" suffix. compute_variance appends
+// that suffix so the single-column text table can disambiguate dimensional
+// rows; once the dimension has its own column the suffix is duplication.
+// concept_base is supplied by the backend — the strip is only a fallback.
+function conceptOnly(row) {
+  const c = row.concept_base || row.concept || ''
+  return c.includes(' [') ? c.slice(0, c.indexOf(' [')) : c
+}
+
+// ── Row count options ────────────────────────────────────────────────────────
+// The table has always shown 30. That stays the default — but 30 of 1,284 with
+// no way to see row 31 forced users into the chart modal just to read further.
+const ROWCOUNT_OPTIONS = [10, 25, 50, 100, 'All']
+
+// Human names for the active sort, so the coverage line can state the real
+// ordering instead of always claiming "ranked by variance".
+const SORT_LABELS = {
+  concept: 'concept',
+  val_a: 'current value', val_b: 'previous value',
+  diff: 'difference', pct: '% change', severity: 'severity',
+}
+
+// [key, label, tooltip] — mirrors the chart modal's filter set exactly.
+const VT_FILTERS = [
+  ['all',      'All',            'Every fact present in both periods'],
+  ['sig',      'High variance',  'Facts flagged high-variance by the variance logic'],
+  ['up',       'Increased',      'Current period is higher than the previous period'],
+  ['down',     'Decreased',      'Current period is lower than the previous period'],
+  ['reversal', 'Reversed',       'The value crossed zero — sign reversal'],
+  ['zero',     'Previous was 0',
+   'Reported in both periods, but the previous value was 0 — so there is no '
+   + 'percentage change to compute. These are real comparisons, not missing facts.'],
+]
+
+
 function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, headerText, noAutoSummary, onSummaryLoaded }) {
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
   const [sortDir,   setSortDir]   = useState('desc')
+  // Display controls. All three narrow what is DRAWN; none re-derives the
+  // comparison, and the coverage line below always reports against the
+  // backend's own totals.
+  const [rowCount,   setRowCount]   = useState(ROWCOUNT_OPTIONS[0])  // 10|25|50|100|'All'
+  const [filterMode, setFilterMode] = useState('all')  // all|sig|up|down|reversal|zero
+  const [search,     setSearch]     = useState('')
+
+  // ── The dataset the table actually works over ────────────────────────────
+  // `rows` is the backend's top-30 slice; `allRows` is every comparable fact.
+  // Sorting, filtering and searching must run over the COMPLETE set, or a
+  // click on "% Chg" returns the largest percentage *within the 30 already
+  // chosen by importance* — which is not the largest percentage, but reads
+  // exactly like it. allRows was already passed in for the chart; this makes
+  // the table use it too. Falls back to `rows` if it is ever absent.
+  const sourceRows = allRows?.length ? allRows : rows
+
+  // ── Chat table scope: Critical + High only ───────────────────────────────
+  // The chat table answers "what must I look at?", so it lists only the
+  // regulatory tiers that warrant attention. Everything else stays in the
+  // dataset and is one click away in Visualize — this narrows the VIEW, never
+  // the comparison.
+  //
+  // A concept the return's JSON did not classify carries importance_matched
+  // false. It is deliberately excluded: unclassified is not a tier, and
+  // showing it here would assert an importance the data does not support.
+  const importanceAvailable = Boolean(
+    meta?.importance_available ?? sourceRows.some((r) => r.importance_matched),
+  )
+  const headlineRows = useMemo(
+    () => sourceRows.filter(
+      (r) => r.importance_matched
+        && (r.importance_tier === 'Critical' || r.importance_tier === 'High'),
+    ),
+    [sourceRows],
+  )
+  // With no importance data at all the table keeps its previous behaviour
+  // rather than rendering empty — "no JSON" and "nothing critical" are
+  // different facts and must not look the same.
+  const tableScope = importanceAvailable ? headlineRows : sourceRows
+  // What the AI Analysis describes. Capped so a very large Critical/High set
+  // still fits a prompt; the backend applies its own SUMMARY_ROWS cap too.
+  const summaryScope = useMemo(
+    () => (importanceAvailable ? headlineRows : rows).slice(0, 40),
+    [importanceAvailable, headlineRows, rows],
+  )
   const lines    = (headerText || '').split('\n')
   const title    = lines[0] || ''
   const subtitle = lines[1] || ''
@@ -2078,7 +2181,10 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
   // than thrown away because the user scrolled the message out of view.
   const summaryCancelledRef = useRef(false)
   useEffect(() => {
-    if (llmSummary || noAutoSummary || !rows?.length) return undefined
+    // The narrative describes the SAME rows the table lists, so the analysis
+    // and the figures beneath it can never disagree. With no importance data
+    // that is the existing top slice, unchanged.
+    if (llmSummary || noAutoSummary || !summaryScope?.length) return undefined
     if (summaryRequestedRef.current) return undefined
     summaryRequestedRef.current = true
     const controller = new AbortController()
@@ -2087,7 +2193,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
     summaryRequestIdRef.current = requestId
     setSummaryLoading(true)
     const reportName = (headerText || '').split('\n')[0]?.replace(/^Variance Analysis\s*—\s*/, '') || ''
-    fetchCompareSummary(rows, labelA, labelB, reportName, { signal: controller.signal, requestId })
+    fetchCompareSummary(summaryScope, labelA, labelB, reportName, { signal: controller.signal, requestId })
       .then((text) => {
         if (summaryCancelledRef.current) return
         // Loading is cleared in the SAME callback as the result, so the two
@@ -2117,19 +2223,80 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
   }
   const summaryText = llmSummary || asyncSummary
   const SEV_ORDER = { critical: 4, high: 3, medium: 2, low: 1 }
+
+
+  // ── Filter → search, over the complete set ───────────────────────────────
+  // Same semantics as the chart modal's filters, deliberately: two views of
+  // one comparison must not disagree about what "Increased" means.
+  const filteredRows = useMemo(() => {
+    let out = tableScope
+    if (filterMode === 'sig')           out = out.filter((r) => r.significant)
+    else if (filterMode === 'up')       out = out.filter((r) => (r.diff ?? 0) > 0)
+    else if (filterMode === 'down')     out = out.filter((r) => (r.diff ?? 0) < 0)
+    else if (filterMode === 'reversal') out = out.filter((r) => r.sign_change)
+    else if (filterMode === 'zero') {
+      out = out.filter((r) => r.pct_change === null || r.pct_change === undefined)
+    }
+    const q = search.trim().toLowerCase()
+    // Matching the concept string alone already covers dimension members: the
+    // backend appends them as a "[OneMonth]" suffix, which is exactly what the
+    // Concept column displays.
+    if (q) out = out.filter((r) => (r.concept ?? '').toLowerCase().includes(q))
+    return out
+  }, [tableScope, filterMode, search])
+
+  // Sort the filtered set. With no explicit sort the backend's importance
+  // ranking is preserved — that is what "ranked by variance" in the caption
+  // refers to, and the caption follows this state so it never claims an
+  // ordering the table is not in.
   const sortedRows = useMemo(() => {
-    if (!sortBy) return rows
+    if (!sortBy) return filteredRows
     const dir = sortDir === 'asc' ? 1 : -1
-    return [...rows].sort((a, b) => {
-      if (sortBy === 'concept')  return dir * (a.concept ?? '').localeCompare(b.concept ?? '')
-      if (sortBy === 'val_a')    return dir * ((a.val_a ?? 0) - (b.val_a ?? 0))
-      if (sortBy === 'val_b')    return dir * ((a.val_b ?? 0) - (b.val_b ?? 0))
-      if (sortBy === 'diff')     return dir * ((a.diff ?? 0) - (b.diff ?? 0))
-      if (sortBy === 'pct')      return dir * (Math.abs(a.pct_change ?? 0) - Math.abs(b.pct_change ?? 0))
-      if (sortBy === 'severity') return dir * ((SEV_ORDER[a.severity] ?? 0) - (SEV_ORDER[b.severity] ?? 0))
+    // Nulls sort last in BOTH directions rather than as 0: a zero-baseline row
+    // has no percentage at all, and letting it read as 0% would put it above
+    // genuine declines when sorting ascending.
+    const nullLast = (a, b, key) => {
+      const av = key(a), bv = key(b)
+      const aN = av === null || av === undefined
+      const bN = bv === null || bv === undefined
+      if (aN && bN) return 0
+      if (aN) return 1
+      if (bN) return -1
+      return dir * (av - bv)
+    }
+    return [...filteredRows].sort((a, b) => {
+      if (sortBy === 'concept')   return dir * (a.concept ?? '').localeCompare(b.concept ?? '')
+      if (sortBy === 'val_a')     return nullLast(a, b, (r) => r.val_a)
+      if (sortBy === 'val_b')     return nullLast(a, b, (r) => r.val_b)
+      if (sortBy === 'diff')      return dir * ((a.diff ?? 0) - (b.diff ?? 0))
+      if (sortBy === 'pct')       return nullLast(a, b, (r) => (r.pct_change === null || r.pct_change === undefined ? null : Math.abs(r.pct_change)))
+      if (sortBy === 'severity')  return dir * ((SEV_ORDER[a.severity] ?? 0) - (SEV_ORDER[b.severity] ?? 0))
       return 0
     })
-  }, [rows, sortBy, sortDir])
+  }, [filteredRows, sortBy, sortDir])
+
+  // Cap last, so the rows shown are the true top N of the sorted set.
+  const visibleRows = useMemo(
+    () => (rowCount === 'All' ? sortedRows : sortedRows.slice(0, rowCount)),
+    [sortedRows, rowCount],
+  )
+  const isFiltered = filterMode !== 'all' || Boolean(search.trim())
+
+  // Counts for the filter chips — computed over the complete set once, so each
+  // chip states how many facts it would show before it is clicked.
+  const filterCounts = useMemo(() => {
+    let sig = 0, up = 0, down = 0, rev = 0, zero = 0
+    for (const r of sourceRows) {
+      if (r.significant) sig++
+      if (r.sign_change) rev++
+      if (r.pct_change === null || r.pct_change === undefined) zero++
+      const d = r.diff ?? 0
+      if (d > 0) up++
+      else if (d < 0) down++
+    }
+    return { all: sourceRows.length, sig, up, down, reversal: rev, zero }
+  }, [sourceRows])
+
   const handleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     else { setSortBy(col); setSortDir('desc') }
@@ -2142,18 +2309,61 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
     <div className="variance-block">
       {title    && <div className="variance-title">{title}</div>}
       {subtitle && <div className="variance-subtitle">{subtitle}</div>}
-      {/* Coverage disclosure. The table has always shown 30 rows and never
-          said so, leaving a reviewer unable to tell 30-of-30 from 30-of-1,000.
-          Counts come from the backend's variance_meta — the real comparison —
-          not from this array's length. */}
-      {meta?.compared > 0 && (
-        <div className="variance-coverage">
-          Table shows <b>{Math.min(meta.table_rows ?? rows.length, meta.compared).toLocaleString()}</b>
-          {' of '}<b>{meta.compared.toLocaleString()}</b> comparable facts
-          {meta.concepts ? <> across <b>{meta.concepts.toLocaleString()}</b> concepts</> : null}
-          , ranked by variance. Visualization covers all {meta.compared.toLocaleString()}.
+      {/* ── Display controls ─────────────────────────────────────────────
+          Filter, search and row count, all over the complete dataset. The
+          same filter set as the chart modal so the two views never disagree
+          about what "Increased" means. */}
+      <div className="vt-controls">
+        <div className="vt-filter-group">
+          {VT_FILTERS.map(([key, label, hint]) => {
+            const n = filterCounts[key]
+            return (
+              <button
+                key={key}
+                className={`vt-chip${filterMode === key ? ' active' : ''}`}
+                onClick={() => setFilterMode(key)}
+                title={hint}
+                type="button"
+              >
+                {label}{n !== undefined ? ` (${n.toLocaleString()})` : ''}
+              </button>
+            )
+          })}
         </div>
-      )}
+        <div className="vt-controls-right">
+          <input
+            className="vt-search"
+            type="search"
+            placeholder="Search concept…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Filter the table by concept name"
+            title="Filters which facts the table lists. Does not change the comparison."
+          />
+          <div className="vt-rowcount-group">
+            <label className="vt-rowcount-label" htmlFor="vt-rowcount">Rows</label>
+            <select
+              id="vt-rowcount"
+              className="vt-select"
+              value={String(rowCount)}
+              // Values are strings in the DOM; 'All' stays a string while the
+              // numbers convert back, because the slice keys off
+              // `rowCount === 'All'` and Number('All') is NaN.
+              onChange={(e) => {
+                const v = e.target.value
+                setRowCount(v === 'All' ? 'All' : Number(v))
+              }}
+              title="How many rows to list. Display only — the comparison keeps every concept."
+            >
+              {ROWCOUNT_OPTIONS.map((opt) => (
+                <option key={String(opt)} value={String(opt)}>
+                  {opt === 'All' ? `All (${sortedRows.length.toLocaleString()})` : opt}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
       <div className="variance-table-wrapper">
         <table className="variance-table">
           <thead>
@@ -2166,7 +2376,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
             </tr>
           </thead>
           <tbody>
-            {sortedRows.map((row, rowIdx) => {
+            {visibleRows.map((row, rowIdx) => {
               const dir     = changeDir(row.diff)
               const diffCls = dir.cls
               const rowCls  = [
@@ -2190,6 +2400,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
                 const notation = (row.val_a ?? 0) > 0 ? '−→+' : '+→−'
                 signNote = <span className="vt-sign-note" title={`Direction reversed: ${notation}`}>{notation}</span>
               }
+              const isZeroBase = row.pct_change === null || row.pct_change === undefined
               const sev      = SEV_CFG[row.severity]
               const sevBadge = sev
                 ? <span className={`vt-severity-badge ${sev.cls}`} title={`Severity: ${sev.title}`}>{sev.label}</span>
@@ -2198,6 +2409,9 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
                 <tr key={rowIdx} className={rowCls}>
                   <td className="vt-concept">
                     {row.significant && <span className="vt-sig-badge" title="High variance">⚠</span>}
+                    {/* Concept keeps its embedded "[member]" suffix — that
+                        suffix is what distinguishes dimensional rows from one
+                        another in a single-column layout. */}
                     <span className="vt-concept-text" title={conceptTitle}>{row.concept ?? ''}</span>
                     {signNote}
                   </td>
@@ -2213,18 +2427,71 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
                       {fmtSignedFin(row.diff)}
                     </span>
                   </td>
+                  {/* A null pct_change means the PREVIOUS value was 0, so the
+                      percentage has no denominator — the fact was reported in
+                      both periods and is fully comparable. Rendering it as
+                      "N/A" made it look like missing data, which is a
+                      different thing entirely (those rows never reach the
+                      table — the backend intersects the two periods). "0 →"
+                      states what actually happened. */}
                   <td className="vt-num">
-                    <span className={`vt-pct ${diffCls}`} title={pctExactLabel(row.pct_change)}>
-                      <span className="vt-dot" aria-hidden="true" />
-                      {fmtPctFin(row.pct_change)}
-                    </span>
+                    {isZeroBase ? (
+                      <span
+                        className="vt-pct vt-pct-zerobase"
+                        title={`Previous period (${labelB}) was 0, so there is no percentage change to compute. `
+                             + `The fact was reported in both periods — this is a real comparison, not missing data.`}
+                      >
+                        0 →
+                      </span>
+                    ) : (
+                      <span className={`vt-pct ${diffCls}`} title={pctExactLabel(row.pct_change)}>
+                        <span className="vt-dot" aria-hidden="true" />
+                        {fmtPctFin(row.pct_change)}
+                      </span>
+                    )}
                   </td>
                 </tr>
               )
             })}
+            {visibleRows.length === 0 && (
+              <tr>
+                <td className="vt-empty" colSpan={5}>
+                  {/* Three different reasons for an empty table, and they must
+                      not read the same. "No Critical/High" is a finding about
+                      the data; "no importance data" is a gap in it. */}
+                  {importanceAvailable && headlineRows.length === 0 && !isFiltered ? (
+                    <>
+                      No Critical or High regulatory-importance concepts changed in this
+                      comparison. {sourceRows.length.toLocaleString()} concept(s) were
+                      compared — open <b>Visualize</b> to see every tier.
+                    </>
+                  ) : (
+                    <>No facts match this filter.</>
+                  )}
+                  {isFiltered && (
+                    <button
+                      className="vt-link-btn"
+                      onClick={() => { setFilterMode('all'); setSearch('') }}
+                      type="button"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
+      {/* Only shown when the cap is actually hiding something. */}
+      {rowCount !== 'All' && sortedRows.length > visibleRows.length && (
+        <div className="vt-more">
+          {(sortedRows.length - visibleRows.length).toLocaleString()} more rows not shown
+          <button className="vt-link-btn" onClick={() => setRowCount('All')} type="button">
+            Show all {sortedRows.length.toLocaleString()}
+          </button>
+        </div>
+      )}
       {/* The chart is computed entirely from `rows` — data already on screen
           in the table above — and has no dependency on the AI summary. It
           used to live INSIDE the `llmSummary &&` block, so whenever the
@@ -2303,6 +2570,9 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
           meta={meta}
           labelA={labelA}
           labelB={labelB}
+          /* The AI narrative leads the downloaded report. Passed down rather
+             than regenerated so the file says exactly what the panel says. */
+          summaryText={summaryText}
           onClose={() => setShowChart(false)}
         />
       )}

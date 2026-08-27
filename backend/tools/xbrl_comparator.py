@@ -798,6 +798,7 @@ def compute_variance(
     label_b: str,
     top_n:   int | None = 30,
     stats:   dict | None = None,
+    importance = None,
 ) -> list[dict]:
     """Align facts on (concept, context_key) and compute diff + % change.
 
@@ -821,6 +822,15 @@ def compute_variance(
     calculation is untouched). The default stays 30 so existing callers are
     unaffected; the chart path asks for None and the table slices to 30 from
     that same full result — see backend.agent._serialize_variance_rows.
+
+    *importance* is an optional xbrl_importance.ImportanceIndex. When supplied,
+    every row is additionally tagged with the regulatory-importance profile the
+    return's own taxonomy states for its concept (section, circular mandate,
+    validation-rule weight, tier) and the ranking becomes a blend of that
+    importance and the size of the movement — so a mandated, heavily-validated
+    figure that moved 12% outranks an unreferenced memorandum note that moved
+    900%. When it is None nothing changes: the extra keys are absent and the
+    sort is the pure magnitude ranking this function has always used.
     """
     import math
 
@@ -1092,6 +1102,34 @@ def compute_variance(
         }
         rows.append(row)
 
+    # ── Regulatory-importance enrichment (optional) ─────────────────────────
+    # Done here, before the sort, so the ranking the table, the chart and the
+    # LLM narrative all read is ONE ordering. Enriching downstream would leave
+    # each consumer to re-rank, and they would drift apart.
+    if importance is not None:
+        try:
+            _tagged = _tag_rows_with_importance(rows, importance)
+        except Exception as exc:                          # never break a compare
+            logger.warning("[IMPORTANCE] tagging failed: %s — ranking by magnitude", exc)
+            _tagged = False
+        if _tagged:
+            # Absolute movement breaks priority ties — concepts sharing a
+            # circular and a rule set share an importance score, so without a
+            # tiebreaker the top of the table could be rows that did not move.
+            # Movement is a hard gate ahead of priority, not a component of it:
+            # this is a VARIANCE table, so a fact that did not move belongs
+            # below every fact that did, no matter how heavily regulated it is.
+            # Its section still reports it — see xbrl_importance's grouped view.
+            rows.sort(
+                key=lambda r: (
+                    1 if (r.get("diff") or 0) else 0,
+                    r.get("priority", 0.0),
+                    abs(r.get("diff") or 0.0),
+                ),
+                reverse=True,
+            )
+            return rows[:top_n]
+
     rows.sort(
         key=lambda r: _importance_score(
             r["pct_change"],
@@ -1104,9 +1142,59 @@ def compute_variance(
     return rows[:top_n]
 
 
+def _tag_rows_with_importance(rows: list[dict], index) -> bool:
+    """Attach the taxonomy's regulatory-importance profile to every row.
+
+    Mutates *rows* in place and returns True when the index actually resolved
+    something — False when every concept came back unclassified, in which case
+    the caller keeps the magnitude ranking rather than sorting by a column that
+    is uniformly zero.
+    """
+    from backend.tools.xbrl_importance import _movement_score
+
+    recognised = 0
+    for r in rows:
+        concept = r.get("concept_base") or r.get("concept", "")
+        profile = index.score_concept(concept)
+        # A JSON-backed profile states matched explicitly. The older
+        # live-taxonomy profile did not, so fall back to "has a section code",
+        # which was the previous test for the same thing.
+        matched = bool(profile.get("matched", bool(profile.get("section_code"))))
+        if matched:
+            recognised += 1
+        r["importance_matched"] = matched
+        r["importance"]      = profile["score"]
+        r["importance_tier"] = profile["tier"]
+        r["section"]         = profile["section"]
+        r["section_code"]    = profile["section_code"]
+        r["mandated_by"]     = profile["circulars"]
+        r["blocking_rules"]  = profile["blocking_rules"]
+        r["importance_why"]  = profile["drivers"]
+        # An unclassified concept has no importance to blend, so its priority
+        # is movement alone. Scoring it 0.6*0 would rank it BELOW a genuinely
+        # low-importance concept, which is a claim the data does not support.
+        score = profile["score"]
+        r["priority"] = (
+            round(0.6 * score + 0.4 * _movement_score(r), 1)
+            if matched and score is not None
+            else round(_movement_score(r), 1)
+        )
+
+    logger.info(
+        "[IMPORTANCE] tagged %d/%d row(s) with a taxonomy section", recognised, len(rows),
+    )
+    return recognised > 0
+
+
 # ---------------------------------------------------------------------------
 # Step 4 – Chat-friendly formatting
 # ---------------------------------------------------------------------------
+
+# How many ranked rows the LLM narrative describes. Kept equal to the chart's
+# default Top-N (TOPN_OPTIONS[0] / DEFAULT_TOPN in VarianceChartModal.jsx) so a
+# bullet never cites a fact the user cannot see. Change both together.
+SUMMARY_ROWS = 10
+
 
 def variance_meta(
     all_rows:   list[dict],
@@ -1137,7 +1225,38 @@ def variance_meta(
     # bar has zero width, so on a chart they look identical to a fact that is
     # missing from one period. Counting them lets the UI say which it is.
     zero_baseline = sum(1 for r in all_rows if r.get("pct_change") is None)
+    # Importance counts are present only when compute_variance was given an
+    # ImportanceIndex. Absent keys (rather than zeros) let the UI tell "no
+    # taxonomy available" apart from "taxonomy available, nothing critical".
+    importance_meta: dict = {}
+    if any("importance_tier" in r for r in all_rows):
+        # Tier counts cover MATCHED rows only. An unclassified concept has no
+        # tier, so counting it anywhere would overstate that bucket — and the
+        # UI labels its tier filters with these numbers.
+        tiers: dict[str, int] = {}
+        matched_rows = 0
+        for r in all_rows:
+            if not r.get("importance_matched"):
+                continue
+            matched_rows += 1
+            tier = r.get("importance_tier")
+            if tier:
+                tiers[tier] = tiers.get(tier, 0) + 1
+        sections = {r.get("section_code") for r in all_rows if r.get("section_code")}
+        importance_meta = {
+            "importance_available": True,
+            "importance_tiers":     tiers,
+            "importance_matched":   matched_rows,
+            # Rows the return's JSON does not classify. Reported separately so
+            # the UI can say "importance unavailable for N" instead of letting
+            # them read as low priority.
+            "importance_unmatched": len(all_rows) - matched_rows,
+            "sections":             len(sections),
+            "mandated":             sum(1 for r in all_rows if r.get("mandated_by")),
+            "unclassified":         len(all_rows) - matched_rows,
+        }
     return {
+        **importance_meta,
         "facts_a":        len(facts_a),
         "facts_b":        len(facts_b),
         "compared":       len(all_rows),
@@ -1354,21 +1473,40 @@ async def generate_llm_summary(
         return ""
 
     # Build data lines — only include rows that have numeric values in both columns
-    # Enhancement: use top 12 rows (up from 10), and humanise concept names for LLM
+    # Concept names are humanised (CamelCase → words) before the model sees them.
+    #
+    # SUMMARY_ROWS matches the chart's default Top-N view. It was 12 while the
+    # chart drew every row, which was harmless then. Now that the chart opens on
+    # the top 10, a 12-row prompt lets the model cite two facts the user cannot
+    # see on screen — so the narrative and the picture must be cut at the same
+    # place. Both are slices of the SAME importance-ranked list, so row i here
+    # is row i there.
     lines: list[str] = []
-    for r in rows[:12]:
+    for r in rows[:SUMMARY_ROWS]:
         concept_raw  = r.get("concept", "?")
         concept_name = _humanise(concept_raw, max_len=50)   # CamelCase → readable
         val_a        = r.get(label_a)
         val_b        = r.get(label_b)
         pct          = f"{r['pct_change']:+.1f}%" if r.get("pct_change") is not None else "N/A"
         sig          = " ⚠ HIGH VARIANCE" if r.get("significant") else ""
+        # Regulatory context, present only when an ImportanceIndex was used.
+        # It goes in the prompt as fact, not instruction: the model is told the
+        # section and tier so it can SAY which supervisory area moved, and is
+        # forbidden below from inferring anything further from it.
+        ctx = ""
+        if r.get("section"):
+            ctx = f" [section: {r['section']}"
+            if r.get("importance_tier"):
+                ctx += f"; regulatory importance: {r['importance_tier']}"
+            if r.get("mandated_by"):
+                ctx += f"; mandated by {r['mandated_by'][0]}"
+            ctx += "]"
         if isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)):
             lines.append(
-                f"  {concept_name}: {label_a}={val_a:,.0f}  {label_b}={val_b:,.0f}  change={pct}{sig}"
+                f"  {concept_name}: {label_a}={val_a:,.0f}  {label_b}={val_b:,.0f}  change={pct}{sig}{ctx}"
             )
         elif pct != "N/A":
-            lines.append(f"  {concept_name}: change={pct}{sig}")
+            lines.append(f"  {concept_name}: change={pct}{sig}{ctx}")
 
     if not lines:
         logger.warning(
@@ -1383,7 +1521,7 @@ async def generate_llm_summary(
 
     # Determine the dominant value scale for scale-aware prompt context
     all_vals = [
-        v for r in rows[:12]
+        v for r in rows[:SUMMARY_ROWS]
         for v in (r.get(label_a), r.get(label_b))
         if isinstance(v, (int, float))
     ]
@@ -1396,6 +1534,18 @@ async def generate_llm_summary(
         scale_note = f"Values are in base units (largest ≈ {max_abs:,.0f})."
 
     data_text = "\n".join(lines)
+    # Only added when the rows actually carry taxonomy sections, so a return
+    # with no importance index gets the exact prompt it got before.
+    importance_note = ""
+    if any(r.get("section") for r in rows[:SUMMARY_ROWS]):
+        importance_note = (
+            "\nRows are ranked by REGULATORY IMPORTANCE combined with size of "
+            "movement, not by size of movement alone. The bracketed section, "
+            "importance tier and circular come from the return's own taxonomy.\n"
+            "- You MAY name the section and the importance tier.\n"
+            "- You MUST NOT infer breach, risk, non-compliance or supervisory "
+            "consequence from them.\n"
+        )
     prompt = (
         f"You are an RBI banking variance analysis assistant.\n"
         f"Your task is to generate STRICTLY DATA-GROUNDED insights from XBRL variance tables.\n\n"
@@ -1406,7 +1556,8 @@ async def generate_llm_summary(
         f"Scale context: {scale_note}\n\n"
 
         f"Variance Data (concept: Period A → Period B, % change):\n"
-        f"{data_text}\n\n"
+        f"{data_text}\n"
+        f"{importance_note}\n"
 
         f"Generate EXACTLY 5 bullet points.\n\n"
 

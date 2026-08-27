@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
-  ReferenceLine,
+  ReferenceLine, LabelList,
 } from 'recharts'
 
 // ── Colour system ─────────────────────────────────────────────────────────────
@@ -182,26 +182,80 @@ function fmtChange(v) {
 
 // Exported so the export can be verified without mounting the component —
 // it is a pure function of (rows, meta, labels).
-export function buildStandaloneHtml({ rows, meta, labelA, labelB, reportName }) {
+export function buildStandaloneHtml({ rows, meta, labelA, labelB, reportName, summaryText }) {
   const generated = new Date().toLocaleString()
   const total     = rows.length
   const inc       = rows.filter((r) => (r.diff ?? 0) > 0).length
   const dec       = rows.filter((r) => (r.diff ?? 0) < 0).length
   const flat      = total - inc - dec
 
+  // Report order is Analysis → Critical graph → full table.
+  //
+  // The GRAPH is Critical-only: a reader opening this wants the supervisory
+  // headline, and a 7,000-bar canvas buries it. The TABLE below stays the
+  // complete set, so restricting the graph narrows what is drawn first without
+  // removing anything from the export.
+  const criticalRows = rows.filter(
+    (r) => r.importance_matched && r.importance_tier === 'Critical',
+  )
+  const headlineRows = rows.filter(
+    (r) => r.importance_matched
+      && (r.importance_tier === 'Critical' || r.importance_tier === 'High'),
+  )
+  // No importance data (or no Critical rows) → the graph falls back to every
+  // fact, which is exactly what this export drew before tiers existed.
+  const graphRows = criticalRows.length ? criticalRows : rows
+  const graphIsCritical = criticalRows.length > 0
+
+  // The AI narrative arrives as plain text bullets ('• ...'). Rendered as a
+  // list rather than injected as markup — it is model output and must never be
+  // trusted as HTML.
+  const analysisHtml = (() => {
+    const raw = String(summaryText || '').replace(/^AI\s+Summary:\s*/i, '').trim()
+    if (!raw) return ''
+    const items = raw.split('\n')
+      .map((l) => l.replace(/^[•\-*]\s*/, '').trim())
+      .filter(Boolean)
+      // ** ** is the only markup the prompt asks for; convert just that.
+      .map((l) => escapeHtml(l).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'))
+    if (!items.length) return ''
+    return `<section class="ai">
+<h2>AI Analysis</h2>
+<p class="aisub">Generated from the ${headlineRows.length.toLocaleString()} Critical and High
+regulatory-importance concept(s) in this comparison.</p>
+<ul>${items.map((i) => `<li>${i}</li>`).join('')}</ul>
+</section>`
+  })()
+
   // Chart: horizontal paired bars, one group per row, drawn as inline SVG.
   // Height grows with the row count and the page simply scrolls — no
   // truncation, which is the whole point of the export.
   const ROW_H = 26, PAD_L = 300, PAD_R = 150, W = 1180
-  const bodyH = Math.max(1, total) * ROW_H
-  const scale = rows.reduce(
+  const bodyH = Math.max(1, graphRows.length) * ROW_H
+  // Scale over the rows actually drawn, so a Critical-only graph is not
+  // squashed against a maximum that belongs to a bar it does not show.
+  const scale = graphRows.reduce(
     (m, r) => Math.max(m, Math.abs(r.val_a ?? 0), Math.abs(r.val_b ?? 0)), 0,
   ) || 1
+  // ── Bar width: signed-log, matching the on-screen chart ──────────────────
+  // A LINEAR width (|v| / globalMax) made this export unreadable on real data.
+  // These returns span orders of magnitude in one chart — a 5e13 row sets the
+  // scale, so a 4e10 row computes to ~0.08% of the track and lands on the 3px
+  // floor. Every smaller row then rendered as the SAME 3px stub, so bars that
+  // differ by thousands of percent looked identical and the graph appeared to
+  // show no variance at all.
+  //
+  // The in-app chart defaults to a signed-log scale for exactly this reason
+  // (see signedLog / effectiveLog above). Using the same transform here makes
+  // the two agree, and keeps small values visibly distinct instead of
+  // collapsing them onto the minimum.
+  const TRACK = W - PAD_L - PAD_R
+  const logMax = Math.abs(signedLog(scale)) || 1
   // Floor of 3px: a value of 0 is data, and a zero-width bar would read as
   // "not reported" — the same confusion the in-app chart had.
-  const barW = (v) => Math.max(3, (Math.abs(v ?? 0) / scale) * (W - PAD_L - PAD_R))
+  const barW = (v) => Math.max(3, (Math.abs(signedLog(v ?? 0)) / logMax) * TRACK)
 
-  const bars = rows.map((r, i) => {
+  const bars = graphRows.map((r, i) => {
     const y = i * ROW_H
     const a = barW(r.val_a), b = barW(r.val_b)
     const pos = (r.diff ?? 0) > 0, neg = (r.diff ?? 0) < 0
@@ -227,25 +281,6 @@ export function buildStandaloneHtml({ rows, meta, labelA, labelB, reportName }) 
     )
   }).join('')
 
-  const tableRows = rows.map((r) => {
-    const pos = (r.diff ?? 0) > 0, neg = (r.diff ?? 0) < 0
-    const cls = pos ? 'up' : neg ? 'down' : 'flat'
-    const arrow = pos ? '↑' : neg ? '↓' : '→'
-    const pct = fmtChange(r.pct_change)
-    const d = r.diff ?? 0
-    const diffTxt = d > 0 ? `+${fmtRaw(d)}` : fmtRaw(d)
-    return `<tr class="${cls}">` +
-      `<td class="c">${escapeHtml(r.concept)}` +
-      `${r.context_key && r.context_key !== 'BASE' ? `<span class="ctx">${escapeHtml(r.context_key)}</span>` : ''}` +
-      `${r.sign_change ? '<span class="rev" title="Direction reversed">⇕</span>' : ''}</td>` +
-      `<td class="n">${fmtRaw(r.val_a)}</td><td class="n">${fmtRaw(r.val_b)}</td>` +
-      `<td class="n ${cls}">${arrow} ${diffTxt}</td>` +
-      `<td class="n ${cls}" title="${r.pct_change === null || r.pct_change === undefined
-        ? 'No % change (previous value was 0)'
-        : `Exact change: ${r.pct_change >= 0 ? '+' : ''}${Number(r.pct_change).toFixed(2)}%`}">` +
-      `<span class="dot ${cls}"></span>${pct}</td>` +
-      `<td class="u">${escapeHtml(r.unit || '')}</td></tr>`
-  }).join('')
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -288,6 +323,13 @@ td.u{color:var(--muted);font-size:12px}
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
 .dot.up{background:var(--up)}.dot.down{background:var(--down)}.dot.flat{background:var(--flat)}
 .excl{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+/* AI Analysis block — leads the report, above the graph. */
+.ai{margin:22px 0 6px;padding:16px 18px;border:1px solid var(--rule);
+border-left:3px solid #0B5CAD;border-radius:8px;background:var(--sunken)}
+.ai h2{margin:0 0 4px}
+.ai ul{margin:10px 0 0;padding-left:20px}
+.ai li{margin:0 0 7px;line-height:1.55}
+.aisub{margin:0;color:var(--muted);font-size:12.5px}
 tr.up td.n.up,tr.down td.n.down{font-weight:600}
 .ctx{display:block;font-size:11px;color:var(--muted)}
 .rev{color:#EA580C;margin-left:6px;font-weight:700}
@@ -309,7 +351,10 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--rule);color:v
     meta?.dimensional
       ? ` ${Number(meta.dimensional).toLocaleString()} carry a dimensional context.`
       : ''
-  } Nothing is sampled or truncated in this export.${
+  } ${graphIsCritical
+      ? `The graph below shows the <b>${graphRows.length.toLocaleString()}</b> Critical
+         regulatory-importance concept(s); the comparison itself covered every fact above.`
+      : 'Every comparable fact is drawn below.'}${
     meta?.one_sided
       ? ` <span class="excl">${Number(meta.one_sided).toLocaleString()} fact(s) reported in only one period are excluded — they cannot be compared.</span>`
       : ''
@@ -322,16 +367,18 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--rule);color:v
   <div class="stat"><b class="flat">${flat.toLocaleString()}</b><span>Unchanged</span></div>
   ${meta?.sign_changes ? `<div class="stat"><b style="color:#EA580C">${Number(meta.sign_changes).toLocaleString()}</b><span>Reversed</span></div>` : ''}
 </div>
-<h2>Current vs previous — all ${total.toLocaleString()} facts</h2>
+${analysisHtml}
+<h2>${graphIsCritical
+    ? `Critical concepts — ${graphRows.length.toLocaleString()} of ${total.toLocaleString()} facts`
+    : `Current vs previous — all ${total.toLocaleString()} facts`}</h2>
+${graphIsCritical
+    ? `<p class="aisub">Graph limited to Critical regulatory-importance concepts.
+Bars use a signed-log scale so values orders of magnitude apart stay
+distinguishable — hover any bar for the exact figures.</p>`
+    : ''}
 <div class="chart"><svg width="${W}" height="${bodyH + 20}" viewBox="0 0 ${W} ${bodyH + 20}"
-role="img" aria-label="Paired bars comparing ${escapeHtml(labelA)} against ${escapeHtml(labelB)} for all ${total} comparable facts">
+role="img" aria-label="Paired bars comparing ${escapeHtml(labelA)} against ${escapeHtml(labelB)} for ${graphRows.length} ${graphIsCritical ? 'Critical' : 'comparable'} facts">
 <g transform="translate(0,10)">${bars}</g></svg></div>
-<h2>All ${total.toLocaleString()} comparable facts</h2>
-<div class="tw"><table><thead><tr>
-<th>Concept</th><th style="text-align:right">${escapeHtml(labelA)}</th>
-<th style="text-align:right">${escapeHtml(labelB)}</th>
-<th style="text-align:right">Difference</th><th style="text-align:right">% Change</th><th>Unit</th>
-</tr></thead><tbody>${tableRows}</tbody></table></div>
 <footer>Generated ${escapeHtml(generated)} from iDEAL Xia. Values are exactly as compared —
 raw XBRL figures, unmodified. Hover a bar for full precision.</footer>
 </div></body></html>`
@@ -346,13 +393,65 @@ const ROW_OVERSCAN = 10
 // need it.
 const ROW_WINDOW_MIN = 120
 
-export default function VarianceChartModal({ rows, meta, labelA, labelB, onClose }) {
+// ── Top-N presentation cap ───────────────────────────────────────────────────
+// A comparison routinely returns thousands of facts. Drawing all of them is
+// honest but unreadable: scrolling a 1,200-bar canvas is not analysis, and the
+// rows that matter are buried among rows that moved by a rounding error.
+// So the chart opens on the ranked top slice and says so, with All still one
+// click away. This is a VIEW cap only — `rows` (the complete dataset) still
+// feeds the summary cards, the filter counts and the download.
+const TOPN_OPTIONS = [10, 25, 50, 'All']
+const DEFAULT_TOPN = 10
+// Above this many rows the layout stays dense (one thin bar pair per 36px).
+// At or below it, rows get room to breathe and carry printed values — see
+// ROW_PX_LARGE.
+const GROUPED_MAX = 25
+const ROW_PX_LARGE = 58
+
+// [key, label, tooltip] for the ranking selector. Ranking decides WHICH rows
+// survive the Top-N cut, so it must be visible and switchable — otherwise
+// "top 10" silently means "top 10 by a rule the user cannot see".
+// Regulatory-importance tiers, read from the return's generated taxonomy JSON
+// (<repo>/JSON/<form_id>.json) — never recomputed here. Selecting one narrows
+// what is DRAWN; `rows` stays the complete comparison, so the summary cards,
+// the direction counts and the download are unaffected.
+//
+// 'all' is not a tier: it clears the filter. A concept the JSON does not
+// classify carries importance_matched:false and belongs to NO tier — it shows
+// under All and nowhere else, because "we don't know" is not "Low".
+const TIER_FILTERS = ['All', 'Critical', 'High', 'Medium', 'Low']
+
+// Optional re-orderings. Neither is selected by default: with no chip active
+// the chart keeps the order the backend already returned (composite priority —
+// movement weighted by value size, with sign reversals and anomalies
+// promoted). Clicking a chip applies that sort; clicking it again clears it
+// and returns to the default order.
+//
+// There is deliberately no 'Importance' chip here. Regulatory importance is a
+// FILTER now (the Importance dropdown, driven by the return's taxonomy JSON),
+// not a sort — having it in both places meant two controls named the same
+// thing doing different jobs.
+const RANKINGS = [
+  ['diff', 'Absolute Diff',
+   'Largest absolute difference first. Surfaces the biggest movements in '
+   + 'value terms, regardless of how small they are in percentage terms.'],
+  ['pct', '% Change',
+   'Largest percentage movement first. Surfaces volatility — a small line '
+   + 'that doubled outranks a large line that moved 3%.'],
+]
+
+export default function VarianceChartModal({ rows, meta, labelA, labelB, summaryText, onClose }) {
   const [chartType,   setChartType]   = useState('bar')
   const [showSig,     setShowSig]     = useState(false)
   const [useLogScale, setUseLogScale] = useState(true)
   // Direction / significance filter over the FULL dataset.
   const [filterMode,  setFilterMode]  = useState('all')   // all|sig|up|down|reversal
   const [search,      setSearch]      = useState('')
+  // Presentation cap + what "top" means. Both affect the DRAWN slice only.
+  const [topN,        setTopN]        = useState(DEFAULT_TOPN)  // 10|25|50|'All'
+  // null = no re-ordering chosen; the backend's own ranking stands.
+  const [rankBy,      setRankBy]      = useState(null)          // null|diff|pct
+  const [tier,        setTier]        = useState('All')         // All|Critical|High|Medium|Low
 
   // Close on Escape key
   const handleKey = useCallback((e) => {
@@ -379,6 +478,23 @@ export default function VarianceChartModal({ rows, meta, labelA, labelB, onClose
     return { minVal: mn, maxVal: mx, valCount: n }
   }, [rows])
   const autoLog = valCount > 1 && minVal > 0 && (maxVal / minVal) > 100
+
+  // Importance availability + per-tier counts come from the backend's meta,
+  // which counts MATCHED rows only. Falling back to a scan of `rows` keeps the
+  // control working if meta is ever absent.
+  const importanceAvailable = Boolean(
+    meta?.importance_available ?? rows.some((r) => r.importance_matched),
+  )
+  const tierCounts = useMemo(() => {
+    if (meta?.importance_tiers) return meta.importance_tiers
+    const t = {}
+    for (const r of rows) {
+      if (r.importance_matched && r.importance_tier) {
+        t[r.importance_tier] = (t[r.importance_tier] ?? 0) + 1
+      }
+    }
+    return t
+  }, [rows, meta])
 
   // Counted once over the COMPLETE dataset (`rows` = variance_all), so the
   // summary cards never describe the filtered view. Direction is taken from
@@ -433,41 +549,82 @@ export default function VarianceChartModal({ rows, meta, labelA, labelB, onClose
     else if (filterMode === 'zero') {
       out = out.filter((r) => r.pct_change === null || r.pct_change === undefined)
     }
+    // Regulatory tier, straight from the row's JSON-derived fields. A row the
+    // JSON did not classify (importance_matched false) matches NO tier — it is
+    // reachable only under All, never bucketed as Low.
+    if (tier !== 'All') {
+      out = out.filter((r) => r.importance_matched && r.importance_tier === tier)
+    }
     const q = search.trim().toLowerCase()
     if (q) out = out.filter((r) => (r.concept ?? '').toLowerCase().includes(q))
     return out
-  }, [rows, filterMode, search])
+  }, [rows, filterMode, search, tier])
 
   // Legacy toggle kept working: it simply drives the same filter.
   const effectiveFiltered = showSig
     ? filteredRows.filter((r) => r.significant)
     : filteredRows
 
-  // NO paging. The chart renders every row in the current filter and the panel
-  // scrolls — a horizontal bar chart grows downward, so scrolling is the
-  // natural navigation for it and needs no controls to explain. The dataset is
-  // the full comparison either way; scrolling is presentation, never a limit.
-  const visibleRows = effectiveFiltered
+  // ── Rank, then cap ────────────────────────────────────────────────────────
+  // Order matters: rank the FILTERED set, then take the top N of it. Doing it
+  // the other way ("top 10 overall, then keep the decreases") would return
+  // fewer than 10 rows and silently answer a different question — so
+  // "top 10 decreases" composes correctly with the direction filters above.
+  //
+  // With no chip active the rows keep the order compute_variance already
+  // returned (composite priority: log-weighted % movement, anomaly and
+  // sign-reversal bonuses) — the backend stays the one place that definition
+  // lives, and nothing is re-sorted here.
+  const rankedRows = useMemo(() => {
+    if (!rankBy) return effectiveFiltered
+    const out = [...effectiveFiltered]
+    if (rankBy === 'diff') {
+      out.sort((a, b) => Math.abs(b.diff ?? 0) - Math.abs(a.diff ?? 0))
+    } else if (rankBy === 'pct') {
+      // Zero-baseline rows have no percentage at all (null). They sort last
+      // rather than as 0, so a genuine 0% row is not pushed below them.
+      const key = (r) => (r.pct_change === null || r.pct_change === undefined
+        ? -Infinity : Math.abs(r.pct_change))
+      out.sort((a, b) => key(b) - key(a))
+    }
+    return out
+  }, [effectiveFiltered, rankBy])
+
+  // The cap is a slice of the ranked list. 'All' keeps every filtered row and
+  // the scroll windowing below handles the size, exactly as before.
+  const cappedRows = useMemo(
+    () => (topN === 'All' ? rankedRows : rankedRows.slice(0, topN)),
+    [rankedRows, topN],
+  )
+  const hiddenByCap = rankedRows.length - cappedRows.length
+
+  // Below GROUPED_MAX the two period bars get a taller row and printed value
+  // labels, so A vs B is read directly off the chart instead of inferred from
+  // two thin bars or recovered by hovering. Above it the dense layout stays.
+  const grouped  = cappedRows.length > 0 && cappedRows.length <= GROUPED_MAX
+  const rowPx    = grouped ? ROW_PX_LARGE : ROW_PX
+
+  const visibleRows = cappedRows
 
   // Rows are only windowed for the row-per-bar layouts; below the threshold the
   // whole thing mounts at once, exactly as before.
   const totalRows   = visibleRows.length
   const windowed    = totalRows > ROW_WINDOW_MIN
   const startIdx    = windowed
-    ? Math.max(0, Math.floor(scrollTop / ROW_PX) - ROW_OVERSCAN)
+    ? Math.max(0, Math.floor(scrollTop / rowPx) - ROW_OVERSCAN)
     : 0
   const endIdx      = windowed
-    ? Math.min(totalRows, Math.ceil((scrollTop + viewportH) / ROW_PX) + ROW_OVERSCAN)
+    ? Math.min(totalRows, Math.ceil((scrollTop + viewportH) / rowPx) + ROW_OVERSCAN)
     : totalRows
   const windowRows  = windowed ? visibleRows.slice(startIdx, endIdx) : visibleRows
-  const spacerH     = totalRows * ROW_PX
-  const offsetY     = startIdx * ROW_PX
+  const spacerH     = totalRows * rowPx
+  const offsetY     = startIdx * rowPx
 
   // ── Download: ALWAYS the complete dataset ────────────────────────────────
   // Deliberately `rows`, not filteredRows or pageRows — the reason to export
   // is to get everything the screen could not show.
   const handleDownloadHtml = useCallback(() => {
-    const html = buildStandaloneHtml({ rows, meta, labelA, labelB, reportName: '' })
+    const html = buildStandaloneHtml({ rows, meta, labelA, labelB, reportName: '', summaryText })
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
@@ -480,7 +637,7 @@ export default function VarianceChartModal({ rows, meta, labelA, labelB, onClose
     // Revoked on the next tick — revoking synchronously can cancel the
     // download before the browser has read the blob.
     setTimeout(() => URL.revokeObjectURL(url), 0)
-  }, [rows, meta, labelA, labelB])
+  }, [rows, meta, labelA, labelB, summaryText])
 
   // [key, label, tooltip] — every control states what it does. All of them
   // filter the DISPLAY only; the comparison dataset is never re-derived.
@@ -630,7 +787,7 @@ const sharedYAxis = (
 
   // Height of the mounted slice. Previously this was the whole dataset, which
   // is what produced the enormous canvas.
-  const chartHeight = Math.max(340, chartData.length * ROW_PX + 60)
+  const chartHeight = Math.max(340, chartData.length * rowPx + 60)
 
 
   return (
@@ -752,8 +909,14 @@ const sharedYAxis = (
             One band rather than three stacked rows: the search belongs beside
             the filters it complements, and the panel keeps the vertical space
             for the chart. */}
+        {/* Two rows, each "content left / control right":
+              row 1  period legend .......... concept search
+              row 2  direction filters ...... Show + Ranked by
+            The search sits at the top so it is the first control reached, and
+            the Top-N/ranking pair sits directly beneath it, to the right of the
+            filter chips it modifies. */}
         <div className="vc-filterbar">
-        <div className="vc-filterbar-main">
+        <div className="vc-fb-row">
 
         {/* Period legend: identity, kept separate from direction */}
         <div className="vc-period-legend">
@@ -774,9 +937,24 @@ const sharedYAxis = (
           ) : null}
         </div>
 
-        {/* ── Filters + concept search over the FULL dataset ── */}
+        {/* Search closes row 1, sitting opposite the period legend. */}
+        <div className="vc-search-col">
+          <input
+            className="vc-search"
+            type="search"
+            placeholder="Search concept name…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Filter the chart by concept name"
+            title="Filters which facts the chart draws. Does not change the comparison."
+          />
+        </div>
+        </div>
+
+        {/* ── Row 2: direction filters + Show / Ranked by ── */}
         {/* These change only what is DISPLAYED. The comparison result is
             untouched, and the counts above always describe the whole set. */}
+        <div className="vc-fb-row">
         <div className="vc-controls">
           <div className="vc-filter-group">
             {FILTERS.map(([key, label, hint]) => (
@@ -791,18 +969,124 @@ const sharedYAxis = (
             ))}
           </div>
         </div>
+
+        {/* ── Top-N cap + ranking ──────────────────────────────────────────
+            Two controls that together answer "top 10 of what, by what?".
+            Both are presentation-only: the summary cards above, the filter
+            counts and the Download button all still describe the complete
+            comparison. */}
+        <div className="vc-controls vc-controls-rank">
+          <div className="vc-rank-group">
+            <label className="vc-rank-label" htmlFor="vc-topn">Show</label>
+            <select
+              id="vc-topn"
+              className="vc-select"
+              value={String(topN)}
+              // The option values are strings; 'All' stays a string while the
+              // numeric caps are converted back, because the slice logic keys
+              // off `topN === 'All'` and Number('All') is NaN.
+              onChange={(e) => {
+                const v = e.target.value
+                setTopN(v === 'All' ? 'All' : Number(v))
+              }}
+              title="How many rows to draw, taken from the top of the current ranking."
+            >
+              {TOPN_OPTIONS.map((opt) => (
+                <option key={String(opt)} value={String(opt)}>
+                  {opt === 'All' ? 'All' : `Top ${opt}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* Regulatory tier filter. Rendered only when the return actually
+              has importance data — offering tiers that can never match would
+              read as a broken control rather than an empty result. */}
+          {importanceAvailable && (
+            <div className="vc-rank-group">
+              <label className="vc-rank-label" htmlFor="vc-tier">Importance</label>
+              <select
+                id="vc-tier"
+                className="vc-select"
+                value={tier}
+                onChange={(e) => setTier(e.target.value)}
+                title="Filter by regulatory-importance tier from the return's taxonomy JSON. Display only — the comparison keeps every concept."
+              >
+                {TIER_FILTERS.map((t) => {
+                  const n = t === 'All' ? rows.length : (tierCounts[t] ?? 0)
+                  return (
+                    <option key={t} value={t}>
+                      {t}{n ? ` (${n.toLocaleString()})` : ''}
+                    </option>
+                  )
+                })}
+              </select>
+            </div>
+          )}
+          <div className="vc-rank-group">
+            <span className="vc-rank-label">Ranked by</span>
+            {RANKINGS.map(([key, label, hint]) => {
+              const active = rankBy === key
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={`vc-chip vc-chip-sm${active ? ' active' : ''}`}
+                  // Toggle: clicking the active chip clears it, restoring the
+                  // backend's default order. Without this there would be no
+                  // way back once either sort was applied.
+                  onClick={() => setRankBy(active ? null : key)}
+                  aria-pressed={active}
+                  title={active ? `${hint}\n\nClick again to restore the default order.` : hint}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
         </div>
-        <div className="vc-search-col">
-          <input
-            className="vc-search"
-            type="search"
-            placeholder="Search concept name…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            aria-label="Filter the chart by concept name"
-            title="Filters which facts the chart draws. Does not change the comparison."
-          />
         </div>
+        </div>
+
+        {/* ── Coverage caption ─────────────────────────────────────────────
+            Anything that caps what is drawn must say what it left out, or the
+            chart reads as the whole result. Denominators come from the
+            backend's own counts (variance_meta / the complete `rows`), never
+            from the length of the drawn slice. */}
+        <div className="vc-coverage">
+          {hiddenByCap > 0 ? (
+            <>
+              Showing <b>top {cappedRows.length.toLocaleString()}</b> of{' '}
+              <b>{rankedRows.length.toLocaleString()}</b>
+              {filterMode === 'all' && !search.trim() && tier === 'All' ? ' comparable facts' : ' matching facts'}
+              {/* Names the ACTIVE ordering. With no chip selected the rows are
+                  in the backend's own priority order, which is what this says
+                  rather than naming a control the user never touched. */}
+              {' · ranked by '}
+              <b>{(RANKINGS.find(([k]) => k === rankBy) || [, 'variance priority'])[1]}</b>
+              {tier !== 'All' ? <> · tier <b>{tier}</b></> : null}
+            </>
+          ) : (
+            <>
+              Showing <b>all {cappedRows.length.toLocaleString()}</b>
+              {filterMode === 'all' && !search.trim() && tier === 'All' ? ' comparable facts' : ' matching facts'}
+              {tier !== 'All' ? <> in tier <b>{tier}</b></> : null}
+            </>
+          )}
+          {' · '}
+          <span className="vc-cov-up">{incCount.toLocaleString()} up</span>
+          {' · '}
+          <span className="vc-cov-down">{decCount.toLocaleString()} down</span>
+          {flatCount > 0 ? <> · {flatCount.toLocaleString()} unchanged</> : null}
+          {/* The up/down counts describe the COMPLETE comparison, not the
+              drawn slice — stated explicitly so the two numbers on this line
+              are not read as parts of the same total. */}
+          {hiddenByCap > 0 || filterMode !== 'all' || search.trim() ? (
+            <span className="vc-cov-note">
+              {' '}(direction counts cover all {rows.length.toLocaleString()} facts)
+            </span>
+          ) : null}
+          {' · '}
+          <span className="vc-cov-note">Download always exports the full set.</span>
         </div>
 
         {/* ── Chart area ── */}
@@ -811,7 +1095,10 @@ const sharedYAxis = (
           className="vc-chart-area"
           ref={scrollRef}
           onScroll={onChartScroll}
-          style={{ overflowY: "auto", maxHeight: "65vh" }}
+          // scrollbarGutter matches the modal's: the plot area's own scrollbar
+          // comes and goes with the row count, and without a reserved gutter
+          // the bars shift sideways every time a filter changes the count.
+          style={{ overflowY: "auto", maxHeight: "65vh", scrollbarGutter: "stable" }}
         >
         {/* Spacer carries the FULL height so the scrollbar reflects every row;
             the inner layer is offset to the mounted slice's position. */}
@@ -850,6 +1137,10 @@ const sharedYAxis = (
           {chartData.map((entry, i) => (
             <Cell key={i} fill={pctFill(entry)} />
           ))}
+          {grouped && (
+            <LabelList dataKey="pct_display" position="right" formatter={pctTickFmt}
+                       style={{ fontSize: 10, fill: '#475569' }} />
+          )}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -865,15 +1156,27 @@ const sharedYAxis = (
           {/* `fill` is for the LEGEND swatch and tooltip dot only — the <Cell>
               children below still decide each bar's actual colour. Without it
               Recharts falls back to black for both. */}
-          <Bar dataKey={aKey} name={`${labelA} — Current`} fill={legendFillA} radius={[0, 4, 4, 0]} maxBarSize={22} minPointSize={3} animationDuration={600}>
+          <Bar dataKey={aKey} name={`${labelA} — Current`} fill={legendFillA} radius={[0, 4, 4, 0]} maxBarSize={grouped ? 18 : 22} minPointSize={3} animationDuration={600}>
             {chartData.map((entry, i) => (
               <Cell key={i} fill={barFillA(entry)} stroke={barStroke(entry)} strokeWidth={entry.sign_change ? 1.5 : 0} />
             ))}
+            {/* Printed values, small-N only. The bar is POSITIONED by aKey
+                (signed-log when the scale is on) but the label must read the
+                RAW figure, so LabelList takes its own dataKey. Without this
+                the chart would print log values as if they were rupees. */}
+            {grouped && (
+              <LabelList dataKey={labelA} position="right" formatter={fmtAxis}
+                         style={{ fontSize: 10, fill: '#475569' }} />
+            )}
           </Bar>
-          <Bar dataKey={bKey} name={`${labelB} — Previous`} fill={legendFillB} radius={[0, 4, 4, 0]} maxBarSize={22} minPointSize={3} animationDuration={600}>
+          <Bar dataKey={bKey} name={`${labelB} — Previous`} fill={legendFillB} radius={[0, 4, 4, 0]} maxBarSize={grouped ? 18 : 22} minPointSize={3} animationDuration={600}>
             {chartData.map((entry, i) => (
               <Cell key={i} fill={barFillB(entry)} stroke={barStroke(entry)} strokeWidth={entry.sign_change ? 1.5 : 0} />
             ))}
+            {grouped && (
+              <LabelList dataKey={labelB} position="right" formatter={fmtAxis}
+                         style={{ fontSize: 10, fill: '#475569' }} />
+            )}
           </Bar>
         </BarChart>
       ) : (
