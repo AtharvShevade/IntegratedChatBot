@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 
 from backend import config
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
 # no branch, but every value states "unknown" rather than "unimportant".
 _UNMATCHED: dict = {
     "matched": False,
+    "label": "",
     # None, not 0.0 — 0.0 is a real score meaning "classified, nothing makes it
     # important". Callers that blend must be able to tell the two apart.
     "score": None,
@@ -117,12 +119,24 @@ class JsonImportance:
 
         # local name -> regulatory_importance block. Built once per file load.
         by_local: dict[str, dict] = {}
+        # Human labels straight from the taxonomy — "Aggregate NPAs", not the
+        # "Aggregate NP As" a CamelCase splitter produces. Always preferred
+        # over regex humanisation when present. Covers dimension members too,
+        # since members are concepts in the same list.
+        labels: dict[str, str] = {}
         collisions: set[str] = set()
         for concept in payload.get("concepts") or []:
             cid = concept.get("concept_id") or ""
             if not cid:
                 continue
             local = cid.split(":")[-1]
+            lbl = (concept.get("label") or "").strip()
+            if lbl:
+                # Members carry a trailing "[member]" marker that is taxonomy
+                # bookkeeping, not part of the business name.
+                lbl = re.sub(r"\s*\[(member|axis|domain|line items|table)\]\s*$",
+                             "", lbl, flags=re.I).strip()
+                labels.setdefault(local, lbl)
             if local in by_local:
                 collisions.add(local)
                 continue
@@ -133,6 +147,7 @@ class JsonImportance:
         for name in collisions:
             by_local.pop(name, None)
         self._by_local = by_local
+        self._labels = labels
         self._collisions = collisions
 
         self._cache: dict[str, dict] = {}
@@ -150,6 +165,10 @@ class JsonImportance:
             name = name[: name.index(" [")]
         return name.split(":")[-1].strip()
 
+    def label_for(self, concept: str) -> str:
+        """The taxonomy's own label for a concept or member, or ''."""
+        return self._labels.get(self._local_name(concept), "")
+
     def score_concept(self, concept: str) -> dict:
         """Regulatory profile for one concept. Always a dict, never None."""
         local = self._local_name(concept)
@@ -165,6 +184,7 @@ class JsonImportance:
             title = self.sections.get(code, "") if code else ""
             result = {
                 "matched": True,
+                "label": self._labels.get(local, ""),
                 "score": reg.get("score"),
                 "tier": reg.get("tier") or "",
                 "section_code": code,

@@ -165,6 +165,17 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
           section:         r.section ?? '',
           importance_tier: r.importance_tier ?? '',
           mandated_by:     Array.isArray(r.mandated_by) ? r.mandated_by.slice(0, 8) : [],
+          // Needed to SELECT and describe the facts server-side: concept_base
+          // drives the max-3-variants-per-concept cap, context_key locates the
+          // parent row for share-of-total, unit decides whether ₹ Cr applies,
+          // and priority is the 60/40 order the selection slices.
+          concept_base:       r.concept_base ?? r.concept ?? '',
+          context_key:        r.context_key ?? 'BASE',
+          unit:               r.unit ?? '',
+          section_code:       r.section_code ?? '',
+          importance:         r.importance ?? null,
+          priority:           r.priority ?? null,
+          importance_matched: Boolean(r.importance_matched),
         })),
         label_a:     labelA ?? '',
         label_b:     labelB ?? '',

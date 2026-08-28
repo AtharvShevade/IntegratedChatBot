@@ -2714,6 +2714,10 @@ def _serialize_variance_rows(rows: list[dict], label_a: str, label_b: str) -> li
             # tier Low — the UI must never filter an unclassified concept into
             # a tier bucket or present it as low priority.
             "importance_matched": bool(r.get("importance_matched", False)),
+            # Taxonomy labels for the concept and each dimension member, used
+            # to build a business name without CamelCase guessing.
+            "concept_label": r.get("concept_label", ""),
+            "member_labels": r.get("member_labels", []),
             "mandated_by":     r.get("mandated_by", []),
             "importance_why":  r.get("importance_why", []),
             "priority":        r.get("priority", None),
@@ -2744,13 +2748,40 @@ def _headline_rows(rows: list[dict]) -> list[dict]:
 
 
 def _summary_rows(rows: list[dict]) -> list[dict]:
-    """Rows the AI narrative should describe.
+    """Rows offered to the narrative generator.
 
-    The Critical/High set when there is one, so the narrative and the table
-    agree; otherwise the existing ranked top slice, unchanged.
+    The full Critical/High set — NOT a slice. Selection (top 20, max 3
+    dimensional variants per concept) happens inside variance_explain, which
+    needs the whole eligible set to apply the per-concept cap; pre-trimming
+    here would let one concept exhaust the list before the cap could spread it.
+
+    Falls back to the ranked top slice when the return has no importance data,
+    which is the behaviour that existed before tiers.
     """
     headline = _headline_rows(rows)
     return headline or rows[:_VARIANCE_TABLE_ROWS]
+
+
+async def _generate_variance_explanations(
+    eligible: list[dict], all_rows: list[dict],
+    label_a: str, label_b: str, name: str,
+) -> str:
+    """One business sentence per selected high-priority fact.
+
+    *all_rows* is passed separately because share-of-total needs the parent
+    and sibling rows, which are not in the eligible subset.
+    """
+    from backend.tools.variance_explain import generate_explanations
+    # The inline path deliberately returns NOTHING. The explanations are the
+    # model's work, and the model cannot answer inside a comparison request —
+    # it needs 30-90s. Returning Python's template here would put the fallback
+    # on screen as the normal result, which is exactly what it must not be.
+    #
+    # The frontend sees an empty summary, shows its "Analysing…" state, and
+    # fetches the real explanations from /compare-summary. Templates appear
+    # only inside that call, per fact, when a model line fails validation.
+    _ = (eligible, all_rows, label_a, label_b, name)
+    return ""
 
 
 def _build_variance_payload(
@@ -2991,8 +3022,8 @@ async def _run_comparison(
         # The narrative describes the ranked TOP slice, not all N rows \u2014 a
         # full set would not fit a prompt. variance_meta is what tells the
         # user how much was actually compared.
-        llm_summary = await generate_llm_summary(
-            _summary_rows(variance_rows), label_a, label_b, name,
+        llm_summary = await _generate_variance_explanations(
+            _summary_rows(variance_rows), variance_rows, label_a, label_b, name,
         )
         return _build(intent="compare_reports", report_name=name,
                       response_text=_variance_response_text(
@@ -3074,8 +3105,8 @@ async def _run_comparison(
     (variance_rows, all_serialized, table_serialized, v_meta, table) = (
         _build_variance_payload(facts_a, label_a, facts_b, label_b, form_id)
     )
-    llm_summary = await generate_llm_summary(
-        _summary_rows(variance_rows), label_a, label_b, name,
+    llm_summary = await _generate_variance_explanations(
+        _summary_rows(variance_rows), variance_rows, label_a, label_b, name,
     )
 
     return _build(
@@ -4262,6 +4293,9 @@ def _build(
         out["variance_label_a"] = variance_label_a or ""
         out["variance_label_b"] = variance_label_b or ""
         out["llm_summary"]      = llm_summary or ""
+        # Every inline comparison now ships Python's deterministic draft, so
+        # the frontend needs an explicit signal that the model has not run yet.
+        out["llm_summary_is_draft"] = bool(llm_summary)
     # Set independently of variance_data: the chart's dataset (ALL comparable
     # rows) and the coverage counts must never be gated on the table's slice.
     if variance_all is not None:

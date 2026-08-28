@@ -1027,7 +1027,7 @@ function BubbleText({ text, errorDetails }) {
 // ── MessageBubble (main export) ───────────────────────────────────────────────
 export default function MessageBubble({
   role, text, data, options, resultType, sqlData, dbQaData,
-  varianceData, varianceAll, varianceMeta, labelA, labelB, llmSummary, instancesData,
+  varianceData, varianceAll, varianceMeta, labelA, labelB, llmSummary, summaryIsDraft, instancesData,
   downloadUrl, downloadLabel, statusNote,
   errorDetails,
   errorMessages,
@@ -1180,6 +1180,7 @@ export default function MessageBubble({
           labelA={labelA}
           labelB={labelB}
           llmSummary={llmSummary}
+          summaryIsDraft={summaryIsDraft}
           headerText={text}
           noAutoSummary={noAutoSummary}
           onSummaryLoaded={onSummaryLoaded}
@@ -2080,7 +2081,7 @@ const VT_FILTERS = [
 ]
 
 
-function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, headerText, noAutoSummary, onSummaryLoaded }) {
+function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, noAutoSummary, onSummaryLoaded }) {
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
   const [sortDir,   setSortDir]   = useState('desc')
@@ -2125,8 +2126,13 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
   const tableScope = importanceAvailable ? headlineRows : sourceRows
   // What the AI Analysis describes. Capped so a very large Critical/High set
   // still fits a prompt; the backend applies its own SUMMARY_ROWS cap too.
+  // The FULL eligible set is posted. Selection (top 20, max 3 variants per
+  // concept) happens server-side in variance_explain, which needs every
+  // eligible row to spread the cap across concepts — and every row of the
+  // comparison to find parent totals for share-of-total. Slicing here would
+  // pre-empt both.
   const summaryScope = useMemo(
-    () => (importanceAvailable ? headlineRows : rows).slice(0, 40),
+    () => (importanceAvailable ? headlineRows : rows.slice(0, 40)),
     [importanceAvailable, headlineRows, rows],
   )
   const lines    = (headerText || '').split('\n')
@@ -2184,7 +2190,12 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, h
     // The narrative describes the SAME rows the table lists, so the analysis
     // and the figures beneath it can never disagree. With no importance data
     // that is the existing top slice, unchanged.
-    if (llmSummary || noAutoSummary || !summaryScope?.length) return undefined
+    // The inline response now always carries text — Python's deterministic
+    // draft — so testing `llmSummary` alone would skip the polish request and
+    // the LLM would never run. A draft still needs polishing; only a summary
+    // that has already been through the model is final.
+    const isDraft = typeof llmSummary === 'string' && llmSummary.includes('•') && summaryIsDraft
+    if ((llmSummary && !isDraft) || noAutoSummary || !summaryScope?.length) return undefined
     if (summaryRequestedRef.current) return undefined
     summaryRequestedRef.current = true
     const controller = new AbortController()

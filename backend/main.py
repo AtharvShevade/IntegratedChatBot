@@ -387,7 +387,7 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
     the inline path does, so a missing summary is never an error state:
     the table and chart above it are complete either way.
     """
-    from backend.tools.xbrl_comparator import generate_llm_summary
+    from backend.tools.variance_explain import generate_explanations
 
     logger.info(
         "API request received: /compare-summary report=%s rows=%d",
@@ -396,7 +396,7 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
     if not request.rows:
         return {"llm_summary": ""}
 
-    # generate_llm_summary reads each row's two values by the LABEL keys
+    # generate_explanations reads each row's two values by the LABEL keys
     # (r.get(label_a)), while the frontend holds them as val_a/val_b — the
     # shape /compare-execute serialised them into. Map back rather than
     # changing either side's contract.
@@ -415,6 +415,16 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
             "section":         row.section,
             "importance_tier": row.importance_tier,
             "mandated_by":     row.mandated_by,
+            # Selection + business context. concept_base drives the
+            # max-3-per-concept cap, context_key finds the parent row for
+            # share-of-total, and unit gates ₹ Cr formatting.
+            "concept_base":       row.concept_base or row.concept,
+            "context_key":        row.context_key or "BASE",
+            "unit":               row.unit,
+            "section_code":       row.section_code,
+            "importance":         row.importance,
+            "priority":           row.priority,
+            "importance_matched": row.importance_matched,
         }
         for row in request.rows
     ]
@@ -428,7 +438,10 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
     try:
         summary = await _run_cancellable(
             request.request_id,
-            generate_llm_summary(rows, label_a, label_b, request.report_name, timeout=timeout),
+            generate_explanations(
+                rows, label_a, label_b, request.report_name,
+                timeout=timeout, all_rows=rows,
+            ),
         )
     except RequestStopped:
         logger.info("Compare-summary request stopped by user: report=%s", request.report_name or "?")

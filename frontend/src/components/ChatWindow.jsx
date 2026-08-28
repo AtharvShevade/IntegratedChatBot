@@ -29,6 +29,7 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           labelA={msg.labelA}
           labelB={msg.labelB}
           llmSummary={msg.llmSummary}
+          summaryIsDraft={msg.summaryIsDraft}
           // Set on messages restored from localStorage — history must never
           // start new LLM work on page load. See VarianceTableBlock.
           noAutoSummary={msg.noAutoSummary}

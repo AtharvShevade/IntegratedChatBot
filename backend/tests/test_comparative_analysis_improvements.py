@@ -125,9 +125,15 @@ class TestArelleParsingDoesNotBlockEventLoop:
         assert captured["facts_a"] == [{"concept": "X", "value_num": 1.0}]
 
     def test_summary_failure_does_not_fail_the_comparison(self, monkeypatch):
-        """generate_llm_summary raising must not surface as an overall
-        comparison failure — the table is the load-bearing result, the
-        summary is decorative."""
+        """A failing explanation generator must not fail the comparison.
+
+        This used to assert the OPPOSITE — that the error propagated — because
+        _run_comparison awaited the generator directly and relied on the
+        generator's own catch-all to stay silent. The inline path no longer
+        calls a generator at all: explanations are the model's work and are
+        fetched separately by /compare-summary, so the comparison response
+        cannot be affected by anything the generator does.
+        """
         def _load(path):
             return [{"concept": "X", "value_num": 1.0}]
 
@@ -138,13 +144,17 @@ class TestArelleParsingDoesNotBlockEventLoop:
         monkeypatch.setattr(xc, "compute_variance", lambda a, la, b, lb, top_n=None, stats=None, importance=None: [])
         monkeypatch.setattr(xc, "format_variance_table", lambda rows, la, lb: "table")
         monkeypatch.setattr(xc, "generate_llm_summary", _raising_summary)
+        import backend.tools.variance_explain as ve
+        monkeypatch.setattr(ve, "generate_explanations", _raising_summary)
 
-        with pytest.raises(RuntimeError):
-            # generate_llm_summary is awaited directly in _run_comparison
-            # without its own try/except at that call site — this documents
-            # that today it relies entirely on generate_llm_summary's own
-            # internal catch-all (tested below) to make failures silent.
-            asyncio.run(_run_comparison(self._base_session(), "confirm", "test-cmp-async-3"))
+        result = asyncio.run(
+            _run_comparison(self._base_session(), "confirm", "test-cmp-async-3")
+        )
+        assert result["result_type"] != "error"
+        # Nothing is shown inline; the frontend requests it from
+        # /compare-summary, where a failure falls back per fact.
+        assert result.get("llm_summary", "") == ""
+
 
     def test_generate_llm_summary_itself_swallows_errors_and_returns_empty(self, monkeypatch):
         """The real generate_llm_summary (not a test double) must itself

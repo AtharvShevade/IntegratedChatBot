@@ -40,6 +40,11 @@ class ChatResponse(BaseModel):
     variance_label_a: str        = ""
     variance_label_b: str        = ""
     llm_summary:      str        = ""
+    # True when llm_summary is Python's deterministic draft and has NOT been
+    # through the model yet. The frontend uses it to decide whether to request
+    # the polished version from /compare-summary — without it, any non-empty
+    # summary looks final and the LLM never runs.
+    llm_summary_is_draft: bool   = False
     instances_data:   list[dict] = []   # rich metadata for instance_selection UI
     download_url:     str        = ""   # relative /download-file URL (empty when N/A)
     download_label:   str        = ""   # e.g. "Download Render File"
@@ -94,6 +99,17 @@ class CompareSummaryRow(BaseModel):
     section:         str       = Field("", max_length=256)
     importance_tier: str       = Field("", max_length=16)
     mandated_by:     list[str] = Field(default_factory=list, max_length=8)
+    # Needed by the explanation builder: selection reads concept_base (for the
+    # max-3-variants-per-concept cap), importance/priority (for ordering) and
+    # importance_matched (eligibility); share-of-total needs context_key to
+    # find the parent row, and unit decides whether ₹ Cr formatting applies.
+    concept_base:       str            = Field("", max_length=512)
+    context_key:        str            = Field("", max_length=512)
+    unit:               str            = Field("", max_length=64)
+    section_code:       str            = Field("", max_length=16)
+    importance:         Optional[float] = None
+    priority:           Optional[float] = None
+    importance_matched: bool            = False
 
 
 class CompareSummaryRequest(BaseModel):
@@ -104,7 +120,7 @@ class CompareSummaryRequest(BaseModel):
     immediately: the summary takes ~140s against llama3.1 on CPU, which is
     far too long to hold the comparison response open for (see
     generate_llm_summary's own docstring)."""
-    rows:        list[CompareSummaryRow] = Field(default_factory=list, max_length=500)
+    rows:        list[CompareSummaryRow] = Field(default_factory=list, max_length=2000)
     label_a:     str = Field("", max_length=256)
     label_b:     str = Field("", max_length=256)
     report_name: str = Field("", max_length=256)

@@ -26,6 +26,10 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import backend.tools.xbrl_comparator as xc
+# The /compare-summary endpoint generates explanations through
+# variance_explain now; xbrl_comparator is still imported for the
+# direct-generator test below.
+import backend.tools.variance_explain as ve
 
 
 _ROWS = [
@@ -93,10 +97,10 @@ class TestSummaryTimeoutOverride:
 
 class TestCompareSummaryEndpoint:
     def test_returns_the_generated_summary(self, monkeypatch):
-        async def _fake(rows, label_a, label_b, report_name="", timeout=None):
+        async def _fake(rows, label_a, label_b, report_name="", timeout=None, **kw):
             return "AI Summary:\n• **Foreign Currency Balances** rose **+233.3%**."
 
-        monkeypatch.setattr(xc, "generate_llm_summary", _fake)
+        monkeypatch.setattr(ve, "generate_explanations", _fake)
         res = _client().post("/compare-summary", json={
             "rows": _ROWS, "label_a": "run A", "label_b": "run B",
             "report_name": "CIMS_FormGPB",
@@ -111,12 +115,12 @@ class TestCompareSummaryEndpoint:
         empty for a table that is full of data."""
         seen: dict = {}
 
-        async def _fake(rows, label_a, label_b, report_name="", timeout=None):
+        async def _fake(rows, label_a, label_b, report_name="", timeout=None, **kw):
             seen["rows"] = rows
             seen["timeout"] = timeout
             return "ok"
 
-        monkeypatch.setattr(xc, "generate_llm_summary", _fake)
+        monkeypatch.setattr(ve, "generate_explanations", _fake)
         _client().post("/compare-summary", json={
             "rows": _ROWS, "label_a": "run A", "label_b": "run B",
             "report_name": "CIMS_FormGPB",
@@ -131,11 +135,11 @@ class TestCompareSummaryEndpoint:
         unreachable on a CPU host, so this path must pass its own."""
         seen: dict = {}
 
-        async def _fake(rows, label_a, label_b, report_name="", timeout=None):
+        async def _fake(rows, label_a, label_b, report_name="", timeout=None, **kw):
             seen["timeout"] = timeout
             return "ok"
 
-        monkeypatch.setattr(xc, "generate_llm_summary", _fake)
+        monkeypatch.setattr(ve, "generate_explanations", _fake)
         monkeypatch.delenv("OLLAMA_SUMMARY_ASYNC_TIMEOUT", raising=False)
         _client().post("/compare-summary", json={
             "rows": _ROWS, "label_a": "A", "label_b": "B", "report_name": "R",
@@ -145,10 +149,10 @@ class TestCompareSummaryEndpoint:
     def test_generator_failure_is_not_an_error_response(self, monkeypatch):
         """A missing summary must never surface as a failed request — the
         table and chart on screen are complete without it."""
-        async def _boom(rows, label_a, label_b, report_name="", timeout=None):
+        async def _boom(rows, label_a, label_b, report_name="", timeout=None, **kw):
             raise RuntimeError("ollama is down")
 
-        monkeypatch.setattr(xc, "generate_llm_summary", _boom)
+        monkeypatch.setattr(ve, "generate_explanations", _boom)
         res = _client().post("/compare-summary", json={
             "rows": _ROWS, "label_a": "A", "label_b": "B", "report_name": "R",
         })
@@ -158,11 +162,11 @@ class TestCompareSummaryEndpoint:
     def test_empty_rows_short_circuit_without_calling_the_model(self, monkeypatch):
         called = []
 
-        async def _fake(rows, label_a, label_b, report_name="", timeout=None):
+        async def _fake(rows, label_a, label_b, report_name="", timeout=None, **kw):
             called.append(True)
             return "should not happen"
 
-        monkeypatch.setattr(xc, "generate_llm_summary", _fake)
+        monkeypatch.setattr(ve, "generate_explanations", _fake)
         res = _client().post("/compare-summary", json={
             "rows": [], "label_a": "A", "label_b": "B", "report_name": "R",
         })

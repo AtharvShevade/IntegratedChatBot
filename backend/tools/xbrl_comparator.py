@@ -1163,6 +1163,18 @@ def _tag_rows_with_importance(rows: list[dict], index) -> bool:
         if matched:
             recognised += 1
         r["importance_matched"] = matched
+        # The taxonomy's own label, preferred over CamelCase splitting when
+        # building the business name. Member labels are resolved here too —
+        # the index has one entry per concept, and members are concepts.
+        r["concept_label"] = profile.get("label", "") or ""
+        if hasattr(index, "label_for"):
+            ck = r.get("context_key") or "BASE"
+            if ck and ck != "BASE":
+                mem_labels = []
+                for part in ck.split("|"):
+                    raw = part.split("=", 1)[1] if "=" in part else part
+                    mem_labels.append(index.label_for(raw) or "")
+                r["member_labels"] = mem_labels
         r["importance"]      = profile["score"]
         r["importance_tier"] = profile["tier"]
         r["section"]         = profile["section"]

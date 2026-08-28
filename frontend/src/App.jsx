@@ -228,6 +228,7 @@ const _pushResult = (result, extra = {}) => {
     // truncation. Falls back to varianceData only if an older backend omits it.
     varianceAll: result.variance_all || result.variance_data || [],
     varianceMeta: result.variance_meta || {},
+    summaryIsDraft: Boolean(result.llm_summary_is_draft),
     // Variance rolled up into the return's own business sections, ranked by
     // the regulatory importance its taxonomy states. Empty for a return whose
     // taxonomy could not be read — the section panel then simply does not render.
