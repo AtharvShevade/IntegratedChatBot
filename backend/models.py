@@ -16,6 +16,12 @@ class ChatRequest(BaseModel):
     user_id:              Optional[str]  = Field(None, max_length=128)  # current user's ID (for DB Q&A role check)
     role_id:              Optional[str]  = Field(None, max_length=64)   # current user's role ID (for DB Q&A admin check)
     request_id:           Optional[str]  = Field(None, max_length=64)   # client-generated ID; enables Stop Generation
+    # Language the USER is writing in / wants replies in. BCP-47 base tag:
+    # en | fr | ar | hi. Absent, empty or "en" => the request takes the exact
+    # English path it took before multilingual support existed, with no
+    # translation call. An unsupported tag degrades to English rather than
+    # erroring — see backend/i18n/boundary.normalize_lang.
+    lang:                 Optional[str]  = Field(None, max_length=8)
 
     # ── APP_VERSION=6.0 only — tenant resolution + instance-gen auth ──────────
     tenant_id:            Optional[str]  = Field(None, max_length=64)   # resolved TenantId, forwarded by the React frontend
@@ -81,6 +87,10 @@ class CompareRequest(BaseModel):
     instance_b:  int = Field(..., ge=0)
     request_id:  Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
 
+    # Chat language, same contract as ChatRequest.lang: absent/"en" keeps the
+    # exact English behaviour and makes no translation call.
+    lang:        Optional[str] = Field(None, max_length=8)
+
 class CompareSummaryRow(BaseModel):
     """One variance row, in the shape the frontend already holds it (the
     `variance_data` it was sent). Posted back rather than re-derived from
@@ -126,6 +136,10 @@ class CompareSummaryRequest(BaseModel):
     report_name: str = Field("", max_length=256)
     request_id:  Optional[str] = Field(None, max_length=64)  # enables Stop Generation
 
+    # Chat language, same contract as ChatRequest.lang: absent/"en" keeps the
+    # exact English behaviour and makes no translation call.
+    lang:        Optional[str] = Field(None, max_length=8)
+
 
 class ExplainCategoryRequest(BaseModel):
     """Request body for /explain-category — on-demand error explanation."""
@@ -135,6 +149,10 @@ class ExplainCategoryRequest(BaseModel):
     report_name:     Optional[str] = Field(None, max_length=256)
     request_id:      Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
     offset:          int = Field(0, ge=0)  # how many errors in this category are already explained (batching)
+
+    # Chat language, same contract as ChatRequest.lang: absent/"en" keeps the
+    # exact English behaviour and makes no translation call.
+    lang:        Optional[str] = Field(None, max_length=8)
 
 
 class FeedbackRequest(BaseModel):

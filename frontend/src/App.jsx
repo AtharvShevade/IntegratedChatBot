@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
+import VoiceInput from './components/VoiceInput.jsx'
+import { LanguageContext, makeT, isRtl } from './i18n.js'
 import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
@@ -50,7 +52,10 @@ const STORAGE_KEY = `chat_history_${_uid}`
 function _getRecentHistory(messages, n = 7) {
   return messages
     .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({ role: m.role, text: m.text || '' }))
+    // textEn is the ENGLISH source echoed back by the backend in
+    // data.i18n.english. Preferring it keeps decide()'s classifier and LLM
+    // extractor on English context without translating history turn by turn.
+    .map((m) => ({ role: m.role, text: m.textEn || m.text || '' }))
     .filter((m) => m.text)
     .slice(-n)
 }
@@ -84,6 +89,17 @@ function _loadHistory() {
 export default function App() {
   const [messages, setMessages]       = useState(_loadHistory)
   const [inputText, setInputText]     = useState('')
+  // 'idle' | 'recording' | 'processing', mirrored up from VoiceInput so the
+  // composer can prompt in the textarea itself.
+  const [voiceState, setVoiceState]   = useState('idle')
+  // Chat language. 'en' takes the pre-existing English path with zero
+  // translation calls; anything else engages the backend i18n boundary.
+  const [lang, setLang]               = useState(() => {
+    try { return localStorage.getItem('chat_lang') || 'en' } catch { return 'en' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('chat_lang', lang) } catch { /* private mode */ }
+  }, [lang])
   const [isLoading, setIsLoading]     = useState(false)
   const [isGuidedFlow, setIsGuidedFlow] = useState(false)
   const inputRef       = useRef(null)
@@ -218,6 +234,12 @@ const _pushResult = (result, extra = {}) => {
   const resultMsg = {
     role: "assistant",
     text: result.response_text || result.text || "",
+    // English source of this reply (empty unless multilingual is active).
+    // Replayed as conversation_history so the backend always sees English.
+    textEn: result?.data?.i18n?.english?.response_text || "",
+    // Structured report name. The variance header is localized, so the name
+    // must come from the field rather than be parsed out of the prose.
+    reportName: result.report_name || "",
     data: result.data || null,
     options: result.options || [],
     resultType: result.result_type || "",
@@ -334,7 +356,11 @@ const pollForErrors = (jobId) => {
     }
 
     try {
-      const res = await fetch(`/status-errors/${jobId}`)
+      // lang so the enriched error cards come back in the selected language;
+      // the poll is the only delivery point for them (backend/main.py:776).
+      const res = await fetch(
+        `/status-errors/${jobId}${lang && lang !== 'en' ? `?lang=${encodeURIComponent(lang)}` : ''}`
+      )
       const data = await res.json()
 
       // ── Fix: stop polling if job was cleaned up before we got it ──────────
@@ -459,7 +485,7 @@ const pollForErrors = (jobId) => {
         _uid || null,
         _roleId || null,
         recentHistory,
-        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null },
+        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null, lang },
       )
       _pushResult(result)
     } catch (err) {
@@ -467,7 +493,7 @@ const pollForErrors = (jobId) => {
       setIsGuidedFlow(false)
       setMessages((prev) => [
         ...prev,
-        { role: 'error', text: err.message || 'Something went wrong. Please try again.' },
+        { role: 'error', text: err.message || t(err.i18nKey || 'errorGeneric') },
       ])
     } finally {
       _endRequest(requestId)
@@ -497,7 +523,7 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null },
+        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null, lang },
       )
       _pushResult(result)
     } catch (err) {
@@ -505,7 +531,7 @@ const pollForErrors = (jobId) => {
       setIsGuidedFlow(false)
       setMessages((prev) => [
         ...prev,
-        { role: 'error', text: err.message || 'Something went wrong. Please try again.' },
+        { role: 'error', text: err.message || t(err.i18nKey || 'errorGeneric') },
       ])
     } finally {
       _endRequest(requestId)
@@ -528,13 +554,13 @@ const pollForErrors = (jobId) => {
         _loginId || null,
         _uid || null,
         _roleId || null,
-        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null },
+        { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null, lang },
       )
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return
       setIsGuidedFlow(false)
-      setMessages((prev) => [...prev, { role: 'error', text: err.message }])
+      setMessages((prev) => [...prev, { role: 'error', text: err.message || t(err.i18nKey || 'errorGeneric') }])
     } finally {
       _endRequest(requestId)
       setIsLoading(false)
@@ -544,18 +570,18 @@ const pollForErrors = (jobId) => {
   // ── Compare Instances button ──────────────────────────────────────────────
   const handleCompareInstances = async (idxA, idxB) => {
     if (isLoading) return
-    setMessages((prev) => [...prev, { role: 'user', text: 'Compare Instances' }])
+    setMessages((prev) => [...prev, { role: 'user', text: t('comparativeAnalysis.compareInstances') }])
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId })
+      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId, lang })
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return
       setIsGuidedFlow(false)
       setMessages((prev) => [
         ...prev,
-        { role: 'error', text: err.message || 'Comparison failed. Please try again.' },
+        { role: 'error', text: err.message || t(err.i18nKey || 'errorComparison') },
       ])
     } finally {
       _endRequest(requestId)
@@ -575,7 +601,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, offset })
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, offset, lang })
       _pushResult(result, {
         batchCategory: category,
         batchErrorFilePath: errorFilePath,
@@ -586,7 +612,7 @@ const pollForErrors = (jobId) => {
       if (err.name === 'AbortError') return
       setMessages((prev) => [
         ...prev,
-        { role: 'error', text: err.message || 'Failed to generate explanations. Please try again.' },
+        { role: 'error', text: err.message || t(err.i18nKey || 'errorExplanations') },
       ])
     } finally {
       _endRequest(requestId)
@@ -676,12 +702,22 @@ const pollForErrors = (jobId) => {
     }
   }
 
-  const placeholder = isGuidedFlow
-    ? 'Type your answer…'
-    : 'Ask about a report… or press the mic'
+  // Static UI text: looked up from the local dictionary, never sent to the
+  // translation model. Zero LLM calls, zero latency, same wording every time.
+  const t = makeT(lang)
+  // While the mic is live the textarea is the prompt: "Speak now…". Users
+  // look at the box they are about to type in, not at the button they just
+  // clicked, so this is where the cue has to be.
+  const placeholder =
+    voiceState === 'recording'  ? t('voice.speakNow')
+    : voiceState === 'processing' ? t('voice.transcribing')
+    : t(isGuidedFlow ? 'inputPlaceholderGuided' : 'inputPlaceholder')
 
   return (
-    <div className="app-shell">
+    // lang is read by every card below via useT(). dir drives RTL layout for
+    // Arabic — a pure CSS/markup concern, so no model is involved in it.
+    <LanguageContext.Provider value={lang}>
+    <div className="app-shell" dir={isRtl(lang) ? 'rtl' : 'ltr'}>
       <main className="chat-area">
         <ChatWindow
           messages={messages}
@@ -693,14 +729,25 @@ const pollForErrors = (jobId) => {
           onExplainCategory={handleExplainCategory}
           onSummaryLoaded={handleSummaryLoaded}
           allowedActions={allowedActions}
+          lang={lang}
+          onLanguageChange={setLang}
         />
       </main>
 
       <footer className="input-bar">
         {isGuidedFlow && (
-          <div className="guided-mode-indicator">🧭 Guided mode — answer the question above</div>
+          <div className="guided-mode-indicator">{t('guidedModeIndicator')}</div>
         )}
         <form className="input-form" onSubmit={handleSubmit}>
+          {/* Leading position: the mic is an INPUT affordance, so it belongs
+              at the start of the composer next to where text is typed, not
+              among the trailing actions (clear/send). The transcript lands in
+              this same textarea via handleTranscript, for review before Send. */}
+          <VoiceInput
+            onTranscript={handleTranscript}
+            onStateChange={setVoiceState}
+            disabled={isLoading}
+          />
           <textarea
             ref={inputRef}
             className="text-input"
@@ -715,8 +762,8 @@ const pollForErrors = (jobId) => {
             type="button"
             className="clear-chat-btn"
             onClick={handleClearChat}
-            title="Clear chat history"
-            aria-label="Clear chat history"
+            title={t('clearChat')}
+            aria-label={t('clearChat')}
           >
             <TrashIcon />
           </button>
@@ -725,8 +772,8 @@ const pollForErrors = (jobId) => {
               type="button"
               className="send-btn stop-btn"
               onClick={handleStop}
-              aria-label="Stop generating"
-              title="Stop generating"
+              aria-label={t('stopGenerating')}
+              title={t('stopGenerating')}
             >
               <StopIcon />
             </button>
@@ -735,7 +782,7 @@ const pollForErrors = (jobId) => {
               type="submit"
               className="send-btn"
               disabled={!inputText.trim()}
-              aria-label="Send message"
+              aria-label={t('sendMessage')}
             >
               <SendIcon />
             </button>
@@ -750,6 +797,7 @@ const pollForErrors = (jobId) => {
         </p>
       </footer>
     </div>
+    </LanguageContext.Provider>
   )
 }
 

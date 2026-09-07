@@ -10,6 +10,20 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 /**
+ * Build an Error carrying an i18n KEY for its fallback wording.
+ *
+ * This module has no React context and therefore no language, so it cannot
+ * translate. It records WHICH message applies and the component resolves it
+ * with the active language. A `detail` from the backend still wins -- that is
+ * a real server message, not a generic fallback.
+ */
+function _err(detail, i18nKey) {
+  const e = new Error(detail || '')
+  e.i18nKey = i18nKey
+  return e
+}
+
+/**
  * Fetch the subset of guided-menu actions the given identity may see/perform.
  * Side-effect-free — does not touch any conversation session, unlike POSTing
  * a sentinel message through /guided.
@@ -28,7 +42,7 @@ export async function getAllowedActions(loginId, opts = {}) {
   if (domain)   params.set('domain', domain)
   const qs = params.toString()
   const res = await fetch(`${BASE_URL}/allowed-actions${qs ? `?${qs}` : ''}`)
-  if (!res.ok) throw new Error('Failed to fetch allowed actions')
+  if (!res.ok) throw _err('', 'errors.fetchActions')
   const data = await res.json()
   return Array.isArray(data?.actions) ? data.actions : []
 }
@@ -99,13 +113,15 @@ export async function sendFeedback(rating, context = {}) {
  * @returns {Promise<object>} - ChatResponse (variance_table or error).
  */
 export async function compareInstances(sessionId, instanceA, instanceB, opts = {}) {
-  const { signal, requestId } = opts
+  const { signal, requestId, lang } = opts
   const body = {
     session_id: sessionId,
     instance_a: instanceA,
     instance_b: instanceB,
     request_id: requestId ?? null,
   }
+  // Same contract as sendMessage: omitted / 'en' takes the exact English path.
+  if (lang && lang !== 'en') body.lang = lang
   const res = await fetch(`${BASE_URL}/compare-execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,7 +131,7 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? 'We could not compare those instances right now. Please try again.')
+    throw _err(body.detail, 'errors.compareFailed')
   }
 
   return res.json()
@@ -145,7 +161,7 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
  * @returns {Promise<string>} the summary text, or '' if unavailable.
  */
 export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts = {}) {
-  const { signal, requestId } = opts
+  const { signal, requestId, lang } = opts
   try {
     const res = await fetch(`${BASE_URL}/compare-summary`, {
       method: 'POST',
@@ -181,6 +197,9 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
         label_b:     labelB ?? '',
         report_name: reportName ?? '',
         request_id:  requestId ?? null,
+        // The AI narrative is model-authored, so it is translated at runtime by
+        // the existing boundary. Omitted / 'en' leaves it in English.
+        ...(lang && lang !== 'en' ? { lang } : {}),
       }),
       signal,
     })
@@ -221,8 +240,11 @@ export async function sendMessage(
   conversationHistory = [],
   opts = {},
 ) {
-  const { signal, requestId, tenantId, domain, jwt } = opts
+  const { signal, requestId, tenantId, domain, jwt, lang } = opts
   const body = { message }
+  // Language the user is writing in. Omitted / 'en' => the backend takes the
+  // exact English path it took before multilingual support existed.
+  if (lang && lang !== 'en')        body.lang                 = lang
   if (sessionId)                    body.session_id           = sessionId
   if (aspSession)                   body.asp_session          = aspSession
   if (loginId)                      body.login_id             = loginId
@@ -243,7 +265,7 @@ export async function sendMessage(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? 'We could not process your request right now. Please try again.')
+    throw _err(body.detail, 'errors.requestFailed')
   }
 
   return await res.json()
@@ -268,8 +290,11 @@ export async function sendMessage(
  * @returns {Promise<object>}
  */
 export async function sendGuidedMessage(message, sessionId = null, aspSession = null, loginId = null, userId = null, roleId = null, opts = {}) {
-  const { signal, requestId, tenantId, domain, jwt } = opts
+  const { signal, requestId, tenantId, domain, jwt, lang } = opts
   const body = { message }
+  // Language the user is writing in. Omitted / 'en' => the backend takes the
+  // exact English path it took before multilingual support existed.
+  if (lang && lang !== 'en')        body.lang                 = lang
   if (sessionId)  body.session_id  = sessionId
   if (aspSession) body.asp_session = aspSession
   if (loginId)    body.login_id    = loginId
@@ -289,7 +314,7 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? 'We could not process your request right now. Please try again.')
+    throw _err(err.detail, 'errors.requestFailed')
   }
 
   return await res.json()
@@ -297,16 +322,18 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
 
 /**
  * Send a recorded audio Blob to the FastAPI /speech-to-text endpoint,
- * which proxies it to Sarvam AI.
+ * which forwards it to the remote Whisper service (backend/stt).
  *
  * @param {Blob} audioBlob - Raw audio recorded by MediaRecorder.
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
- * @returns {Promise<string>} - Transcribed text.
+ * @param {string} [opts.lang] - Selected UI language; the STT language hint.
+ * @param {string} [opts.requestId] - Lets /stop cancel a slow transcription.
+ * @returns {Promise<string>} - Transcribed text, in the SPOKEN language.
  * @throws {Error} - With a user-friendly message on failure.
  */
 export async function transcribeAudio(audioBlob, opts = {}) {
-  const { signal } = opts
+  const { signal, lang, requestId } = opts
   const formData = new FormData()
   // Give the file a name with the correct extension based on MIME type
   const ext = audioBlob.type.includes('webm') ? 'webm'
@@ -314,6 +341,12 @@ export async function transcribeAudio(audioBlob, opts = {}) {
     : audioBlob.type.includes('mp4')  ? 'mp4'
     : 'audio'
   formData.append('file', audioBlob, `recording.${ext}`)
+  // Unlike /chat, English is sent EXPLICITLY. STT must be told which language
+  // is being spoken -- there is no "leave it in English" default to fall back
+  // on the way there is for translation, and Whisper's own detection is
+  // unreliable on short clips (measured 0.35-0.63 confidence on non-speech).
+  if (lang)      formData.append('lang', lang)
+  if (requestId) formData.append('request_id', requestId)
 
   const res = await fetch(`${BASE_URL}/speech-to-text`, {
     method: 'POST',
@@ -324,7 +357,7 @@ export async function transcribeAudio(audioBlob, opts = {}) {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? 'Sorry, voice transcription failed. Please try again.')
+    throw _err(body.detail, 'voice.transcribeFailed')
   }
 
   const data = await res.json()
@@ -347,8 +380,9 @@ export async function transcribeAudio(audioBlob, opts = {}) {
  * @returns {Promise<object>} - ChatResponse-shaped object with error_details populated.
  */
 export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null, opts = {}) {
-  const { signal, requestId, offset } = opts
+  const { signal, requestId, offset, lang } = opts
   const body = { error_file_path: errorFilePath, category }
+  if (lang && lang !== 'en') body.lang = lang
   if (formId)     body.form_id     = formId
   if (reportName) body.report_name = reportName
   if (requestId)  body.request_id  = requestId
@@ -364,7 +398,7 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? 'We could not load the explanation right now. Please try again.')
+    throw _err(err.detail, 'errors.explanationFailed')
   }
   return await res.json()
 }

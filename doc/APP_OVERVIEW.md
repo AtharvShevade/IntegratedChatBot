@@ -14,7 +14,7 @@ React/Vite frontend  ──HTTP──▶  FastAPI backend  ──▶  Intent rou
                                                        ├─ XBRL report tools ──▶ external .NET APIs
                                                        ├─ App "DB" Q&A ──▶ XML files (Users/Roles/Returns/...)
                                                        └─ SQL Agent (FAISS + Ollama) ──▶ Oracle DB
-Voice input ──▶ Sarvam AI (speech-to-text)
+Voice input ──▶ Whisper service (speech-to-text, remote)
 ```
 
 ---
@@ -28,6 +28,8 @@ Voice input ──▶ Sarvam AI (speech-to-text)
   - `MessageBubble.jsx` — individual message rendering
   - `VarianceChartModal.jsx` — chart popup for XBRL instance comparison (recharts)
   - `VoiceInput.jsx` — microphone recording UI, feeds `/speech-to-text`
+    (mounted in the composer; the transcript lands in the chat input for
+    review before Send, never auto-sent)
 - **Dual version support**: `App.5.5.css` vs `App.6.0.css`, chosen at runtime based on whether a `tenant_id` URL param is present (6.0 = multi-tenant).
 - **Identity**: v5.5 reads `loginId`/`uid`/`roleId`/`aspSession` from URL query params; v6.0 uses a `postMessage` handshake (`CHATBOT_READY` → parent replies `CHATBOT_AUTH`) to receive a JWT.
 - **Backend calls** — all through `src/services/api.js` via `fetch`, base URL from `VITE_API_BASE_URL`:
@@ -45,7 +47,12 @@ Voice input ──▶ Sarvam AI (speech-to-text)
   2. **App "database" Q&A** (`backend/db_qa/`) — queries **flat XML files** (Users, Roles, Returns, Schedules) from the iDEAL app's filesystem — not a real DB. Version-aware path resolution in `backend/config.py`.
   3. **SQL Agent** (`backend/sql_agent/`, vendored from the standalone `sql_agent/` project at repo root) — natural-language-to-SQL over an **Oracle** banking database. Pipeline: query → FAISS retrieval of relevant tables/columns → Ollama generates SQL → SQL validator (blocks dangerous DDL/DML) → executed via `oracledb`.
 - **LLM**: entirely local via **Ollama** — no OpenAI/Azure OpenAI/LangChain anywhere in the codebase. Models used: `phi3:mini` (intent/extraction, DB Q&A beautify), `mistral` (XBRL variance summaries), `sqlcoder`/`gpt-oss`/`llama3.1` (SQL generation, configurable).
-- **Voice**: uploaded audio proxied to **Sarvam AI** for transcription (`SARVAM_API_KEY`).
+- **Voice**: uploaded audio forwarded to a **remote Whisper service**
+  (`STT_BASE_URL`, default `http://3.109.51.228/whisper-api`), reached through
+  `backend/stt/` — a thin client mirroring `backend/i18n/translator.py`. No model,
+  no torch and no ffmpeg on the FastAPI host. The selected UI language is sent as
+  the STT language hint, and `task` is pinned to `transcribe` so speech is never
+  translated — translation stays the job of `backend/i18n/`.
 - **No Docker** — deployment is direct-on-Windows (uvicorn + IIS/.NET-hosted iframe embed).
 
 ## Standalone `sql_agent/` project (repo root)
@@ -71,7 +78,7 @@ The original, independent NL-to-SQL project ("CIMS Banking Regulatory Reporting"
   ollama pull llama3.1
   ```
 - (Optional, only if using the SQL Agent) an **Oracle DB** instance/credentials, and a SQL-generation model such as `sqlcoder-7b` pulled into Ollama.
-- (Optional, only if using voice input) a **Sarvam AI** API key.
+- (Optional, only if using voice input) network access to the **Whisper service** at `STT_BASE_URL`.
 - Access to an iDEAL repo folder on disk (XML files) if you want the App DB Q&A / XBRL tooling to work — otherwise those features gracefully degrade/disable.
 
 ### 1. Backend setup
@@ -98,7 +105,7 @@ Edit `.env` and set at minimum:
 - `BASE_REPO_PATH` (5.5) or `APP_600_REPO_ROOT` (6.0) — path to the iDEAL repo, if available
 - `OLLAMA_BASE_URL` / `OLLAMA_MODEL`
 - `CORS_ORIGINS=http://localhost:3000` (or whatever port the frontend dev server uses)
-- `SARVAM_API_KEY` if testing voice input
+- `STT_BASE_URL` / `STT_ENABLED` if testing voice input
 
 If you want the **SQL Agent** working too:
 

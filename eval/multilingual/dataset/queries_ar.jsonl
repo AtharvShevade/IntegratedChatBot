@@ -1,0 +1,60 @@
+{"id": "st01", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "ما هي حالة RAQ", "text_en": "what is the status of RAQ", "multi_turn": false}
+{"id": "st02", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "ما حالة تقرير raq الخاص بي", "text_en": "whats the status of my raq report", "multi_turn": false}
+{"id": "st03", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "تحقق من حالة إيداع cims", "text_en": "check status for cims filing", "multi_turn": false}
+{"id": "st04", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "هل تم إنشاء DPSS09 بعد", "text_en": "has DPSS09 been generated yet", "multi_turn": false}
+{"id": "st05", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "هل CIMS_ROR متأخر عن موعده", "text_en": "is CIMS_ROR overdue", "multi_turn": false}
+{"id": "st06", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "أعطني تحديثًا لحالة جميع تقاريري", "text_en": "give me a status update on all my reports", "multi_turn": false}
+{"id": "st07", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "تحقق مما إذا كان إنشاء RAQ قد نجح", "text_en": "check if RAQ generation succeeded", "multi_turn": false}
+{"id": "st08", "lang": "ar", "category": "status", "expected_tier": "regex", "text": "ما هي حالة الإرسال الخاص بي ID 1", "text_en": "what is the status of my submission ID 1", "multi_turn": false}
+{"id": "gn01", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "أنشئ تقرير DBR01 لنهاية الربع الماضي", "text_en": "generate the DBR01 report for last quarter end", "multi_turn": false}
+{"id": "gn02", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "أنشئ نسخة جديدة من RAQ بتاريخ 31 مارس 2025", "text_en": "create a new instance of RAQ for 31st march 2025", "multi_turn": false}
+{"id": "gn03", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "ابدأ CIMS_ROR لهذا اليوم", "text_en": "kick off CIMS_ROR for today", "multi_turn": false}
+{"id": "gn04", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "شغّل raq الآن", "text_en": "run raq now", "multi_turn": false}
+{"id": "gn05", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "هل يمكنك إنشاء raq ليوم الجمعة الماضي", "text_en": "can you generate raq for last friday", "multi_turn": false}
+{"id": "gn06", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "أنشئ dbr01 للربع الأول", "text_en": "generate dbr01 for q1", "multi_turn": false}
+{"id": "gn07", "lang": "ar", "category": "generate", "expected_tier": "regex", "text": "أنشئ نسخة للتقرير المنتهي في 31-12-2025", "text_en": "create instance for the report ending 31-12-2025", "multi_turn": false}
+{"id": "sc01", "lang": "ar", "category": "schedule", "expected_tier": "regex", "text": "جدول DBR01 للتشغيل كل يوم اثنين في الساعة 9 صباحًا", "text_en": "schedule DBR01 to run every Monday at 9am", "multi_turn": false}
+{"id": "sc02", "lang": "ar", "category": "schedule", "expected_tier": "regex", "text": "اضبط RAQ ليوم الجمعة القادم الساعة 5:30 مساءً", "text_en": "set up RAQ for next friday at 5:30 pm", "multi_turn": false}
+{"id": "sc03", "lang": "ar", "category": "schedule", "expected_tier": "regex", "text": "جدول إيداع cims لنهاية هذا الشهر", "text_en": "schedule cims filing for the end of this month", "multi_turn": false}
+{"id": "sc04", "lang": "ar", "category": "schedule", "expected_tier": "regex", "text": "جدول cims ليوم 15 من الشهر القادم عند الظهر", "text_en": "schedule cims for 15th of next month at noon", "multi_turn": false}
+{"id": "sc05", "lang": "ar", "category": "schedule", "expected_tier": "regex", "text": "جدول تقرير المودعين ليوم العمل التالي", "text_en": "schedule the depositor report for next business day", "multi_turn": false}
+{"id": "sc06", "lang": "ar", "category": "schedule", "expected_tier": "regex", "text": "ذكرني بإنشاء RAQ قبل يومين من تاريخ الاستحقاق", "text_en": "remind me to generate RAQ 2 days before due date", "multi_turn": false}
+{"id": "cp01", "lang": "ar", "category": "compare", "expected_tier": "regex", "text": "قارن نسخ cims من مارس وأبريل", "text_en": "compare cims instances from march and april", "multi_turn": false}
+{"id": "cp02", "lang": "ar", "category": "compare", "expected_tier": "regex", "text": "أظهر الفرق بين آخر إيداعين لـ RAQ", "text_en": "show variance between last two RAQ filings", "multi_turn": false}
+{"id": "cp03", "lang": "ar", "category": "compare", "expected_tier": "regex", "text": "قارن DBR01 لهذا الشهر مع الشهر الماضي", "text_en": "compare this month vs last month DBR01", "multi_turn": false}
+{"id": "cp04", "lang": "ar", "category": "compare", "expected_tier": "regex", "text": "قارن قسمي مع قسم report", "text_en": "compare my department with report department", "multi_turn": false}
+{"id": "cp05", "lang": "ar", "category": "compare", "expected_tier": "regex", "text": "ما الذي تغير بين آخر نسختين من CIMS_ROR", "text_en": "what changed between the last two CIMS_ROR instances", "multi_turn": false}
+{"id": "cp06", "lang": "ar", "category": "compare", "expected_tier": "regex", "text": "تحليل الفروق لـ DBR01 بين الربع الأول والربع الثاني", "text_en": "variance analysis for DBR01 between q1 and q2", "multi_turn": false}
+{"id": "dq01", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "ما هو دوري", "text_en": "what is my role", "multi_turn": false}
+{"id": "dq02", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "في أي قسم أنا", "text_en": "what department am i in", "multi_turn": false}
+{"id": "dq03", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "من يعمل في Finance", "text_en": "who works in Finance", "multi_turn": false}
+{"id": "dq04", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "اعرض جميع الأقسام", "text_en": "list all departments", "multi_turn": false}
+{"id": "dq05", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "كم عدد المستخدمين النشطين", "text_en": "how many active users are there", "multi_turn": false}
+{"id": "dq06", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "ما هو بريدي الإلكتروني", "text_en": "what is my email", "multi_turn": false}
+{"id": "dq07", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "متى قمت بتسجيل الدخول آخر مرة", "text_en": "when did i last login", "multi_turn": false}
+{"id": "dq08", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "ما هي الإقرارات التي يمكنني تقديمها", "text_en": "which returns can i submit", "multi_turn": false}
+{"id": "dq09", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "ما هو تكرار إعداد التقارير لـ DBR01", "text_en": "what is the reporting frequency of DBR01", "multi_turn": false}
+{"id": "dq10", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "اعرض جميع الإقرارات غير xbrl", "text_en": "list all non-xbrl returns", "multi_turn": false}
+{"id": "dq11", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "ما هي الأقسام التي يمكنها تقديم DPSS09", "text_en": "which departments can submit DPSS09", "multi_turn": false}
+{"id": "dq12", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "كم عدد الأدوار الموجودة في النظام", "text_en": "how many roles exist in the system", "multi_turn": false}
+{"id": "dq13", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "أظهر لي جميع التقارير المقدمة بين 01-01-2025 و 31-03-2025", "text_en": "show me all reports filed between 01-01-2025 and 31-03-2025", "multi_turn": false}
+{"id": "dq14", "lang": "ar", "category": "db_qa", "expected_tier": "db_qa", "text": "ما هو تاريخ استحقاق DPSS09", "text_en": "what is the due date for DPSS09", "multi_turn": false}
+{"id": "sq01", "lang": "ar", "category": "sql_agent", "expected_tier": "sql", "text": "أظهر لي إجمالي الودائع من بيانات الفروع المحلية", "text_en": "show me the total deposits from the domestic branch data", "multi_turn": false}
+{"id": "sq02", "lang": "ar", "category": "sql_agent", "expected_tier": "sql", "text": "ما هو المبلغ الاسمي للمشتقات من ALE domestic", "text_en": "what is the derivative notional principal from ALE domestic", "multi_turn": false}
+{"id": "sq03", "lang": "ar", "category": "sql_agent", "expected_tier": "sql", "text": "أظهر لي بيانات NPA للربع الأخير", "text_en": "show me the NPA data for last quarter", "multi_turn": false}
+{"id": "sq04", "lang": "ar", "category": "sql_agent", "expected_tier": "sql", "text": "اعرض أعلى 10 سلفيات حسب المبلغ المستحق", "text_en": "list the top 10 advances by outstanding amount", "multi_turn": false}
+{"id": "sq05", "lang": "ar", "category": "sql_agent", "expected_tier": "sql", "text": "إجمالي دخل الفوائد المُبلغ عنه للربع المنتهي في 31-03-2025", "text_en": "total interest income reported for the quarter ending 31-03-2025", "multi_turn": false}
+{"id": "er01", "lang": "ar", "category": "error_explanation", "expected_tier": "llm", "text": "اشرح الأخطاء في RAQ", "text_en": "explain the errors in RAQ", "multi_turn": false}
+{"id": "er02", "lang": "ar", "category": "error_explanation", "expected_tier": "llm", "text": "لماذا فشل DBR01 في التحقق من الصحة", "text_en": "why did DBR01 fail validation", "multi_turn": false}
+{"id": "er03", "lang": "ar", "category": "error_explanation", "expected_tier": "llm", "text": "أظهر لي أخطاء الصيغة لـ CIMS_ROR", "text_en": "show me the formula errors for CIMS_ROR", "multi_turn": false}
+{"id": "er04", "lang": "ar", "category": "error_explanation", "expected_tier": "llm", "text": "ما هي أخطاء التحقق الموجودة في DPSS09", "text_en": "what validation errors does DPSS09 have", "multi_turn": false}
+{"id": "cv01", "lang": "ar", "category": "conversational", "expected_tier": "conv", "text": "مرحبا", "text_en": "hello", "multi_turn": false}
+{"id": "cv02", "lang": "ar", "category": "conversational", "expected_tier": "conv", "text": "شكرا لك", "text_en": "thank you", "multi_turn": false}
+{"id": "cv03", "lang": "ar", "category": "conversational", "expected_tier": "conv", "text": "ماذا يمكنك أن تفعل", "text_en": "what can you do", "multi_turn": false}
+{"id": "cv04", "lang": "ar", "category": "conversational", "expected_tier": "conv", "text": "من هو رئيس وزراء الهند", "text_en": "who is the prime minister of India", "multi_turn": false}
+{"id": "cv05", "lang": "ar", "category": "conversational", "expected_tier": "conv", "text": "أخبرني بأشياء عن النظام", "text_en": "tell me stuff about the system", "multi_turn": false}
+{"id": "cv06", "lang": "ar", "category": "conversational", "expected_tier": "conv", "text": "مرحبا هل يمكنك إخباري عن الإقرارات من فضلك", "text_en": "hey can u tell me abt returns pls", "multi_turn": false}
+{"id": "mt01", "lang": "ar", "category": "multi_turn", "expected_tier": "regex", "reply_mode": "numeric", "multi_turn": true, "turns": [{"text": "ما حالة تقرير raq الخاص بي", "text_en": "whats the status of my raq report"}, {"text": "2", "text_en": "2"}]}
+{"id": "mt02", "lang": "ar", "category": "multi_turn", "expected_tier": "regex", "reply_mode": "numeric", "multi_turn": true, "turns": [{"text": "تحقق من حالة إيداع cims", "text_en": "check status for cims filing"}, {"text": "1", "text_en": "1"}]}
+{"id": "mt03", "lang": "ar", "category": "multi_turn", "expected_tier": "regex", "reply_mode": "name", "multi_turn": true, "turns": [{"text": "ما حالة تقرير raq الخاص بي", "text_en": "whats the status of my raq report"}, {"from_options": 0}]}
+{"id": "mt04", "lang": "ar", "category": "multi_turn", "expected_tier": "regex", "reply_mode": "numeric", "multi_turn": true, "turns": [{"text": "أنشئ تقرير DBR01 لنهاية الربع الماضي", "text_en": "generate the DBR01 report for last quarter end"}, {"text": "1", "text_en": "1"}]}

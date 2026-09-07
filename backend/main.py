@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -25,6 +25,9 @@ setup_logging(console_level=logging.INFO)
 from backend import version_config  # noqa: E402
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
+from backend import i18n  # noqa: E402
+from backend import stt  # noqa: E402
+from backend.stt import config as stt_config, vocabulary as stt_vocabulary  # noqa: E402
 from backend.models import (  # noqa: E402
     ChatRequest, ChatResponse, CompareRequest, CompareSummaryRequest,
     ExplainCategoryRequest, FeedbackRequest,
@@ -133,6 +136,39 @@ async def lifespan(app: FastAPI):
                 except Exception as exc:
                     logger.warning("LLM warm-up failed for model=%s: %s", model, exc)
 
+        # State the multilingual configuration THIS process actually has.
+        # os.environ is fixed at process start, so a backend started before
+        # MULTILINGUAL_ENABLED was set returns English to every fr/ar/hi
+        # request while looking perfectly healthy. One log line makes that
+        # visible instead of leaving it to be guessed at from the UI.
+        _i18n_cfg = i18n.runtime_config()
+        logger.info(
+            "Multilingual: enabled=%s model=%s endpoint=%s languages=%s",
+            _i18n_cfg["enabled"], _i18n_cfg["model"],
+            _i18n_cfg["base_url"], _i18n_cfg["supported"],
+        )
+        if not _i18n_cfg["enabled"]:
+            logger.warning(
+                "Multilingual is DISABLED in this process — /chat and /guided "
+                "will return English even when lang=fr|ar|hi is sent. "
+                "Set MULTILINGUAL_ENABLED=true in .env and restart."
+            )
+
+        # Same reasoning as the multilingual line above: os.environ is fixed at
+        # process start, so a backend started before STT_BASE_URL was set would
+        # fail every transcription while looking healthy.
+        _stt_cfg = stt.runtime_config()
+        logger.info(
+            "STT: enabled=%s endpoint=%s language_mode=%s concurrency=%d timeout=%.0fs",
+            _stt_cfg["enabled"], _stt_cfg["base_url"], _stt_cfg["language_mode"],
+            _stt_cfg["concurrency"], _stt_cfg["timeout"],
+        )
+        if not _stt_cfg["enabled"]:
+            logger.warning(
+                "STT is DISABLED in this process — the mic button will report "
+                "that voice input is unavailable. Set STT_ENABLED=true and restart."
+            )
+
         logger.info("Application startup completed")
         yield
     except Exception as exc:
@@ -158,6 +194,14 @@ _inflight_tasks: dict[str, asyncio.Task] = {}
 # endpoint as the identical exception, but only the first should be turned
 # into a normal HTTP response. Swallowing the second would break shutdown.
 _stopped_request_ids: set[str] = set()
+
+# ── STT admission control ─────────────────────────────────────────────────────
+# MEASURED: the Whisper service transcribes one clip at a time. Two concurrent
+# 1s clips returned in 13.6s and 27.2s -- the second caller simply waited for
+# the first. Bounding admission here means a third caller is told to retry
+# instead of queueing invisibly behind two requests that each take ~14s.
+# Same reasoning, and the same shape, as the semaphore in i18n/boundary.py.
+_stt_slots = asyncio.Semaphore(stt_config.concurrency())
 
 
 class RequestStopped(Exception):
@@ -280,13 +324,36 @@ async def chat(request: ChatRequest) -> ChatResponse:
     _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
     _repo_scope.__enter__()
     try:
+        # ── Multilingual boundary, INBOUND: user language → English ───────────
+        # No-op (returns request.message itself, no model call) when
+        # MULTILINGUAL_ENABLED=false or lang is absent/"en". decide() below
+        # receives an English string either way and is completely unaware of
+        # this layer.  Wrapped in _run_cancellable so Stop Generation
+        # interrupts a translation exactly as it interrupts any Ollama call.
+        _inbound = await _run_cancellable(
+            request.request_id, i18n.translate_inbound(request.message, request.lang)
+        )
+        if not _inbound.ok:
+            # FAIL SAFE. A timed-out or truncated translation is
+            # indistinguishable from a valid short question once it reaches
+            # decide(), which would then route it confidently and wrongly.
+            # Refuse the turn instead — the pipeline is never called.
+            logger.warning(
+                "Chat request refused: inbound translation failed lang=%s session=%s error=%s",
+                request.lang, request.session_id or "anonymous", _inbound.error,
+            )
+            return ChatResponse(**i18n.inbound_failure_response(request.lang, _inbound.error))
+
         result = await _run_cancellable(request.request_id, decide(
-            request.message,
+            _inbound.text,
             session_id=request.session_id,
             asp_session=request.asp_session,
             login_id=request.login_id,
             user_id=request.user_id,
             role_id=request.role_id,
+            # Already English: the frontend replays data.i18n.english from the
+            # previous turn, so the classifier and LLM extractor keep seeing
+            # English context without seven extra translation calls.
             conversation_history=request.conversation_history[-7:] if request.conversation_history else None,
         ))
         elapsed = time.monotonic() - start
@@ -308,8 +375,21 @@ async def chat(request: ChatRequest) -> ChatResponse:
     )[:120],
     elapsed_s=f"{elapsed:.3f}s",
 )
+        # ── Multilingual boundary, OUTBOUND: English → user language ─────────
+        # Returns `result` itself, unchanged and uncopied, when the feature is
+        # off or lang is English. Never raises; on translation failure the
+        # correct ENGLISH answer is returned rather than a blank one. Option
+        # lists are masked out before the call and re-rendered locally from
+        # options[], so identifiers cannot be altered by the model.
         if isinstance(result, ChatResponse):
-            return result
+            if not i18n.should_translate(request.lang):
+                return result
+            result = result.model_dump()
+        result = await _run_cancellable(request.request_id, i18n.translate_outbound(
+            result, request.lang,
+            english_message=_inbound.text,
+            inbound=_inbound,
+        ))
         return ChatResponse(**result)
     except RequestStopped:
         logger.info("Chat request stopped by user: session=%s", request.session_id or "anonymous")
@@ -355,6 +435,14 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
             "Comparison completed: duration=%.2fs session=%s",
             elapsed, request.session_id or "anonymous",
         )
+        # The comparison's own prose is deterministic and resolves from the
+        # catalogue. variance_data / variance_all / labels are DATA and are not
+        # translatable fields, so the table and chart are untouched. llm_summary
+        # here is Python's deterministic draft; the model-authored narrative
+        # arrives separately via /compare-summary.
+        result = await _run_cancellable(request.request_id, i18n.translate_outbound(
+            result, request.lang,
+        ))
         return ChatResponse(**result)
     except RequestStopped:
         logger.info("Comparison request stopped by user: session=%s", request.session_id or "anonymous")
@@ -457,6 +545,18 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
         "[PERF] endpoint=/compare-summary duration=%.2fs chars=%d",
         time.monotonic() - start, len(summary or ""),
     )
+
+    # GENUINELY DYNAMIC. This narrative is written by the model per comparison
+    # -- it is not a template and cannot be catalogued, so it is the one place
+    # on this endpoint that legitimately spends a runtime translation call.
+    # translate_outbound masks the concept names, figures and percentages out
+    # of it first, so the numbers a regulator reads are the pipeline's own.
+    if summary and i18n.should_translate(request.lang):
+        localized = await _run_cancellable(request.request_id, i18n.translate_outbound(
+            {"llm_summary": summary, "options": []}, request.lang,
+        ))
+        return {"llm_summary": localized.get("llm_summary") or summary}
+
     return {"llm_summary": summary or ""}
 
 
@@ -484,6 +584,11 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             "Error explanation completed: category=%s duration=%.2fs",
             request.category, elapsed,
         )
+        # Deterministic prose here resolves from the catalogue; the LLM-authored
+        # error explanations in error_details[] are NOT translated (Phase 2).
+        result = await _run_cancellable(request.request_id, i18n.translate_outbound(
+            result, request.lang, english_message=request.category,
+        ))
         return ChatResponse(**result)
     except RequestStopped:
         logger.info("Explain-category request stopped by user: category=%s", request.category)
@@ -503,12 +608,27 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
 
 
 @app.post("/speech-to-text", status_code=status.HTTP_200_OK)
-async def speech_to_text(file: UploadFile = File(...)) -> dict:
-    sarvam_api_key = os.environ.get("SARVAM_API_KEY", "")
-    if not sarvam_api_key:
+async def speech_to_text(
+    file: UploadFile = File(...),
+    lang: str = Form("en"),
+    request_id: str | None = Form(None),
+) -> dict:
+    """Transcribe recorded audio to text in the SPOKEN language.
+
+    This does not translate and does not touch the chat pipeline. The
+    transcript is returned to the frontend, which puts it in the input box
+    (App.jsx handleTranscript) so the user can correct a misheard report name
+    before pressing Send. Keeping it out of /chat is also what keeps STT
+    latency outside the chat latency budget.
+
+    Backed by the remote Whisper service (backend/stt), reached exactly the way
+    Ollama is: a base URL in configuration, a thin typed client, no model and
+    no audio decoding on this host.
+    """
+    if not stt.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Voice transcription is unavailable right now. Please try again later.",
+            detail="Voice input is turned off.",
         )
 
     audio_bytes = await file.read()
@@ -518,41 +638,66 @@ async def speech_to_text(file: UploadFile = File(...)) -> dict:
             detail="Empty audio file received.",
         )
 
-    logger.info("Speech-to-text request received: %d bytes", len(audio_bytes))
+    limit = stt_config.max_bytes()
+    if len(audio_bytes) > limit:
+        # Bounds a runaway recorder before it costs a minute of serialized CPU
+        # on the STT host.
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="That recording is too long. Please record a shorter message.",
+        )
 
-    # Sarvam rejects MIME types with codec parameters (e.g. "audio/webm;codecs=opus").
-    # Strip everything after the first semicolon to get the bare MIME type.
-    content_type = (file.content_type or "audio/webm").split(";")[0].strip()
+    # The service validates by FILENAME EXTENSION -- measured: a .txt upload is
+    # rejected with the allowed list. api.js already names the blob
+    # "recording.webm"; fall back rather than send something unnamed.
+    filename = (file.filename or "recording.webm").strip() or "recording.webm"
 
+    # The selected UI language is the STT language hint. Whisper's own
+    # detection is unreliable on short or noisy clips (measured
+    # language_probability 0.35-0.63 on non-speech), while a user who picked
+    # French is overwhelmingly likely to be speaking French. STT_LANGUAGE_MODE
+    # =auto hands the decision back to the model.
+    requested = (lang or "").strip().lower()
+    hint: str | None = None
+    if stt_config.language_mode() == "ui" and requested in stt_config.supported_languages():
+        hint = requested
+
+    logger.info(
+        "API request received: /speech-to-text bytes=%d lang=%r hint=%r file=%r",
+        len(audio_bytes), requested, hint, filename,
+    )
+    start = time.monotonic()
+
+    client = stt.get_client()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                "https://api.sarvam.ai/speech-to-text",
-                headers={"api-subscription-key": sarvam_api_key},
-                files={
-                    "file": (
-                        file.filename or "audio.webm",
-                        audio_bytes,
-                        content_type,
-                    )
-                },
-                data={"model": "saaras:v3", "mode": "transcribe", "language_code": "en-IN"},
-            )
-            resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to transcribe audio right now. Please try again.",
-        ) from exc
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to transcribe audio right now. Please try again.",
-        ) from exc
+        async with _stt_slots:
+            result = await _run_cancellable(request_id, client.transcribe(
+                audio_bytes, filename, lang=hint,
+                initial_prompt=stt_vocabulary.initial_prompt(),
+            ))
+    except RequestStopped:
+        logger.info("Speech-to-text stopped by user: request_id=%s", request_id)
+        return {"transcript": "", "stopped": True}
 
-    transcript: str = resp.json().get("transcript", "").strip()
-    logger.info("Speech-to-text completed successfully")
-    return {"transcript": transcript}
+    elapsed = time.monotonic() - start
+    logger.info(
+        "[PERF] endpoint=/speech-to-text duration=%.2fs ok=%s chars=%d meta=%s",
+        elapsed, result.ok, len(result.text), result.to_dict(),
+    )
+
+    if not result.ok:
+        # Nothing sensible to degrade to: a failed transcription has no English
+        # fallback the way a failed translation does.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to transcribe audio right now. Please try again.",
+        )
+
+    return {
+        "transcript": result.text,
+        "detected_language": result.language,
+        "language_probability": result.language_probability,
+    }
 
 
 @app.post("/stop", status_code=status.HTTP_200_OK)
@@ -694,7 +839,7 @@ async def allowed_actions(
 
 
 @app.get("/status-errors/{job_id}", status_code=status.HTTP_200_OK)
-async def get_status_errors(job_id: str) -> dict:
+async def get_status_errors(job_id: str, lang: str = "en") -> dict:
     """Poll for the result of a background LLM error-enrichment job.
 
     Returns:
@@ -716,7 +861,14 @@ async def get_status_errors(job_id: str) -> dict:
     list(payload.keys()) if payload else []
 )
     _error_jobs.pop(job_id, None)
-    return {"status": "done", **(payload or {})}
+    # ── Multilingual boundary: OUTBOUND ────────────────────────────────────
+    # This is the report-status path, and it carries the SAME error_details[]
+    # cards /explain-category returns -- the enrichment simply finished after
+    # the first response was already sent. Without this the cards came back
+    # English no matter which language was selected, because the poll is the
+    # only place they are delivered.
+    localized = await i18n.translate_outbound(dict(payload or {}), lang)
+    return {"status": "done", **localized}
 
 
 @app.post("/guided", response_model=ChatResponse, status_code=status.HTTP_200_OK)
@@ -745,6 +897,21 @@ async def guided(request: ChatRequest) -> ChatResponse:
             "[PERF] endpoint=/guided result_type=%s duration=%.2fs session=%s",
             result.get("result_type", "?"), elapsed, request.session_id,
         )
+        # ── Multilingual boundary: OUTBOUND ONLY for /guided ─────────────────
+        # There is deliberately NO inbound translation here. Every message this
+        # endpoint receives is a token the pipeline matches verbatim, never
+        # free prose:
+        #   * "__GUIDED_START__"        — the menu sentinel (main.py:726)
+        #   * an exact GUIDED_ACTIONS label — matched with `msg in
+        #     GUIDED_ACTIONS` at guided.py:179-180, an English literal test
+        #   * a report name / ReturnId / Request ID — taken verbatim at
+        #     guided.py:198-230 (_looks_like_request_id_attempt, _INSTANCE_ID_RE)
+        # Translating any of them would break the flow outright. The user still
+        # gets a localized RESPONSE; the button labels stay English, which is
+        # also what keeps them matchable on the next turn.
+        result = await _run_cancellable(request.request_id, i18n.translate_outbound(
+            result, request.lang, english_message=request.message,
+        ))
         return ChatResponse(**result)
     except RequestStopped:
         logger.info("Guided request stopped by user: session=%s", request.session_id)

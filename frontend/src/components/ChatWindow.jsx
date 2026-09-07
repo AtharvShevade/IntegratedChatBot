@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import MessageBubble from './MessageBubble.jsx'
 
-export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback, onExplainCategory, onSummaryLoaded, allowedActions }) {
+export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback, onExplainCategory, onSummaryLoaded, allowedActions, lang, onLanguageChange }) {
   const bottomRef = useRef(null)
 
   // Auto-scroll to the latest message whenever messages change
@@ -19,6 +19,7 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           data={msg.data}
           options={msg.options}
           resultType={msg.resultType}
+          reportName={msg.reportName}
           feedbackQuery={msg.query}
           feedbackIntent={msg.intent}
           sqlData={msg.sqlData}
@@ -52,6 +53,10 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           onFeedback={onFeedback}
           onExplainCategory={(cat, errorFilePath, formId, reportName, offset) => onExplainCategory?.(cat, errorFilePath, formId, reportName, offset)}
           allowedActions={allowedActions}
+          // Only the welcome / next-action menu cards use these: the language
+          // dropdown lives in the chatbot menu section.
+          lang={lang}
+          onLanguageChange={onLanguageChange}
         />
       ))}
 

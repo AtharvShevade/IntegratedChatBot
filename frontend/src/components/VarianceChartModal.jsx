@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useT, makeT } from '../i18n.js'
 import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
@@ -52,18 +53,19 @@ function fmtRaw(v) {
 }
 
 // ── Analyst-friendly percentage ───────────────────────────────────────────────
-function fmtPct(v) {
-  if (v === null || v === undefined) return 'N/A'
+function fmtPct(v, t) {
+  if (v === null || v === undefined) return t('common.notAvailable')
   const abs = Math.abs(v)
   const sign = v > 0 ? '+' : ''
-  if (abs > 100_000) return `${sign}Extreme ${v > 0 ? '↑' : '↓'}`
-  if (abs > 10_000)  return `${sign}Very High`
+  if (abs > 100_000) return `${sign}${t('comparativeAnalysis.extreme')} ${v > 0 ? '↑' : '↓'}`
+  if (abs > 10_000)  return `${sign}${t('comparativeAnalysis.veryHigh')}`
   if (abs > 1_000)   return `${sign}>1,000%`
   return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
 }
 
 // ── Custom tooltip ────────────────────────────────────────────────────────────
 function VarTooltip({ active, payload, label, labelA, labelB }) {
+  const t = useT()
   if (!active || !payload?.length) return null
   const row = payload[0]?.payload ?? {}
   const pct = row.pct_change
@@ -96,19 +98,19 @@ function VarTooltip({ active, payload, label, labelA, labelB }) {
           style={{ color: pct > 0 ? COLOR_POS : pct < 0 ? COLOR_NEG : COLOR_FLAT }}
         >
           <span className="vc-tip-dot" aria-hidden="true" />
-          {fmtChange(pct)} {pct > 0 ? 'increase' : pct < 0 ? 'decrease' : 'no change'}
+          {fmtChange(pct, t)} {pct > 0 ? t('comparativeAnalysis.legendIncrease').toLowerCase() : pct < 0 ? t('comparativeAnalysis.legendDecrease').toLowerCase() : t('comparativeAnalysis.legendNoChange').toLowerCase()}
         </div>
       )}
       {(row.pct_change === null || row.pct_change === undefined) && (
         <div className="vc-tooltip-zero">
-          Previous value was 0 — no % change (reported in both periods)
+          {t('comparativeAnalysis.zeroPreviousNote')}
         </div>
       )}
       {row.sign_change && (
-        <div className="vc-tooltip-sign">⇕ Direction reversed</div>
+        <div className="vc-tooltip-sign">⇕ {t('comparativeAnalysis.directionReversed')}</div>
       )}
       {/* {row.significant && (
-        <div className="vc-tooltip-high">⚠ High variance</div>
+        <div className="vc-tooltip-high">⚠ {t('comparativeAnalysis.highVariance')}</div>
       )} */}
       {row.anomaly_flags?.length > 0 && (
         <div className="vc-tooltip-anomaly">
@@ -170,8 +172,8 @@ function escapeHtml(s) {
 
 // Change label for the export and chart tooltips — always a percentage,
 // matching the in-app table exactly (see fmtPctFin in MessageBubble.jsx).
-function fmtChange(v) {
-  if (v === null || v === undefined) return 'N/A'
+function fmtChange(v, t) {
+  if (v === null || v === undefined) return t('common.notAvailable')
   const abs = Math.abs(v)
   const sign = v > 0 ? '+' : v < 0 ? '-' : ''
   if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(2)}B%`
@@ -182,7 +184,10 @@ function fmtChange(v) {
 
 // Exported so the export can be verified without mounting the component —
 // it is a pure function of (rows, meta, labels).
-export function buildStandaloneHtml({ rows, meta, labelA, labelB, reportName, summaryText }) {
+export function buildStandaloneHtml({ rows, meta, labelA, labelB, reportName, summaryText, lang = 'en' }) {
+  // Not a component -- no hooks here. The caller passes the active
+  // language and this stays a pure function of its arguments.
+  const t = makeT(lang)
   const generated = new Date().toLocaleString()
   const total     = rows.length
   const inc       = rows.filter((r) => (r.diff ?? 0) > 0).length
@@ -220,7 +225,7 @@ export function buildStandaloneHtml({ rows, meta, labelA, labelB, reportName, su
       .map((l) => escapeHtml(l).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'))
     if (!items.length) return ''
     return `<section class="ai">
-<h2>AI Analysis</h2>
+<h2>${t('comparativeAnalysis.aiAnalysis')}</h2>
 <p class="aisub">Generated from the ${headlineRows.length.toLocaleString()} Critical and High
 regulatory-importance concept(s) in this comparison.</p>
 <ul>${items.map((i) => `<li>${i}</li>`).join('')}</ul>
@@ -261,16 +266,16 @@ regulatory-importance concept(s) in this comparison.</p>
     const pos = (r.diff ?? 0) > 0, neg = (r.diff ?? 0) < 0
     const dirCol = pos ? '#16A34A' : neg ? '#DC2626' : '#6B7280'
     const arrow  = pos ? '↑' : neg ? '↓' : '→'
-    const pct = fmtChange(r.pct_change)
+    const pct = fmtChange(r.pct_change, t)
     return (
       `<g><title>${escapeHtml(r.concept)}` +
       `${r.context_key && r.context_key !== 'BASE' ? `\nContext: ${escapeHtml(r.context_key)}` : ''}` +
-      `\n${escapeHtml(labelA)} (current): ${fmtRaw(r.val_a)}` +
-      `\n${escapeHtml(labelB)} (previous): ${fmtRaw(r.val_b)}` +
-      `\nDifference: ${(r.diff ?? 0) > 0 ? '+' : ''}${fmtRaw(r.diff)}` +
-      `\nChange: ${pct} ${arrow}` +
-      `\nDirection: ${pos ? 'Increased' : neg ? 'Decreased' : 'No change'}` +
-      `${r.sign_change ? '\nSign reversal' : ''}` +
+      `\n${escapeHtml(labelA)} (${t('comparativeAnalysis.tooltipCurrent')}): ${fmtRaw(r.val_a)}` +
+      `\n${escapeHtml(labelB)} (${t('comparativeAnalysis.tooltipPrevious')}): ${fmtRaw(r.val_b)}` +
+      `\n${t('comparativeAnalysis.tooltipDifference')}: ${(r.diff ?? 0) > 0 ? '+' : ''}${fmtRaw(r.diff)}` +
+      `\n${t('comparativeAnalysis.tooltipChange')}: ${pct} ${arrow}` +
+      `\n${t('comparativeAnalysis.tooltipDirection')}: ${pos ? t('comparativeAnalysis.increased') : neg ? t('comparativeAnalysis.decreased') : t('comparativeAnalysis.legendNoChange')}` +
+      `${r.sign_change ? `\n${t('comparativeAnalysis.tooltipSignReversal')}` : ''}` +
       `${r.unit ? `\nUnit: ${escapeHtml(r.unit)}` : ''}</title>` +
       `<text x="${PAD_L - 10}" y="${y + 17}" text-anchor="end" class="lbl">${escapeHtml(
         (r.concept || '').length > 46 ? r.concept.slice(0, 45) + '…' : r.concept,
@@ -339,17 +344,17 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--rule);color:v
 <h1>Variance Analysis${reportName ? ` — ${escapeHtml(reportName)}` : ''}</h1>
 <p class="sub">${escapeHtml(labelA)} &nbsp;vs&nbsp; ${escapeHtml(labelB)}</p>
 <div class="cmp">
-  <span class="key"><span class="sw" style="background:${COLOR_A}"></span>${escapeHtml(labelA)} — Current</span>
-  <span class="key"><span class="sw" style="background:${COLOR_B}"></span>${escapeHtml(labelB)} — Previous</span>
+  <span class="key"><span class="sw" style="background:${COLOR_A}"></span>${escapeHtml(labelA)} — ${t('comparativeAnalysis.current')}</span>
+  <span class="key"><span class="sw" style="background:${COLOR_B}"></span>${escapeHtml(labelB)} — ${t('comparativeAnalysis.previous')}</span>
   <span class="sep"></span>
-  <span class="key up">↑ Increase</span><span class="key flat">→ No change</span>
-  <span class="key down">↓ Decrease</span>
+  <span class="key up">↑ ${t('comparativeAnalysis.legendIncrease')}</span><span class="key flat">→ ${t('comparativeAnalysis.legendNoChange')}</span>
+  <span class="key down">↓ ${t('comparativeAnalysis.legendDecrease')}</span>
 </div>
-<div class="cov"><b>Visualization: all ${total.toLocaleString()} comparable facts${
+<div class="cov"><b>${t('export.visualizationAll').replace('{0}', total.toLocaleString())}${
     meta?.concepts ? ` across ${Number(meta.concepts).toLocaleString()} concepts` : ''
   }.</b>${
     meta?.dimensional
-      ? ` ${Number(meta.dimensional).toLocaleString()} carry a dimensional context.`
+      ? ` ${t('comparativeAnalysis.dimensionalContext').replace('{0}', Number(meta.dimensional).toLocaleString())}`
       : ''
   } ${graphIsCritical
       ? `The graph below shows the <b>${graphRows.length.toLocaleString()}</b> Critical
@@ -360,17 +365,17 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--rule);color:v
       : ''
   }</div>
 <div class="stats">
-  <div class="stat"><b>${total.toLocaleString()}</b><span>Facts compared</span></div>
-  ${meta?.concepts ? `<div class="stat"><b>${Number(meta.concepts).toLocaleString()}</b><span>Concepts</span></div>` : ''}
-  <div class="stat"><b class="up">${inc.toLocaleString()}</b><span>Increased</span></div>
-  <div class="stat"><b class="down">${dec.toLocaleString()}</b><span>Decreased</span></div>
-  <div class="stat"><b class="flat">${flat.toLocaleString()}</b><span>Unchanged</span></div>
-  ${meta?.sign_changes ? `<div class="stat"><b style="color:#EA580C">${Number(meta.sign_changes).toLocaleString()}</b><span>Reversed</span></div>` : ''}
+  <div class="stat"><b>${total.toLocaleString()}</b><span>${t('comparativeAnalysis.factsCompared')}</span></div>
+  ${meta?.concepts ? `<div class="stat"><b>${Number(meta.concepts).toLocaleString()}</b><span>${t('comparativeAnalysis.concepts')}</span></div>` : ''}
+  <div class="stat"><b class="up">${inc.toLocaleString()}</b><span>${t('comparativeAnalysis.increased')}</span></div>
+  <div class="stat"><b class="down">${dec.toLocaleString()}</b><span>${t('comparativeAnalysis.decreased')}</span></div>
+  <div class="stat"><b class="flat">${flat.toLocaleString()}</b><span>${t('comparativeAnalysis.unchanged')}</span></div>
+  ${meta?.sign_changes ? `<div class="stat"><b style="color:#EA580C">${Number(meta.sign_changes).toLocaleString()}</b><span>${t('comparativeAnalysis.reversed')}</span></div>` : ''}
 </div>
 ${analysisHtml}
 <h2>${graphIsCritical
-    ? `Critical concepts — ${graphRows.length.toLocaleString()} of ${total.toLocaleString()} facts`
-    : `Current vs previous — all ${total.toLocaleString()} facts`}</h2>
+    ? t('comparativeAnalysis.criticalConceptsOf').replace('{0}', graphRows.length.toLocaleString()).replace('{1}', total.toLocaleString())
+    : t('comparativeAnalysis.currentVsPreviousAll').replace('{0}', total.toLocaleString())}</h2>
 ${graphIsCritical
     ? `<p class="aisub">Graph limited to Critical regulatory-importance concepts.
 Bars use a signed-log scale so values orders of magnitude apart stay
@@ -431,16 +436,17 @@ const TIER_FILTERS = ['All', 'Critical', 'High', 'Medium', 'Low']
 // FILTER now (the Importance dropdown, driven by the return's taxonomy JSON),
 // not a sort — having it in both places meant two controls named the same
 // thing doing different jobs.
-const RANKINGS = [
-  ['diff', 'Absolute Diff',
-   'Largest absolute difference first. Surfaces the biggest movements in '
-   + 'value terms, regardless of how small they are in percentage terms.'],
-  ['pct', '% Change',
-   'Largest percentage movement first. Surfaces volatility — a small line '
-   + 'that doubled outranks a large line that moved 3%.'],
+// Built per-render so the labels follow the selected language. The KEY
+// ('diff' / 'pct') is the ranking value and never changes.
+const rankings = (t) => [
+  ['diff', t('comparativeAnalysis.rankAbsoluteDiff'),
+   t('comparativeAnalysis.rankAbsoluteDiffDesc')],
+  ['pct', t('comparativeAnalysis.rankPctChange'),
+   t('comparativeAnalysis.rankPctChangeDesc')],
 ]
 
 export default function VarianceChartModal({ rows, meta, labelA, labelB, summaryText, onClose }) {
+  const t = useT()
   const [chartType,   setChartType]   = useState('bar')
   const [showSig,     setShowSig]     = useState(false)
   const [useLogScale, setUseLogScale] = useState(true)
@@ -624,7 +630,7 @@ export default function VarianceChartModal({ rows, meta, labelA, labelB, summary
   // Deliberately `rows`, not filteredRows or pageRows — the reason to export
   // is to get everything the screen could not show.
   const handleDownloadHtml = useCallback(() => {
-    const html = buildStandaloneHtml({ rows, meta, labelA, labelB, reportName: '', summaryText })
+    const html = buildStandaloneHtml({ rows, meta, labelA, labelB, reportName: '', summaryText, lang: t.lang })
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
@@ -639,25 +645,35 @@ export default function VarianceChartModal({ rows, meta, labelA, labelB, summary
     setTimeout(() => URL.revokeObjectURL(url), 0)
   }, [rows, meta, labelA, labelB, summaryText])
 
+  // Direction chips get the same colour + arrow the old legend row used to
+  // carry on its own — the legend was removed as redundant once the chips
+  // that select a direction also LOOK like that direction. 'all' / 'sig' /
+  // 'zero' have no direction of their own, so they keep the neutral chip
+  // style and no arrow.
+  const FILTER_META = {
+    up:       { arrow: '↑ ', color: COLOR_POS },
+    down:     { arrow: '↓ ', color: COLOR_NEG },
+    reversal: { arrow: '⇕ ', color: COLOR_SIGN },
+  }
+
   // [key, label, tooltip] — every control states what it does. All of them
   // filter the DISPLAY only; the comparison dataset is never re-derived.
   const FILTERS = [
-    ['all',      `All (${rows.length.toLocaleString()})`,
-                 'Every fact present in both periods'],
-    ['sig',      `High variance (${sigCount.toLocaleString()})`,
-                 'Facts flagged high-variance by the existing variance logic'],
-    ['up',       `Increased (${incCount.toLocaleString()})`,
-                 'Current period is higher than the previous period'],
-    ['down',     `Decreased (${decCount.toLocaleString()})`,
-                 'Current period is lower than the previous period'],
-    ['reversal', `Reversed (${signChgCount.toLocaleString()})`,
-                 'The value crossed zero — sign reversal per the existing anomaly logic'],
+    ['all',      `${t('common.all')} (${rows.length.toLocaleString()})`,
+                 t('comparativeAnalysis.filters.allDesc')],
+    ['sig',      `${t('comparativeAnalysis.highVariance')} (${sigCount.toLocaleString()})`,
+                 t('comparativeAnalysis.filters.sigDesc')],
+    ['up',       `${t('comparativeAnalysis.increased')} (${incCount.toLocaleString()})`,
+                 t('comparativeAnalysis.filters.upDesc')],
+    ['down',     `${t('comparativeAnalysis.decreased')} (${decCount.toLocaleString()})`,
+                 t('comparativeAnalysis.filters.downDesc')],
+    ['reversal', `${t('comparativeAnalysis.reversed')} (${signChgCount.toLocaleString()})`,
+                 t('comparativeAnalysis.filters.reversalDesc')],
     // "Previous was 0" rather than "From zero": the first reading of the label
     // should already be the explanation. Users asked what "From zero" meant.
-    ['zero',     `Previous was 0 (${zeroBaseCount.toLocaleString()})`,
-                 'Reported in both periods, but the previous value was 0 — so there is no '
-                 + 'percentage change to compute and the previous bar has no length. These '
-                 + 'are real comparisons, not missing facts.'],
+    ['zero',     t('comparativeAnalysis.previousWas0Count')
+                   .replace('{0}', zeroBaseCount.toLocaleString()),
+                 t('comparativeAnalysis.zeroBaselineNote')],
   ]
 
   // Prepare chart data — always use raw numeric values; formatting is in the tooltip
@@ -793,13 +809,13 @@ const sharedYAxis = (
   return (
     /* backdrop */
     <div className="vc-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose?.() }}>
-      <div className="vc-modal" role="dialog" aria-modal="true" aria-label="Variance Chart">
+      <div className="vc-modal" role="dialog" aria-modal="true" aria-label={t('comparativeAnalysis.chartTitle')}>
 
         {/* ── Header ── */}
         <div className="vc-header">
           <div className="vc-title">
             <span className="vc-title-icon">📊</span>
-            Variance Visualisation
+            {t('comparativeAnalysis.title')}
             <span className="vc-title-labels">
               <span className="vc-label-a">{labelA}</span>
               <span className="vc-vs">vs</span>
@@ -813,7 +829,7 @@ const sharedYAxis = (
                 onClick={() => setShowSig((s) => !s)}
                 title="Show only high-variance rows"
               >
-                ⚠ High variance ({sigCount})
+                ⚠ {t('comparativeAnalysis.highVariance')} ({sigCount})
               </button>
             )} */}
             {/* <button
@@ -829,32 +845,32 @@ const sharedYAxis = (
             <button
               className="vc-download-btn-main"
               onClick={handleDownloadHtml}
-              title={`Download a standalone HTML file with all ${rows.length.toLocaleString()} comparable facts`}
+              title={t('comparativeAnalysis.downloadTooltip').replace('{0}', rows.length.toLocaleString())}
             >
-              ⭳ Download
+              ⭳ {t('common.download')}
             </button>
             <div className="vc-toggle-group">
               <button
                 className={`vc-toggle-btn${chartType === 'bar' ? ' active' : ''}`}
                 onClick={() => setChartType('bar')}
               >
-                ▦ Bar
+                ▦ {t('comparativeAnalysis.chartBar')}
               </button>
               <button
                 className={`vc-toggle-btn${chartType === 'line' ? ' active' : ''}`}
                 onClick={() => setChartType('line')}
               >
-                〰 Line
+                〰 {t('comparativeAnalysis.chartLine')}
               </button>
               <button
                 className={`vc-toggle-btn${chartType === 'pct' ? ' active' : ''}`}
                 onClick={() => setChartType('pct')}
-                title="Show % change per concept"
+                title={t('comparativeAnalysis.showPctChange')}
               >
                 % Chg
               </button>
             </div>
-            <button className="vc-close-btn" onClick={onClose} aria-label="Close chart">✕</button>
+            <button className="vc-close-btn" onClick={onClose} aria-label={t('comparativeAnalysis.closeChart')}>✕</button>
           </div>
         </div>
 
@@ -867,107 +883,106 @@ const sharedYAxis = (
           <div
             className="vc-sum-card"
             title={[
-              `${rows.length.toLocaleString()} facts reported in BOTH ${labelA} and ${labelB}.`,
+              t('comparativeAnalysis.factsBoth')
+                .replace('{0}', rows.length.toLocaleString())
+                .replace('{1}', labelA).replace('{2}', labelB),
               meta?.one_sided
-                ? `${Number(meta.one_sided).toLocaleString()} present in only one period — excluded, they cannot be compared.`
+                ? t('comparativeAnalysis.oneSidedExcluded')
+                    .replace('{0}', Number(meta.one_sided).toLocaleString())
                 : '',
               meta?.dimensional
-                ? `${Number(meta.dimensional).toLocaleString()} carry a dimensional context.`
+                ? t('comparativeAnalysis.dimensionalContext')
+                    .replace('{0}', Number(meta.dimensional).toLocaleString())
                 : '',
             ].filter(Boolean).join('\n')}
           >
-            <span className="vc-sum-label">Comparable Facts</span>
+            <span className="vc-sum-label">{t('comparativeAnalysis.comparableFacts')}</span>
             <span className="vc-sum-val">{rows.length.toLocaleString()}</span>
           </div>
           {meta?.concepts ? (
             <div className="vc-sum-card">
-              <span className="vc-sum-label">Concepts</span>
+              <span className="vc-sum-label">{t('comparativeAnalysis.concepts')}</span>
               <span className="vc-sum-val">{Number(meta.concepts).toLocaleString()}</span>
             </div>
           ) : null}
           <div className="vc-sum-card">
-            <span className="vc-sum-label">Increased</span>
+            <span className="vc-sum-label">{t('comparativeAnalysis.increased')}</span>
             <span className="vc-sum-val" style={{ color: COLOR_POS }}>{incCount.toLocaleString()}</span>
           </div>
           <div className="vc-sum-card">
-            <span className="vc-sum-label">Decreased</span>
+            <span className="vc-sum-label">{t('comparativeAnalysis.decreased')}</span>
             <span className="vc-sum-val" style={{ color: COLOR_NEG }}>{decCount.toLocaleString()}</span>
           </div>
           <div className="vc-sum-card">
-            <span className="vc-sum-label">No Change</span>
+            <span className="vc-sum-label">{t('comparativeAnalysis.noChange')}</span>
             <span className="vc-sum-val" style={{ color: COLOR_FLAT }}>{flatCount.toLocaleString()}</span>
           </div>
           {signChgCount > 0 ? (
             <div className="vc-sum-card">
-              <span className="vc-sum-label">Reversed</span>
+              <span className="vc-sum-label">{t('comparativeAnalysis.reversed')}</span>
               <span className="vc-sum-val" style={{ color: COLOR_SIGN }}>{signChgCount.toLocaleString()}</span>
             </div>
           ) : null}
+
+          {/* Period identity, pushed to the far right of the summary row and
+              stacked vertically — which period is "current" vs "previous" is
+              a single fact, not a filter, so it sits with the cards rather
+              than in the filter bar below. */}
+          <div className="vc-period-badge">
+            <span className="vc-pl-item">
+              <span className="vc-pl-swatch" style={{ background: COLOR_A }} />
+              {labelA} <em>{t('comparativeAnalysis.current')}</em>
+            </span>
+            <span className="vc-pl-item">
+              <span className="vc-pl-swatch" style={{ background: COLOR_B }} />
+              {labelB} <em>{t('comparativeAnalysis.previous')}</em>
+            </span>
+          </div>
         </div>
 
-        {/* ── Legend + filters on the left, concept search on the right ──
-            One band rather than three stacked rows: the search belongs beside
-            the filters it complements, and the panel keeps the vertical space
-            for the chart. */}
-        {/* Two rows, each "content left / control right":
-              row 1  period legend .......... concept search
-              row 2  direction filters ...... Show + Ranked by
-            The search sits at the top so it is the first control reached, and
-            the Top-N/ranking pair sits directly beneath it, to the right of the
-            filter chips it modifies. */}
+        {/* One row: direction filters ... search ... Show + Ranked by.
+            Search sits between the two control groups so it stays visually
+            level with the filter chips it complements, rather than on a row
+            of its own. */}
         <div className="vc-filterbar">
-        <div className="vc-fb-row">
-
-        {/* Period legend: identity, kept separate from direction */}
-        <div className="vc-period-legend">
-          <span className="vc-pl-item">
-            <span className="vc-pl-swatch" style={{ background: COLOR_A }} />
-            {labelA} <em>Current</em>
-          </span>
-          <span className="vc-pl-item">
-            <span className="vc-pl-swatch" style={{ background: COLOR_B }} />
-            {labelB} <em>Previous</em>
-          </span>
-          <span className="vc-pl-sep" aria-hidden="true" />
-          <span className="vc-pl-item" style={{ color: COLOR_POS }}>↑ Increase</span>
-          <span className="vc-pl-item" style={{ color: COLOR_FLAT }}>→ No change</span>
-          <span className="vc-pl-item" style={{ color: COLOR_NEG }}>↓ Decrease</span>
-          {signChgCount > 0 ? (
-            <span className="vc-pl-item" style={{ color: COLOR_SIGN }}>⇕ Reversed (outlined)</span>
-          ) : null}
-        </div>
-
-        {/* Search closes row 1, sitting opposite the period legend. */}
-        <div className="vc-search-col">
-          <input
-            className="vc-search"
-            type="search"
-            placeholder="Search concept name…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            aria-label="Filter the chart by concept name"
-            title="Filters which facts the chart draws. Does not change the comparison."
-          />
-        </div>
-        </div>
-
-        {/* ── Row 2: direction filters + Show / Ranked by ── */}
         {/* These change only what is DISPLAYED. The comparison result is
             untouched, and the counts above always describe the whole set. */}
         <div className="vc-fb-row">
         <div className="vc-controls">
           <div className="vc-filter-group">
-            {FILTERS.map(([key, label, hint]) => (
-              <button
-                key={key}
-                className={`vc-chip${filterMode === key ? ' active' : ''}`}
-                onClick={() => setFilterMode(key)}
-                title={hint}
-              >
-                {label}
-              </button>
-            ))}
+            {FILTERS.map(([key, label, hint]) => {
+              const meta = FILTER_META[key]
+              const active = filterMode === key
+              return (
+                <button
+                  key={key}
+                  className={`vc-chip${active ? ' active' : ''}`}
+                  onClick={() => setFilterMode(key)}
+                  title={hint}
+                  style={meta ? (active
+                    ? { background: meta.color, borderColor: meta.color, color: '#fff' }
+                    : { color: meta.color, borderColor: meta.color }
+                  ) : undefined}
+                >
+                  {meta ? meta.arrow : ''}{label}
+                </button>
+              )
+            })}
           </div>
+        </div>
+
+        {/* Search — horizontally aligned with the direction filter chips and
+            the ranking controls, all three in one row. */}
+        <div className="vc-search-col">
+          <input
+            className="vc-search"
+            type="search"
+            placeholder={t('comparativeAnalysis.searchConceptName')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label={t('comparativeAnalysis.filterChartTooltip')}
+            title={t('comparativeAnalysis.filterNoteChart')}
+          />
         </div>
 
         {/* ── Top-N cap + ranking ──────────────────────────────────────────
@@ -977,7 +992,7 @@ const sharedYAxis = (
             comparison. */}
         <div className="vc-controls vc-controls-rank">
           <div className="vc-rank-group">
-            <label className="vc-rank-label" htmlFor="vc-topn">Show</label>
+            <label className="vc-rank-label" htmlFor="vc-topn">{t('common.show')}</label>
             <select
               id="vc-topn"
               className="vc-select"
@@ -989,11 +1004,11 @@ const sharedYAxis = (
                 const v = e.target.value
                 setTopN(v === 'All' ? 'All' : Number(v))
               }}
-              title="How many rows to draw, taken from the top of the current ranking."
+              title={t('comparativeAnalysis.rowsNoteChart')}
             >
               {TOPN_OPTIONS.map((opt) => (
                 <option key={String(opt)} value={String(opt)}>
-                  {opt === 'All' ? 'All' : `Top ${opt}`}
+                  {opt === 'All' ? t('common.all') : t('comparativeAnalysis.topN').replace('{0}', String(opt))}
                 </option>
               ))}
             </select>
@@ -1003,13 +1018,13 @@ const sharedYAxis = (
               read as a broken control rather than an empty result. */}
           {importanceAvailable && (
             <div className="vc-rank-group">
-              <label className="vc-rank-label" htmlFor="vc-tier">Importance</label>
+              <label className="vc-rank-label" htmlFor="vc-tier">{t('comparativeAnalysis.importance')}</label>
               <select
                 id="vc-tier"
                 className="vc-select"
                 value={tier}
                 onChange={(e) => setTier(e.target.value)}
-                title="Filter by regulatory-importance tier from the return's taxonomy JSON. Display only — the comparison keeps every concept."
+                title={t('comparativeAnalysis.tierFilterTooltip')}
               >
                 {TIER_FILTERS.map((t) => {
                   const n = t === 'All' ? rows.length : (tierCounts[t] ?? 0)
@@ -1023,8 +1038,8 @@ const sharedYAxis = (
             </div>
           )}
           <div className="vc-rank-group">
-            <span className="vc-rank-label">Ranked by</span>
-            {RANKINGS.map(([key, label, hint]) => {
+            <span className="vc-rank-label">{t('comparativeAnalysis.rankedBy')}</span>
+            {rankings(t).map(([key, label, hint]) => {
               const active = rankBy === key
               return (
                 <button
@@ -1055,38 +1070,47 @@ const sharedYAxis = (
         <div className="vc-coverage">
           {hiddenByCap > 0 ? (
             <>
-              Showing <b>top {cappedRows.length.toLocaleString()}</b> of{' '}
-              <b>{rankedRows.length.toLocaleString()}</b>
-              {filterMode === 'all' && !search.trim() && tier === 'All' ? ' comparable facts' : ' matching facts'}
+              {t('comparativeAnalysis.showingTopOf')
+                .replace('{0}', cappedRows.length.toLocaleString())
+                .replace('{1}', rankedRows.length.toLocaleString())}{' '}
+              {filterMode === 'all' && !search.trim() && tier === 'All'
+                ? t('comparativeAnalysis.comparableFacts')
+                : t('comparativeAnalysis.matchingFacts')}
               {/* Names the ACTIVE ordering. With no chip selected the rows are
                   in the backend's own priority order, which is what this says
                   rather than naming a control the user never touched. */}
-              {' · ranked by '}
-              <b>{(RANKINGS.find(([k]) => k === rankBy) || [, 'variance priority'])[1]}</b>
-              {tier !== 'All' ? <> · tier <b>{tier}</b></> : null}
+              {' · '}{t('comparativeAnalysis.rankedBySep')}{' '}
+              <b>{(rankings(t).find(([k]) => k === rankBy)
+                || [, t('comparativeAnalysis.defaultRanking')])[1]}</b>
+              {tier !== 'All'
+                ? <> · {t('comparativeAnalysis.tierSep')} <b>{tier}</b></> : null}
             </>
           ) : (
             <>
-              Showing <b>all {cappedRows.length.toLocaleString()}</b>
-              {filterMode === 'all' && !search.trim() && tier === 'All' ? ' comparable facts' : ' matching facts'}
-              {tier !== 'All' ? <> in tier <b>{tier}</b></> : null}
+              {t('comparativeAnalysis.showingAll')
+                .replace('{0}', cappedRows.length.toLocaleString())}{' '}
+              {filterMode === 'all' && !search.trim() && tier === 'All'
+                ? t('comparativeAnalysis.comparableFacts')
+                : t('comparativeAnalysis.matchingFacts')}
+              {tier !== 'All' ? <> {t('comparativeAnalysis.inTier')} <b>{tier}</b></> : null}
             </>
           )}
           {' · '}
-          <span className="vc-cov-up">{incCount.toLocaleString()} up</span>
+          <span className="vc-cov-up">{t('comparativeAnalysis.countUp').replace('{0}', incCount.toLocaleString())}</span>
           {' · '}
-          <span className="vc-cov-down">{decCount.toLocaleString()} down</span>
-          {flatCount > 0 ? <> · {flatCount.toLocaleString()} unchanged</> : null}
+          <span className="vc-cov-down">{t('comparativeAnalysis.countDown').replace('{0}', decCount.toLocaleString())}</span>
+          {flatCount > 0 ? <> · {t('comparativeAnalysis.countUnchanged').replace('{0}', flatCount.toLocaleString())}</> : null}
           {/* The up/down counts describe the COMPLETE comparison, not the
               drawn slice — stated explicitly so the two numbers on this line
               are not read as parts of the same total. */}
           {hiddenByCap > 0 || filterMode !== 'all' || search.trim() ? (
             <span className="vc-cov-note">
-              {' '}(direction counts cover all {rows.length.toLocaleString()} facts)
+              {' '}{t('comparativeAnalysis.directionCountsNote')
+                .replace('{0}', rows.length.toLocaleString())}
             </span>
           ) : null}
           {' · '}
-          <span className="vc-cov-note">Download always exports the full set.</span>
+          <span className="vc-cov-note">{t('comparativeAnalysis.downloadNote')}</span>
         </div>
 
         {/* ── Chart area ── */}
@@ -1105,7 +1129,7 @@ const sharedYAxis = (
         <div style={windowed ? { height: spacerH, position: 'relative' } : undefined}>
         <div style={windowed ? { position: 'absolute', top: offsetY, left: 0, right: 0 } : undefined}>
   {chartData.length === 0 ? (
-    <div className="vc-empty">No rows to display.</div>
+    <div className="vc-empty">{t('comparativeAnalysis.noRows')}</div>
   ) : chartType === 'pct' ? (
     /* ── % Change chart ── */
     <ResponsiveContainer width="100%" height={chartHeight}>

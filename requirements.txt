@@ -9,7 +9,7 @@ uvicorn[standard]>=0.29.0       # includes httptools + uvloop for performance
 
 oracledb>=2.2.0                 # Oracle DB driver (thin mode — no Oracle Client needed)
 
-# ── HTTP client (async calls to Ollama + Sarvam AI) ─────────────────────────
+# ── HTTP client (async calls to Ollama + the Whisper STT service) ───────────
 
 httpx>=0.27.0
 

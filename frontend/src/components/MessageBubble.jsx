@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { useT, LANGUAGES, OPTION_LABELS } from '../i18n.js'
 import VarianceChartModal from './VarianceChartModal.jsx'
 import { fetchCompareSummary, stopRequest } from '../services/api.js'
 
@@ -74,6 +75,7 @@ if (typeof document !== 'undefined' && !document.getElementById('error-panel-sty
 
 // ── DownloadButton ────────────────────────────────────────────────────────────
 function DownloadButton({ downloadUrl, downloadLabel, className = 'download-btn' }) {
+  const t = useT()
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   if (!downloadUrl) return null
   return (
@@ -87,11 +89,15 @@ function DownloadButton({ downloadUrl, downloadLabel, className = 'download-btn'
 }
 
 // ── Summary category metadata ─────────────────────────────────────────────────
-const _SUMMARY_CAT_META = {
-  formula_error: { label: 'Formula Errors',      btnLabel: 'Explain Formula Errors',      cls: 'formula',   icon: '⚙' },
-  xbrl_schema:   { label: 'Schema Errors',       btnLabel: 'Explain Schema Errors',       cls: 'xbrl',      icon: '⚠' },
-  dimensional:   { label: 'Dimension Errors',    btnLabel: 'Explain Dimension Errors',    cls: 'dimension', icon: '📐' },
-}
+// Built per-render so the labels follow the selected language. This CANNOT be
+// a module-level constant: t() would run at import time, before any React
+// context exists. The category KEY (formula_error / xbrl_schema / dimensional)
+// is the backend value and never changes.
+const summaryCatMeta = (t) => ({
+  formula_error: { label: t('errors.category.formulaErrors'),   btnLabel: t('errors.explainFormula'),   cls: 'formula',   icon: '⚙' },
+  xbrl_schema:   { label: t('errors.category.schemaErrors'),    btnLabel: t('errors.explainSchema'),    cls: 'xbrl',      icon: '⚠' },
+  dimensional:   { label: t('errors.category.dimensionErrors'), btnLabel: t('errors.explainDimension'), cls: 'dimension', icon: '📐' },
+})
 const _CAT_ORDER = ['formula_error', 'xbrl_schema', 'dimensional']
 
 // ── ErrorSummaryPanel ─────────────────────────────────────────────────────────
@@ -102,6 +108,7 @@ const _CAT_ORDER = ['formula_error', 'xbrl_schema', 'dimensional']
 // them (currently just formula_error — see backend/tools/formula_error_generic.py).
 // Categories left out of the list still show their count, just without a button.
 function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCategory, formId, reportName, explainableCategories = _CAT_ORDER }) {
+  const t = useT()
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const [loadingCat, setLoadingCat] = useState(null)
 
@@ -125,12 +132,12 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
 
   return (
     <div className="error-summary-panel">
-      <div className="error-summary-heading">⚠ Error Summary</div>
+      <div className="error-summary-heading">⚠ {t('errors.summaryHeading')}</div>
       <div className="error-summary-body">
         {activeCategories.length > 0 && (
           <div className="error-summary-counts">
             {activeCategories.map((cat) => {
-              const meta = _SUMMARY_CAT_META[cat]
+              const meta = summaryCatMeta(t)[cat]
               return (
                 <div key={cat} className={`error-count-chip ${meta.cls}`}>
                   <span>{meta.icon}</span>
@@ -143,7 +150,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
         )}
         <div className="error-summary-actions">
           {explainableActiveCategories.map((cat) => {
-            const meta = _SUMMARY_CAT_META[cat]
+            const meta = summaryCatMeta(t)[cat]
             const isLoading = loadingCat === cat
             return (
               <button
@@ -153,7 +160,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
                 disabled={!!loadingCat}
               >
                 {isLoading
-                  ? <><span className="btn-spinner" /> Generating…</>
+                  ? <><span className="btn-spinner" /> {t('common.generating')}</>
                   : <>{meta.icon} {meta.btnLabel}</>
                 }
               </button>
@@ -164,7 +171,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
               className="error-summary-dl-btn"
               onClick={() => triggerBlobDownload(`${API_BASE}${downloadUrl}`, downloadLabel)}
             >
-              ⬇ {downloadLabel || 'Download error report'}
+              ⬇ {downloadLabel || t('errors.downloadReport')}
             </button>
           )}
         </div>
@@ -179,8 +186,9 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
 // nextOffset — the backend never re-explains errors already covered by an
 // earlier batch, so clicking this can never repeat a previously-shown error.
 function ExplainNextErrorsButton({ category, errorFilePath, formId, reportName, nextOffset, onExplainCategory }) {
+  const t = useT()
   const [loading, setLoading] = useState(false)
-  const meta = _SUMMARY_CAT_META[category] || { icon: '⚙', label: category }
+  const meta = summaryCatMeta(t)[category] || { icon: '⚙', label: category }
 
   const handleClick = async () => {
     if (loading) return
@@ -199,7 +207,7 @@ function ExplainNextErrorsButton({ category, errorFilePath, formId, reportName, 
         onClick={handleClick}
         disabled={loading}
       >
-        {loading ? <><span className="btn-spinner" /> Generating…</> : <>{meta.icon} Explain Next Errors</>}
+        {loading ? <><span className="btn-spinner" /> {t('common.generating')}</> : <>{meta.icon} {t('errors.explainNext')}</>}
       </button>
     </div>
   )
@@ -329,6 +337,7 @@ const _MATRIX_STATUS = {
 // differ ("Detail / Expected / You provided" vs "Item / Expected / You
 // reported"), which is why they travel with the data.
 function ErrorCardMatrix({ section }) {
+  const t = useT()
   const cols = section.columns || {}
   const rows = section.rows || []
   if (rows.length === 0) return null
@@ -347,10 +356,10 @@ function ErrorCardMatrix({ section }) {
                 numbers under a left-aligned header is harder to read, not
                 easier. */}
             <tr>
-              <th className="error-card-matrix-status" aria-label="Status" />
-              <th className="error-card-matrix-label">{cols.label || 'Item'}</th>
-              <th className="error-card-matrix-expected">{cols.expected || 'Expected'}</th>
-              <th className="error-card-matrix-actual">{cols.actual || 'Actual'}</th>
+              <th className="error-card-matrix-status" aria-label={t('common.status')} />
+              <th className="error-card-matrix-label">{cols.label || t('errors.columns.item')}</th>
+              <th className="error-card-matrix-expected">{cols.expected || t('errors.columns.expected')}</th>
+              <th className="error-card-matrix-actual">{cols.actual || t('errors.columns.actual')}</th>
             </tr>
           </thead>
           <tbody>
@@ -549,6 +558,7 @@ export function FormulaErrorSections({ sections }) {
 }
 
 function FormulaErrorContent({ explanation }) {
+  const t = useT()
   const blocks = useMemo(() => _parseFormulaExplanationBlocks(explanation), [explanation])
   if (blocks.length === 0) return null
   return (
@@ -589,7 +599,7 @@ function FormulaErrorContent({ explanation }) {
           case 'fix':
             return (
               <div key={i} className="formula-error-fix">
-                <div className="formula-error-fix-heading">How to fix</div>
+                <div className="formula-error-fix-heading">{t('errors.howToFix')}</div>
                 <p className="formula-error-fix-text">{b.text}</p>
               </div>
             )
@@ -603,6 +613,7 @@ function FormulaErrorContent({ explanation }) {
 
 // ── PlainTextErrorPanel ───────────────────────────────────────────────────────
 function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabel }) {
+  const t = useT()
   const groups = useMemo(() => {
     const map = new Map()
     const push_item = (item) => {
@@ -622,7 +633,7 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
           // to err.explanation, but this panel renders its own section header
           // with the same icon/label/rule name above each item — strip the
           // duplicate leading line rather than show it twice.
-          const rawExplanation = err.explanation || err.business_rule || `Validation rule '${err.rule_name}' failed.`
+          const rawExplanation = err.explanation || err.business_rule || t('errors.validationRuleFailed').replace('{0}', err.rule_name)
           push_item({
             _error_category: err._error_category || 'formula_error',
             section:         err.rule_name,
@@ -714,12 +725,24 @@ function PlainTextErrorPanel({ details, errorMessages, downloadUrl, downloadLabe
 // parsed into real labeled sections here (icon + color-coded left border per
 // label) rather than left to generic markdown rendering, so the structure
 // and bolding are guaranteed regardless of markdown-renderer quirks.
+// KEYED BY THE BACKEND'S ENGLISH LABEL. dimension_taxonomy.py emits these
+// headings and _parseDimensionSections matches on them, so the keys are a
+// parsing contract and must never be translated. _DIM_SECTION_I18N maps each
+// to the label actually SHOWN, which is localized.
 const _DIM_SECTION_META = {
   'Dimension Error':        { icon: '📐', cls: 'dim-sec-title' },
   'What is wrong':          { icon: '⚠️', cls: 'dim-sec-wrong' },
   'What should be checked': { icon: '🔍', cls: 'dim-sec-check' },
   'Reported value':         { icon: '🔢', cls: 'dim-sec-value' },
   'Context':                { icon: '📍', cls: 'dim-sec-context' },
+}
+
+const _DIM_SECTION_I18N = {
+  'Dimension Error':        'errors.category.dimensionalError',
+  'What is wrong':          'errors.whatIsWrong',
+  'What should be checked': 'errors.whatShouldBeChecked',
+  'Reported value':         'errors.reportedValue',
+  'Context':                'errors.columns.context',
 }
 
 function _parseDimensionSections(text) {
@@ -746,6 +769,7 @@ function _renderInlineCode(text, keyPrefix) {
 }
 
 function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
+  const t = useT()
   if (!details || details.length === 0) return null
   const color = _catMeta('dimensional').color
   return (
@@ -756,7 +780,7 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
           style={{ '--section-color': color, background: color }}
         >
           <span className="section-icon">📐</span>
-          <span className="section-name">Dimensional Validation Errors</span>
+          <span className="section-name">{t('errors.dimensionalTitle')}</span>
           <span className="error-section-count">{details.length}</span>
         </div>
         <ol className="dimensional-error-list">
@@ -776,7 +800,10 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
                     const meta = _DIM_SECTION_META[sec.label] || { icon: '•', cls: 'dim-sec-generic' }
                     return (
                       <div key={si} className={`dim-sec ${meta.cls}`}>
-                        <span className="dim-sec-label">{meta.icon} {sec.label}:</span>{' '}
+                        <span className="dim-sec-label">{meta.icon}{' '}
+                          {_DIM_SECTION_I18N[sec.label]
+                            ? t(_DIM_SECTION_I18N[sec.label])
+                            : sec.label}:</span>{' '}
                         <span className="dim-sec-content">{_renderInlineCode(sec.content, `s${i}-${si}`)}</span>
                       </div>
                     )
@@ -785,7 +812,7 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
               ) : (
                 <div className="dimensional-error-explanation error-explanation-markdown">
                   <ReactMarkdown>
-                    {err.explanation || `Dimensional error detected for concept '${err.concept || 'unknown'}'.`}
+                    {err.explanation || t('errors.dimensionalDetected').replace('{0}', err.concept || t('errors.unknownConcept'))}
                   </ReactMarkdown>
                 </div>
               )}
@@ -819,6 +846,7 @@ function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
 
 // ── ErrorDetailsTablePanel ────────────────────────────────────────────────────
 function ErrorDetailsTablePanel({ details, downloadUrl, downloadLabel, errorMessages }) {
+  const t = useT()
   const tableRows = useMemo(() => details.map((err, i) => {
     const ti = err?.table_info ?? {}
     const db_table_name = (
@@ -862,11 +890,11 @@ function ErrorDetailsTablePanel({ details, downloadUrl, downloadLabel, errorMess
           <table className="error-table-info-tbl">
             <thead>
               <tr>
-                <th>DB Table Name</th>
-                <th>Row Label</th>
-                <th>Cell Code</th>
-                <th>Error</th>
-                <th>Explanation</th>
+                <th>{t('errors.columns.dbTableName')}</th>
+                <th>{t('errors.columns.rowLabel')}</th>
+                <th>{t('errors.columns.cellCode')}</th>
+                <th>{t('errors.columns.error')}</th>
+                <th>{t('errors.columns.explanation')}</th>
               </tr>
             </thead>
             <tbody>
@@ -942,6 +970,10 @@ function ErrorDetailsPanel({ details, errorMessages, downloadUrl, downloadLabel 
 
 // ── BubbleText ────────────────────────────────────────────────────────────────
 function BubbleText({ text, errorDetails }) {
+  const t = useT()
+  // Matches the backend's English heading (agent/__init__.py:3230) to split
+  // the message -- a parsing key, so it stays English. The heading shown to
+  // the user is localized where failureBlock is rendered.
   const FAILURE_HEADING = 'Failure Reason(s):'
   const PENDING_MARKER  = 'Generating error explanations\u2026'
   const idx = (text ?? '').indexOf(FAILURE_HEADING)
@@ -974,7 +1006,7 @@ function BubbleText({ text, errorDetails }) {
     const seen  = new Set()
     for (const err of errorDetails) {
       if (err?.rule_name !== undefined) {
-        const msg = (err.explanation || `Rule '${err.rule_name}' failed.`).trim()
+        const msg = (err.explanation || t('errors.ruleFailed').replace('{0}', err.rule_name)).trim()
         if (msg && !seen.has(msg)) {
           seen.add(msg)
           items.push({ cellCode: '', message: msg, label: msg })
@@ -1026,7 +1058,7 @@ function BubbleText({ text, errorDetails }) {
 
 // ── MessageBubble (main export) ───────────────────────────────────────────────
 export default function MessageBubble({
-  role, text, data, options, resultType, sqlData, dbQaData,
+  role, text, data, options, resultType, reportName, sqlData, dbQaData,
   varianceData, varianceAll, varianceMeta, labelA, labelB, llmSummary, summaryIsDraft, instancesData,
   downloadUrl, downloadLabel, statusNote,
   errorDetails,
@@ -1037,14 +1069,16 @@ export default function MessageBubble({
   batchCategory, batchErrorFilePath, batchFormId, batchReportName,
   allowedActions,
   noAutoSummary, onSummaryLoaded,
+  lang, onLanguageChange,
 }) {
+  const t = useT()
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const isUser    = role === 'user'
   const isError   = role === 'error'
   const isWelcome = role === 'welcome'
 
-  if (isWelcome)              return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} allowedActions={allowedActions} />
-  if (role === 'action_menu') return <ActionMenu onGuidedAction={onGuidedAction} allowedActions={allowedActions} />
+  if (isWelcome)              return <WelcomeCard onSuggestion={onSuggestion} onGuidedAction={onGuidedAction} allowedActions={allowedActions} lang={lang} onLanguageChange={onLanguageChange} />
+  if (role === 'action_menu') return <ActionMenu onGuidedAction={onGuidedAction} allowedActions={allowedActions} lang={lang} onLanguageChange={onLanguageChange} />
   if (role === 'sql_welcome') return <SqlWelcomeCard />
   if (role === 'feedback_prompt')   return (
     <FeedbackPrompt
@@ -1058,7 +1092,7 @@ export default function MessageBubble({
     return (
       <div className="bubble-row assistant">
         <div className="avatar assistant-avatar">AI</div>
-        <div className="bubble assistant-bubble">Great! Glad I could help. 😊</div>
+        <div className="bubble assistant-bubble">{t('feedback.thanksPositive')}</div>
       </div>
     )
   }
@@ -1079,7 +1113,7 @@ export default function MessageBubble({
         <div className="avatar assistant-avatar">AI</div>
         <div className="assistant-msg-block">
           <div className="bubble assistant-bubble guided-prompt-bubble">
-            <span className="guided-prompt-label">🧭 Guided</span>
+            <span className="guided-prompt-label">{t('guidedBadge')}</span>
             {(text ?? '').split('\n').map((line, i, arr) => (
               <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
             ))}
@@ -1088,7 +1122,7 @@ export default function MessageBubble({
             <div className="welcome-suggestions option-chips">
               {options.map((opt) => (
                 <button key={opt} className="suggestion-chip" onClick={() => onSuggestion?.(opt)}>
-                  {opt}
+                  {t.option(opt)}
                 </button>
               ))}
             </div>
@@ -1112,32 +1146,6 @@ export default function MessageBubble({
       <div className="bubble-row assistant">
         <div className="avatar assistant-avatar">AI</div>
         <DbQaResultBlock data={dbQaData} fallbackText={text} />
-      </div>
-    )
-  }
-
-  // Long instance list -> collapsed, searchable dropdown instead of the
-  // expanded row list, which would otherwise run down the whole panel.
-  //
-  // Gated on data.use_search_dropdown, which ONLY the Explain Report Errors
-  // flow sets, and only above its threshold (backend:
-  // _instance_picker_data / _EXPLAIN_ERR_LIST_MAX = 5). The Check Report Status
-  // flow never sets it, so it keeps the expanded InstanceDropdown at every
-  // instance count — unchanged.
-  if (!isUser && resultType === 'date_selection' && data?.use_search_dropdown && options?.length > 0) {
-    return (
-      <div className="bubble-row assistant">
-        <div className="avatar assistant-avatar">AI</div>
-        <div className="assistant-msg-block">
-          <div className="bubble assistant-bubble">
-            <BubbleText text={text} />
-          </div>
-          <ReportSearchDropdown
-            options={options}
-            onSelect={onSuggestion}
-            placeholder="Select a reporting instance"
-          />
-        </div>
       </div>
     )
   }
@@ -1182,6 +1190,7 @@ export default function MessageBubble({
           llmSummary={llmSummary}
           summaryIsDraft={summaryIsDraft}
           headerText={text}
+          reportName={reportName}
           noAutoSummary={noAutoSummary}
           onSummaryLoaded={onSummaryLoaded}
         />
@@ -1285,7 +1294,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
           </div>
           {errorPanel}
           <div className="bubble assistant-bubble" style={{ marginTop: 6, fontStyle: 'italic', fontSize: '0.88em' }}>
-            Would you also like to check status for another reporting date?
+            {t('checkAnotherDate')}
           </div>
           <div className="welcome-suggestions option-chips sched-confirm-actions">
             {chips.map((opt) => (
@@ -1294,7 +1303,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
                 className={`suggestion-chip${opt === 'Yes' ? ' chip-confirm' : ' chip-cancel'}`}
                 onClick={() => onSuggestion?.(opt)}
               >
-                {opt}
+                {t.option(opt)}
               </button>
             ))}
           </div>
@@ -1321,7 +1330,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
                 className={`suggestion-chip${opt === 'Schedule' ? ' chip-confirm' : ' chip-cancel'}`}
                 onClick={() => onSuggestion?.(opt)}
               >
-                {opt}
+                {t.option(opt)}
               </button>
             ))}
           </div>
@@ -1340,7 +1349,14 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
 
       <div className="assistant-msg-block">
         <div className={`bubble ${isUser ? 'user-bubble' : isError ? 'error-bubble' : 'assistant-bubble'}`}>
-          <BubbleText text={displayText} errorDetails={resolvedErrorDetails} />
+          {/* A user bubble may be the echo of a clicked button, which holds the
+              ENGLISH protocol token that was sent ("Generate instance for a
+              report", "Schedule"). Show the label the user actually read; free
+              text they typed is in neither table and passes through unchanged. */}
+          <BubbleText
+            text={isUser ? t.echo(displayText) : displayText}
+            errorDetails={resolvedErrorDetails}
+          />
         </div>
 
         {/* Disambiguation / date-selection chips */}
@@ -1351,7 +1367,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
             <div className="welcome-suggestions option-chips">
               {chips.map((opt) => (
                 <button key={opt} className="suggestion-chip" onClick={() => onSuggestion?.(opt)}>
-                  {opt}
+                  {t.option(opt)}
                 </button>
               ))}
             </div>
@@ -1377,7 +1393,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
         )}
       </div>
 
-      {isUser && <div className="avatar user-avatar">You</div>}
+      {isUser && <div className="avatar user-avatar">{t('common.you')}</div>}
     </div>
   )
 }
@@ -1407,6 +1423,7 @@ const STATUS_LEGEND = [11, 9, 4, 0, 3].map((code) => getStatusMeta(code))
 
 // ── Instance Dropdown ─────────────────────────────────────────────────────────
 function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
+  const t = useT()
   const [selected, setSelected] = useState(options[0] ?? '')
   const statusMap = useMemo(() => {
     if (!instancesData?.length) return {}
@@ -1437,7 +1454,7 @@ function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
           })}
         </div>
         <button className="instance-dropdown-btn" onClick={() => onSelect?.(selected)}>
-          Select ›
+          {t('common.select')} ›
         </button>
         {hasStatus && <StatusLegend />}
       </div>
@@ -1450,6 +1467,7 @@ function InstanceDropdown({ headerText, options, instancesData, onSelect }) {
 // derived from getStatusMeta, so a colour or wording change in one place
 // updates both the dots and this legend.
 function StatusLegend() {
+  const t = useT()
   return (
     <div className="status-legend" role="note">
       <span className="status-legend-title">Status</span>
@@ -1464,14 +1482,49 @@ function StatusLegend() {
 }
 
 // ── Welcome Card ──────────────────────────────────────────────────────────────
+// `action` is the ENGLISH PROTOCOL TOKEN: it is what gets sent to /guided,
+// where guided.py:179-180 matches it with `msg in GUIDED_ACTIONS`, and what
+// getAllowedActions() filters on. It is never translated. Only the label
+// rendered beside the icon is localized, via t.action(group.action).
 const SUGGESTION_GROUPS = [
-  { label: '📋 Check report status',          action: 'Check report status' },
-  { label: '⚙️ Generate a report instance',   action: 'Generate instance for a report' },
-  { label: '🗓️ Schedule a report',            action: 'Schedule a report' },
-  { label: '📊 Perform comparative analysis', action: 'Perform comparative analysis' },
-  { label: '🗄️ Retrieve data from database', action: 'Retrieve data from database' },
-  { label: '❌ Explain Report Errors',        action: 'Explain Report Errors' },
+  { icon: '📋', action: 'Check report status' },
+  { icon: '⚙️', action: 'Generate instance for a report' },
+  { icon: '🗓️', action: 'Schedule a report' },
+  { icon: '📊', action: 'Perform comparative analysis' },
+  { icon: '🗄️', action: 'Retrieve data from database' },
 ]
+
+// Renders *starred* spans in a dictionary string as bold. The markers live
+// inside the string so each language controls its own word order and which
+// words carry the emphasis.
+function renderRich(str) {
+  return String(str).split('*').map((part, i) =>
+    i % 2 === 1 ? <strong key={i}>{part}</strong> : part
+  )
+}
+
+// The language dropdown, shown inside the chatbot menu section.
+function LanguagePicker({ lang, onLanguageChange }) {
+  const t = useT()
+  if (!onLanguageChange) return null
+  return (
+    <div className="menu-lang-row">
+      <label className="menu-lang-label" htmlFor="chat-lang-select">🌐 {t('chatLanguage')}</label>
+      <select
+        id="chat-lang-select"
+        className="lang-select"
+        value={lang}
+        onChange={(e) => onLanguageChange(e.target.value)}
+        title={t('chatLanguage')}
+        aria-label={t('chatLanguage')}
+      >
+        {LANGUAGES.map((l) => (
+          <option key={l.code} value={l.code}>{l.label}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
 
 // Filter SUGGESTION_GROUPS by the backend-resolved allowed-actions list
 // (from guided.py's _allowed_actions, reused via App.jsx's prefetch). A null/
@@ -1483,32 +1536,33 @@ function _visibleGroups(allowedActions) {
   return SUGGESTION_GROUPS.filter((g) => allowedActions.includes(g.action))
 }
 
-function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions }) {
+function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions, lang, onLanguageChange }) {
+  const t = useT()
   const groups = _visibleGroups(allowedActions)
+  const items = [
+    'welcomeItemStatus', 'welcomeItemGenerate', 'welcomeItemSchedule',
+    'welcomeItemCompare', 'welcomeItemDatabase', 'welcomeItemErrors',
+  ]
   return (
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
       <div className="bubble assistant-bubble welcome-bubble">
-        <p className="welcome-greeting">👋 Hi! I'm your Report Assistant.</p>
-        <p className="welcome-subtext">I can help you with:</p>
+        <p className="welcome-greeting">{t('welcomeGreeting')}</p>
+        <p className="welcome-subtext">{t('welcomeHelp')}</p>
         <ul className="welcome-list">
-          <li>Checking the <strong>status</strong> of a report</li>
-          <li><strong>Generating</strong> a new report instance for a date</li>
-          <li><strong>Scheduling</strong> reports for a future date and time</li>
-          <li>Performing <strong>comparative analysis</strong> on report instances</li>
-          <li>Retrieving data from the <strong>database</strong></li>
-          <li><strong>Explaining errors</strong> in a failed report instance</li>
+          {items.map((key) => <li key={key}>{renderRich(t(key))}</li>)}
         </ul>
-        <p className="welcome-subtext">Click a category to use guided mode, or type freely:</p>
+        <LanguagePicker lang={lang} onLanguageChange={onLanguageChange} />
+        <p className="welcome-subtext">{t('welcomeCta')}</p>
         <div className="welcome-suggestion-groups">
           {groups.map((group) => (
-            <div key={group.label} className="welcome-suggestion-group">
+            <div key={group.action} className="welcome-suggestion-group">
               <button
                 className="welcome-group-label-btn"
                 onClick={() => onGuidedAction?.(group.action)}
-                title={`Start guided flow: ${group.action}`}
+                title={`${t('startGuidedFlow')}: ${t.action(group.action)}`}
               >
-                {group.label}
+                {group.icon} {t.action(group.action)}
                 <span className="welcome-group-arrow">›</span>
               </button>
             </div>
@@ -1526,6 +1580,7 @@ function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions }) {
 const FEEDBACK_TIMEOUT_MS = 6500
 
 function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
+  const t = useT()
   const [answered, setAnswered] = useState(false)
   // Self-hides once the timer elapses. The message deliberately STAYS in App's
   // message array — it is only hidden visually — so the array order
@@ -1554,7 +1609,7 @@ function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
         className={`assistant-msg-block${answered ? '' : ' feedback-timed'}`}
         style={answered ? undefined : { '--feedback-timeout': `${FEEDBACK_TIMEOUT_MS}ms` }}
       >
-        <div className="bubble assistant-bubble">Was this helpful?</div>
+        <div className="bubble assistant-bubble">{t('wasThisHelpful')}</div>
         {!answered && (
           <>
             <div className="feedback-actions">
@@ -1575,12 +1630,13 @@ function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
 
 // ── Support Contact ───────────────────────────────────────────────────────────
 function SupportContact() {
+  const t = useT()
   return (
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
       <div className="bubble assistant-bubble support-contact-bubble">
-        <p className="support-sorry">I'm sorry the experience wasn't helpful.</p>
-        <p className="support-desc">If you're facing an issue, have a query, or want to report a problem, please contact our support team:</p>
+        <p className="support-sorry">{t('support.sorry')}</p>
+        <p className="support-desc">{t('support.contact')}</p>
         <div className="support-emails">
           <a href="mailto:support@company.com" className="support-email-link">📧 support@company.com</a>
           <a href="mailto:chatbot-support@company.com" className="support-email-link">📧 chatbot-support@company.com</a>
@@ -1591,22 +1647,24 @@ function SupportContact() {
 }
 
 // ── Action Menu ───────────────────────────────────────────────────────────────
-function ActionMenu({ onGuidedAction, allowedActions }) {
+function ActionMenu({ onGuidedAction, allowedActions, lang, onLanguageChange }) {
+  const t = useT()
   const groups = _visibleGroups(allowedActions)
   return (
     <div className="bubble-row assistant">
       <div className="avatar assistant-avatar">AI</div>
       <div className="bubble assistant-bubble action-menu-bubble">
-        <p className="action-menu-prompt">What would you like to do next?</p>
+        <p className="action-menu-prompt">{t('actionMenuPrompt')}</p>
+        <LanguagePicker lang={lang} onLanguageChange={onLanguageChange} />
         <div className="welcome-suggestion-groups">
           {groups.map((group) => (
-            <div key={group.label} className="welcome-suggestion-group">
+            <div key={group.action} className="welcome-suggestion-group">
               <button
                 className="welcome-group-label-btn"
                 onClick={() => onGuidedAction?.(group.action)}
-                title={`Start guided flow: ${group.action}`}
+                title={`${t('startGuidedFlow')}: ${t.action(group.action)}`}
               >
-                {group.label}
+                {group.icon} {t.action(group.action)}
                 <span className="welcome-group-arrow">›</span>
               </button>
             </div>
@@ -1620,7 +1678,11 @@ function ActionMenu({ onGuidedAction, allowedActions }) {
 // ── Report Search Dropdown ────────────────────────────────────────────────────
 // `placeholder` defaults to the report-name wording so every existing call
 // site (report disambiguation) is unchanged; the instance picker passes its own.
-function ReportSearchDropdown({ options, onSelect, placeholder = 'Select Report Name' }) {
+function ReportSearchDropdown({ options, onSelect, placeholder }) {
+  const t = useT()
+  // Defaulted here rather than in the signature so the fallback follows the
+  // selected language; the instance picker still passes its own wording.
+  const ph = placeholder ?? t('selectReportName')
   const [query,    setQuery]    = useState('')
   const [isOpen,   setIsOpen]   = useState(false)
   const [selected, setSelected] = useState(null)
@@ -1646,7 +1708,7 @@ function ReportSearchDropdown({ options, onSelect, placeholder = 'Select Report 
       >
         {selected
           ? <span className="rsd-value">{selected}</span>
-          : <span className="rsd-placeholder">{placeholder}</span>
+          : <span className="rsd-placeholder">{ph}</span>
         }
         <span className="rsd-arrow">{isOpen ? '▲' : '▼'}</span>
       </div>
@@ -1656,7 +1718,7 @@ function ReportSearchDropdown({ options, onSelect, placeholder = 'Select Report 
             <input
               autoFocus
               className="rsd-search"
-              placeholder="Type to filter…"
+              placeholder={t('typeToFilter')}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onClick={(e) => e.stopPropagation()}
@@ -1664,7 +1726,7 @@ function ReportSearchDropdown({ options, onSelect, placeholder = 'Select Report 
           </div>
           <ul className="rsd-list">
             {filtered.length === 0
-              ? <li className="rsd-no-results">No matches</li>
+              ? <li className="rsd-no-results">{t('sql.noMatches')}</li>
               : filtered.map((opt) => (
                   <li key={opt} className="rsd-item" onClick={() => handleChoose(opt)}>{opt}</li>
                 ))
@@ -1678,6 +1740,7 @@ function ReportSearchDropdown({ options, onSelect, placeholder = 'Select Report 
 
 // ── SQL Result Block ──────────────────────────────────────────────────────────
 function SqlResultBlock({ data }) {
+  const t = useT()
   const {
     sql, is_valid, validation_reason, db_error,
     matched_tables = [], matched_columns = [],
@@ -1690,7 +1753,7 @@ function SqlResultBlock({ data }) {
     <div className="sql-result-block">
       {matched_tables.length > 0 && (
         <div>
-          <div className="sql-result-label">Schema Match</div>
+          <div className="sql-result-label">{t('sql.schemaMatch')}</div>
           <div className="sql-result-chips">
             {matched_tables.map((t) => <span key={t} className="sql-chip-table">{t}</span>)}
             {matched_columns.slice(0, 6).map((c) => <span key={c} className="sql-chip-col">{c}</span>)}
@@ -1700,15 +1763,15 @@ function SqlResultBlock({ data }) {
       )}
       {sql && (
         <div>
-          <div className="sql-result-label">Generated SQL</div>
+          <div className="sql-result-label">{t('sql.generatedSql')}</div>
           <pre className="sql-result-sql-box">{sql}</pre>
         </div>
       )}
-      {!is_valid && <div className="sql-invalid-msg">⚠ {validation_reason || 'SQL validation failed.'}</div>}
+      {!is_valid && <div className="sql-invalid-msg">⚠ {validation_reason || t('errors.sqlValidationFailed')}</div>}
       {db_error  && <div className="sql-db-error">⚠ A database error occurred. Please try again.</div>}
       {is_valid && !db_error && columns.length > 0 && (
         <div>
-          <div className="sql-result-label">Query Results</div>
+          <div className="sql-result-label">{t('sql.queryResults')}</div>
           <div className="sql-table-wrapper">
             <table className="sql-data-table">
               <thead>
@@ -1730,14 +1793,14 @@ function SqlResultBlock({ data }) {
       )}
       {is_valid && !db_error && columns.length === 0 && (
         <div className="sql-db-error" style={{ color: 'var(--text-muted)', background: 'transparent', border: 'none' }}>
-          No rows returned.
+          {t('sql.noRowsReturned')}
         </div>
       )}
       {accuracy_hint && (
         <div className="sql-accuracy-hint">💡 {accuracy_hint}</div>
       )}
       {needs_more_info && more_info_hint && (
-        <div className="sql-more-info-hint"><strong>Need more detail:</strong><br />{more_info_hint}</div>
+        <div className="sql-more-info-hint"><strong>{t('sql.needMoreDetail')}</strong><br />{more_info_hint}</div>
       )}
     </div>
   )
@@ -1758,13 +1821,14 @@ function renderDbQaCell(col, value) {
 const DBQA_PAGE_SIZE = 10
 
 function DbQaResultBlock({ data, fallbackText }) {
+  const t = useT()
   // Hooks must run unconditionally on every render (Rules of Hooks) — this
   // has to sit above the early returns below, even though `page` is only
   // read/used by the table branches further down.
   const [page, setPage] = useState(0)
 
   if (!data || (data.records?.length === 0 && !data.summary)) {
-    return <div className="bubble assistant-bubble">{fallbackText || 'No data found.'}</div>
+    return <div className="bubble assistant-bubble">{fallbackText || t('noDataFound')}</div>
   }
   const {
     label, summary,
@@ -1791,16 +1855,16 @@ function DbQaResultBlock({ data, fallbackText }) {
         className="dbqa-page-btn"
         onClick={() => setPage((p) => Math.max(0, p - 1))}
         disabled={clampedPage === 0}
-      >‹ Prev</button>
+      >‹ {t('prev')}</button>
       <span className="dbqa-page-info">
-        {pageStart + 1}–{pageEnd} of {records.length} · Page {clampedPage + 1} of {totalPages}
+        {pageStart + 1}–{pageEnd} / {records.length} {t('records')} · {clampedPage + 1} / {totalPages}
       </span>
       <button
         type="button"
         className="dbqa-page-btn"
         onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
         disabled={clampedPage >= totalPages - 1}
-      >Next ›</button>
+      >{t('next')} ›</button>
     </div>
   )
 
@@ -1817,7 +1881,7 @@ function DbQaResultBlock({ data, fallbackText }) {
         <div className="dbqa-table-wrapper">
           <table className="dbqa-table">
             <thead>
-              <tr><th>DB TableName</th><th>Row Label(s)</th><th>Context</th><th>Cell Code</th></tr>
+              <tr><th>{t('errors.columns.dbTableName')}</th><th>{t('errors.columns.rowLabels')}</th><th>{t('errors.columns.context')}</th><th>{t('errors.columns.cellCode')}</th></tr>
             </thead>
             <tbody>
               {pageIdxs.map((i) => (
@@ -1898,6 +1962,7 @@ function DbQaResultBlock({ data, fallbackText }) {
 
 // ── Instance Selection Block ──────────────────────────────────────────────────
 function InstanceSelectionBlock({ instances, headerText, onCompare }) {
+  const t = useT()
   const NONE = ''
   const [sel1, setSel1] = useState(NONE)
   const [sel2, setSel2] = useState(NONE)
@@ -1905,8 +1970,8 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
   const labelFor = (inst) =>
     inst.label || `${inst.reporting_date || '—'} | Generated: ${inst.run_at || '—'}`
   const handleCompare = () => {
-    if (!sel1 || !sel2)  { setError('Select an instance in each dropdown.'); return }
-    if (sel1 === sel2)   { setError('Choose two different instances to compare.'); return }
+    if (!sel1 || !sel2)  { setError(t('variance.selectEachDropdown')); return }
+    if (sel1 === sel2)   { setError(t('variance.chooseTwoInstances')); return }
     setError('')
     onCompare?.(parseInt(sel1, 10) - 1, parseInt(sel2, 10) - 1)
   }
@@ -1915,16 +1980,16 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
       <div className="inst-sel-header">{headerText}</div>
       <div className="inst-sel-dropdowns">
         <div className="inst-sel-dropdown-group">
-          <label className="inst-sel-label">Instance 1</label>
+          <label className="inst-sel-label">{t('comparativeAnalysis.instance1')}</label>
           <select className="inst-sel-select" value={sel1} onChange={(e) => { setSel1(e.target.value); setError('') }}>
-            <option value="">— Select instance —</option>
+            <option value="">{t('variance.selectInstancePlaceholder')}</option>
             {instances.map((inst, idx) => <option key={idx} value={String(idx + 1)}>{labelFor(inst)}</option>)}
           </select>
         </div>
         <div className="inst-sel-dropdown-group">
-          <label className="inst-sel-label">Instance 2</label>
+          <label className="inst-sel-label">{t('comparativeAnalysis.instance2')}</label>
           <select className="inst-sel-select" value={sel2} onChange={(e) => { setSel2(e.target.value); setError('') }}>
-            <option value="">— Select instance —</option>
+            <option value="">{t('variance.selectInstancePlaceholder')}</option>
             {instances.map((inst, idx) => (
               <option key={idx} value={String(idx + 1)} disabled={String(idx + 1) === sel1}>{labelFor(inst)}</option>
             ))}
@@ -1937,7 +2002,7 @@ function InstanceSelectionBlock({ instances, headerText, onCompare }) {
         disabled={!sel1 || !sel2 || sel1 === sel2}
         onClick={handleCompare}
       >
-        Compare Instances
+        {t('comparativeAnalysis.compareInstances')}
       </button>
     </div>
   )
@@ -1993,9 +2058,9 @@ function fmtPctFin(v) {
 
 // The full, unrounded figure — always available on hover so the compact form
 // above never hides the real number.
-function pctExactLabel(v) {
-  if (v === null || v === undefined) return 'No % change (zero baseline)'
-  return `Exact change: ${v >= 0 ? '+' : ''}${v.toLocaleString(undefined, {
+function pctExactLabel(v, t) {
+  if (v === null || v === undefined) return t('variance.noPctZeroBaseline')
+  return `${t('comparativeAnalysis.exactChange')}: ${v >= 0 ? '+' : ''}${v.toLocaleString(undefined, {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}%`
 }
@@ -2062,26 +2127,34 @@ const ROWCOUNT_OPTIONS = [10, 25, 50, 100, 'All']
 
 // Human names for the active sort, so the coverage line can state the real
 // ordering instead of always claiming "ranked by variance".
-const SORT_LABELS = {
-  concept: 'concept',
-  val_a: 'current value', val_b: 'previous value',
-  diff: 'difference', pct: '% change', severity: 'severity',
-}
+// Built per-render so the wording follows the selected language. The SORT
+// KEY (concept / val_a / val_b / diff / pct / severity) never changes.
+const sortLabels = (t) => ({
+  concept: t('comparativeAnalysis.sortConcept'),
+  val_a:   t('comparativeAnalysis.sortCurrent'),
+  val_b:   t('comparativeAnalysis.sortPrevious'),
+  diff:    t('comparativeAnalysis.sortDifference'),
+  pct:     t('comparativeAnalysis.sortPctChange'),
+  severity: t('comparativeAnalysis.sortSeverity'),
+})
 
 // [key, label, tooltip] — mirrors the chart modal's filter set exactly.
-const VT_FILTERS = [
-  ['all',      'All',            'Every fact present in both periods'],
-  ['sig',      'High variance',  'Facts flagged high-variance by the variance logic'],
-  ['up',       'Increased',      'Current period is higher than the previous period'],
-  ['down',     'Decreased',      'Current period is lower than the previous period'],
-  ['reversal', 'Reversed',       'The value crossed zero — sign reversal'],
-  ['zero',     'Previous was 0',
-   'Reported in both periods, but the previous value was 0 — so there is no '
-   + 'percentage change to compute. These are real comparisons, not missing facts.'],
+// Built per-render so the labels follow the selected language. The KEY
+// ('all','sig','up','down','reversal','zero') is the filter value and never
+// changes -- only the label and tooltip are localized.
+const vtFilters = (t) => [
+  ['all',      t('common.all'),                             t('comparativeAnalysis.filters.allDesc')],
+  ['sig',      t('comparativeAnalysis.highVariance'),        t('comparativeAnalysis.filters.sigDesc')],
+  ['up',       t('comparativeAnalysis.increased'),           t('comparativeAnalysis.filters.upDesc')],
+  ['down',     t('comparativeAnalysis.decreased'),           t('comparativeAnalysis.filters.downDesc')],
+  ['reversal', t('comparativeAnalysis.reversed'),            t('comparativeAnalysis.filters.reversalDesc')],
+  ['zero',     t('comparativeAnalysis.filters.zero'),
+               t('comparativeAnalysis.zeroBaselineNote')],
 ]
 
 
-function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, noAutoSummary, onSummaryLoaded }) {
+function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, reportName, noAutoSummary, onSummaryLoaded }) {
+  const t = useT()
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
   const [sortDir,   setSortDir]   = useState('desc')
@@ -2203,8 +2276,14 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     const requestId = (crypto?.randomUUID?.() ?? String(Date.now()))
     summaryRequestIdRef.current = requestId
     setSummaryLoading(true)
-    const reportName = (headerText || '').split('\n')[0]?.replace(/^Variance Analysis\s*—\s*/, '') || ''
-    fetchCompareSummary(summaryScope, labelA, labelB, reportName, { signal: controller.signal, requestId })
+    // Structural, not parsed. The header is now localized, so stripping the
+    // English "Variance Analysis — " prefix would silently stop matching and
+    // send a wrong report name to /compare-summary.
+    const resolvedReportName = reportName || ''
+    fetchCompareSummary(summaryScope, labelA, labelB, resolvedReportName,
+      // t.lang is the active language from the shared LanguageContext -- no
+      // second language state anywhere.
+      { signal: controller.signal, requestId, lang: t.lang })
       .then((text) => {
         if (summaryCancelledRef.current) return
         // Loading is cleared in the SAME callback as the result, so the two
@@ -2326,7 +2405,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
           about what "Increased" means. */}
       <div className="vt-controls">
         <div className="vt-filter-group">
-          {VT_FILTERS.map(([key, label, hint]) => {
+          {vtFilters(t).map(([key, label, hint]) => {
             const n = filterCounts[key]
             return (
               <button
@@ -2345,14 +2424,14 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
           <input
             className="vt-search"
             type="search"
-            placeholder="Search concept…"
+            placeholder={t('comparativeAnalysis.searchConcept')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            aria-label="Filter the table by concept name"
-            title="Filters which facts the table lists. Does not change the comparison."
+            aria-label={t('comparativeAnalysis.filterTooltip')}
+            title={t('comparativeAnalysis.filterNoteTable')}
           />
           <div className="vt-rowcount-group">
-            <label className="vt-rowcount-label" htmlFor="vt-rowcount">Rows</label>
+            <label className="vt-rowcount-label" htmlFor="vt-rowcount">{t('common.rows')}</label>
             <select
               id="vt-rowcount"
               className="vt-select"
@@ -2364,11 +2443,11 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
                 const v = e.target.value
                 setRowCount(v === 'All' ? 'All' : Number(v))
               }}
-              title="How many rows to list. Display only — the comparison keeps every concept."
+              title={t('comparativeAnalysis.rowsNoteTable')}
             >
               {ROWCOUNT_OPTIONS.map((opt) => (
                 <option key={String(opt)} value={String(opt)}>
-                  {opt === 'All' ? `All (${sortedRows.length.toLocaleString()})` : opt}
+                  {opt === 'All' ? t('comparativeAnalysis.allCount').replace('{0}', sortedRows.length.toLocaleString()) : opt}
                 </option>
               ))}
             </select>
@@ -2379,11 +2458,11 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
         <table className="variance-table">
           <thead>
             <tr>
-              <th className="vt-concept-col vt-sortable" onClick={() => handleSort('concept')}>Concept {sortIcon('concept')}</th>
+              <th className="vt-concept-col vt-sortable" onClick={() => handleSort('concept')}>{t('comparativeAnalysis.columns.concept')} {sortIcon('concept')}</th>
               <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_a')}>{labelA} {sortIcon('val_a')}</th>
               <th className="vt-num-col vt-sortable" onClick={() => handleSort('val_b')}>{labelB} {sortIcon('val_b')}</th>
-              <th className="vt-num-col vt-sortable" onClick={() => handleSort('diff')}>Diff {sortIcon('diff')}</th>
-              <th className="vt-num-col vt-sortable" onClick={() => handleSort('pct')}>% Chg {sortIcon('pct')}</th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('diff')}>{t('comparativeAnalysis.columns.diff')} {sortIcon('diff')}</th>
+              <th className="vt-num-col vt-sortable" onClick={() => handleSort('pct')}>{t('comparativeAnalysis.columns.pctChange')} {sortIcon('pct')}</th>
             </tr>
           </thead>
           <tbody>
@@ -2405,11 +2484,11 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
               const unitLabel = row.unit ? ` ${row.unit}` : ''
               const tipA = `Raw: ${fmtRaw(row.val_a)}${unitLabel}`
               const tipB = `Raw: ${fmtRaw(row.val_b)}${unitLabel}`
-              const tipD = `Raw diff: ${fmtRaw(row.diff)}${unitLabel}`
+              const tipD = `${t('comparativeAnalysis.rawDiff')}: ${fmtRaw(row.diff)}${unitLabel}`
               let signNote = null
               if (row.sign_change) {
                 const notation = (row.val_a ?? 0) > 0 ? '−→+' : '+→−'
-                signNote = <span className="vt-sign-note" title={`Direction reversed: ${notation}`}>{notation}</span>
+                signNote = <span className="vt-sign-note" title={`${t('comparativeAnalysis.directionReversedLabel')}: ${notation}`}>{notation}</span>
               }
               const isZeroBase = row.pct_change === null || row.pct_change === undefined
               const sev      = SEV_CFG[row.severity]
@@ -2419,7 +2498,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
               return (
                 <tr key={rowIdx} className={rowCls}>
                   <td className="vt-concept">
-                    {row.significant && <span className="vt-sig-badge" title="High variance">⚠</span>}
+                    {row.significant && <span className="vt-sig-badge" title={t('comparativeAnalysis.highVariance')}>⚠</span>}
                     {/* Concept keeps its embedded "[member]" suffix — that
                         suffix is what distinguishes dimensional rows from one
                         another in a single-column layout. */}
@@ -2449,13 +2528,12 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
                     {isZeroBase ? (
                       <span
                         className="vt-pct vt-pct-zerobase"
-                        title={`Previous period (${labelB}) was 0, so there is no percentage change to compute. `
-                             + `The fact was reported in both periods — this is a real comparison, not missing data.`}
+                        title={t('comparativeAnalysis.zeroBaseTooltip').replace('{0}', labelB)}
                       >
                         0 →
                       </span>
                     ) : (
-                      <span className={`vt-pct ${diffCls}`} title={pctExactLabel(row.pct_change)}>
+                      <span className={`vt-pct ${diffCls}`} title={pctExactLabel(row.pct_change, t)}>
                         <span className="vt-dot" aria-hidden="true" />
                         {fmtPctFin(row.pct_change)}
                       </span>
@@ -2474,10 +2552,10 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
                     <>
                       No Critical or High regulatory-importance concepts changed in this
                       comparison. {sourceRows.length.toLocaleString()} concept(s) were
-                      compared — open <b>Visualize</b> to see every tier.
+                      compared — open <b>{t('comparativeAnalysis.visualize')}</b> {t('variance.toSeeEveryTier')}
                     </>
                   ) : (
-                    <>No facts match this filter.</>
+                    <>{t('comparativeAnalysis.noFactsMatch')}</>
                   )}
                   {isFiltered && (
                     <button
@@ -2485,7 +2563,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
                       onClick={() => { setFilterMode('all'); setSearch('') }}
                       type="button"
                     >
-                      Clear filters
+                      {t('common.clearFilters')}
                     </button>
                   )}
                 </td>
@@ -2497,9 +2575,10 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
       {/* Only shown when the cap is actually hiding something. */}
       {rowCount !== 'All' && sortedRows.length > visibleRows.length && (
         <div className="vt-more">
-          {(sortedRows.length - visibleRows.length).toLocaleString()} more rows not shown
+          {t('comparativeAnalysis.moreRowsNotShown')
+            .replace('{0}', (sortedRows.length - visibleRows.length).toLocaleString())}
           <button className="vt-link-btn" onClick={() => setRowCount('All')} type="button">
-            Show all {sortedRows.length.toLocaleString()}
+            {t('comparativeAnalysis.showAll').replace('{0}', sortedRows.length.toLocaleString())}
           </button>
         </div>
       )}
@@ -2513,7 +2592,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
       <div className="variance-summary">
         <div className="variance-summary-header">
           <div className="variance-summary-label">
-            AI Analysis
+            {t('comparativeAnalysis.aiAnalysis')}
             {/* The summary arrives on a SECOND request that can take ~140s on a
                 CPU-hosted Ollama. A static line of text gave no sign anything
                 was still happening, so a stalled panel and a working one looked
@@ -2535,12 +2614,12 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
               <button
                 className="vc-stop-btn"
                 onClick={handleStopSummary}
-                title="Stop generating the AI analysis"
+                title={t('comparativeAnalysis.stopAnalysis')}
               >
                 ■ Stop
               </button>
             )}
-            <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title="Open chart visualisation">📊 Visualize</button>
+            <button className="vc-visualize-btn" onClick={() => setShowChart(true)} title={t('comparativeAnalysis.openChart')}>📊 Visualize</button>
           </div>
         </div>
         {summaryText ? (
@@ -2592,28 +2671,35 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
 }
 
 // ── Guided Action Menu Card ───────────────────────────────────────────────────
-const GUIDED_ACTION_META = {
-  'Check report status':            { icon: '📋', desc: 'Look up the latest status of any report' },
-  'Generate instance for a report': { icon: '⚙️', desc: 'Trigger a new report instance for a period' },
-  'Schedule a report':              { icon: '🗓️', desc: 'Schedule a report to run at a future date/time' },
-  'Perform comparative analysis':   { icon: '📊', desc: 'Compare two report instances period-over-period' },
-  'Retrieve data from database':    { icon: '🗄️', desc: 'Query the database using plain English' },
-  'Explain Report Errors':          { icon: '❌', desc: 'See why a report instance failed validation' },
+// Icons only. The label and description now come from the language
+// dictionary, keyed by this same ENGLISH action token — which is also what
+// onSelect sends back to /guided, untranslated.
+const GUIDED_ACTION_ICONS = {
+  'Check report status':            '📋',
+  'Generate instance for a report': '⚙️',
+  'Schedule a report':              '🗓️',
+  'Perform comparative analysis':   '📊',
+  'Retrieve data from database':    '🗄️',
 }
 
 function GuidedMenuCard({ text, options, onSelect }) {
+  const t = useT()
   return (
     <div className="guided-menu-card">
       <p className="guided-menu-prompt">{text}</p>
       <div className="guided-menu-options">
         {(options || []).map((opt) => {
-          const meta = GUIDED_ACTION_META[opt] || { icon: '•', desc: '' }
+          // `opt` is the English action token the backend sent and expects
+          // back verbatim — onSelect(opt) below passes it through unchanged.
+          // Only what is DISPLAYED is looked up in the dictionary.
+          const icon = GUIDED_ACTION_ICONS[opt] || '•'
+          const desc = t.actionDesc(opt)
           return (
             <button key={opt} className="guided-action-btn" onClick={() => onSelect?.(opt)}>
-              <span className="guided-action-icon">{meta.icon}</span>
+              <span className="guided-action-icon">{icon}</span>
               <div className="guided-action-body">
-                <span className="guided-action-label">{opt}</span>
-                {meta.desc && <span className="guided-action-desc">{meta.desc}</span>}
+                <span className="guided-action-label">{t.action(opt)}</span>
+                {desc && desc !== opt && <span className="guided-action-desc">{desc}</span>}
               </div>
               <span className="guided-action-arrow">›</span>
             </button>

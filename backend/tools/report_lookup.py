@@ -141,7 +141,7 @@ _STATUS_LABELS_5_5: dict[int, str] = {
     10: "Failed",
     # 13 is not in the application's dictionary and has never been observed in
     # real data, but is kept as Failed so a future status-13 row still gets its
-    # error file and still appears in Explain Report Errors (see the sets below).
+    # error file (see the sets below).
     13: "Failed",
     # Code 4 is deliberately NOT mapped. It is absent from the application's
     # dictionary and has never been observed; labelling it "In Progress" was a
@@ -160,8 +160,7 @@ _STATUS_LABELS_5_5: dict[int, str] = {
 # These two sets drive BEHAVIOUR, not wording, and are deliberately not a
 # mirror of the label map:
 #
-#   _FAILED_STATUSES  -> offer the error file, count error categories, and
-#                        populate the Explain Report Errors picker.
+#   _FAILED_STATUSES  -> offer the error file and count error categories.
 #   _SUCCESS_STATUSES -> offer the rendered Excel file.
 #
 # 11 keeps its membership here even though it is now labelled "Approval
@@ -172,7 +171,7 @@ _STATUS_LABELS_5_5: dict[int, str] = {
 # 13 is retained as failed although the application's dictionary omits it. It
 # has never been observed in either repo, so retaining it costs nothing, while
 # dropping it would mean a status-13 row silently stopped offering its error
-# file and vanished from Explain Report Errors.
+# file.
 _FAILED_STATUSES_5_5:  frozenset[int] = frozenset({3, 5, 8, 10, 13})
 _SUCCESS_STATUSES_5_5: frozenset[int] = frozenset({9, 11})
 
@@ -3954,9 +3953,28 @@ def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
     return norm_cache.set(result)
 
 
-def find_matching_reports(user_input: str) -> list[dict]:
+# How a return name was resolved. The distinction is load-bearing, not
+# cosmetic: an EXACT hit is something the user typed correctly and may be acted
+# on directly, while everything else is the system's guess and must be
+# confirmed. Collapsing the two is what let "FormGPBX" silently become
+# "FormGPB" and "DBR01X" become "DBR01".
+MATCH_EXACT = "exact"
+MATCH_FUZZY = "fuzzy"
+
+
+def find_matching_reports_tiered(user_input: str) -> tuple[list[dict], str]:
+    """Matches plus HOW they were found: (matches, MATCH_EXACT | MATCH_FUZZY).
+
+    Exact means the input equalled a ReturnId, a Name or an alt-name after
+    normalisation. Every other tier -- prefix, token, substring, weighted
+    scoring, rapidfuzz -- is a guess, however confident, and is reported as
+    MATCH_FUZZY so the caller can ask before acting.
+
+    An empty result is MATCH_FUZZY by convention; there is nothing exact about
+    finding nothing, and callers branch on the list being empty first anyway.
+    """
     needle = _normalise(user_input)
-    if not needle: return []
+    if not needle: return [], MATCH_FUZZY
     needle_compact = _compact_normalise(user_input)
     quads = _normalised_returns()
     from rapidfuzz import fuzz as _fuzz
@@ -3972,42 +3990,42 @@ def find_matching_reports(user_input: str) -> list[dict]:
         return text.replace(" ", "")
 
     exact_rid = [r for (_, nrid, _, r) in quads if nrid and nrid == needle]
-    if exact_rid: return _dedup(exact_rid)
+    if exact_rid: return _dedup(exact_rid), MATCH_EXACT
     exact_name = [r for (nname, _, _, r) in quads if nname and nname == needle]
-    if exact_name: return _dedup(exact_name)
+    if exact_name: return _dedup(exact_name), MATCH_EXACT
     exact_alt = [r for (_, _, nalt, r) in quads if nalt and nalt == needle]
-    if exact_alt: return _dedup(exact_alt)
+    if exact_alt: return _dedup(exact_alt), MATCH_EXACT
 
     if len(needle_compact) >= 2:
         prefix_name = [r for (nname, _, _, r) in quads if nname and _compact(nname).startswith(needle_compact)]
-        if prefix_name: return _dedup(prefix_name)
+        if prefix_name: return _dedup(prefix_name), MATCH_FUZZY
         prefix_alt = [r for (_, _, nalt, r) in quads if nalt and _compact(nalt).startswith(needle_compact)]
-        if prefix_alt: return _dedup(prefix_alt)
+        if prefix_alt: return _dedup(prefix_alt), MATCH_FUZZY
         prefix_rid = [r for (_, nrid, _, r) in quads if nrid and _compact(nrid).startswith(needle_compact)]
-        if prefix_rid: return _dedup(prefix_rid)
+        if prefix_rid: return _dedup(prefix_rid), MATCH_FUZZY
 
     if len(needle_compact) >= 2:
         token_name = [r for (nname, _, _, r) in quads if nname and needle_compact in nname.split()]
-        if token_name: return _dedup(token_name)
+        if token_name: return _dedup(token_name), MATCH_FUZZY
         token_alt = [r for (_, _, nalt, r) in quads if nalt and needle_compact in nalt.split()]
-        if token_alt: return _dedup(token_alt)
+        if token_alt: return _dedup(token_alt), MATCH_FUZZY
         token_rid = [r for (_, nrid, _, r) in quads if nrid and needle_compact in nrid.split()]
-        if token_rid: return _dedup(token_rid)
+        if token_rid: return _dedup(token_rid), MATCH_FUZZY
 
     if len(needle_compact) >= 2:
         partial_name = [r for (nname, _, _, r) in quads if nname and (needle_compact in _compact(nname) or _compact(nname) in needle_compact)]
-        if partial_name: return _dedup(partial_name)
+        if partial_name: return _dedup(partial_name), MATCH_FUZZY
         partial_alt = [r for (_, _, nalt, r) in quads if nalt and (needle_compact in _compact(nalt) or _compact(nalt) in needle_compact)]
-        if partial_alt: return _dedup(partial_alt)
+        if partial_alt: return _dedup(partial_alt), MATCH_FUZZY
         partial_rid = [r for (_, nrid, _, r) in quads if nrid and (needle_compact in _compact(nrid) or _compact(nrid) in needle_compact)]
-        if partial_rid: return _dedup(partial_rid)
+        if partial_rid: return _dedup(partial_rid), MATCH_FUZZY
 
     tokens = [t for t in needle.split() if len(t) >= 2]
     if tokens:
         all_name = [r for (nname, _, _, r) in quads if nname and all(t in nname for t in tokens)]
-        if all_name: return _dedup(all_name)
+        if all_name: return _dedup(all_name), MATCH_FUZZY
         all_alt = [r for (_, _, nalt, r) in quads if nalt and all(t in nalt for t in tokens)]
-        if all_alt: return _dedup(all_alt)
+        if all_alt: return _dedup(all_alt), MATCH_FUZZY
 
         _WW_THRESHOLD = 40; n_tok = len(tokens)
         scored: list[tuple[int, dict]] = []; seen_keys: set[str] = set()
@@ -4036,8 +4054,9 @@ def find_matching_reports(user_input: str) -> list[dict]:
         if scored:
             scored.sort(key=lambda x: x[0], reverse=True)
             best = scored[0][0]
-            if best >= _WW_THRESHOLD: return [r for s, r in scored if s >= _WW_THRESHOLD]
-            return [r for _, r in scored]
+            if best >= _WW_THRESHOLD:
+                return [r for s, r in scored if s >= _WW_THRESHOLD], MATCH_FUZZY
+            return [r for _, r in scored], MATCH_FUZZY
 
     _FUZZY_CUTOFF = 85; fuzzy_scored: list[tuple[int, dict]] = []; fuzzy_seen: set[str] = set()
     if len(needle_compact) >= 3:
@@ -4052,8 +4071,18 @@ def find_matching_reports(user_input: str) -> list[dict]:
                 if key not in fuzzy_seen: fuzzy_seen.add(key); fuzzy_scored.append((best_fuzz, r))
     if fuzzy_scored:
         fuzzy_scored.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r in fuzzy_scored]
-    return []
+        return [r for _, r in fuzzy_scored], MATCH_FUZZY
+    return [], MATCH_FUZZY
+
+
+def find_matching_reports(user_input: str) -> list[dict]:
+    """Backwards-compatible view of find_matching_reports_tiered().
+
+    Kept because ~10 call sites use it and only care about the candidates.
+    Callers that ACT on a single result must use the tiered form instead --
+    otherwise a guess is indistinguishable from a certainty.
+    """
+    return find_matching_reports_tiered(user_input)[0]
 
 
 def fuzzy_report_suggestions(user_input: str, n: int = 5, cutoff: float = 0.75) -> list[str]:
@@ -4288,41 +4317,6 @@ def get_available_instances(form_id: str) -> list[dict]:
     ]
 
 
-def get_failed_instances(form_id: str, limit: int = 10) -> list[dict]:
-    """The most recent FAILED-status instances for a form, newest first.
-
-    Byte-for-byte the same dict shape as get_available_instances — including
-    `status` as the RAW XML string — so the existing date_selection dropdown
-    receives identical data and renders identically. The only differences
-    between the two helpers are the filter and the limit.
-
-    Filtering is done on the PARSED int (_safe_status) even though the raw
-    string is what gets returned: comparing the raw string against the int
-    members of _FAILED_STATUSES silently matches nothing.
-
-    Used only by the "Explain Report Errors" shortcut, which is failed-only by
-    definition. The status flow keeps using get_available_instances and still
-    shows every status.
-    """
-    rows = [r for r in get_instances_by_form_id(form_id)
-            if _safe_status(r) in _FAILED_STATUSES]
-    rows.sort(key=_dtc_sort_key, reverse=True)
-    failed = [
-        {
-            "dtc":            r.get("DTC", "").strip(),
-            "reporting_date": r.get("ReportingDate", "").strip(),
-            "status":         r.get("Status", "").strip(),
-            "label":          _fmt_instance_label(r.get("DTC", "").strip(), r.get("ReportingDate", "").strip()),
-        }
-        for r in rows if r.get("DTC", "").strip() or r.get("ReportingDate", "").strip()
-    ]
-    logger.info(
-        "[report_lookup] get_failed_instances(form_id=%r): failed=%d returned=%d limit=%d",
-        form_id, len(failed), min(len(failed), max(0, limit)), limit,
-    )
-    return failed[:limit]
-
-
 def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
     rows = get_instances_by_form_id(form_id); dtc_clean = dtc.strip()
     row  = next((r for r in rows if r.get("DTC", "").strip() == dtc_clean), None)
@@ -4534,15 +4528,55 @@ def get_report_status_exact_fast(report_name: str) -> dict:
     return _build_status_result_fast(form_id, ret_name, instances)
 
 
+def _confirm_fuzzy_result(clean_input: str, matches: list[dict]) -> dict:
+    """A disambiguation asking the user to confirm a GUESS.
+
+    Reached only when nothing matched exactly. The single-match wording is
+    deliberately different from the multi-match wording: with one candidate the
+    honest question is "did you mean this?", and phrasing it as a menu of one
+    invites a reflexive click on the only option.
+
+    Returns the same {"type": "disambiguation", "options": [...]} shape the
+    multi-match path already produces, so the staged-session machinery that
+    handles the user picking a number or a name needs no change at all.
+    """
+    seen: dict[str, None] = {}
+    for m in matches:
+        name = m.get("Name", "")
+        if name:
+            seen[name] = None
+    options = list(seen.keys())
+    if len(options) == 1:
+        message = (
+            f"I couldn't find an exact match for '{clean_input}'. "
+            f"I found a similar return: {options[0]}. "
+            f"Are you referring to {options[0]}?"
+        )
+    else:
+        listed = "\n".join(f"{i + 1}. {name}" for i, name in enumerate(options))
+        message = (
+            f"I couldn't find an exact match for '{clean_input}'. "
+            f"Did you mean one of these?\n\n{listed}"
+        )
+    return {"type": "disambiguation", "message": message, "options": options}
+
+
 def get_report_status_fast(report_name: str) -> dict:
     clean_input = report_name.strip()
-    matches = find_matching_reports(clean_input)
+    matches, match_tier = find_matching_reports_tiered(clean_input)
     if not matches:
         suggestions = fuzzy_report_suggestions(clean_input)
         if suggestions:
             opts_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(suggestions))
             return {"type": "disambiguation", "message": f"No exact match found for '{clean_input}'. Did you mean one of these?\n\n{opts_text}", "options": suggestions}
         return {"type": "error", "message": f"No matching reports found for '{clean_input}'."}
+    # A GUESS IS NEVER ACTED ON SILENTLY. This used to branch only on the
+    # COUNT, so a single fuzzy hit was indistinguishable from a single exact
+    # one and was auto-selected: "FormGPBX" quietly became "FormGPB" and
+    # "DBR01X" became "DBR01". Ask whenever the match was not exact, however
+    # few candidates there are.
+    if match_tier != MATCH_EXACT:
+        return _confirm_fuzzy_result(clean_input, matches)
     if len(matches) > 1:
         seen_opts: dict[str, None] = {}
         for m in matches:
@@ -4559,13 +4593,20 @@ def get_report_status_fast(report_name: str) -> dict:
 
 def get_report_status(report_name: str) -> dict:
     clean_input = report_name.strip()
-    matches = find_matching_reports(clean_input)
+    matches, match_tier = find_matching_reports_tiered(clean_input)
     if not matches:
         suggestions = fuzzy_report_suggestions(clean_input)
         if suggestions:
             opts_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(suggestions))
             return {"type": "disambiguation", "message": f"No exact match found for '{clean_input}'. Did you mean one of these?\n\n{opts_text}", "options": suggestions}
         return {"type": "error", "message": f"No matching reports found for '{clean_input}'."}
+    # A GUESS IS NEVER ACTED ON SILENTLY. This used to branch only on the
+    # COUNT, so a single fuzzy hit was indistinguishable from a single exact
+    # one and was auto-selected: "FormGPBX" quietly became "FormGPB" and
+    # "DBR01X" became "DBR01". Ask whenever the match was not exact, however
+    # few candidates there are.
+    if match_tier != MATCH_EXACT:
+        return _confirm_fuzzy_result(clean_input, matches)
     if len(matches) > 1:
         seen_opts: dict[str, None] = {}
         for m in matches:
