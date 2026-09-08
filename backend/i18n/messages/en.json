@@ -70,6 +70,7 @@
   "label.scheduled": "Scheduled",
   "label.status": "Status",
   "label.initiated_on": "Initiated On",
+  "label.run_date_time": "Run Date/Time",
   "label.errors_found": "Errors Found",
   "label.failure_reasons": "Failure Reason(s):",
   "status.generating_explanations": "Generating error explanations…",

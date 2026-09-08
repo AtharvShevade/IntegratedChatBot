@@ -249,10 +249,15 @@ def _inbound_skip_reason(message: str) -> str | None:
         # against the English name -- a transliterated identifier cannot match.
         return "identifier"
     try:
-        from backend.guided import GUIDED_ACTIONS
+        from backend.guided import GUIDED_ACTIONS, normalize_confirmation
         if text in GUIDED_ACTIONS:
             # Matched exactly, in English, at guided.py:179-180.
             return "guided-action"
+        if normalize_confirmation(text) is not None:
+            # A static guided yes/no reply (any supported language, case- and
+            # whitespace-insensitive) -- consumed deterministically by
+            # STAGE_PREV_DATES via the same normalize_confirmation() call.
+            return "guided-confirmation"
     except Exception:  # noqa: BLE001 - the skip is an optimisation, not a gate
         pass
     return None

@@ -70,6 +70,7 @@
   "label.scheduled": "शेड्यूल किया गया",
   "label.status": "स्थिति",
   "label.initiated_on": "आरंभ किया गया",
+  "label.run_date_time": "रन तिथि/समय",
   "label.errors_found": "मिली त्रुटियाँ",
   "label.failure_reasons": "विफलता के कारण:",
   "status.generating_explanations": "त्रुटि स्पष्टीकरण बनाए जा रहे हैं…",

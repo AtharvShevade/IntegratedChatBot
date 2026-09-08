@@ -21,6 +21,13 @@ const _loginId    = _readParam('loginId',    'chat_loginId')
 const _uid        = _readParam('uid',         'chat_uid')
 const _roleId     = _readParam('roleId',      'chat_roleId') || _readParam('rid', 'chat_rid') || ''
 const _aspSession = _params.get('aspSession') || ''  // never persisted — cookie-like, must be fresh
+// Chat language, set by the .NET header's chatbotLanguageSelect dropdown —
+// present in the URL only on first load (mirrors loginId/uid above). Read
+// once here, not persisted to sessionStorage: a reload should fall through
+// to the localStorage 'chat_lang' value below exactly as it did before this
+// existed, and changes after first load arrive via the CHATBOT_LANG
+// postMessage handled further down, not by re-reading the URL.
+const _langParam  = _params.get('lang') || ''
 
 // APP_VERSION=6.0 only — tenant identity + JWT, read as plain URL params for
 // manual/dev testing in THIS standalone test frontend. Note: the real 6.0
@@ -94,7 +101,10 @@ export default function App() {
   const [voiceState, setVoiceState]   = useState('idle')
   // Chat language. 'en' takes the pre-existing English path with zero
   // translation calls; anything else engages the backend i18n boundary.
+  // _langParam (the .NET header dropdown, first load only) wins over the
+  // localStorage fallback used by every other embed path.
   const [lang, setLang]               = useState(() => {
+    if (_langParam) return _langParam
     try { return localStorage.getItem('chat_lang') || 'en' } catch { return 'en' }
   })
   useEffect(() => {
@@ -125,9 +135,21 @@ export default function App() {
     if (window.parent === window) return  // not embedded in an iframe — nothing to shake hands with
 
     function handleAuthMessage(event) {
-      if (!event.data || event.data.type !== 'CHATBOT_AUTH') return
-      if (typeof event.data.jwt === 'string' && event.data.jwt) {
-        jwtRef.current = event.data.jwt
+      if (!event.data) return
+      if (event.data.type === 'CHATBOT_AUTH') {
+        if (typeof event.data.jwt === 'string' && event.data.jwt) {
+          jwtRef.current = event.data.jwt
+        }
+        return
+      }
+      // .NET header's chatbotLanguageSelect, sent only when the iframe is
+      // already open (the first-load case is covered by _langParam above).
+      // Routed through the EXISTING setLang -- same state, same
+      // LanguageContext, same translation boundary as the in-chat picker.
+      if (event.data.type === 'CHATBOT_LANG') {
+        if (typeof event.data.lang === 'string' && event.data.lang) {
+          setLang(event.data.lang)
+        }
       }
     }
     window.addEventListener('message', handleAuthMessage)

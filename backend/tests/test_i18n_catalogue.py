@@ -210,6 +210,7 @@ PIPELINE_OUTPUT = {
     "label.status": "Status",
     "label.initiated_on": "Initiated On",
     "label.latest_reporting_date": "Latest Reporting Date",
+    "label.run_date_time": "Run Date/Time",
     "lookup.render_missing": "Render file not found.",
     "lookup.error_file_missing": "Error file not found.",
     "lookup.not_found": "Report 'CIMS_ROR' not found.",

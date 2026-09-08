@@ -31,6 +31,49 @@ GUIDED_ACTIONS: list[str] = [
     "Retrieve data from database",
 ]
 
+# ── Confirmation tokens (static Yes/No guided prompts) ─────────────────────────
+# Canonical action -> {language: [accepted tokens, lowercase]}. Lets a static
+# guided yes/no reply (e.g. STAGE_PREV_DATES's "check another reporting date?"
+# prompt) be recognized deterministically in any supported language, with no
+# translation/LLM call -- the same role GUIDED_ACTIONS plays for the 5-item
+# menu, but for the smaller Yes/No confirmation surface. This is the single
+# source of truth for these tokens; both the inbound-translation skip check
+# (backend/i18n/boundary.py) and the STAGE_PREV_DATES handler below use
+# normalize_confirmation() rather than keeping their own copies.
+CONFIRMATION_TOKENS: dict[str, dict[str, list[str]]] = {
+    "YES": {
+        "en": ["yes", "y", "yeah", "yep"],
+        "fr": ["oui"],
+        "ar": ["نعم"],
+        "hi": ["हाँ"],
+    },
+    "NO": {
+        "en": ["no", "n", "nope", "nah"],
+        "fr": ["non"],
+        "ar": ["لا"],
+        "hi": ["नहीं"],
+    },
+}
+
+
+def normalize_confirmation(text: str) -> str | None:
+    """Return "YES", "NO", or None for a static guided yes/no reply.
+
+    Case- and whitespace-insensitive, matched against CONFIRMATION_TOKENS
+    across every supported language -- so a clicked English "Yes" and a
+    hand-typed French "Oui" / "OUI" / " oui " all resolve the same way,
+    deterministically, with no translation involved.
+    """
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return None
+    for canonical, by_lang in CONFIRMATION_TOKENS.items():
+        for tokens in by_lang.values():
+            if lowered in tokens:
+                return canonical
+    return None
+
+
 # ── Central action → permission mapping ────────────────────────────────────────
 # Actions not listed here require no permission beyond return access (Status,
 # Compare, DB Q&A) — only actions that need a role-level check (backed by

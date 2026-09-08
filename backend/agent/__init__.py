@@ -997,11 +997,11 @@ async def decide(
                 _session_context.pop(session_id, None)
             session = {}
         else:
-            lower           = lower_q.strip()
             form_id         = session.get("pending_form_id", "")
             return_name     = session.get("pending_return_name", "")
             other_instances = session.get("pending_other_instances", [])
-            if lower in ("yes", "y", "yeah", "yep"):
+            from backend.guided import normalize_confirmation
+            if normalize_confirmation(user_query) == "YES":
                 if session_id:
                     _session_context[session_id] = {
                         "awaiting":            STAGE_DATE,

@@ -70,6 +70,7 @@
   "label.scheduled": "Planifié",
   "label.status": "Statut",
   "label.initiated_on": "Lancé le",
+  "label.run_date_time": "Date/Heure d’exécution",
   "label.errors_found": "Erreurs trouvées",
   "label.failure_reasons": "Motif(s) de l’échec :",
   "status.generating_explanations": "Génération des explications d’erreur…",

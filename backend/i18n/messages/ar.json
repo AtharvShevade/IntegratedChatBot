@@ -70,6 +70,7 @@
   "label.scheduled": "مجدول",
   "label.status": "الحالة",
   "label.initiated_on": "بدأ في",
+  "label.run_date_time": "تاريخ/وقت التشغيل",
   "label.errors_found": "الأخطاء المكتشفة",
   "label.failure_reasons": "أسباب الفشل:",
   "status.generating_explanations": "جارٍ إنشاء شرح الأخطاء…",
