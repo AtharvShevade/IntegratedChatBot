@@ -50,6 +50,31 @@ def translation_model() -> str:
     return os.getenv("TRANSLATION_MODEL", "qwen3:14b")
 
 
+def compare_summary_translation_model() -> str:
+    """Model override for /compare-summary's AI-narrative translation ONLY.
+
+    Benchmarked against qwen3:14b (translation_model()'s default) on realistic
+    comparison-analysis text: qwen3:14b reliably exceeded even a 180s budget on
+    the shared proxy, while aya-expanse:8b finished in 81-157s with every
+    [[E#]] placeholder preserved. Every OTHER translation path (/chat,
+    /guided, ...) keeps calling translation_model() unchanged -- this is a
+    single endpoint's override, not a global model swap.
+    """
+    return os.getenv("COMPARE_SUMMARY_TRANSLATION_MODEL", "aya-expanse:8b")
+
+
+def compare_summary_translation_base_url() -> str:
+    """Where compare_summary_translation_model() is served.
+
+    Falls back to translation_base_url() (TRANSLATION_BASE_URL / OLLAMA_BASE_URL)
+    if unset. Set this explicitly if aya-expanse:8b is not pulled on whatever
+    host/proxy qwen3:14b uses -- it was benchmarked against a LOCAL Ollama
+    instance, not the shared remote proxy.
+    """
+    explicit = os.getenv("COMPARE_SUMMARY_TRANSLATION_BASE_URL", "").strip()
+    return explicit.rstrip("/") if explicit else translation_base_url()
+
+
 def translation_base_url() -> str:
     """Endpoint for the translation model.
 

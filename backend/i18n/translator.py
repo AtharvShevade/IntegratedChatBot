@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -267,9 +268,90 @@ class IdentityTranslator:
         return TranslationResult(text=text, latency_ms=0.0, ok=True, model="identity")
 
 
-def get_translator() -> Translator:
-    """Build the translator for one request from current configuration."""
-    return OllamaTranslator()
+def get_translator(
+    timeout: float | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> Translator:
+    """Build the translator for one request from current configuration.
+
+    ``timeout``, ``model`` and ``base_url`` override their config.* defaults
+    for callers with their own requirements -- e.g. /compare-summary passes
+    its own model (aya-expanse:8b, not TRANSLATION_MODEL's qwen3:14b) and its
+    own base_url, without changing what every other caller gets.
+    """
+    return OllamaTranslator(model=model, base_url=base_url, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Placeholder-safety guardrail
+# ---------------------------------------------------------------------------
+# Benchmarking aya-expanse:8b (see /compare-summary's model override) found
+# two failure modes protect.restore_entities() does not catch by itself:
+#
+#   1. A placeholder reused for a second, different value ("[[E7]]" appearing
+#      where "[[E8]]" should) -- restore_entities() only checks that each
+#      placeholder was used at LEAST once, so a duplicate is invisible to it.
+#   2. An invented illustrative figure in plain prose next to an otherwise
+#      intact placeholder (observed once: "500 million rupees" was not in the
+#      source at all). protect.mask_entities() masks every number/amount/date
+#      in the input, so a genuine translation has NO bare digits left; any
+#      digit outside a placeholder in the output is new.
+#
+# Wrapping the Translator (rather than duplicating masking/restore logic
+# here) means this validates on exactly the text boundary.py already masks
+# and restores, with no second copy of that logic.
+_PLACEHOLDER_TOKEN_RE = re.compile(r"\[\[E\d+\]\]")
+
+
+def unsafe_translation_reason(original_masked: str, translated_masked: str) -> str | None:
+    """None if *translated_masked* is safe; otherwise a short reason string.
+
+    Both arguments are MASKED text (still carrying [[E#]] placeholders) --
+    the same shape boundary.py sends to and receives from a Translator,
+    before protect.restore_entities() runs.
+    """
+    orig_counts = Counter(_PLACEHOLDER_TOKEN_RE.findall(original_masked))
+    new_counts = Counter(_PLACEHOLDER_TOKEN_RE.findall(translated_masked))
+    if orig_counts != new_counts:
+        return f"placeholder counts changed: {dict(orig_counts)} -> {dict(new_counts)}"
+
+    residue = _PLACEHOLDER_TOKEN_RE.sub("", translated_masked)
+    if re.search(r"\d", residue):
+        return "output contains a number outside any protected placeholder"
+
+    return None
+
+
+class PlaceholderSafeTranslator:
+    """Wraps another Translator and rejects a result that fails
+    unsafe_translation_reason(), by returning ok=False.
+
+    ok=False is the SAME signal an ordinary translation failure produces, so
+    boundary.translate_outbound's existing "keep English" fallback
+    (backend/i18n/boundary.py, the ``if not (tr.ok and tr.text.strip())``
+    branch) handles a rejected translation with no new code path.
+    """
+
+    def __init__(self, inner: Translator) -> None:
+        self.inner = inner
+        self.name = inner.name
+
+    async def translate(self, text: str, src: str, tgt: str) -> TranslationResult:
+        result = await self.inner.translate(text, src, tgt)
+        if not result.ok:
+            return result
+        reason = unsafe_translation_reason(text, result.text)
+        if reason is not None:
+            logger.warning(
+                "[I18N_SAFETY] model=%s rejected: %s", self.inner.name, reason,
+            )
+            return TranslationResult(
+                text="", latency_ms=result.latency_ms, ok=False,
+                error=f"placeholder safety check failed: {reason}",
+                attempts=result.attempts, model=result.model,
+            )
+        return result
 
 
 async def warmup() -> float:

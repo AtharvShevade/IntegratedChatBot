@@ -48,6 +48,28 @@ _GLOSSARY = (
     "Instance ID", "Form ID", "Return ID",
 )
 
+# Ordinary English/financial acronyms that match the bare-acronym pattern's
+# shape (below) but are NEVER a real report/return short name in this system
+# -- checked against every Name/AltName/ReturnId across all 429 real rows in
+# returns.xml, zero collisions. Masking one of these forces a translation
+# model to reconstruct a sentence around a meaningless bracket sitting inside
+# otherwise ordinary prose ("AI Summary:", "...Gross NPA To Gross Advances
+# Ratio..."), which was measured (real /compare-summary narrative, real
+# aya-expanse:8b, en->hi/fr/ar) to measurably increase the odds it drops the
+# placeholder outright: 2 of 3 languages failed PlaceholderSafeTranslator's
+# check with "AI"/"NPA" masked, 3 of 3 succeeded -- and ~25% faster -- with
+# them excluded.
+#
+# This is a narrow EXCLUSION from the bare-acronym shape, not a loosening of
+# it: that pattern is the ONLY thing protecting the 27 real report/return
+# codes in returns.xml that are bare uppercase with no digit or underscore
+# (ROR, CRILC, RBS, IRS, FCY, LOU, CEM, BBSD, BEF, ALO, CPR, FVCI, MTSS, OCB,
+# PCI, RCL, RDA, RDB, RLC, RLE, ROC, ROF, ROP, ROS, SIR, SSL, STDL). Add an
+# entry here ONLY after checking it against every real report/return name the
+# same way -- this set may only ever grow with words PROVEN to never be a
+# real report code, and must never be used to loosen the pattern's shape.
+_ORDINARY_ACRONYMS = frozenset({"AI", "NPA"})
+
 # Order matters: alternation is leftmost-first, so the more specific patterns
 # must come first or a shorter one will claim part of a longer token.
 _PATTERNS = (
@@ -106,8 +128,9 @@ _PATTERNS = (
     r"\b[A-Z][a-zA-Z0-9]*(?:[-.][A-Z0-9][a-zA-Z0-9]*)+\b",
     r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b",
     # Bare acronyms: RAQ, XBRL, SQL, ROR. Report short names carry no digit,
-    # so the rule above misses them.
-    r"\b[A-Z]{2,16}\b",
+    # so the rule above misses them. Excludes _ORDINARY_ACRONYMS (see above)
+    # -- a verified, narrow exclusion, not a loosening of the pattern's shape.
+    rf"\b(?!(?:{'|'.join(re.escape(w) for w in sorted(_ORDINARY_ACRONYMS, key=len, reverse=True))})\b)[A-Z]{{2,16}}\b",
     # Numbers, amounts, percentages. Protected mainly for digit SHAPE: an
     # Arabic-Indic ٣١ would break every downstream parse.
     r"\b\d[\d,]*(?:\.\d+)?%?\b",

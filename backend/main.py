@@ -26,6 +26,7 @@ from backend import version_config  # noqa: E402
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
 from backend import i18n  # noqa: E402
+from backend.i18n.translator import PlaceholderSafeTranslator  # noqa: E402
 from backend import stt  # noqa: E402
 from backend.stt import config as stt_config, vocabulary as stt_vocabulary  # noqa: E402
 from backend.models import (  # noqa: E402
@@ -551,9 +552,40 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
     # on this endpoint that legitimately spends a runtime translation call.
     # translate_outbound masks the concept names, figures and percentages out
     # of it first, so the numbers a regulator reads are the pipeline's own.
+    #
+    # This narrative is several sentences long -- longer than a normal chat
+    # reply -- and the shared qwen3:14b Ollama proxy was measured reliably
+    # exceeding even a 180s budget on it. Benchmarked against aya-expanse:8b
+    # on realistic comparison-analysis text (short + long, en->hi/fr/ar):
+    # 81-157s, every [[E#]] placeholder preserved. So THIS endpoint only uses
+    # its own model (config.compare_summary_translation_model(), NOT
+    # TRANSLATION_MODEL/qwen3:14b -- every other translation path is
+    # unaffected) and keeps the existing 180s budget, which already covers
+    # the worst case measured (157s) with margin -- no need to raise it.
+    #
+    # PlaceholderSafeTranslator adds one more check on top of the existing
+    # restore_entities() safety net: the benchmark also found aya-expanse:8b
+    # can (rarely) reuse a placeholder for a second value or invent a bare
+    # number in prose next to an intact one, neither of which
+    # restore_entities() catches on its own (see translator.py). A rejected
+    # translation falls back to English via the SAME existing mechanism any
+    # other translation failure already uses -- no new fallback path.
     if summary and i18n.should_translate(request.lang):
+        try:
+            translation_timeout = float(os.getenv("COMPARE_SUMMARY_TRANSLATION_TIMEOUT", "180"))
+        except ValueError:
+            translation_timeout = 180.0
+        # i18n.boundary.get_translator (attribute access, not a bound import) so
+        # tests that monkeypatch "backend.i18n.boundary.get_translator" still
+        # intercept this call exactly as they do the default /chat path.
+        base_translator = i18n.boundary.get_translator(
+            timeout=translation_timeout,
+            model=i18n.config.compare_summary_translation_model(),
+            base_url=i18n.config.compare_summary_translation_base_url(),
+        )
+        translator = PlaceholderSafeTranslator(base_translator)
         localized = await _run_cancellable(request.request_id, i18n.translate_outbound(
-            {"llm_summary": summary, "options": []}, request.lang,
+            {"llm_summary": summary, "options": []}, request.lang, translator,
         ))
         return {"llm_summary": localized.get("llm_summary") or summary}
 

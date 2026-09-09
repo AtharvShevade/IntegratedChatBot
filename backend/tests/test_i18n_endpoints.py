@@ -81,9 +81,18 @@ def _install(monkeypatch, decide=None, guided=None, translator=None):
     if guided is not None:
         monkeypatch.setattr(main_module, "guided_step", guided)
     if translator is not None:
-        monkeypatch.setattr(
-            "backend.i18n.boundary.get_translator", lambda: translator
-        )
+        # **kwargs tolerates /compare-summary's get_translator(timeout=...,
+        # model=..., base_url=...) call as well as every other call site's
+        # zero-arg one. Calls are recorded onto the translator itself so a
+        # test can assert exactly what /compare-summary requested.
+        calls: list[dict] = []
+        translator.get_translator_calls = calls
+
+        def _get_translator(**kwargs):
+            calls.append(kwargs)
+            return translator
+
+        monkeypatch.setattr("backend.i18n.boundary.get_translator", _get_translator)
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +444,93 @@ def test_compare_execute_honours_lang(client, monkeypatch, lang):
     assert data["variance_label_a"] == "30-Jun-2026"
     assert data["report_name"] == "RAQ(Monthly)"
     assert "RAQ(Monthly)" in data["response_text"]
+
+
+def test_compare_summary_requests_its_own_model_override(client, monkeypatch):
+    """/compare-summary must ask for compare_summary_translation_model()
+    (aya-expanse:8b, benchmarked faster+safer for this narrative), NOT
+    TRANSLATION_MODEL (qwen3:14b, still used everywhere else)."""
+    async def _generate(*args, **kwargs):
+        return "Amount Outstanding — Domestic increased from Rs 4,855 Cr to Rs 506,108 Cr."
+
+    monkeypatch.setattr("backend.tools.variance_explain.generate_explanations",
+                        _generate, raising=False)
+    tr = StubTranslator()
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-summary", json={
+        "rows": [{"concept": "AmountOutstanding", "val_a": 1.0, "val_b": 2.0}],
+        "label_a": "30-Jun-2026", "label_b": "30-Sep-2025",
+        "report_name": "RAQ(Monthly)", "lang": "fr",
+    })
+    assert resp.status_code == 200
+    assert tr.get_translator_calls, "get_translator was never called"
+    kwargs = tr.get_translator_calls[-1]
+    assert kwargs.get("model") == "aya-expanse:8b"
+    assert kwargs.get("model") != "qwen3:14b"
+    assert kwargs.get("timeout") == 180.0
+
+
+@pytest.mark.parametrize("lang", ("hi", "fr", "ar"))
+def test_compare_summary_falls_back_to_english_when_translation_is_unsafe(client, monkeypatch, lang):
+    """A translation that corrupts a protected placeholder (dropped, or an
+    invented bare number alongside an intact one -- the two failure modes
+    measured on aya-expanse:8b) must never reach the user: /compare-summary
+    keeps the English narrative instead, via the SAME 'keep English'
+    fallback any other translation failure already uses."""
+    narrative = "Amount Outstanding — Domestic increased from Rs 4,855 Cr to Rs 506,108 Cr for CIMS_ROR."
+
+    async def _generate(*args, **kwargs):
+        return narrative
+
+    monkeypatch.setattr("backend.tools.variance_explain.generate_explanations",
+                        _generate, raising=False)
+
+    # Drops every placeholder outright -- an aggressively unsafe "translation".
+    tr = StubTranslator(transform=lambda t: "Le montant a augmenté de manière significative.")
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-summary", json={
+        "rows": [{"concept": "AmountOutstanding", "val_a": 1.0, "val_b": 2.0}],
+        "label_a": "30-Jun-2026", "label_b": "30-Sep-2025",
+        "report_name": "RAQ(Monthly)", "lang": lang,
+    })
+    assert resp.status_code == 200
+    summary = resp.json()["llm_summary"]
+    assert summary == narrative, (
+        f"{lang}: an unsafe translation reached the user instead of falling back to English"
+    )
+
+
+@pytest.mark.parametrize("lang", ("hi", "fr", "ar"))
+def test_compare_summary_invented_number_also_falls_back(client, monkeypatch, lang):
+    """The specific defect observed on aya-expanse:8b: placeholders survive
+    intact, but an illustrative figure is fabricated in the surrounding
+    prose. protect.restore_entities() alone would not catch this -- the
+    PlaceholderSafeTranslator guardrail must."""
+    narrative = "Amount Outstanding — Domestic increased from Rs 4,855 Cr to Rs 506,108 Cr for CIMS_ROR."
+
+    async def _generate(*args, **kwargs):
+        return narrative
+
+    monkeypatch.setattr("backend.tools.variance_explain.generate_explanations",
+                        _generate, raising=False)
+
+    def _invent_a_number(masked_text: str) -> str:
+        # Echo the masked text back (placeholders intact) but with a
+        # fabricated figure inserted -- exactly the observed defect shape.
+        return "500 million rupees, " + masked_text
+
+    tr = StubTranslator(transform=_invent_a_number)
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-summary", json={
+        "rows": [{"concept": "AmountOutstanding", "val_a": 1.0, "val_b": 2.0}],
+        "label_a": "30-Jun-2026", "label_b": "30-Sep-2025",
+        "report_name": "RAQ(Monthly)", "lang": lang,
+    })
+    assert resp.status_code == 200
+    assert resp.json()["llm_summary"] == narrative
 
 
 @pytest.mark.parametrize("lang", LANGS_ALL)

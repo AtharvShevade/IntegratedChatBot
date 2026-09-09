@@ -1503,29 +1503,6 @@ function renderRich(str) {
   )
 }
 
-// The language dropdown, shown inside the chatbot menu section.
-function LanguagePicker({ lang, onLanguageChange }) {
-  const t = useT()
-  if (!onLanguageChange) return null
-  return (
-    <div className="menu-lang-row">
-      <label className="menu-lang-label" htmlFor="chat-lang-select">🌐 {t('chatLanguage')}</label>
-      <select
-        id="chat-lang-select"
-        className="lang-select"
-        value={lang}
-        onChange={(e) => onLanguageChange(e.target.value)}
-        title={t('chatLanguage')}
-        aria-label={t('chatLanguage')}
-      >
-        {LANGUAGES.map((l) => (
-          <option key={l.code} value={l.code}>{l.label}</option>
-        ))}
-      </select>
-    </div>
-  )
-}
-
 // Filter SUGGESTION_GROUPS by the backend-resolved allowed-actions list
 // (from guided.py's _allowed_actions, reused via App.jsx's prefetch). A null/
 // undefined list means "not resolved yet" — show everything rather than hide
@@ -1552,7 +1529,6 @@ function WelcomeCard({ onSuggestion, onGuidedAction, allowedActions, lang, onLan
         <ul className="welcome-list">
           {items.map((key) => <li key={key}>{renderRich(t(key))}</li>)}
         </ul>
-        <LanguagePicker lang={lang} onLanguageChange={onLanguageChange} />
         <p className="welcome-subtext">{t('welcomeCta')}</p>
         <div className="welcome-suggestion-groups">
           {groups.map((group) => (
@@ -1655,7 +1631,6 @@ function ActionMenu({ onGuidedAction, allowedActions, lang, onLanguageChange }) 
       <div className="avatar assistant-avatar">AI</div>
       <div className="bubble assistant-bubble action-menu-bubble">
         <p className="action-menu-prompt">{t('actionMenuPrompt')}</p>
-        <LanguagePicker lang={lang} onLanguageChange={onLanguageChange} />
         <div className="welcome-suggestion-groups">
           {groups.map((group) => (
             <div key={group.action} className="welcome-suggestion-group">
