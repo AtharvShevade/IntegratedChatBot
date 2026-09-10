@@ -666,6 +666,58 @@ def test_compare_summary_translates_the_ai_narrative(client, monkeypatch, lang):
             )
 
 
+def test_compare_summary_batches_bullets_instead_of_one_giant_call(client, monkeypatch):
+    """The narrative is 'AI Summary:\\n• fact one\\n• fact two\\n...\\n\\n
+    Overall pattern: ...'. Previously sent as ONE model call regardless of
+    length -- measured in production reliably hitting ReadTimeout on a
+    12-bullet/1092-char narrative. Batches of
+    COMPARE_SUMMARY_TRANSLATION_BATCH_SIZE bullets must now be dispatched as
+    separate calls, never the whole multi-bullet blob in one call."""
+    monkeypatch.setenv("COMPARE_SUMMARY_TRANSLATION_BATCH_SIZE", "3")
+    bullets = "\n".join(f"• Concept{i} increased to {i} Cr." for i in range(7))
+    narrative = f"AI Summary:\n{bullets}\n\nOverall pattern: 7 increased."
+
+    async def _generate(*args, **kwargs):
+        return narrative
+
+    monkeypatch.setattr("backend.tools.variance_explain.generate_explanations",
+                        _generate, raising=False)
+
+    class LineWiseStub:
+        name = "linewise"
+
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def translate(self, text, src, tgt):
+            self.calls.append(text)
+            lines = [f"<{tgt}>{ln}" if ln.strip() else ln for ln in text.split("\n")]
+            return TranslationResult(text="\n".join(lines), latency_ms=1.0, ok=True, model="linewise")
+
+    tr = LineWiseStub()
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-summary", json={
+        "rows": [{"concept": "AmountOutstanding", "val_a": 1.0, "val_b": 2.0}],
+        "label_a": "30-Jun-2026", "label_b": "30-Sep-2025",
+        "report_name": "RAQ(Monthly)", "lang": "fr",
+    })
+    assert resp.status_code == 200
+    summary = resp.json()["llm_summary"]
+
+    # 7 bullets at batch_size=3 must never fit in one call.
+    assert len(tr.calls) > 1, "the whole narrative was sent as one giant call"
+    for call_text in tr.calls:
+        concepts_in_call = sum(1 for i in range(7) if f"Concept{i}" in call_text)
+        assert concepts_in_call <= 3, f"a batch carried {concepts_in_call} bullets: {call_text!r}"
+
+    # Every bullet must still be present, translated, and in order.
+    for i in range(7):
+        assert f"<fr>• Concept{i} increased to {i} Cr." in summary, (
+            f"bullet {i} missing or untranslated: {summary!r}"
+        )
+
+
 @pytest.mark.parametrize("lang", LANGS_ALL)
 def test_explain_category_honours_lang(client, monkeypatch, lang):
     async def _explain(*args, **kwargs):

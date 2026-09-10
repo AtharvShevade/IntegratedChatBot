@@ -647,9 +647,15 @@ async def _translate_error_batch(
     translated: dict[str, str],
     batch_no: int,
     total_batches: int,
+    label: str = "error-explanation",
 ) -> None:
-    """Translate one batch of whole error-explanation objects in a SINGLE
-    model call, then split the result back into its individual fields.
+    """Translate one batch of whole "objects" (error-explanation cards, or --
+    via translate_lines_in_batches -- prose lines) in a SINGLE model call,
+    then split the result back into its individual fields.
+
+    ``label`` only changes the log line's tag ("error-explanation" vs
+    "compare-summary" etc.) so production logs stay readable about which
+    caller a batch belongs to; the mechanism itself is generic.
 
     Never raises and never leaves a field unset: any failure -- the call
     itself, a lost batch separator, a segment-count mismatch -- keeps every
@@ -666,8 +672,8 @@ async def _translate_error_batch(
     tr = await client.translate(combined_text, "en", resolved)
     elapsed = time.perf_counter() - started
     logger.info(
-        "[I18N_OUT] error-explanation batch=%d/%d items=%d elapsed=%.2fs ok=%s",
-        batch_no, total_batches, len(names), elapsed, tr.ok,
+        "[I18N_OUT] %s batch=%d/%d items=%d elapsed=%.2fs ok=%s",
+        label, batch_no, total_batches, len(names), elapsed, tr.ok,
     )
 
     def _fall_back_all(reason: str) -> None:
@@ -685,9 +691,9 @@ async def _translate_error_batch(
 
     if missing_set & separator_keys:
         logger.warning(
-            "[I18N_OUT] error-explanation batch=%d/%d: lost a batch separator -- "
+            "[I18N_OUT] %s batch=%d/%d: lost a batch separator -- "
             "keeping English for all %d item(s) in this batch",
-            batch_no, total_batches, len(names),
+            label, batch_no, total_batches, len(names),
         )
         _fall_back_all("batch separator lost")
         return
@@ -695,9 +701,9 @@ async def _translate_error_batch(
     segments = restored_whole.split(_BATCH_SEP_MARK)
     if len(segments) != len(names):
         logger.warning(
-            "[I18N_OUT] error-explanation batch=%d/%d: split produced %d segment(s), "
+            "[I18N_OUT] %s batch=%d/%d: split produced %d segment(s), "
             "expected %d -- keeping English for this batch",
-            batch_no, total_batches, len(segments), len(names),
+            label, batch_no, total_batches, len(segments), len(names),
         )
         _fall_back_all("batch split mismatch")
         return
@@ -717,6 +723,99 @@ async def _translate_error_batch(
             continue
         translated[name] = segment.strip()
         meta.fields.append(name)
+
+
+async def translate_lines_in_batches(
+    text: str,
+    lang: str | None,
+    translator: Translator | None,
+    batch_size: int,
+) -> tuple[str, bool]:
+    """Translate a multi-line prose blob in batches of ``batch_size`` LINES
+    per model call, instead of the whole blob as one call.
+
+    Built for /compare-summary's bulleted AI narrative ("AI Summary:\\n"
+    "• fact one\\n• fact two\\n...\\n\\nOverall pattern: ..."), which
+    was measured in production reliably hitting ReadTimeout on
+    COMPARE_SUMMARY_TRANSLATION_TIMEOUT (180s) for a 12-bullet/1092-char
+    narrative -- the exact same "one giant call" failure mode error_details[]
+    batching already fixed, just on a single free-form string instead of a
+    list of objects. Reuses the SAME batch/separator/restore mechanism
+    (_prepare_error_batch / _translate_error_batch): each non-blank line is
+    catalogue-checked first (a line the catalogue already has costs no
+    call), then the remaining lines are masked, grouped into batches of
+    ``batch_size``, and each batch is one combined translation call.
+
+    Returns (localized_text, ok). ok is False if ANY line ended up staying
+    English due to a failure -- the caller decides what that means (here,
+    /compare-summary falls back to the original English summary exactly as
+    it already does for any other translation failure).
+
+    Never raises. A batch that fails keeps its lines' original English text,
+    the same per-batch graceful degradation _translate_error_batch already
+    gives error_details[].
+    """
+    if not should_translate(lang) or not text or not text.strip():
+        return text, True
+
+    resolved = normalize_lang(lang)
+    client = translator or get_translator()
+    lines = text.split("\n")
+
+    resolved_lines: dict[int, str] = {}
+    to_translate: dict[str, str] = {}
+    for i, line in enumerate(lines):
+        if not line.strip():
+            resolved_lines[i] = line
+            continue
+        hit = catalogue.resolve(line, resolved)
+        if hit is not None:
+            resolved_lines[i] = hit
+            continue
+        if not protect.has_translatable_prose(line):
+            resolved_lines[i] = line
+            continue
+        to_translate[str(i)] = line
+
+    if not to_translate:
+        return "\n".join(resolved_lines[i] for i in range(len(lines))), True
+
+    masked: dict[str, str] = {}
+    entity_tokens: dict[str, dict[str, str]] = {}
+    for key, line in to_translate.items():
+        masked[key], entity_tokens[key] = protect.mask_entities(line)
+
+    meta = OutboundResult(model=getattr(client, "name", ""))
+    translated: dict[str, str] = {}
+    names = list(to_translate)
+    batches = [names[i:i + batch_size] for i in range(0, len(names), batch_size)]
+
+    logger.info(
+        "[I18N_OUT] compare-summary lang=%s model=%s lines=%d batch_size=%d "
+        "batches=%d",
+        resolved, meta.model, len(names), batch_size, len(batches),
+    )
+
+    limit = asyncio.Semaphore(config.translation_concurrency())
+
+    async def _one_batch(batch_no: int, batch_names: list[str]) -> None:
+        async with limit:
+            await _translate_error_batch(
+                batch_names, masked, to_translate, entity_tokens, client,
+                resolved, meta, translated, batch_no, len(batches),
+                label="compare-summary",
+            )
+
+    await asyncio.gather(*(_one_batch(n, b) for n, b in enumerate(batches, 1)))
+
+    for i in range(len(lines)):
+        key = str(i)
+        if key in translated:
+            resolved_lines[i] = translated[key]
+        elif i not in resolved_lines:
+            resolved_lines[i] = lines[i]
+
+    return "\n".join(resolved_lines[i] for i in range(len(lines))), meta.ok
 
 
 async def translate_outbound(

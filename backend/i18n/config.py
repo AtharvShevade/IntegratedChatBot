@@ -115,6 +115,23 @@ def error_explanation_translation_batch_size() -> int:
         return 3
 
 
+def compare_summary_translation_batch_size() -> int:
+    """How many bullet LINES of /compare-summary's AI narrative are joined
+    into one translation call.
+
+    The narrative was previously sent as one whole blob regardless of length
+    and that reliably hit ReadTimeout on COMPARE_SUMMARY_TRANSLATION_TIMEOUT
+    for a 12-bullet/1092-char narrative in production. Batching a few lines
+    at a time is the same fix already applied to error-explanation
+    translation (ERROR_EXPLANATION_TRANSLATION_BATCH_SIZE), generalized to a
+    single free-form string instead of a list of objects. Minimum 1.
+    """
+    try:
+        return max(1, int(os.getenv("COMPARE_SUMMARY_TRANSLATION_BATCH_SIZE", "4")))
+    except ValueError:
+        return 4
+
+
 def compare_summary_translation_base_url() -> str:
     """Where compare_summary_translation_model() is served.
 
@@ -214,4 +231,5 @@ def runtime_config() -> dict[str, object]:
         "compare_execute_timeout": compare_execute_translation_timeout(),
         "error_explanation_timeout": error_explanation_translation_timeout(),
         "error_explanation_batch_size": error_explanation_translation_batch_size(),
+        "compare_summary_batch_size": compare_summary_translation_batch_size(),
     }

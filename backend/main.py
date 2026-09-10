@@ -626,10 +626,25 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
             base_url=i18n.config.compare_summary_translation_base_url(),
         )
         translator = PlaceholderSafeTranslator(base_translator)
-        localized = await _run_cancellable(request.request_id, i18n.translate_outbound(
-            {"llm_summary": summary, "options": []}, request.lang, translator,
-        ))
-        return {"llm_summary": localized.get("llm_summary") or summary}
+        # The narrative is "AI Summary:\n• fact one\n• fact two\n...\n\n
+        # Overall pattern: ...", one bullet per fact. Sent as ONE model call
+        # this reliably hit ReadTimeout in production for a 12-bullet/
+        # 1092-char narrative (the shorter ones happened to fit; size, not
+        # language, decided pass/fail). translate_lines_in_batches sends a
+        # few bullet lines per call instead of the whole blob -- the same
+        # fix already applied to error-explanation translation.
+        localized_summary, _ok = await _run_cancellable(
+            request.request_id,
+            i18n.boundary.translate_lines_in_batches(
+                summary, request.lang, translator,
+                i18n.config.compare_summary_translation_batch_size(),
+            ),
+        )
+        # translate_lines_in_batches already degrades PER LINE -- a failed
+        # batch keeps just its own bullets English rather than the whole
+        # narrative, so the result is never empty; "or summary" is only a
+        # safety net for an unexpected empty string.
+        return {"llm_summary": localized_summary or summary}
 
     return {"llm_summary": summary or ""}
 
