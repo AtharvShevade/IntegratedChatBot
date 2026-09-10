@@ -571,6 +571,154 @@ def _inject_nested(result: dict[str, Any], values: dict[str, str]) -> None:
     result[_NESTED_ROOT] = details
 
 
+# ---------------------------------------------------------------------------
+# error_details[] batching -- whole objects, not one call per prose fragment
+# ---------------------------------------------------------------------------
+# Previously every prose fragment inside every error card (heading, text, each
+# bullet, each locator label) was dispatched as its own model call, bounded
+# only by the global TRANSLATION_CONCURRENCY admission semaphore -- a report
+# with several errors could fan out into dozens of small calls. This groups
+# COMPLETE error_details[] objects into batches of
+# config.error_explanation_translation_batch_size() and sends each batch's
+# fields as ONE combined translation call, cutting the call count sharply
+# while keeping ordering, structure and entity protection intact.
+_BATCH_SEP_MARK = "␟␟␟"  # control-picture run; never real prose
+
+
+def _prepare_error_batch(
+    names: list[str],
+    masked: dict[str, str],
+    entity_tokens: dict[str, dict[str, str]],
+) -> tuple[str, dict[str, str], set[str], dict[str, list[str]]]:
+    """Join several fields' already-masked texts into one payload.
+
+    Each field's [[E#]] placeholders are RENUMBERED so none collide across
+    fields once joined, and a placeholder-protected separator is inserted
+    between fields so the batch can be split back apart after translation --
+    the same [[E#]] shape the model has already been benchmarked to preserve,
+    rather than an unproven marker of its own.
+
+    Returns (combined_masked_text, combined_tokens, separator_keys,
+    field_placeholder_keys). combined_tokens restores BOTH the real entities
+    and the separators in one restore_entities() call; field_placeholder_keys
+    attributes a lost entity back to the one field it belongs to.
+    """
+    combined_tokens: dict[str, str] = {}
+    field_placeholder_keys: dict[str, list[str]] = {}
+    separator_keys: set[str] = set()
+    parts: list[str] = []
+    counter = 0
+
+    for i, name in enumerate(names):
+        text = masked[name]
+        own_tokens = entity_tokens.get(name) or {}
+        keys_for_field: list[str] = []
+
+        def _shift(match: re.Match, _own=own_tokens, _keys=keys_for_field) -> str:
+            nonlocal counter
+            counter += 1
+            new_key = f"[[E{counter}]]"
+            combined_tokens[new_key] = _own.get(match.group(0), match.group(0))
+            _keys.append(new_key)
+            return new_key
+
+        shifted = re.sub(r"\[\[E\d+\]\]", _shift, text)
+        field_placeholder_keys[name] = keys_for_field
+        parts.append(shifted)
+
+        if i < len(names) - 1:
+            counter += 1
+            sep_key = f"[[E{counter}]]"
+            combined_tokens[sep_key] = _BATCH_SEP_MARK
+            separator_keys.add(sep_key)
+            parts.append(sep_key)
+
+    return "\n".join(parts), combined_tokens, separator_keys, field_placeholder_keys
+
+
+async def _translate_error_batch(
+    names: list[str],
+    masked: dict[str, str],
+    to_translate: dict[str, str],
+    entity_tokens: dict[str, dict[str, str]],
+    client: Translator,
+    resolved: str,
+    meta: "OutboundResult",
+    translated: dict[str, str],
+    batch_no: int,
+    total_batches: int,
+) -> None:
+    """Translate one batch of whole error-explanation objects in a SINGLE
+    model call, then split the result back into its individual fields.
+
+    Never raises and never leaves a field unset: any failure -- the call
+    itself, a lost batch separator, a segment-count mismatch -- keeps every
+    field in the batch English, the same graceful-degradation guarantee the
+    ordinary per-field path already gives (see translate_outbound's
+    "keep English" fallback). A protected entity lost from just ONE field
+    only falls that one field back to English; the rest of the batch keeps
+    its translation.
+    """
+    combined_text, combined_tokens, separator_keys, field_keys = _prepare_error_batch(
+        names, masked, entity_tokens,
+    )
+    started = time.perf_counter()
+    tr = await client.translate(combined_text, "en", resolved)
+    elapsed = time.perf_counter() - started
+    logger.info(
+        "[I18N_OUT] error-explanation batch=%d/%d items=%d elapsed=%.2fs ok=%s",
+        batch_no, total_batches, len(names), elapsed, tr.ok,
+    )
+
+    def _fall_back_all(reason: str) -> None:
+        for name in names:
+            translated[name] = to_translate[name]
+            meta.ok = False
+            meta.errors[name] = reason
+
+    if not (tr.ok and tr.text.strip()):
+        _fall_back_all(tr.error or "empty translation")
+        return
+
+    restored_whole, missing = protect.restore_entities(tr.text, combined_tokens)
+    missing_set = set(missing)
+
+    if missing_set & separator_keys:
+        logger.warning(
+            "[I18N_OUT] error-explanation batch=%d/%d: lost a batch separator -- "
+            "keeping English for all %d item(s) in this batch",
+            batch_no, total_batches, len(names),
+        )
+        _fall_back_all("batch separator lost")
+        return
+
+    segments = restored_whole.split(_BATCH_SEP_MARK)
+    if len(segments) != len(names):
+        logger.warning(
+            "[I18N_OUT] error-explanation batch=%d/%d: split produced %d segment(s), "
+            "expected %d -- keeping English for this batch",
+            batch_no, total_batches, len(segments), len(names),
+        )
+        _fall_back_all("batch split mismatch")
+        return
+
+    for name, segment in zip(names, segments):
+        lost_here = [k for k in field_keys[name] if k in missing_set]
+        if lost_here:
+            logger.warning(
+                "[I18N_OUT] %s: translation lost %d protected entit%s in batch "
+                "%d/%d -- keeping English", name, len(lost_here),
+                "y" if len(lost_here) == 1 else "ies", batch_no, total_batches,
+            )
+            translated[name] = to_translate[name]
+            meta.ok = False
+            meta.errors[name] = f"lost {len(lost_here)} protected entities"
+            meta.entities_lost += len(lost_here)
+            continue
+        translated[name] = segment.strip()
+        meta.fields.append(name)
+
+
 async def translate_outbound(
     result: dict[str, Any],
     lang: str | None,
@@ -701,45 +849,94 @@ async def translate_outbound(
     started = time.perf_counter()
     client = translator or get_translator()
 
+    # error_details[] fields are dispatched separately, in BATCHES of whole
+    # objects (see _translate_error_batch above); every other field
+    # (response_text, llm_summary, ...) keeps the exact per-field path this
+    # always had. Both share ONE semaphore, so total in-flight calls across
+    # the two paths never exceeds TRANSLATION_CONCURRENCY.
+    plain_masked = {n: t for n, t in masked.items() if n not in nested_keys}
+    nested_masked = {n: t for n, t in masked.items() if n in nested_keys}
+    limit = asyncio.Semaphore(config.translation_concurrency())
+
     # Deduplicate before dispatching. db_qa responses routinely carry the same
     # string in response_text and db_beautified (db_qa_router.py:762-763), which
     # was costing two identical calls for one piece of text.
     unique: dict[str, list[str]] = {}
-    for name, text in masked.items():
+    for name, text in plain_masked.items():
         unique.setdefault(text, []).append(name)
     meta.calls = len(unique)
 
-    if unique:
-        payloads = list(unique)
-        # Concurrent, not sequential. The fields are independent, so wall-clock
-        # is the slowest single call rather than their sum. A response with
-        # response_text + llm_summary costs one call's latency, not two.
-        # CancelledError propagates, so Stop Generation still works.
-        #
-        # BOUNDED, though. The translation model is a shared remote proxy that
-        # serves requests a few at a time, and the timeout is measured per
-        # call from the moment it is issued -- not from the moment the proxy
-        # starts working on it. An unbounded fan-out therefore makes the calls
-        # at the back of the queue spend their whole budget waiting: a
-        # 12-field error card dispatched 11-wide had 4 of its calls return
-        # ReadTimeout and fall back to English, while a bounded run of the same
-        # card returns everything. Admission is what keeps each call's clock
-        # meaningful.
-        limit = asyncio.Semaphore(config.translation_concurrency())
+    async def _one(text: str) -> TranslationResult:
+        async with limit:
+            return await client.translate(text, "en", resolved)
 
-        async def _one(text: str) -> TranslationResult:
-            async with limit:
-                return await client.translate(text, "en", resolved)
+    # Concurrent, not sequential. The fields are independent, so wall-clock
+    # is the slowest single call rather than their sum. A response with
+    # response_text + llm_summary costs one call's latency, not two.
+    # CancelledError propagates, so Stop Generation still works.
+    #
+    # BOUNDED, though. The translation model is a shared remote proxy that
+    # serves requests a few at a time, and the timeout is measured per
+    # call from the moment it is issued -- not from the moment the proxy
+    # starts working on it. An unbounded fan-out therefore makes the calls
+    # at the back of the queue spend their whole budget waiting: a
+    # 12-field error card dispatched 11-wide had 4 of its calls return
+    # ReadTimeout and fall back to English, while a bounded run of the same
+    # card returns everything. Admission is what keeps each call's clock
+    # meaningful.
+    payloads = list(unique)
+    plain_coro = asyncio.gather(*(_one(text) for text in payloads)) if payloads else None
 
-        results: list[TranslationResult] = await asyncio.gather(
-            *(_one(text) for text in payloads)
+    # Group error_details[] fields by object index (preserving the order
+    # _nested_payload produced them in) and chunk into whole-object batches.
+    batches: list[list[str]] = []
+    if nested_masked:
+        by_object: dict[int, list[str]] = {}
+        for name in nested_masked:
+            match = re.match(rf"{re.escape(_NESTED_ROOT)}\.(\d+)\.", name)
+            index = int(match.group(1)) if match else -1
+            by_object.setdefault(index, []).append(name)
+        object_indices = sorted(by_object)
+        batch_size = config.error_explanation_translation_batch_size()
+        for start_i in range(0, len(object_indices), batch_size):
+            chunk = object_indices[start_i:start_i + batch_size]
+            names: list[str] = [n for idx in chunk for n in by_object[idx]]
+            if names:
+                batches.append(names)
+
+        logger.info(
+            "[I18N_OUT] error-explanation lang=%s model=%s errors=%d batch_size=%d "
+            "batches=%d",
+            resolved, client.name, len(object_indices), batch_size, len(batches),
         )
-    else:
-        payloads, results = [], []
-
-    meta.latency_ms = (time.perf_counter() - started) * 1000.0
 
     translated: dict[str, str] = {}
+
+    async def _one_batch(batch_no: int, names: list[str]) -> None:
+        async with limit:
+            await _translate_error_batch(
+                names, nested_masked, to_translate, entity_tokens, client,
+                resolved, meta, translated, batch_no, len(batches),
+            )
+
+    batch_coro = (
+        asyncio.gather(*(_one_batch(n, b) for n, b in enumerate(batches, 1)))
+        if batches else None
+    )
+
+    if plain_coro is not None and batch_coro is not None:
+        results, _ = await asyncio.gather(plain_coro, batch_coro)
+    elif plain_coro is not None:
+        results = await plain_coro
+    elif batch_coro is not None:
+        await batch_coro
+        results = []
+    else:
+        results = []
+
+    meta.calls += len(batches)
+    meta.latency_ms = (time.perf_counter() - started) * 1000.0
+
     for text, tr in zip(payloads, results):
         for name in unique[text]:
             english = to_translate[name]

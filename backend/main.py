@@ -441,8 +441,26 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
         # translatable fields, so the table and chart are untouched. llm_summary
         # here is Python's deterministic draft; the model-authored narrative
         # arrives separately via /compare-summary.
+        #
+        # This response is much larger than an ordinary /chat reply -- the
+        # comparison card's error_details[] can carry dozens of protected
+        # entities -- and it was inheriting the general TRANSLATION_TIMEOUT
+        # (150s) purely by relying on translate_outbound's default translator.
+        # Measured in production: this exact response shape reliably hit
+        # ReadTimeout at ~150s on aya-expanse:8b, in both French and Hindi,
+        # while the comparison computation itself took 3s. Give it its own
+        # timeout (COMPARE_EXECUTE_TRANSLATION_TIMEOUT), the same way
+        # /compare-summary already has its own -- and wrap it in
+        # PlaceholderSafeTranslator, the same guardrail /compare-summary uses,
+        # since a large payload of numbers/percentages is exactly what it was
+        # built to protect.
+        compare_execute_translator = PlaceholderSafeTranslator(
+            i18n.boundary.get_translator(
+                timeout=i18n.config.compare_execute_translation_timeout(),
+            )
+        )
         result = await _run_cancellable(request.request_id, i18n.translate_outbound(
-            result, request.lang,
+            result, request.lang, compare_execute_translator,
         ))
         return ChatResponse(**result)
     except RequestStopped:
@@ -616,10 +634,22 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             "Error explanation completed: category=%s duration=%.2fs",
             request.category, elapsed,
         )
-        # Deterministic prose here resolves from the catalogue; the LLM-authored
-        # error explanations in error_details[] are NOT translated (Phase 2).
+        # Deterministic prose here resolves from the catalogue; the
+        # LLM-authored error explanations in error_details[] go through
+        # translate_outbound's batched error-explanation path (whole objects
+        # grouped by ERROR_EXPLANATION_TRANSLATION_BATCH_SIZE, one call per
+        # batch) rather than one call per prose fragment. Same dedicated
+        # timeout + PlaceholderSafeTranslator guardrail as /compare-execute:
+        # a batch call carries more text than an ordinary field and deserves
+        # its own budget, not the general TRANSLATION_TIMEOUT.
+        explain_category_translator = PlaceholderSafeTranslator(
+            i18n.boundary.get_translator(
+                timeout=i18n.config.error_explanation_translation_timeout(),
+            )
+        )
         result = await _run_cancellable(request.request_id, i18n.translate_outbound(
-            result, request.lang, english_message=request.category,
+            result, request.lang, explain_category_translator,
+            english_message=request.category,
         ))
         return ChatResponse(**result)
     except RequestStopped:

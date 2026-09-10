@@ -63,6 +63,58 @@ def compare_summary_translation_model() -> str:
     return os.getenv("COMPARE_SUMMARY_TRANSLATION_MODEL", "aya-expanse:8b")
 
 
+def compare_execute_translation_timeout() -> float:
+    """Dedicated timeout for /compare-execute's outbound translation ONLY.
+
+    /compare-execute can return a much larger payload than /chat or /guided --
+    a full comparison card's rendered prose plus its error_details[] cards --
+    and it inherited the general TRANSLATION_TIMEOUT (150s) purely because it
+    called translate_outbound() with no override. Measured in production
+    logs: this response (~4,000 chars, ~50 protected entities) reliably hit
+    ReadTimeout at ~150s on aya-expanse:8b, in both French and Hindi, while
+    the comparison computation itself completed in 3s. This mirrors
+    COMPARE_SUMMARY_TRANSLATION_TIMEOUT's reasoning exactly: a bigger prose
+    payload gets its own longer budget rather than raising the general one,
+    which would also slow down every /chat failure-detection timeout.
+    """
+    try:
+        return float(os.getenv("COMPARE_EXECUTE_TRANSLATION_TIMEOUT", "240"))
+    except ValueError:
+        return 240.0
+
+
+def error_explanation_translation_timeout() -> float:
+    """Dedicated timeout for the batched error-explanation translation calls
+    used by /explain-category (and any other endpoint carrying error_details).
+
+    A batch call carries the combined prose of up to
+    error_explanation_translation_batch_size() whole error cards, so it is
+    larger than a single ordinary field and gets more time, same reasoning as
+    compare_execute_translation_timeout().
+    """
+    try:
+        return float(os.getenv("ERROR_EXPLANATION_TRANSLATION_TIMEOUT", "180"))
+    except ValueError:
+        return 180.0
+
+
+def error_explanation_translation_batch_size() -> int:
+    """How many COMPLETE error-explanation objects (error_details[] entries)
+    are joined into one translation call.
+
+    Previously every prose fragment inside every error card (heading, text,
+    each bullet, each locator label) was dispatched as its own model call,
+    bounded only by the global TRANSLATION_CONCURRENCY semaphore -- a report
+    with several errors could fan out into dozens of small calls. Grouping
+    whole error objects into batches of a few cuts the call count sharply
+    while keeping each call's payload a bounded, predictable size. Minimum 1.
+    """
+    try:
+        return max(1, int(os.getenv("ERROR_EXPLANATION_TRANSLATION_BATCH_SIZE", "3")))
+    except ValueError:
+        return 3
+
+
 def compare_summary_translation_base_url() -> str:
     """Where compare_summary_translation_model() is served.
 
@@ -159,4 +211,7 @@ def runtime_config() -> dict[str, object]:
         "max_chars": translation_max_chars(),
         "concurrency": translation_concurrency(),
         "supported": sorted(supported_languages()),
+        "compare_execute_timeout": compare_execute_translation_timeout(),
+        "error_explanation_timeout": error_explanation_translation_timeout(),
+        "error_explanation_batch_size": error_explanation_translation_batch_size(),
     }

@@ -168,11 +168,17 @@ def test_card_headings_and_columns_cost_no_model_call(lang):
 @pytest.mark.parametrize("lang", TARGETS)
 def test_only_genuinely_variable_prose_reaches_the_model(lang):
     """The headline sentence and the fix step are written per rule; everything
-    else in the card is a template."""
+    else in the card is a template.
+
+    Both live in the SAME error_details[] object, so the batched
+    error-explanation dispatch (see test_i18n_error_batching.py) now sends
+    them as ONE combined call rather than two separate ones -- fewer calls
+    for the same content, not a regression.
+    """
     spy = Spy()
     out = _out(lang, spy)
     meta = out["data"]["i18n"]["outbound"]
-    assert meta["calls"] == 2, f"{meta['calls']} calls: {spy.seen}"
+    assert meta["calls"] == 1, f"{meta['calls']} calls: {spy.seen}"
     assert len(meta["catalogued"]) >= 12
     assert meta["entities_lost"] == 0
 
