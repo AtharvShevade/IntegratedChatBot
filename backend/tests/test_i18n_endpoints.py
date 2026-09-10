@@ -446,6 +446,101 @@ def test_compare_execute_honours_lang(client, monkeypatch, lang):
     assert "RAQ(Monthly)" in data["response_text"]
 
 
+def test_compare_execute_requests_its_own_timeout(client, monkeypatch):
+    """/compare-execute must ask for compare_execute_translation_timeout(),
+    the dedicated budget -- not the general TRANSLATION_TIMEOUT."""
+    rec = Recorder({
+        "intent": "compare_reports", "report_name": "RAQ(Monthly)",
+        "response_text": "Variance Analysis — RAQ(Monthly)\n"
+                         "Comparing: 30-Jun-2026  vs  30-Sep-2025",
+        "result_type": "variance_table", "options": [],
+    })
+
+    async def _execute(*args, **kwargs):
+        return dict(rec.response)
+
+    monkeypatch.setattr("backend.agent.execute_comparison", _execute, raising=False)
+    monkeypatch.setenv("COMPARE_EXECUTE_TRANSLATION_TIMEOUT", "222")
+    tr = StubTranslator()
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-execute", json={
+        "session_id": "s1", "instance_a": 0, "instance_b": 1, "lang": "fr",
+    })
+    assert resp.status_code == 200
+    assert tr.get_translator_calls == [{"timeout": 222.0}]
+
+
+def test_compare_execute_never_sends_the_variance_table_to_the_model(client, monkeypatch):
+    """The rendered concept table inside response_text is DATA, exactly like
+    variance_data/variance_all -- large (many rows, many protected numbers)
+    and was the actual cause of production ReadTimeouts even with the
+    dedicated timeout raised. Only the short heading before the blank line
+    may ever reach the translator; the table must come back byte-identical."""
+    table = "\n".join(f"Concept{i} | {i} | {i + 1} | +{i}%" for i in range(40))
+    rec = Recorder({
+        "intent": "compare_reports", "report_name": "RAQ(Monthly)",
+        "response_text": (
+            "Variance Analysis — RAQ(Monthly)\n"
+            "Comparing: 30-Jun-2026  vs  30-Sep-2025\n\n" + table
+        ),
+        "result_type": "variance_table", "options": [],
+    })
+
+    async def _execute(*args, **kwargs):
+        return dict(rec.response)
+
+    monkeypatch.setattr("backend.agent.execute_comparison", _execute, raising=False)
+    tr = StubTranslator()
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-execute", json={
+        "session_id": "s1", "instance_a": 0, "instance_b": 1, "lang": "fr",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+
+    for text, _, _ in tr.calls:
+        assert table not in text, "the variance table must never reach the model"
+        assert "Concept0" not in text
+
+    # The table must survive verbatim in the final response.
+    assert table in data["response_text"]
+    # The heading before it was still translated.
+    assert not data["response_text"].startswith("Variance Analysis"), (
+        "the heading must still be localized"
+    )
+
+
+def test_compare_execute_english_is_byte_identical_with_a_large_table(client, monkeypatch):
+    """The split logic must never run for English -- same identity guarantee
+    every other endpoint has."""
+    table = "\n".join(f"Concept{i} | {i} | {i + 1} | +{i}%" for i in range(40))
+    original = {
+        "intent": "compare_reports", "report_name": "RAQ(Monthly)",
+        "response_text": (
+            "Variance Analysis — RAQ(Monthly)\n"
+            "Comparing: 30-Jun-2026  vs  30-Sep-2025\n\n" + table
+        ),
+        "result_type": "variance_table", "options": [],
+    }
+
+    async def _execute(*args, **kwargs):
+        return dict(original)
+
+    monkeypatch.setattr("backend.agent.execute_comparison", _execute, raising=False)
+    tr = StubTranslator()
+    _install(monkeypatch, translator=tr)
+
+    resp = client.post("/compare-execute", json={
+        "session_id": "s1", "instance_a": 0, "instance_b": 1,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["response_text"] == original["response_text"]
+    assert tr.calls == []
+
+
 def test_compare_summary_requests_its_own_model_override(client, monkeypatch):
     """/compare-summary must ask for compare_summary_translation_model()
     (aya-expanse:8b, benchmarked faster+safer for this narrative), NOT

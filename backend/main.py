@@ -459,9 +459,33 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
                 timeout=i18n.config.compare_execute_translation_timeout(),
             )
         )
+        # response_text is "<heading>\n\n<table>" (agent/__init__.py
+        # _variance_response_text): a short translatable heading followed by
+        # the FULL rendered concept table (up to ~4000 chars, ~50 protected
+        # numbers). Measured in production: even with the dedicated timeout
+        # above, sending the whole thing reliably hit ReadTimeout at exactly
+        # 240s -- the table has no per-row structure to batch the way
+        # error_details[] batching does, and it is DATA (concept names,
+        # figures), exactly like variance_data/variance_all, which are
+        # already excluded from translation. So only the heading is ever
+        # sent to the model; the table is reattached afterward, untouched.
+        original_response_text = result.get("response_text") or ""
+        head, sep, table = original_response_text.partition("\n\n")
+        split_applied = bool(sep and table and i18n.should_translate(request.lang))
+        translate_input = dict(result) if split_applied else result
+        if split_applied:
+            translate_input["response_text"] = head + sep
+
         result = await _run_cancellable(request.request_id, i18n.translate_outbound(
-            result, request.lang, compare_execute_translator,
+            translate_input, request.lang, compare_execute_translator,
         ))
+
+        if split_applied:
+            result["response_text"] = (result.get("response_text") or head + sep) + table
+            english = (result.get("data") or {}).get("i18n", {}).get("english")
+            if isinstance(english, dict) and "response_text" in english:
+                english["response_text"] = original_response_text
+
         return ChatResponse(**result)
     except RequestStopped:
         logger.info("Comparison request stopped by user: session=%s", request.session_id or "anonymous")
