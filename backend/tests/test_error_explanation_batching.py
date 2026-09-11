@@ -278,7 +278,7 @@ class TestExplainCategoryForReportBatchMetadata:
     def test_has_more_true_when_batch_smaller_than_total(self, monkeypatch, dummy_html_file):
         import backend.agent as agent
 
-        def _fake_explain_for_form_sync(path, category, form_id="", offset=0):
+        def _fake_explain_for_form_sync(path, category, form_id="", offset=0, lang="en"):
             rules = [_formula_rule(f"Rule{i}", 1) for i in range(8)]
             return rules[offset:offset + 3]
 
@@ -296,7 +296,7 @@ class TestExplainCategoryForReportBatchMetadata:
     def test_has_more_false_on_last_batch(self, monkeypatch, dummy_html_file):
         import backend.agent as agent
 
-        def _fake_explain_for_form_sync(path, category, form_id="", offset=0):
+        def _fake_explain_for_form_sync(path, category, form_id="", offset=0, lang="en"):
             rules = [_formula_rule(f"Rule{i}", 1) for i in range(8)]
             return rules[offset:offset + 3]
 

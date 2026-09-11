@@ -596,7 +596,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId, lang })
+      const result = await compareInstances(sessionId.current, idxA, idxB, { signal, requestId, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null, lang })
       _pushResult(result)
     } catch (err) {
       if (err.name === 'AbortError') return
@@ -623,7 +623,7 @@ const pollForErrors = (jobId) => {
     setIsLoading(true)
     const { signal, requestId } = _beginRequest()
     try {
-      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, offset, lang })
+      const result = await explainErrorCategory(errorFilePath, category, formId, reportName, { signal, requestId, offset, tenantId: _tenantId || null, domain: _domain || null, jwt: jwtRef.current || null, lang })
       _pushResult(result, {
         batchCategory: category,
         batchErrorFilePath: errorFilePath,

@@ -139,6 +139,28 @@ def get_active_jwt() -> str | None:
     return _active_jwt.get()
 
 
+def scoped_session_id(session_id: str | None) -> str | None:
+    """Prefix session_id with the active tenant, for cross-tenant isolation of
+    agent/__init__.py's _session_context dict (keyed by this string).
+
+    APP_VERSION=5.5: get_active_tenant_id() is always None here (repo_scope's
+    default), so this returns session_id UNCHANGED -- zero behavior change.
+
+    APP_VERSION=6.0: the frontend's session_id falls back to the app's own
+    `uid` when present (App.jsx: `sessionId = useRef(_uid || crypto.
+    randomUUID())`), which is NOT namespaced per tenant. Two different
+    tenants' users sharing the same uid would otherwise collide in
+    _session_context. Call this ONCE, at the request boundary (main.py),
+    on the value handed to decide()/guided_step()/execute_comparison() --
+    agent/__init__.py itself treats session_id as an opaque string, so
+    nothing downstream needs to change.
+    """
+    if not session_id:
+        return session_id
+    tenant_id = get_active_tenant_id()
+    return f"{tenant_id}:{session_id}" if tenant_id else session_id
+
+
 def get_repo_root_override() -> str | None:
     """Return the per-request repo root override, or None if unset.
 

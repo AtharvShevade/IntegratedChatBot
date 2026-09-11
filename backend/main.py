@@ -347,7 +347,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         result = await _run_cancellable(request.request_id, decide(
             _inbound.text,
-            session_id=request.session_id,
+            # Scoped so two tenants' users cannot collide in
+            # agent._session_context (see version_config.scoped_session_id) --
+            # identity function under 5.5.
+            session_id=version_config.scoped_session_id(request.session_id),
             asp_session=request.asp_session,
             login_id=request.login_id,
             user_id=request.user_id,
@@ -425,9 +428,19 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
         request.session_id or "anonymous",
     )
     start = time.monotonic()
+    # ── APP_VERSION=6.0: resolve tenant repo root for this request only.
+    # No-op under 5.5 (root stays None -> BASE_REPO_PATH, unchanged behavior).
+    # Covers the ENTIRE comparison: instance parsing, importance-JSON lookup,
+    # taxonomy/metadata lookup and the comparison itself all resolve repo
+    # paths fresh via config._active_root(), which reads this scope.
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
+    _repo_scope.__enter__()
     try:
         result = await _run_cancellable(request.request_id, execute_comparison(
-            session_id=request.session_id,
+            # Scoped so two tenants' users cannot collide in
+            # agent._session_context (see version_config.scoped_session_id) --
+            # identity function under 5.5.
+            session_id=version_config.scoped_session_id(request.session_id),
             idx_a=request.instance_a,
             idx_b=request.instance_b,
         ))
@@ -502,6 +515,8 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to process your request at the moment. Please try again.",
         ) from exc
+    finally:
+        _repo_scope.__exit__(None, None, None)
 
 
 @app.post("/compare-summary", status_code=status.HTTP_200_OK)
@@ -660,6 +675,12 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
         request.category, request.form_id,
     )
     start = time.monotonic()
+    # ── APP_VERSION=6.0: resolve tenant repo root for this request only.
+    # No-op under 5.5 (root stays None -> BASE_REPO_PATH, unchanged behavior).
+    # Covers taxonomy/JSON metadata lookup and report/error enrichment, which
+    # resolve repo paths fresh via config._active_root() during explanation.
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
+    _repo_scope.__enter__()
     try:
         result = await _run_cancellable(request.request_id, explain_category_for_report(
             error_file_path=request.error_file_path,
@@ -667,6 +688,7 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             form_id=request.form_id,
             report_name=request.report_name,
             offset=request.offset,
+            lang=request.lang or "en",
         ))
         elapsed = time.monotonic() - start
         logger.info(
@@ -706,6 +728,8 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to process your request at the moment. Please try again.",
         ) from exc
+    finally:
+        _repo_scope.__exit__(None, None, None)
 
 
 @app.post("/speech-to-text", status_code=status.HTTP_200_OK)
@@ -989,7 +1013,10 @@ async def guided(request: ChatRequest) -> ChatResponse:
     try:
         result = await _run_cancellable(request.request_id, guided_step(
             request.message,
-            session_id=request.session_id,
+            # Scoped so two tenants' users cannot collide in
+            # agent._session_context (see version_config.scoped_session_id) --
+            # identity function under 5.5.
+            session_id=version_config.scoped_session_id(request.session_id),
             asp_session=request.asp_session,
             login_id=request.login_id,
         ))

@@ -110,10 +110,13 @@ export async function sendFeedback(rating, context = {}) {
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
+ * @param {string|null} [opts.tenantId] - APP_VERSION=6.0 only.
+ * @param {string|null} [opts.domain] - APP_VERSION=6.0 only, fallback if tenantId absent.
+ * @param {string|null} [opts.jwt] - APP_VERSION=6.0 only.
  * @returns {Promise<object>} - ChatResponse (variance_table or error).
  */
 export async function compareInstances(sessionId, instanceA, instanceB, opts = {}) {
-  const { signal, requestId, lang } = opts
+  const { signal, requestId, lang, tenantId, domain, jwt } = opts
   const body = {
     session_id: sessionId,
     instance_a: instanceA,
@@ -122,6 +125,9 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
   }
   // Same contract as sendMessage: omitted / 'en' takes the exact English path.
   if (lang && lang !== 'en') body.lang = lang
+  if (tenantId) body.tenant_id = tenantId
+  if (domain)   body.domain    = domain
+  if (jwt)      body.jwt       = jwt
   const res = await fetch(`${BASE_URL}/compare-execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -377,16 +383,22 @@ export async function transcribeAudio(audioBlob, opts = {}) {
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.requestId]
+ * @param {string|null} [opts.tenantId] - APP_VERSION=6.0 only.
+ * @param {string|null} [opts.domain] - APP_VERSION=6.0 only, fallback if tenantId absent.
+ * @param {string|null} [opts.jwt] - APP_VERSION=6.0 only.
  * @returns {Promise<object>} - ChatResponse-shaped object with error_details populated.
  */
 export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null, opts = {}) {
-  const { signal, requestId, offset, lang } = opts
+  const { signal, requestId, offset, lang, tenantId, domain, jwt } = opts
   const body = { error_file_path: errorFilePath, category }
   if (lang && lang !== 'en') body.lang = lang
   if (formId)     body.form_id     = formId
   if (reportName) body.report_name = reportName
   if (requestId)  body.request_id  = requestId
   if (offset)     body.offset      = offset
+  if (tenantId)   body.tenant_id   = tenantId
+  if (domain)     body.domain      = domain
+  if (jwt)        body.jwt         = jwt
   // Use the same BASE_URL as sendMessage — relies on Vite proxy in dev,
   // VITE_API_BASE_URL in production. Do NOT use a hardcoded localhost fallback
   // here (unlike the polling fetch in App.jsx which correctly uses port 8001).

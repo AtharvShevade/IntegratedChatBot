@@ -101,6 +101,15 @@ def collect_numbers(value) -> set[str]:
 
 _VAR_REF_RE = re.compile(r"\bV\d+\b")
 
+# Non-Latin-script target languages get a cheap, zero-false-positive sanity
+# check in is_grounded(): the response must contain at least one character of
+# the script it claims to be written in. There is no such check for French
+# (Latin script, indistinguishable from English by character range alone).
+_SCRIPT_RANGES: dict[str, re.Pattern] = {
+    "hi": re.compile(r"[ऀ-ॿ]"),   # Devanagari
+    "ar": re.compile(r"[؀-ۿ]"),   # Arabic
+}
+
 # "0 + 0 + 34000, which equals 0" / "1 + 2 = 4" — an arithmetic assertion the
 # model made up. Checked for internal consistency, not against the payload,
 # because a correct restatement of payload numbers is fine.
@@ -175,15 +184,45 @@ def _misstates_the_requirement(body: str, operator_meaning: str | None) -> str:
     return ""
 
 
-def is_grounded(text: str, payload: dict, required_terms: list[str]) -> tuple[bool, str]:
+def is_grounded(
+    text: str, payload: dict, required_terms: list[str], lang: str = "en",
+) -> tuple[bool, str]:
     """Check LLM output against the payload it was given.
 
     Returns (ok, reason). *reason* names the first failed check so rejections
     are diagnosable in the log rather than silently degrading to the template.
+
+    *lang* gates the checks that are English-phrase pattern matches
+    (_CONTRADICTION_RE, _misstates_the_requirement, _UNIVERSAL_CLAIM_RE): they
+    look for specific English words ("greater than", "all", "equal", ...) and
+    have nothing to match against in Hindi/French/Arabic prose, so they would
+    either never fire (useless) or false-positive on an unrelated substring.
+    Every other check here — numbers, variable ids, technical names, member
+    names, required business-label terms — is language-agnostic, because
+    labels, identifiers and figures are never translated: the model is
+    instructed to quote them exactly regardless of what language it writes in.
     """
     body = (text or "").strip()
     if not body:
         return False, "empty"
+
+    # The model is INSTRUCTED to write in the requested language, but nothing
+    # else here checks that it actually did -- every other rule checks facts,
+    # not language. Observed in practice: a request for Arabic came back
+    # grounded (every number and label correct) but written in English. That
+    # is worse than a rejection, because a field tagged as "authored natively
+    # in the target language" is exactly the field the i18n boundary will
+    # SKIP re-translating (see boundary.py's _i18n_native handling) -- so an
+    # ungrounded-in-language answer that passed the fact checks would reach
+    # the user as English under a translated heading, permanently. Checked
+    # only for non-Latin-script targets, where "does this contain not a
+    # single character of the expected script" is a cheap, zero-false-positive
+    # signal; Hindi/French/Arabic model text also legitimately contains
+    # Latin-script business labels and numbers, so no such shortcut exists to
+    # check a Latin-script target (French) this way.
+    script_check = _SCRIPT_RANGES.get((lang or "en").strip().lower())
+    if script_check and not script_check.search(body):
+        return False, f"response is not written in the requested script ({lang})"
 
     lowered = body.lower()
 
@@ -215,22 +254,26 @@ def is_grounded(text: str, payload: dict, required_terms: list[str]) -> tuple[bo
         if normalised not in allowed_numbers:
             return False, f"number not present in verified facts: {token!r}"
 
+    is_english = (lang or "en").strip().lower() in ("", "en", "english")
+
     relationship = payload.get("relationship")
-    if relationship == "lhs_equal" and _CONTRADICTION_RE.search(body):
+    if is_english and relationship == "lhs_equal" and _CONTRADICTION_RE.search(body):
         return False, "claims a difference where the verified values are equal"
 
     # The rule's own comparison must not be restated as a different one. A fix
     # sentence saying a total should be "greater than" its components, for a
     # rule that requires them to be EQUAL, tells the user to do the wrong
     # thing — the highest-consequence error this field can contain.
-    wrong = _misstates_the_requirement(body, payload.get("operator_meaning"))
-    if wrong:
-        return False, f"restates the rule's comparison as {wrong!r}"
+    if is_english:
+        wrong = _misstates_the_requirement(body, payload.get("operator_meaning"))
+        if wrong:
+            return False, f"restates the rule's comparison as {wrong!r}"
 
     # A false universal claim ("all of these values are zero") is the failure
     # mode when several variables share a concept name but hold different
     # values. Driven entirely by the payload's own values, not by any concept.
-    if payload.get("_values_are_uniform") is False and _UNIVERSAL_CLAIM_RE.search(body):
+    if (is_english and payload.get("_values_are_uniform") is False
+            and _UNIVERSAL_CLAIM_RE.search(body)):
         return False, "claims the values are all the same when the verified facts differ"
 
     # Technical identifiers are context for the model, not vocabulary for the
@@ -261,18 +304,39 @@ _SYSTEM_PROMPT = (
     "relationship. Write naturally, not from a fixed template."
 )
 
+# Names used in the prompt, not codes — the model writes better prose when
+# told "write in Hindi" than when told "write in lang=hi".
+_LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English", "fr": "French", "ar": "Arabic", "hi": "Hindi",
+}
+
+
+def _language_name(lang: str) -> str:
+    return _LANGUAGE_NAMES.get((lang or "en").strip().lower(), "English")
+
 
 def phrase(
     payload: dict,
     required_terms: list[str],
     fields: dict[str, str],
     settings: dict | None = None,
+    lang: str = "en",
 ) -> dict | None:
     """Ask the LLM for one short piece of prose per entry in *fields*.
 
     *fields* maps output key -> instruction for that key, e.g.
     {"why_failed": "one or two sentences on why the check failed",
      "how_to_fix": "one sentence of conservative, actionable guidance"}.
+
+    *lang* ("en", "fr", "ar", "hi") asks the model to write the prose directly
+    in that language, instead of writing English and relying on a later
+    translation pass. This is what lets a formula-error explanation for a
+    rule kind that has never been seen before still come out in Hindi/French/
+    Arabic without a catalogue entry: the facts (payload) are language-neutral
+    (numbers, business labels, an operator meaning already resolved to
+    English-ish words like "equal to"), and the model is simply asked to
+    phrase them in the requested language rather than to translate a fixed
+    English sentence afterwards.
 
     Returns the dict of fields, or None when the LLM is disabled, unreachable,
     returns malformed JSON, or fails grounding. None always means "use the
@@ -287,14 +351,24 @@ def phrase(
     except ImportError:
         return None
 
+    language_name = _language_name(lang)
+    is_english = language_name == "English"
+
     field_spec = "\n".join(f"  {key} — {desc}" for key, desc in fields.items())
+    language_instruction = "" if is_english else (
+        f"\nWrite your entire answer in {language_name}. Every business label, "
+        "identifier, and number below must still be copied EXACTLY as given, "
+        f"character-for-character, even inside otherwise-{language_name} prose — "
+        "do not translate, transliterate, or reformat them.\n"
+    )
     prompt = (
         "Below is a VERIFIED, AUTHORITATIVE set of facts about one failed regulatory "
         "validation check. Every value, label, relationship and taxonomy detail has "
         "already been computed and confirmed by deterministic code. None of it is "
         "yours to calculate, re-derive, or second-guess. Explain these exact facts in "
         "clear business language, the way a knowledgeable colleague would say it — not "
-        "by filling in a template. Vary your wording; do not reuse a fixed phrasing.\n\n"
+        "by filling in a template. Vary your wording; do not reuse a fixed phrasing."
+        f"{language_instruction}\n\n"
         "VERIFIED FACTS (authoritative — do not recalculate, reinterpret or add to these):\n"
         f"{_json.dumps(_public(payload), indent=2, ensure_ascii=False, default=str)}\n\n"
         "STRICT GROUNDING RULES — breaking any of these makes your answer unusable:\n"
@@ -312,10 +386,14 @@ def phrase(
         "No other text, no markdown, no code fences."
     )
 
+    system_prompt = _SYSTEM_PROMPT if is_english else (
+        f"{_SYSTEM_PROMPT} Write every field entirely in {language_name}, except "
+        "business labels, identifiers and numbers, which you copy verbatim."
+    )
     body = {
         "model": settings["model"],
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         "stream": False,
@@ -344,7 +422,7 @@ def phrase(
             return None
         out[key] = value
 
-    ok, reason = is_grounded(" ".join(out.values()), payload, required_terms)
+    ok, reason = is_grounded(" ".join(out.values()), payload, required_terms, lang=lang)
     if not ok:
         logger.info("[error_llm] rejected: %s", reason)
         return None

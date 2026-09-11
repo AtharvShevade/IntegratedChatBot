@@ -91,6 +91,11 @@ class CompareRequest(BaseModel):
     # exact English behaviour and makes no translation call.
     lang:        Optional[str] = Field(None, max_length=8)
 
+    # ── APP_VERSION=6.0 only — same contract as ChatRequest ───────────────────
+    tenant_id:   Optional[str] = Field(None, max_length=64)    # resolved TenantId, forwarded by the React frontend
+    domain:      Optional[str] = Field(None, max_length=256)   # fallback: looked up in XML_Tenant.xml if tenant_id absent
+    jwt:         Optional[str] = Field(None, max_length=4096)  # from CHATBOT_AUTH postMessage
+
 class CompareSummaryRow(BaseModel):
     """One variance row, in the shape the frontend already holds it (the
     `variance_data` it was sent). Posted back rather than re-derived from
@@ -153,6 +158,11 @@ class ExplainCategoryRequest(BaseModel):
     # Chat language, same contract as ChatRequest.lang: absent/"en" keeps the
     # exact English behaviour and makes no translation call.
     lang:        Optional[str] = Field(None, max_length=8)
+
+    # ── APP_VERSION=6.0 only — same contract as ChatRequest ───────────────────
+    tenant_id:   Optional[str] = Field(None, max_length=64)    # resolved TenantId, forwarded by the React frontend
+    domain:      Optional[str] = Field(None, max_length=256)   # fallback: looked up in XML_Tenant.xml if tenant_id absent
+    jwt:         Optional[str] = Field(None, max_length=4096)  # from CHATBOT_AUTH postMessage
 
 
 class FeedbackRequest(BaseModel):

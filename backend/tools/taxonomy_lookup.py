@@ -20,12 +20,23 @@ import logging
 import os
 import threading
 
-from backend import config
+from backend import config, version_config
 
 logger = logging.getLogger(__name__)
 
 _CACHE_LOCK = threading.Lock()
-_TAXONOMY_CACHE: dict[str, dict] = {}  # form_id -> index dict (see get_return_json)
+# (tenant_id, form_id) -> index dict (see get_return_json). tenant_id is
+# folded into the key because two APP_VERSION=6.0 tenants can share the same
+# form_id with DIFFERENT taxonomy JSON under their own repo root -- a bare
+# form_id key would let tenant B's request return tenant A's cached
+# taxonomy. Under 5.5, version_config.get_active_tenant_id() is always
+# None, so every entry gets the same constant prefix -- byte-for-byte the
+# same bucketing as a bare form_id key.
+_TAXONOMY_CACHE: dict[tuple[str | None, str], dict] = {}
+
+
+def _cache_key(form_id: str) -> tuple[str | None, str]:
+    return (version_config.get_active_tenant_id(), str(form_id).strip())
 
 
 def _find_taxonomy_json_path(form_id: str) -> str | None:
@@ -64,7 +75,7 @@ def get_return_json(form_id: str) -> dict | None:
         logger.warning("[taxonomy_lookup] cannot stat %s: %s", path, exc)
         return None
 
-    key = str(form_id).strip()
+    key = _cache_key(form_id)
     with _CACHE_LOCK:
         cached = _TAXONOMY_CACHE.get(key)
         if cached and cached.get("path") == path and cached.get("mtime") == mtime:

@@ -199,6 +199,12 @@
   "errcard.differByLower": "Ils diffèrent de {0} ({1} est inférieur), le contrôle échoue donc.",
   "errcard.ruleRequiresEqualRatio": "La règle exige que {0} soit égal au ratio calculé.",
   "errcard.ruleRequiresEqualWeightedAverage": "La règle exige que {0} soit égal à la moyenne pondérée calculée.",
+  "errcard.calculatedTotal": "Total calculé",
+  "errcard.calculatedPercentage": "Pourcentage calculé",
+  "errcard.calculatedValue": "Valeur calculée",
+  "errcard.ruleRequiresEqualAggregate": "La règle exige que {0} soit égal à la somme des valeurs composantes.",
+  "errcard.ruleRequiresEqualPercentage": "La règle exige que {0} soit égal au pourcentage calculé.",
+  "errcard.ruleRequiresEqualConditional": "La règle exige que {0} soit égal à la valeur calculée par cette règle.",
   "errcard.reviewRevalidateNegative": "Examinez et revalidez la valeur {0}, actuellement de -{1}, par rapport au ratio calculé de {2} sur {3}.",
   "errcard.reviewRevalidate": "Examinez et revalidez la valeur {0}, actuellement de {1}, par rapport au ratio calculé de {2} sur {3}."
 }

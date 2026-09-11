@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
@@ -105,12 +106,7 @@ def _get_instance_by_dtc_fast_with_bg_job(
         if row:
             code = _safe_status(row)
             dl   = _get_download_info(row, form_id)
-            thread = threading.Thread(
-                target=_run_error_enrichment_async,
-                args=(job_id, form_id, row, dl, code),
-                daemon=True,
-            )
-            thread.start()
+            _start_error_enrichment_thread(job_id, form_id, row, dl, code)
             result["job_id"] = job_id
 
     return result
@@ -160,6 +156,32 @@ def _run_error_enrichment_async(job_id: str, form_id: str, latest_row: dict, dl:
         }
 
 
+def _start_error_enrichment_thread(
+    job_id: str, form_id: str, row: dict, dl: dict, code: int
+) -> None:
+    """Start _run_error_enrichment_async in a background thread, WITH the
+    calling request's contextvars (version_config's active repo root /
+    tenant_id / jwt) copied across.
+
+    threading.Thread does NOT inherit contextvars the way asyncio.Task does
+    -- a plain Thread starts with a fresh, empty Context. Under
+    APP_VERSION=6.0 that meant this background enrichment silently read
+    config._active_root() as unset and fell back to BASE_REPO_PATH (the 5.5
+    repo), regardless of which tenant's request started it. Running the
+    target through contextvars.copy_context().run(...) carries the calling
+    request's active root/tenant forward into the thread, exactly as if it
+    had inherited it -- and is a no-op under 5.5, where that context is
+    always empty anyway.
+    """
+    ctx = contextvars.copy_context()
+    thread = threading.Thread(
+        target=ctx.run,
+        args=(_run_error_enrichment_async, job_id, form_id, row, dl, code),
+        daemon=True,
+    )
+    thread.start()
+
+
 def _get_status_fast_with_bg_job(query: str) -> dict:
     """Call get_report_status_fast and, for failed statuses with errors, kick off
     background LLM enrichment.  Returns the result dict with job_id attached when
@@ -183,12 +205,7 @@ def _get_status_fast_with_bg_job(query: str) -> dict:
         code        = _safe_status(latest_row)
         dl          = _get_download_info(latest_row, form_id)
 
-        thread = threading.Thread(
-            target=_run_error_enrichment_async,
-            args=(job_id, form_id, latest_row, dl, code),
-            daemon=True,
-        )
-        thread.start()
+        _start_error_enrichment_thread(job_id, form_id, latest_row, dl, code)
 
         result["job_id"]      = job_id
         result["result_type"] = result.get("result_type", "final")
@@ -221,12 +238,7 @@ def _get_status_by_id_fast_with_bg_job(instance_id: str) -> dict:
         if row:
             code = _safe_status(row)
             dl   = _get_download_info(row, form_id)
-            thread = threading.Thread(
-                target=_run_error_enrichment_async,
-                args=(job_id, form_id, row, dl, code),
-                daemon=True,
-            )
-            thread.start()
+            _start_error_enrichment_thread(job_id, form_id, row, dl, code)
             result["job_id"]      = job_id
             result["result_type"] = result.get("result_type", "final")
 
@@ -4048,12 +4060,7 @@ def _get_status_exact_fast_with_bg_job(report_name: str) -> dict:
         code        = _safe_status(latest_row)
         dl          = _get_download_info(latest_row, form_id)
 
-        thread = threading.Thread(
-            target=_run_error_enrichment_async,
-            args=(job_id, form_id, latest_row, dl, code),
-            daemon=True,
-        )
-        thread.start()
+        _start_error_enrichment_thread(job_id, form_id, latest_row, dl, code)
 
         result["job_id"]      = job_id
         result["result_type"] = result.get("result_type", "final")
@@ -4077,6 +4084,7 @@ async def explain_category_for_report(
     form_id: str | None = None,
     report_name: str | None = None,
     offset: int = 0,
+    lang: str = "en",
 ) -> dict[str, Any]:
     """Explain one batch (size = report_lookup._MAX_EXPLAIN, currently 3) of
     errors for the given category from error_file_path, starting at *offset*.
@@ -4125,6 +4133,7 @@ async def explain_category_for_report(
             category,
             form_id or "",
             offset,
+            lang or "en",
         )
     except Exception as exc:
         logger.error(

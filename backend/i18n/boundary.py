@@ -373,7 +373,9 @@ def translatable_payload(result: dict[str, Any]) -> dict[str, str]:
 _NESTED_ROOT = "error_details"
 
 
-def _nested_payload(result: dict[str, Any]) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+def _nested_payload(
+    result: dict[str, Any], lang: str = "",
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
     """Flatten the prose inside error_details[] to dotted pseudo-field keys.
 
     Walks the full error-card schema (backend/tools/error_card.py:36-46):
@@ -386,6 +388,17 @@ def _nested_payload(result: dict[str, Any]) -> tuple[dict[str, str], dict[str, t
         fix       heading, steps[]
         points    heading, bullets[]
         details   heading, sections[]  (recurses -- v1 sections nested in v2)
+
+    *lang* is the resolved target language of THIS request. A section carrying
+    ``_i18n_native == lang`` (set by formula_error.py's build_sections /
+    build_card_sections when error_llm.phrase() successfully authored that
+    section's bullets DIRECTLY in that language) has its body text skipped
+    here -- it is already correct prose in the target language, produced from
+    verified facts, not an English template awaiting translation. Sending it
+    to the model a second time (as "English" that is not actually English)
+    would risk corrupting a grounded answer for no benefit. The heading is
+    still taken normally: it is always the fixed UI label ("Why It Failed"),
+    unaffected by which language the body was authored in.
     """
     out: dict[str, str] = {}
     # field key -> the concept labels its section published in `terms`. These
@@ -412,6 +425,7 @@ def _nested_payload(result: dict[str, Any]) -> tuple[dict[str, str], dict[str, t
             current = section_terms
         # The heading is a UI label on every kind, so it always translates.
         take(f"{base}.heading", section.get("heading"))
+        already_native = bool(lang) and section.get("_i18n_native") == lang
         # `text` is authored prose EXCEPT where the schema marks it raw:
         #
         #   * mono=True -- error_card.py:104 documents this as "a raw
@@ -426,12 +440,13 @@ def _nested_payload(result: dict[str, Any]) -> tuple[dict[str, str], dict[str, t
         # heading text, so a heading may be translated freely without changing
         # which text is protected.
         raw_text = bool(section.get("mono")) or (kind == "rule" and parent_kind == "details")
-        if not raw_text:
+        if not raw_text and not already_native:
             take(f"{base}.text", section.get("text"))
-        # Bullet/step lists are authored prose.
-        for name in ("steps", "bullets"):
-            for n, entry in enumerate(section.get(name) or []):
-                take(f"{base}.{name}.{n}", entry)
+        # Bullet/step lists are authored prose -- unless already native.
+        if not already_native:
+            for name in ("steps", "bullets"):
+                for n, entry in enumerate(section.get(name) or []):
+                    take(f"{base}.{name}.{n}", entry)
         # Matrix COLUMN HEADERS are labels; the rows under them are values.
         columns = section.get("columns")
         if isinstance(columns, dict):
@@ -860,7 +875,7 @@ async def translate_outbound(
     # Prose inside error_details[] is flattened in here so it goes through the
     # identical path; _inject_nested puts it back at the end.
     nested_keys = set()
-    nested, field_terms = _nested_payload(result)
+    nested, field_terms = _nested_payload(result, resolved)
     if nested:
         english_payload.update(nested)
         nested_keys = set(nested)

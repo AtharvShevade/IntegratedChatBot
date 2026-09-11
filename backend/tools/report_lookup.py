@@ -3715,7 +3715,8 @@ _MAX_EXPLAIN = 3  # batch size — formula_error and xbrl_schema are explained t
 
 
 def explain_errors_by_category(
-    error_file_path: str, category: str, form_id: str = "", offset: int = 0
+    error_file_path: str, category: str, form_id: str = "", offset: int = 0,
+    lang: str = "en",
 ) -> list[dict]:
     """Parse and explain one _MAX_EXPLAIN-sized batch, starting at *offset*,
     with full context and root-cause linking.
@@ -3773,6 +3774,7 @@ def explain_errors_by_category(
                 from backend.tools.formula_error import explain_formula_error_file
                 explained = explain_formula_error_file(
                     error_file_path, form_id=form_id, max_rules=_MAX_EXPLAIN, offset=offset,
+                    lang=lang,
                 )
                 logger.info(
                     "[explain_errors_by_category] v2-formula done rules=%d elapsed=%.3fs form_id=%s",
@@ -3881,12 +3883,15 @@ def explain_errors_by_category(
 
 
 def explain_errors_by_category_for_form(
-    error_file_path: str, category: str, form_id: str = "", offset: int = 0
+    error_file_path: str, category: str, form_id: str = "", offset: int = 0,
+    lang: str = "en",
 ) -> list[dict]:
     """Like explain_errors_by_category but applies 4000-series tag for xbrl_schema
     and passes form_id through for formula_error and dimensional taxonomy-JSON
     enrichment."""
-    results = explain_errors_by_category(error_file_path, category, form_id=form_id, offset=offset)
+    results = explain_errors_by_category(
+        error_file_path, category, form_id=form_id, offset=offset, lang=lang,
+    )
 
     if category == "xbrl_schema" and form_id:
         return_id    = _get_return_id_for_form(form_id)

@@ -37,7 +37,20 @@ _DEPT_ID_ATTR:    str = "Id" if version_config.IS_V6 else "DeptId"
 _DEPT_FORMS_ATTR: str = "ReturnId" if version_config.IS_V6 else "Forms"
 # Non-XBRL returns live in a second, separate access list on the same
 # department row. Env-overridable for the same reason the attrs below are.
-_DEPT_NX_FORMS_ATTR: str = os.getenv("XML_DEPT_NX_FORMS_ATTR", "NXForms")
+_DEPT_NX_FORMS_ATTR: str = os.getenv(
+    "XML_DEPT_NX_FORMS_ATTR", "NXReturnId" if version_config.IS_V6 else "NXForms"
+)
+# Verified against real data: 5.5's XML_Dept.xml (D:\RepoCore_5.5\DataBase\
+# XML_Dept.xml) joins Forms/NXForms with "|" ("1001|1002|..."); 6.0's real
+# Department.xml (D:\Repo6.0\1001\DataBase\Department.xml) joins ReturnId/
+# NXReturnId with "," ("2029,4089,4070"). Splitting a comma-joined 6.0 value
+# on "|" (no pipes present) previously returned the WHOLE string as a single
+# bogus form id, so no real 6.0 form id ever matched -- every 6.0 allowed-
+# forms/allowed-actions check silently denied access. Env-overridable for
+# the same reason the attribute names above are.
+_DEPT_FORMS_DELIM: str = os.getenv(
+    "XML_DEPT_FORMS_DELIM", "," if version_config.IS_V6 else "|"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +67,27 @@ _AUTH_TTL: float = float(os.getenv("AUTH_TTL_SEC", "3600"))
 # Enable or disable authorization checks entirely. Defaults to true.
 AUTHORIZATION_ENABLED: bool = os.getenv("AUTHORIZATION_ENABLED", "true").lower() == "true"
 
-# { login_id: (result, monotonic_ts, xml_mtime) }
-_cache: dict[str, tuple[set[str] | None, float, float]] = {}
+# { (tenant_id, login_id): (result, monotonic_ts, xml_mtime) }
+#
+# tenant_id is folded into the key because APP_VERSION=6.0 login_ids are not
+# proven globally unique across tenants anywhere in this codebase or its
+# XML schemas — two different tenants' users could share a login_id, and a
+# bare login_id key would let tenant B's request return tenant A's cached
+# permission set. Under 5.5, version_config.get_active_tenant_id() is
+# always None, so every entry gets the same constant prefix — byte-for-byte
+# the same bucketing as a bare login_id key.
+_cache: dict[tuple[str | None, str], tuple[set[str] | None, float, float]] = {}
 
 # Same shape as _cache, for the non-XBRL (NXForms) access list — kept
 # separate so the two lists can never be confused for one another.
-_nx_cache: dict[str, tuple[set[str] | None, float, float]] = {}
+_nx_cache: dict[tuple[str | None, str], tuple[set[str] | None, float, float]] = {}
 
-# Per-login_id cache for role-based CreateInstance access.
-_create_cache: dict[str, tuple[bool, float]] = {}
+# Per-(tenant_id, login_id) cache for role-based CreateInstance access.
+_create_cache: dict[tuple[str | None, str], tuple[bool, float]] = {}
+
+
+def _cache_key(login_id: str) -> tuple[str | None, str]:
+    return (version_config.get_active_tenant_id(), login_id)
 
 
 def _auth_xml_mtime() -> float:
@@ -111,7 +136,8 @@ def get_allowed_form_ids(login_id: str) -> set[str] | None:
         return None
 
     current_mtime = _auth_xml_mtime()
-    entry = _cache.get(clean)
+    key = _cache_key(clean)
+    entry = _cache.get(key)
     if entry:
         result, ts, cached_mtime = entry
         if current_mtime != cached_mtime:
@@ -123,7 +149,7 @@ def get_allowed_form_ids(login_id: str) -> set[str] | None:
             return result
 
     result = _lookup(clean)
-    _cache[clean] = (result, time.monotonic(), current_mtime)
+    _cache[key] = (result, time.monotonic(), current_mtime)
     logger.info(
         "[AUTH_CACHE] login_id=%r result=%s",
         clean,
@@ -152,21 +178,22 @@ def get_allowed_nx_form_ids(login_id: str) -> set[str] | None:
         return None
 
     current_mtime = _auth_xml_mtime()
-    entry = _nx_cache.get(clean)
+    key = _cache_key(clean)
+    entry = _nx_cache.get(key)
     if entry:
         result, ts, cached_mtime = entry
         if current_mtime == cached_mtime and (time.monotonic() - ts) < _AUTH_TTL:
             return result
 
     result = _lookup(clean, forms_attr=_DEPT_NX_FORMS_ATTR)
-    _nx_cache[clean] = (result, time.monotonic(), current_mtime)
+    _nx_cache[key] = (result, time.monotonic(), current_mtime)
     return result
 
 
 def invalidate(login_id: str) -> None:
     """Remove a cached entry so the next request re-reads the XML."""
-    _cache.pop(login_id.strip(), None)
-    _nx_cache.pop(login_id.strip(), None)
+    _cache.pop(_cache_key(login_id.strip()), None)
+    _nx_cache.pop(_cache_key(login_id.strip()), None)
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +203,10 @@ def invalidate(login_id: str) -> None:
 def _lookup(login_id: str, forms_attr: str | None = None) -> set[str] | None:
     """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids.
 
-    *forms_attr* names the XML_Dept.xml attribute holding the pipe-delimited
-    access list; defaults to _DEPT_FORMS_ATTR (the XBRL forms list). Pass
-    _DEPT_NX_FORMS_ATTR to resolve the non-XBRL list instead — see
-    get_allowed_nx_form_ids.
+    *forms_attr* names the department XML attribute holding the delimited
+    access list (_DEPT_FORMS_DELIM-joined — "|" on 5.5, "," on 6.0); defaults
+    to _DEPT_FORMS_ATTR (the XBRL forms list). Pass _DEPT_NX_FORMS_ATTR to
+    resolve the non-XBRL list instead — see get_allowed_nx_form_ids.
     """
     forms_attr = forms_attr or _DEPT_FORMS_ATTR
     # ── Step 1: resolve DepartmentId from XML_User.xml ──────────────────────
@@ -232,7 +259,7 @@ def _lookup(login_id: str, forms_attr: str | None = None) -> set[str] | None:
     for el in dept_root.findall("Row"):
         if el.attrib.get(_DEPT_ID_ATTR, "").strip() == dept_id:
             forms_raw = el.attrib.get(forms_attr, "")
-            form_ids = {f.strip() for f in forms_raw.split("|") if f.strip()}
+            form_ids = {f.strip() for f in forms_raw.split(_DEPT_FORMS_DELIM) if f.strip()}
             logger.info(
                 "[AUTH] SUMMARY | LoginId: %r | DepartmentId: %r | "
                 "Allowed FormIds: %d forms loaded | Sample (first 5): %s",
@@ -408,7 +435,8 @@ def can_generate_instance(login_id: str) -> bool:
     if not clean:
         return False
 
-    entry = _create_cache.get(clean)
+    key = _cache_key(clean)
+    entry = _create_cache.get(key)
     if entry and (time.monotonic() - entry[1]) < _AUTH_TTL:
         logger.debug("[AUTH_ROLE] cache hit login_id=%r can_generate=%s", clean, entry[0])
         return entry[0]
@@ -419,7 +447,7 @@ def can_generate_instance(login_id: str) -> bool:
     else:
         result = validate_create_instance_access(role_id)
 
-    _create_cache[clean] = (result, time.monotonic())
+    _create_cache[key] = (result, time.monotonic())
     logger.info(
         "[AUTH_ROLE] login_id=%r role_id=%r can_generate_instance=%s",
         clean, role_id, result,
@@ -429,4 +457,4 @@ def can_generate_instance(login_id: str) -> bool:
 
 def invalidate_role_cache(login_id: str) -> None:
     """Remove a cached role-access entry so the next request re-reads the XML."""
-    _create_cache.pop(login_id.strip(), None)
+    _create_cache.pop(_cache_key(login_id.strip()), None)

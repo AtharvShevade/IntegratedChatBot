@@ -199,6 +199,12 @@
   "errcard.differByLower": "They differ by {0} ({1} is lower), so the check fails.",
   "errcard.ruleRequiresEqualRatio": "The rule requires {0} to be equal to the calculated ratio.",
   "errcard.ruleRequiresEqualWeightedAverage": "The rule requires {0} to be equal to the calculated weighted average.",
+  "errcard.calculatedTotal": "Calculated total",
+  "errcard.calculatedPercentage": "Calculated percentage",
+  "errcard.calculatedValue": "Calculated value",
+  "errcard.ruleRequiresEqualAggregate": "The rule requires {0} to be equal to the sum of the component values.",
+  "errcard.ruleRequiresEqualPercentage": "The rule requires {0} to be equal to the calculated percentage.",
+  "errcard.ruleRequiresEqualConditional": "The rule requires {0} to be equal to the value this rule calculates.",
   "errcard.reviewRevalidateNegative": "Review and revalidate the {0} value, which is currently -{1}, against the calculated ratio of {2} to {3}.",
   "errcard.reviewRevalidate": "Review and revalidate the {0} value, which is currently {1}, against the calculated ratio of {2} to {3}."
 }

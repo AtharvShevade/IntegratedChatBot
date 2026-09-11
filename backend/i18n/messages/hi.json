@@ -199,6 +199,12 @@
   "errcard.differByLower": "दोनों में {0} का अंतर है ({1} कम है), इसलिए जाँच विफल होती है।",
   "errcard.ruleRequiresEqualRatio": "नियम के अनुसार {0} गणित अनुपात के बराबर होना चाहिए।",
   "errcard.ruleRequiresEqualWeightedAverage": "नियम के अनुसार {0} गणित भारित औसत के बराबर होना चाहिए।",
+  "errcard.calculatedTotal": "परिकलित कुल",
+  "errcard.calculatedPercentage": "परिकलित प्रतिशत",
+  "errcard.calculatedValue": "परिकलित मान",
+  "errcard.ruleRequiresEqualAggregate": "नियम के अनुसार {0} घटक मानों के योग के बराबर होना चाहिए।",
+  "errcard.ruleRequiresEqualPercentage": "नियम के अनुसार {0} गणित प्रतिशत के बराबर होना चाहिए।",
+  "errcard.ruleRequiresEqualConditional": "नियम के अनुसार {0} इस नियम द्वारा गणना किए गए मान के बराबर होना चाहिए।",
   "errcard.reviewRevalidateNegative": "{0} मान की समीक्षा करके उसे पुनः सत्यापित करें, जो इस समय -{1} है, {2} और {3} के गणित अनुपात के सापेक्ष।",
   "errcard.reviewRevalidate": "{0} मान की समीक्षा करके उसे पुनः सत्यापित करें, जो इस समय {1} है, {2} और {3} के गणित अनुपात के सापेक्ष।"
 }

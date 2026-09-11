@@ -1602,10 +1602,13 @@ def build_sections(
         if cleaned:
             sections.append({"kind": "rule", "heading": "Validator Message", "text": cleaned})
 
-    sections.append({
+    why_section = {
         "kind": "points", "heading": "Why It Failed",
         "bullets": _why_failed_points(comparison, result, labels, unit, llm_text),
-    })
+    }
+    if llm_text and llm_text.get("_native_lang") and llm_text.get("why_failed"):
+        why_section["_i18n_native"] = llm_text["_native_lang"]
+    sections.append(why_section)
 
     where = _where_to_check_items(by_var, labels, rule)
     if where:
@@ -1618,10 +1621,13 @@ def build_sections(
                      f"the first is shown above."),
         })
 
-    sections.append({
+    fix_section = {
         "kind": "points", "heading": "How to Fix",
         "bullets": _how_to_fix_points(comparison, result, labels, llm_text),
-    })
+    }
+    if llm_text and llm_text.get("_native_lang") and llm_text.get("how_to_fix"):
+        fix_section["_i18n_native"] = llm_text["_native_lang"]
+    sections.append(fix_section)
     return sections
 
 
@@ -2881,7 +2887,7 @@ def _card_details_sections_formula(comparison, result, by_var, labels, unit,
                               f"scaling is a precision device and is not shown above"),
                 })
 
-    sections.append({
+    why_section = {
         "kind": "points", "heading": "Why It Failed",
         # concise: the card body's matrix has already printed both figures and
         # the gap, so this block states what the rule required and how the
@@ -2891,7 +2897,13 @@ def _card_details_sections_formula(comparison, result, by_var, labels, unit,
                                       llm_text, kind, concise=True,
                                       omit_requirement=omit_requirement,
                                       rule_sentence=rule_sentence),
-    })
+    }
+    if llm_text and llm_text.get("_native_lang") and llm_text.get("why_failed"):
+        # Already authored directly in the target language (error_llm.phrase);
+        # the i18n boundary must not run this bullet list through translation
+        # again — see boundary.py's _NATIVE_LANG_MARKER handling.
+        why_section["_i18n_native"] = llm_text["_native_lang"]
+    sections.append(why_section)
 
     instances = rule.get("instances") or []
     instance = instances[0] if instances else {"business_message": ""}
@@ -3037,10 +3049,10 @@ def build_card_sections(
                      f"the first is shown above."),
         })
 
-    sections.append(error_card.attach_emphasis(
-        error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text, kind)),
-        terms, ops,
-    ))
+    fix_section = error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text, kind))
+    if llm_text and llm_text.get("_native_lang") and llm_text.get("how_to_fix"):
+        fix_section["_i18n_native"] = llm_text["_native_lang"]
+    sections.append(error_card.attach_emphasis(fix_section, terms, ops))
 
     drawer_sections = _card_details_sections_formula(
         comparison, result, by_var, labels, unit, rule, llm_text, kind,
@@ -3287,7 +3299,7 @@ def _load_index(form_id: str, error_file_path: str):
         return None
 
 
-def explain_one_rule(rule: dict, taxonomy_json, index, settings) -> dict:
+def explain_one_rule(rule: dict, taxonomy_json, index, settings, lang: str = "en") -> dict:
     """Never raises — any failure falls through to the deterministic template."""
     out = dict(rule)
     try:
@@ -3303,7 +3315,7 @@ def explain_one_rule(rule: dict, taxonomy_json, index, settings) -> dict:
         # malformed model response ('why_failed' returned as a JSON array)
         # propagated to the outer handler and replaced a complete, correct
         # explanation with a one-line "review the values" fallback.
-        llm_text = _phrase_via_llm(rule, comparison, result, labels, settings)
+        llm_text = _phrase_via_llm(rule, comparison, result, labels, settings, lang=lang)
 
         # v2 = the unified error card shared with dimension errors; v1 = the
         # original per-type sections. Chosen per request (not at import) so
@@ -3337,8 +3349,19 @@ def _llm_may_phrase_why() -> bool:
     return os.getenv("ERROR_EXPLAIN_LLM_WHY", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _phrase_via_llm(rule, comparison, result, labels, settings) -> dict | None:
-    """Grounded LLM wording, or None. Never raises."""
+def _phrase_via_llm(rule, comparison, result, labels, settings, lang: str = "en") -> dict | None:
+    """Grounded LLM wording, or None. Never raises.
+
+    *lang* != "en" is what makes an unseen rule kind explainable in
+    Hindi/French/Arabic without a catalogue entry: instead of building the
+    English deterministic sentence and translating it afterwards (which needs
+    a structural template per rule kind), the same verified payload
+    (build_llm_payload) is handed to the model with an instruction to write
+    "why_failed" directly in the target language. The deterministic template
+    is still what runs for English, and is still the fallback here whenever
+    the model is unavailable or its answer fails the grounding gate — this
+    never lowers the floor, only raises the ceiling for translated requests.
+    """
     if not settings.get("enabled"):
         return None
     try:
@@ -3346,24 +3369,38 @@ def _phrase_via_llm(rule, comparison, result, labels, settings) -> dict | None:
         if not built:
             return None
         payload, required = built
-        # "Why it failed" is deterministic by default. It is a sequence of
-        # verified arithmetic facts, and the deterministic generator states
-        # them as short, separate points; asking a model to restate them
-        # reliably produced one dense line instead ("reported value:
-        # 1240058000, compared value: 1274362000, outcome: not satisfied"),
-        # which is strictly worse to read and adds a hallucination surface for
-        # no gain. Set ERROR_EXPLAIN_LLM_WHY=1 to let the model phrase it.
+        # "Why it failed" is deterministic by default for ENGLISH output. It is
+        # a sequence of verified arithmetic facts, and the deterministic
+        # generator states them as short, separate points; asking a model to
+        # restate them in English reliably produced one dense line instead
+        # ("reported value: 1240058000, compared value: 1274362000, outcome:
+        # not satisfied"), which is strictly worse to read and adds a
+        # hallucination surface for no gain there. Set ERROR_EXPLAIN_LLM_WHY=1
+        # to let the model phrase it in English too.
+        #
+        # For a NON-English target this trade-off flips: the alternative is
+        # not "a slightly worse English sentence", it is "no sentence at all
+        # unless someone adds a catalogue template for this rule kind" — so
+        # why_failed is always asked for when lang != "en".
+        is_english = (lang or "en").strip().lower() in ("", "en", "english")
         fields = {
             "how_to_fix": ("one short sentence telling the user what to review and "
                            "revalidate, in business terms"),
         }
-        if _llm_may_phrase_why():
+        if not is_english or _llm_may_phrase_why():
             fields["why_failed"] = (
                 "3 to 5 VERY SHORT sentences, one per line, each stating one fact: "
                 "the reported value, the compared value, any rounding, what the rule "
                 "requires, and the outcome. No bullet characters, no paragraph."
             )
-        return error_llm.phrase(payload, required, fields, settings)
+        out = error_llm.phrase(payload, required, fields, settings, lang=lang)
+        if out is not None and not is_english:
+            # Tags this result as authored NATIVELY in the target language, so
+            # the section built from it can be flagged for the i18n boundary
+            # to skip — translating already-Hindi/French/Arabic text a second
+            # time would risk corrupting it and gains nothing.
+            out["_native_lang"] = lang
+        return out
     except Exception as exc:
         logger.warning(
             "[formula_error] LLM phrasing failed for %r (%s) — using deterministic wording",
@@ -3372,7 +3409,9 @@ def _phrase_via_llm(rule, comparison, result, labels, settings) -> dict | None:
         return None
 
 
-def explain_formula_rules(rules: list[dict], form_id: str = "", error_file_path: str = "") -> list[dict]:
+def explain_formula_rules(
+    rules: list[dict], form_id: str = "", error_file_path: str = "", lang: str = "en",
+) -> list[dict]:
     if not rules:
         return []
     taxonomy_json = _load_json(form_id)
@@ -3380,7 +3419,7 @@ def explain_formula_rules(rules: list[dict], form_id: str = "", error_file_path:
     settings = error_llm.llm_settings()
 
     def worker(rule: dict) -> dict:
-        return explain_one_rule(rule, taxonomy_json, index, settings)
+        return explain_one_rule(rule, taxonomy_json, index, settings, lang=lang)
 
     workers = max(1, min(settings.get("max_concurrency", 2), len(rules)))
     if workers == 1 or not settings.get("enabled"):
@@ -3393,10 +3432,12 @@ def explain_formula_rules(rules: list[dict], form_id: str = "", error_file_path:
 
 def explain_formula_error_file(
     html_path: str, form_id: str = "", max_rules: int = 3, offset: int = 0,
+    lang: str = "en",
 ) -> list[dict]:
     """Top-level entry point: parse, then explain one batch starting at *offset*."""
     rules = parse_formula_errors_v2(html_path)
     offset = max(0, int(offset or 0))
     return explain_formula_rules(
         rules[offset:offset + max_rules], form_id=form_id, error_file_path=html_path,
+        lang=lang,
     )

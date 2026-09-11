@@ -711,7 +711,7 @@ class TestUnifiedFlowBatching:
         captured = {}
         monkeypatch.setattr(
             "backend.tools.formula_error.explain_formula_rules",
-            lambda trimmed, form_id="", error_file_path="": captured.setdefault(
+            lambda trimmed, form_id="", error_file_path="", lang="en": captured.setdefault(
                 "names", [r["rule_name"] for r in trimmed]) or trimmed,
         )
         rl.explain_errors_by_category(html, "formula_error", form_id="4046", offset=0)

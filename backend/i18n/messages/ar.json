@@ -199,6 +199,12 @@
   "errcard.differByLower": "يختلفان بمقدار {0} ({1} أقل)، لذلك يفشل التحقق.",
   "errcard.ruleRequiresEqualRatio": "تشترط القاعدة أن يساوي {0} النسبة المحسوبة.",
   "errcard.ruleRequiresEqualWeightedAverage": "تشترط القاعدة أن يساوي {0} المتوسط المرجّح المحسوب.",
+  "errcard.calculatedTotal": "الإجمالي المحسوب",
+  "errcard.calculatedPercentage": "النسبة المئوية المحسوبة",
+  "errcard.calculatedValue": "القيمة المحسوبة",
+  "errcard.ruleRequiresEqualAggregate": "تشترط القاعدة أن يساوي {0} مجموع القيم المكوّنة.",
+  "errcard.ruleRequiresEqualPercentage": "تشترط القاعدة أن يساوي {0} النسبة المئوية المحسوبة.",
+  "errcard.ruleRequiresEqualConditional": "تشترط القاعدة أن يساوي {0} القيمة التي تحسبها هذه القاعدة.",
   "errcard.reviewRevalidateNegative": "راجع قيمة {0} وأعد التحقق منها، وهي حاليًا -{1}، مقابل النسبة المحسوبة لـ {2} إلى {3}.",
   "errcard.reviewRevalidate": "راجع قيمة {0} وأعد التحقق منها، وهي حاليًا {1}، مقابل النسبة المحسوبة لـ {2} إلى {3}."
 }

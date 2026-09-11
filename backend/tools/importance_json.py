@@ -46,7 +46,7 @@ import os
 import re
 import threading
 
-from backend import config
+from backend import config, version_config
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +75,21 @@ _UNMATCHED: dict = {
 _UNMATCHED_GROUPING_SCORE = 0.0
 
 _CACHE_LOCK = threading.Lock()
-# form_id -> (mtime, JsonImportance). Keyed on mtime so a regenerated JSON is
-# picked up without a restart.
-_CACHE: dict[str, tuple[float, "JsonImportance"]] = {}
+# (tenant_id, form_id) -> (mtime, JsonImportance). Keyed on mtime so a
+# regenerated JSON is picked up without a restart.
+#
+# tenant_id is folded into the key (not just form_id) because two
+# APP_VERSION=6.0 tenants can share the same form_id with DIFFERENT JSON
+# content under their own repo root -- a bare form_id key would let tenant
+# B's request return tenant A's cached importance data. Under 5.5,
+# version_config.get_active_tenant_id() is always None, so every entry gets
+# the same constant prefix and this is byte-for-byte the same bucketing as
+# a bare form_id key.
+_CACHE: dict[tuple[str | None, str], tuple[float, "JsonImportance"]] = {}
+
+
+def _cache_key(form_id: str) -> tuple[str | None, str]:
+    return (version_config.get_active_tenant_id(), str(form_id))
 
 
 def json_path_for(form_id: str) -> str | None:
@@ -236,7 +248,7 @@ def get_importance_from_json(form_id: str | None) -> JsonImportance | None:
         return None
 
     with _CACHE_LOCK:
-        hit = _CACHE.get(str(form_id))
+        hit = _CACHE.get(_cache_key(form_id))
         if hit is not None and hit[0] == mtime:
             return hit[1]
 
@@ -268,5 +280,5 @@ def get_importance_from_json(form_id: str | None) -> JsonImportance | None:
         index.scorer_version, len(index._collisions), path,
     )
     with _CACHE_LOCK:
-        _CACHE[str(form_id)] = (mtime, index)
+        _CACHE[_cache_key(form_id)] = (mtime, index)
     return index
