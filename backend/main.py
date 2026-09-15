@@ -1,5 +1,6 @@
 # main.py — FastAPI entry point: /chat, /speech-to-text, /health.
-# Start with: uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+# Start with: python service_server.py (or dev_server.py), port from BACKEND_PORT
+# in .env (default 8001). See those two files for the actual uvicorn.run() calls.
 
 from __future__ import annotations
 
@@ -15,7 +16,16 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, sta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-load_dotenv()
+# ENV_FILE lets two backend processes share this one codebase checkout while
+# each loading its OWN .env (own APP_VERSION, BACKEND_PORT, repo paths,
+# CORS_ORIGINS, LOG_DIR, ...) -- e.g. ENV_FILE=.env.6.0. Unset (the default)
+# is byte-for-byte the previous behavior: load_dotenv() searches upward from
+# the working directory for the plain ".env".
+_env_file = os.environ.get("ENV_FILE", "").strip()
+if _env_file:
+    load_dotenv(_env_file, override=True)
+else:
+    load_dotenv()
 
 # Initialise centralised logging before any other backend import so that
 # module-level loggers in agent, guided, tools, etc. are already wired up.

@@ -29,7 +29,19 @@ _PROJECT_ROOT = os.path.dirname(                    # Chat-System/
         os.path.dirname(os.path.abspath(__file__))  # backend/utils/
     )
 )
-LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
+# Overridable so two simultaneous backend processes (e.g. 5.5 on one port,
+# 6.0 on another, same codebase checkout, each with its own .env via
+# ENV_FILE -- see backend/main.py) don't interleave writes into the same log
+# files. Default is unchanged, so any deployment that never sets LOG_DIR
+# behaves exactly as before. A relative override is resolved against the
+# project root (not the process's working directory), same convention as
+# sql_agent's EMBEDDING_DIR override.
+_log_dir_override = os.environ.get("LOG_DIR", "").strip()
+if _log_dir_override:
+    LOG_DIR = (_log_dir_override if os.path.isabs(_log_dir_override)
+               else os.path.join(_PROJECT_ROOT, _log_dir_override))
+else:
+    LOG_DIR = os.path.join(_PROJECT_ROOT, "logs")
 APP_LOG_PATH = os.path.join(LOG_DIR, "app.log")
 ERROR_LOG_PATH = os.path.join(LOG_DIR, "error.log")
 
