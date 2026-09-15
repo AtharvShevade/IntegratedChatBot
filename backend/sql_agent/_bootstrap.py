@@ -40,8 +40,19 @@ SQL_AGENT_ROOT = _HERE
 # Retrieval artefacts (FAISS indexes, schema.json, qa_pairs.json,
 # semantic_layer.yaml, concept_map.json, business_dictionary.yaml) — prebuilt,
 # shipped as data files alongside the engine. Refreshing them is: replace the
-# contents of this folder and restart; no rebuild step runs in this repo.
-EMBEDDING_DIR = os.path.join(SQL_AGENT_ROOT, "embeddings")
+# contents of the matching folder below and restart; no rebuild step runs in
+# this repo.
+#
+# Two full copies are kept side by side, one built against each repository
+# version's own schema — 5.5 and 6.0 genuinely have different tables/columns,
+# so the two sets are NOT interchangeable: pointing the SQL agent at the wrong
+# one would put nonexistent (or wrong) table/column names in front of the
+# SQL-generation model. Which copy is used is decided in ensure() below, from
+# the exact same APP_VERSION switch backend/version_config.py's IS_V6 uses —
+# a process-level constant, not resolved per-request, matching how every other
+# 5.5-vs-6.0 decision in this app is made.
+EMBEDDING_DIR_5_5 = os.path.join(SQL_AGENT_ROOT, "embeddings_5.5")
+EMBEDDING_DIR_6_0 = os.path.join(SQL_AGENT_ROOT, "embeddings_6.0")
 
 # Checked-in Oracle DDL, the authoritative column-type source for the prompt.
 DDL_SCHEMA_PATH = os.path.join(SQL_AGENT_ROOT, "data", "schema.sql")
@@ -154,13 +165,34 @@ def ensure() -> None:
     # A relative EMBEDDING_DIR override (from an agent-local .env or a real env
     # var) is resolved against SQL_AGENT_ROOT (this folder) rather than the
     # process's working directory, so "copy this folder, start from anywhere"
-    # keeps working regardless of how the chatbot is launched.
+    # keeps working regardless of how the chatbot is launched. This explicit
+    # override still wins over the version-based default below — unchanged
+    # from before, so an operator who wants to point at a specific folder
+    # (testing, a one-off rebuild) still can.
     configured_dir = (env("EMBEDDING_DIR") or "").strip()
     if configured_dir:
         if not os.path.isabs(configured_dir):
             _setenv("EMBEDDING_DIR", os.path.join(SQL_AGENT_ROOT, configured_dir), override=True)
     else:
-        _setenv("EMBEDDING_DIR", EMBEDDING_DIR, override=False)
+        # Same switch as backend/version_config.py's IS_V6 (APP_VERSION=="6.0"),
+        # read directly here via the same env()/chatbot-.env precedence as every
+        # other setting in this function, rather than importing version_config
+        # — keeps this bootstrap module import-order-independent (it must not
+        # require the rest of the app to already be initialised).
+        is_v6 = (env("APP_VERSION") or "5.5").strip() == "6.0"
+        default_dir = EMBEDDING_DIR_6_0 if is_v6 else EMBEDDING_DIR_5_5
+        if not os.path.isdir(default_dir):
+            # Fail loud rather than silently fall back to the other version's
+            # embeddings (or to a stale/missing default) — a 5.5 query run
+            # against 6.0's schema, or vice versa, would produce SQL against
+            # tables/columns that do not exist for that repository.
+            raise RuntimeError(
+                f"[SQL_AGENT] no embeddings folder for APP_VERSION="
+                f"{'6.0' if is_v6 else '5.5'} at {default_dir!r}. Refusing to "
+                "fall back to a different version's embeddings; set EMBEDDING_DIR "
+                "explicitly to override."
+            )
+        _setenv("EMBEDDING_DIR", default_dir, override=False)
 
     # ── Embedding model ──────────────────────────────────────────────────────
     _setenv("EMBED_MODEL", env("SQL_EMBED_MODEL"), override=False)
