@@ -414,3 +414,25 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
   }
   return await res.json()
 }
+
+/**
+ * Poll the status of an async error-enrichment job.
+ *
+ * Must go through BASE_URL like every other call: in production the app is
+ * served from /AiChatbot/ while the API lives at /AIChatBot/api, so a bare
+ * `/status-errors/...` resolves to the site root and 404s. Dev hid this,
+ * because vite.config.js proxies the bare path to :8001.
+ *
+ * @param {string} jobId
+ * @param {object} [opts]
+ * @param {string} [opts.lang] - Omitted / 'en' leaves the cards in English.
+ * @param {AbortSignal} [opts.signal]
+ * @returns {Promise<object>} - { status: 'pending'|'done'|'not_found', ... }
+ */
+export async function fetchStatusErrors(jobId, opts = {}) {
+  const { lang, signal } = opts
+  const qs = lang && lang !== 'en' ? `?lang=${encodeURIComponent(lang)}` : ''
+  const res = await fetch(`${BASE_URL}/status-errors/${jobId}${qs}`, { signal })
+  if (!res.ok) throw _err('', 'errors.requestFailed')
+  return res.json()
+}

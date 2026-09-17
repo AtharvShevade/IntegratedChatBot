@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
 import { LanguageContext, makeT, isRtl } from './i18n.js'
-import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback } from './services/api.js'
+import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback, fetchStatusErrors } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them to sessionStorage so identity
 // survives a page refresh (the .NET params are only in the URL on first load).
@@ -380,10 +380,7 @@ const pollForErrors = (jobId) => {
     try {
       // lang so the enriched error cards come back in the selected language;
       // the poll is the only delivery point for them (backend/main.py:776).
-      const res = await fetch(
-        `/status-errors/${jobId}${lang && lang !== 'en' ? `?lang=${encodeURIComponent(lang)}` : ''}`
-      )
-      const data = await res.json()
+      const data = await fetchStatusErrors(jobId, { lang })
 
       // ── Fix: stop polling if job was cleaned up before we got it ──────────
         if (data.status === "not_found") {
