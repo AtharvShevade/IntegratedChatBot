@@ -99,8 +99,8 @@ def _auth_xml_mtime() -> float:
     for path in (xml_user_path(), xml_dept_path()):
         try:
             mtime = max(mtime, os.path.getmtime(path))
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning("[AUTH] Could not stat auth XML file %s: %s", path, exc)
     return mtime
 
 

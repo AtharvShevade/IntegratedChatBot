@@ -1,22 +1,26 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig({
-   plugins: [react()],
-  base: '/AiChatbot/',
+// Dev-proxy target: derived from VITE_API_BASE_URL (frontend/.env.development)
+// instead of a port hardcoded here -- one value to change per deployment,
+// matching the backend's own single-source-of-truth BACKEND_PORT in .env.
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const target = env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
 
-  server: {
-    port: 3000,
-    proxy: {
-      '/chat': 'http://localhost:8001',
-      '/guided': 'http://localhost:8001',
-      '/reports': 'http://localhost:8001',
-      '/compare-execute': 'http://localhost:8001',
-      '/speech-to-text': 'http://localhost:8001',
-      '/health': 'http://localhost:8001',
-      '/download-file': 'http://localhost:8001',
-      '/explain-category': 'http://localhost:8001',
-      '/status-errors': 'http://localhost:8001',
+  const proxiedPaths = [
+    '/chat', '/guided', '/reports', '/compare-execute', '/speech-to-text',
+    '/health', '/download-file', '/explain-category', '/status-errors',
+  ]
+
+  return {
+    plugins: [react()],
+    // base: '/AiChatbot/',
+    base: '/AIChatBot6/',
+
+    server: {
+      port: 3000,
+      proxy: Object.fromEntries(proxiedPaths.map((path) => [path, target])),
     },
-  },
+  }
 })

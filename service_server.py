@@ -21,7 +21,7 @@ if _env_file:
 else:
     load_dotenv()
 
-BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8001"))
+from backend.config import BACKEND_PORT
 
 # Refuse to start if the IIS rewrite rule forwards somewhere else --
 # see port_guard.py for why this cannot be caught any later.

@@ -1,7 +1,9 @@
 """Function-entry/exit tracing decorator for the db_qa pipeline.
 
-Wraps a callable so that entering and exiting (or crashing) are printed
-to the console, making the full call chain visible in the uvicorn terminal.
+Wraps a callable so that entering, exiting, and any exception are logged to
+the "dbqa.tracer" logger at DEBUG level — opt-in only. Enable it (e.g. via
+LOG_LEVEL or a per-logger override) to see the full call chain while
+developing; it stays silent in production unless DEBUG is explicitly turned on.
 
 Usage — individual function::
 
@@ -11,10 +13,10 @@ Usage — individual function::
     def handle_my_department(store, params, user_id, is_admin):
         ...
 
-Expected console output::
+Expected DEBUG output::
 
-    >>> ENTER handle_my_department(<XMLStore>, {}, 'iris810', False)
-    <<< EXIT  handle_my_department → found=True records=1 summary='You are in ...'
+    ENTER handle_my_department(<XMLStore>, {}, 'iris810', False)
+    EXIT  handle_my_department -> found=True records=1 summary='You are in ...'
 
 Usage — auto-apply to all handle_* functions in a module (placed at module end)::
 
@@ -59,15 +61,18 @@ def trace(func):
         parts = [_fmt(a) for a in args] + [f"{k}={_fmt(v)}" for k, v in kwargs.items()]
         sig   = ", ".join(parts)
 
-        _safe_print(f"\n>>> ENTER {name}({sig})")
-        _trc.debug("ENTER %s  args=%s  kwargs=%s", name, args, kwargs)
+        # DEBUG-gated only — this used to also unconditionally print() to
+        # stdout on every call, which meant every DB Q&A query printed
+        # ENTER/EXIT noise to the production console regardless of the
+        # configured log level. Tracing is still fully available by
+        # enabling DEBUG on the "dbqa.tracer" logger; it no longer fires
+        # unconditionally in production.
+        _trc.debug("ENTER %s(%s)", name, sig)
 
         try:
             result = func(*args, **kwargs)
         except Exception as exc:
-            # Print the error clearly before re-raising so it is visible in context
-            _safe_print(f"!!! ERROR {name} -> {type(exc).__name__}: {exc}")
-            _trc.exception("ERROR in traced function %s", name)
+            _trc.exception("ERROR in traced function %s -> %s: %s", name, type(exc).__name__, exc)
             raise
 
         # Summarise the result concisely.
@@ -81,17 +86,7 @@ def trace(func):
         else:
             r_repr = repr(result)[:_MAX_RESULT]
 
-        _safe_print(f"<<< EXIT  {name} -> {r_repr}")
         _trc.debug("EXIT  %s -> %s", name, r_repr)
         return result
 
     return wrapper
-
-
-def _safe_print(line: str) -> None:
-    """print(), but never crash the call it's tracing over a console encoding
-    (e.g. Windows cp1252) that can't represent every character in *line*."""
-    try:
-        print(line, flush=True)
-    except UnicodeEncodeError:
-        print(line.encode("ascii", errors="replace").decode("ascii"), flush=True)

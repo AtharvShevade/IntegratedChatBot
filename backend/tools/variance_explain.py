@@ -59,6 +59,7 @@ import math
 import os
 
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -1253,6 +1254,7 @@ async def generate_explanations(
         },
     }
 
+    _t0 = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=float(timeout)) as client:
             resp = await client.post(f"{base_url}/api/chat", json=payload)
@@ -1262,10 +1264,17 @@ async def generate_explanations(
             content = (resp.json().get("message", {}).get("content") or "").strip()
 
     except Exception as exc:
-        logger.info("[EXPLAIN] LLM unavailable (%s) — using Python templates", exc)
-
+        logger.warning(
+            "AI request failed | flow=variance_explain | model=%s | duration_ms=%.0f | error=%s "
+            "— falling back to deterministic templates",
+            model, (time.monotonic() - _t0) * 1000, exc,
+        )
         return _render(templates, "template")
 
     sentences, n_llm = validate_and_merge(content, facts)
+    logger.info(
+        "AI completed | flow=variance_explain | model=%s | duration_ms=%.0f | facts_explained=%d/%d",
+        model, (time.monotonic() - _t0) * 1000, n_llm, len(facts),
+    )
 
     return _render(sentences, f"llm({n_llm}/{len(facts)})")

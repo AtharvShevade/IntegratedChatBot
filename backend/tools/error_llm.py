@@ -30,6 +30,7 @@ import json as _json
 import logging
 import os
 import re
+import time as _time
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,7 @@ def phrase(
         "options": {"temperature": 0.2, "num_predict": 320},
     }
 
+    _t0 = _time.monotonic()
     try:
         with _httpx.Client(timeout=settings["timeout"]) as client:
             resp = client.post(f"{settings['base']}/api/chat", json=body)
@@ -411,7 +413,10 @@ def phrase(
         if parsed is None:
             raise ValueError("no usable JSON object in response")
     except Exception as exc:
-        logger.info("[error_llm] phrasing unavailable (%s) — using deterministic text", exc)
+        logger.warning(
+            "AI request failed | flow=error_explanation | model=%s | duration_ms=%.0f | error=%s",
+            settings["model"], (_time.monotonic() - _t0) * 1000, exc,
+        )
         return None
 
     out: dict[str, str] = {}
@@ -426,6 +431,11 @@ def phrase(
     if not ok:
         logger.info("[error_llm] rejected: %s", reason)
         return None
+
+    logger.info(
+        "AI completed | flow=error_explanation | model=%s | duration_ms=%.0f",
+        settings["model"], (_time.monotonic() - _t0) * 1000,
+    )
     return out
 
 

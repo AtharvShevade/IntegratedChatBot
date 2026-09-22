@@ -3501,3 +3501,12 @@ html, body, #root {
 [dir="rtl"] .welcome-list { padding-right: 1.2rem; padding-left: 0; }
 [dir="rtl"] .welcome-group-arrow,
 [dir="rtl"] .guided-action-arrow { transform: scaleX(-1); }
+
+/* ── Validation Details table: no-backtrack (Error | Explanation only) ──────
+   Narrower Error column so the 2-column table fits without horizontal
+   scroll; the 5-column (backtracked) table keeps its existing widths. */
+.error-table-info-tbl--compact { min-width: 0; table-layout: fixed; }
+.error-table-info-tbl--compact th:nth-child(1),
+.error-table-info-tbl--compact td:nth-child(1) { width: 26%; }
+.error-table-info-tbl--compact th:nth-child(2),
+.error-table-info-tbl--compact td:nth-child(2) { width: 74%; }

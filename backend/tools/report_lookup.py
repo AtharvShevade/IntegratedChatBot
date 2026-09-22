@@ -1264,34 +1264,47 @@ def _expected_type_from_err(err: dict) -> str:
     return m.group(1).strip() if m else ""
 
 
+# Plain-language "what is expected" sentence per known XBRL datatype name.
+# Kept short and business-friendly, matching the concise 4-part target
+# format: what was entered -> what is expected -> a simple example -> what
+# to do. Unlisted types fall back to a generic, non-hallucinated sentence
+# built only from the type name the validator itself reported.
+_XBRL_DATATYPE_EXPECTATION = {
+    "decimal": "This field expects a decimal number, but text was entered instead.",
+    "integer": "This field expects a whole number.",
+    "date":    "This field expects a valid date.",
+    "boolean": "This field expects a Boolean value.",
+}
+
+
+
+# Classic validator phrasing: "'<value>' is not a valid value for '<type>'".
+# Used only to recover the entered value when no dedicated actualValue/
+# entered_data(s) field was parsed out for this error — never invents a
+# value, just extracts one already present in the validator's own message.
+_QUOTED_VALUE_BEFORE_INVALID_RE = re.compile(
+    r"^[‘’“”']([^'‘’“”]+)[‘’“”']"
+    r"\s+is not a valid value for",
+    re.IGNORECASE,
+)
+
+
 def _build_fallback_business_explanation(err: dict) -> str:
     """
-    Evidence-based fallback for XBRL schema errors.
-    Derives text only from parsed fields.
-    Never asserts date format, business meaning, or downstream effects
-    unless they are present in the parsed dict.
+    Deterministic, concise explanation for an XBRL schema/datatype error.
+
+    Answers exactly: what was entered -> what is expected -> a simple
+    example -> what to do. No LLM call, so wording is always short and
+    predictable. This is the path used for the common "wrong data type"
+    shape (see explain_validation_errors) — including cases with unrelated
+    cascade/downstream messages at the same location, which are
+    deliberately NOT surfaced here: they are symptoms of the same
+    underlying datatype problem, not new information the user needs.
     """
     import re as _re_fb
- 
+
     is_direct = err.get("_source") == "directMsg"
- 
-    # Identify the subject from parsed fields only
-    cell = err.get("cellCode") or err.get("cell", "")
-    if cell and not is_direct:
-        subject = f"Cell {cell}"
-    else:
-        em = _re_fb.search(
-            r"[Ee]lement\s+'([^']+)'",
-            err.get("message", "") or err.get("validation_message", ""),
-        )
-        if em:
-            subject = f"The field \"{em.group(1)}\""
-        elif err.get("all_element_names"):
-            names = err["all_element_names"]
-            subject = f"The field(s) {', '.join(names)}"
-        else:
-            subject = "A reported value"
- 
+
     # Invalid value — from parsed fields only
     actual = (
         err.get("entered_data(s)")
@@ -1300,62 +1313,50 @@ def _build_fallback_business_explanation(err: dict) -> str:
         or (err.get("all_invalid_values") or [None])[0]
         or ""
     ).strip()
- 
-    if not actual and is_direct:
-        raw = err.get("message", "")
-        m = _re_fb.search(
-            r"['\u2018\u2019\u201c\u201d]([^'\"]+)['\u2018\u2019\u201c\u201d]", raw
-        )
+
+    if not actual:
+        raw = err.get("message", "") or err.get("validation_message", "") or err.get("col_0", "")
+        m = _QUOTED_VALUE_BEFORE_INVALID_RE.search(raw.strip())
+        if not m and is_direct:
+            m = _re_fb.search(
+                r"['‘’“”]([^'\"]+)['‘’“”]", raw
+            )
         if m:
             actual = m.group(1).strip()
- 
+
     expected = _expected_type_from_err(err)
+    expected_key = expected.strip().lower()
 
-    # Use validator message as the factual anchor
-    raw_validator_msg = (
-        err.get("validation_message")
-        or err.get("message")
-        or err.get("col_0")
-        or ""
-    ).strip()
-    # Strip cvc- codes — they are technical noise
-    clean_validator_msg = _re_fb.sub(r"^cvc-[\w\.\-]+:\s*", "", raw_validator_msg).strip()
-    # Strip duplicate cell prefix
-    clean_validator_msg = _re_fb.sub(
-        r"^Cell\s+\S+\s+failed\s+validation\s*:\s*", "", clean_validator_msg,
-        flags=_re_fb.IGNORECASE,
-    ).strip()
- 
-    lines = []
-
-    # "Cell X contains Y" names WHERE the problem is; "the entered value is Y"
-    # states WHAT is wrong with it — distinct facts, so both are kept when a
-    # cell code is available, rather than treating the second as a duplicate
-    # of the first and dropping it.
-    if cell and not is_direct and actual:
-        lines.append(f"Cell {cell} contains '{actual}'.")
+    lines_out = []
 
     if actual:
-        lines.append(f"The entered value is '{actual}'.")
+        lines_out.append(f"The entered value is '{actual}'.")
     else:
-        lines.append(f"{subject} failed validation.")
+        raw_validator_msg = (
+            err.get("validation_message") or err.get("message") or err.get("col_0") or ""
+        ).strip()
+        clean_validator_msg = _re_fb.sub(r"^cvc-[\w\.\-]+:\s*", "", raw_validator_msg).strip()
+        clean_validator_msg = _re_fb.sub(
+            r"^Cell\s+\S+\s+failed\s+validation\s*:\s*", "", clean_validator_msg,
+            flags=_re_fb.IGNORECASE,
+        ).strip()
+        lines_out.append(
+            clean_validator_msg.rstrip(".") + "." if clean_validator_msg
+            else "The reported value failed validation."
+        )
 
     if expected:
-        lines.append(f"This value is not a valid {expected}.")
-    elif clean_validator_msg:
-        lines.append(clean_validator_msg.rstrip(".") + ".")
+        lines_out.append(
+            _XBRL_DATATYPE_EXPECTATION.get(expected_key, f"This value is not a valid {expected}.")
+        )
+        example_val = _example_value_for_datatype(expected)
+        if expected_key == "boolean":
+            lines_out.append("Use a valid value such as true or false.")
+        elif example_val:
+            lines_out.append(f"For example, enter a value like {example_val}.")
 
-    example_val = _example_value_for_datatype(expected)
-    if example_val:
-        lines.append(f"A valid {expected} looks like this: eg.{example_val}")
-
-    # Downstream effects — include only if explicitly populated by root-cause analysis
-    if err.get("downstream_effects"):
-        for effect in err["downstream_effects"][:2]:
-            lines.append(effect)
-
-    lines.append("Correct the value and revalidate the report.")
-    return " ".join(lines)
+    lines_out.append("Correct the value and revalidate the report.")
+    return " ".join(lines_out)
 
 
 def _normalize_error_for_llm(err: dict) -> dict:
@@ -1698,18 +1699,22 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
             or err.get("instance_data(s)")
             or (err.get("all_invalid_values") or [None])[0] or ""
         ).strip()
+        if not actual:
+            raw_msg = err.get("message", "") or err.get("validation_message", "") or err.get("col_0", "")
+            _m = _QUOTED_VALUE_BEFORE_INVALID_RE.search(raw_msg.strip())
+            if _m:
+                actual = _m.group(1).strip()
         expected = _expected_type_from_err(err)
-        has_cascade    = bool(err.get("cascade_errors"))
-        has_downstream = bool(err.get("downstream_effects"))
 
-        # The common "wrong data type" shape (a value + the type it should
-        # have been, nothing else going on) is rendered deterministically —
-        # no LLM call, so the cell reference can never be dropped and the
-        # example-value line can never be mangled (e.g. a stray "eg " prefix)
-        # the way free-form LLM phrasing occasionally produced. Anything
-        # messier (cascades, downstream effects, or no clear expected type)
-        # still goes through the LLM's more flexible narrative composition.
-        if actual and expected and not has_cascade and not has_downstream:
+        # The common "wrong data type" shape (an entered value + the type it
+        # should have been) is rendered deterministically, concisely, and
+        # WITHOUT surfacing cascade/downstream noise from the same location
+        # — that noise is a symptom of this same datatype problem, not new
+        # information for the user. No LLM call, so the wording is always
+        # short and predictable and the example value can never be mangled.
+        # Anything without a clear entered value + expected type still goes
+        # through the LLM's more flexible narrative composition.
+        if actual and expected:
             explanation = _build_fallback_business_explanation(err)
         else:
             explanation = _explain_single_error(err, ollama_base, model, timeout, keep_alive)

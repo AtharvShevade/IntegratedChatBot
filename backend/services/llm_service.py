@@ -214,25 +214,33 @@ async def _call_ollama(
         },
     }
 
+    _model = model or OLLAMA_MODEL
     logger.debug(
         "[LLM_CALL] model=%s endpoint=%s/api/chat prompt_len=%d keep_alive=%s timeout=%.0fs",
-        OLLAMA_MODEL, OLLAMA_BASE_URL, len(prompt), _KEEP_ALIVE, CHAT_FALLBACK_TIMEOUT,
+        _model, OLLAMA_BASE_URL, len(prompt), _KEEP_ALIVE, CHAT_FALLBACK_TIMEOUT,
     )
     _t0 = time.monotonic()
     # CHAT_FALLBACK_TIMEOUT (not REQUEST_TIMEOUT) — see its definition above for why
     # this call in particular needs a short leash.
-    async with httpx.AsyncClient(timeout=CHAT_FALLBACK_TIMEOUT) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json=payload,
+    try:
+        async with httpx.AsyncClient(timeout=CHAT_FALLBACK_TIMEOUT) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json=payload,
+            )
+            resp.raise_for_status()
+    except Exception as exc:
+        logger.warning(
+            "AI request failed | flow=llm_chat | model=%s | duration_ms=%.0f | error=%s",
+            _model, (time.monotonic() - _t0) * 1000, exc,
         )
-        resp.raise_for_status()
+        raise
 
     _elapsed = time.monotonic() - _t0
     content: str = resp.json()["message"]["content"]
     logger.info(
         "[PERF] operation=llm_chat model=%s duration=%.2fs response_len=%d",
-        OLLAMA_MODEL, _elapsed, len(content),
+        _model, _elapsed, len(content),
     )
     logger.debug("[LLM_RESPONSE] content_preview=%r", content[:200])
     return content
@@ -450,7 +458,7 @@ async def extract_intent_entities_llm(user_query: str, history: list[dict] | Non
         "[PERF] operation=llm_extract model=%s duration=%.2fs",
         OLLAMA_EXTRACT_MODEL, _elapsed,
     )
-    logger.debug("[LLM_EXTRACT_RAW] content=%r", content)
+    logger.debug("[LLM_EXTRACT_RAW] content_preview=%r", content[:200])
     return json.loads(content)
 
 

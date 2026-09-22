@@ -12,9 +12,12 @@ Precedence: real environment variables (as set by the OS/shell/container) always
 win over `.env` — `.env` only fills in values nothing else has already set.
 """
 
+import logging
 import os
 
 from dotenv import load_dotenv
+
+log = logging.getLogger("sql_agent.config")
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_REPO_ROOT, ".env"), override=False)
@@ -28,7 +31,7 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        print(f"[config] WARNING: {name}={raw!r} is not a valid int — using default {default}")
+        log.warning("%s=%r is not a valid int — using default %s", name, raw, default)
         return default
 
 
@@ -40,7 +43,7 @@ def _env_float(name: str, default: float) -> float:
     try:
         return float(raw)
     except ValueError:
-        print(f"[config] WARNING: {name}={raw!r} is not a valid float — using default {default}")
+        log.warning("%s=%r is not a valid float — using default %s", name, raw, default)
         return default
 
 

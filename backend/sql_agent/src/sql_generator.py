@@ -460,7 +460,7 @@ def _log_hallucination(user_query, tables, model_name, first_attempt_sql, first_
         with open(HALLUCINATION_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError as e:
-        print(f"[WARNING] Could not write hallucination log: {e}")
+        log.warning("Could not write hallucination log: %s", e)
 
 
 def _build_full_rules_block(dialect_hint: str) -> str:
@@ -1348,7 +1348,6 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
             raise RuntimeError(f"Ollama API error: {e}")
         _connect_ms = round((time.perf_counter() - _call_started) * 1000, 1)
 
-        print("  ", end="", flush=True)
         raw = ""
         token_count = 0
         _ttft_ms = None
@@ -1369,12 +1368,10 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
                 _ttft_ms = round((time.perf_counter() - _call_started) * 1000, 1)
             if token:
                 token_count += 1
-            print(token, end="", flush=True)
             raw += token
             if chunk.get("done"):
                 _final_chunk = chunk
                 break
-        print()
         total_ms = round((time.perf_counter() - _call_started) * 1000, 1)
         ttft_ms = _ttft_ms if _ttft_ms is not None else total_ms
         decode_s = (total_ms - ttft_ms) / 1000
@@ -1406,14 +1403,16 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
         # Prompt length correlates with time-to-first-token on a remote proxy —
         # log it alongside timing so a slow call can be attributed to network/
         # model latency vs. an oversized prompt, instead of staying a mystery.
-        print(f"[TIMING] ollama {call_label}: connect={_connect_ms}ms ttft={ttft_ms}ms "
-              f"total={total_ms}ms tokens={token_count} tokens_per_sec={tokens_per_sec} "
-              f"ollama_load_ms={ollama_load_ms} ollama_prompt_eval_ms={ollama_prompt_eval_ms} "
-              f"ollama_prompt_tokens={ollama_prompt_tokens} ollama_eval_ms={ollama_eval_ms} "
-              f"prompt_chars={len(prompt_text)} response_chars={len(raw)}")
+        log.info(
+            "[SQL_AGENT] AI completed | flow=sql_generation | model=%s | call=%s | duration_ms=%s | "
+            "ttft_ms=%s | tokens=%d | tokens_per_sec=%s | prompt_chars=%d | response_chars=%d",
+            model_name, call_label, total_ms, ttft_ms, token_count, tokens_per_sec,
+            len(prompt_text), len(raw),
+        )
         return raw
 
-    print(f"[DEBUG] Ollama model={model_name} prompt_style={model_profile.get('prompt_style')}")
+    log.info("[SQL_AGENT] AI request | flow=sql_generation | model=%s | prompt_style=%s",
+              model_name, model_profile.get('prompt_style'))
     raw = _call_ollama(prompt, call_label="first_attempt")
 
     # Strip markdown fences if present
@@ -1495,8 +1494,8 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
         if corrected is not None:
             corrected_valid, corrected_reason = _check(corrected)
             if corrected_valid:
-                print(f"[AUTOCORRECT] Rewrote the vertical-table aggregation deterministically:\n"
-                      f"  before: {raw}\n  after:  {corrected}")
+                log.info("[SQL_AGENT] Auto-corrected vertical-table aggregation deterministically")
+                log.debug("[SQL_AGENT] autocorrect before=%r after=%r", raw, corrected)
                 warnings.append(
                     "Auto-corrected: the model did not add the required row-label filter, "
                     "so it was rewritten deterministically instead of guessed."
@@ -1599,7 +1598,7 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
         tried_sql.append(raw)
         is_valid, reason = _check(raw)
         if is_valid:
-            print(f"[CORRECTED] Valid after retry {attempt}")
+            log.info("[SQL_AGENT] SQL corrected and valid after retry %d", attempt)
         log.info("[TIMING] retry_round=%d total_ms=%.1f", attempt,
                  (time.perf_counter() - round_t0) * 1000)
 
@@ -1610,7 +1609,8 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
             f"Reason: {reason}"
         )
         warnings.append(warning)
-        print(f"[WARNING] {warning}")
+        log.warning("[SQL_AGENT] AI request failed | flow=sql_generation | model=%s | category=%s | reason=%s",
+                     model_name, category, reason)
         _log_hallucination(
             user_query=user_query,
             tables=tables,
@@ -1634,7 +1634,7 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
             from src.concept_map import check_stock_aggregation
             for w in check_stock_aggregation(raw, tables):
                 warnings.append(w)
-                print(f"[WARNING] {w}")
+                log.warning("[SQL_AGENT] %s", w)
 
     # Hallucinated-literal check. Always on (not gated by BUSINESS_SEMANTICS_LEVEL) —
     # description_samples.json's values are already unconditionally in the prompt,
@@ -1643,7 +1643,7 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
         from src.literal_validator import check_literal_validity
         for w in check_literal_validity(raw, tables):
             warnings.append(w)
-            print(f"[WARNING] {w}")
+            log.warning("[SQL_AGENT] %s", w)
 
     return {
         "question_understanding": "",

@@ -61,7 +61,7 @@ def get_accessible_tables() -> set:
         conn.close()
         return tables
     except Exception as e:
-        print(f"  [warn] Could not fetch USER_TABLES: {e}")
+        log.warning("Could not fetch USER_TABLES: %s", e)
         return set()
 
 
@@ -106,6 +106,7 @@ def _dry_run_sql(sql):
         conn = get_connection()
     except oracledb.DatabaseError as e:
         # Cannot verify — do not fail the query on infrastructure grounds.
+        log.warning("[SQL_AGENT] dry_run_sql: connection unavailable, skipping validation: %s", e)
         return True, f"dry-run skipped (connection failed: {e})"
 
     cursor = None
@@ -119,17 +120,20 @@ def _dry_run_sql(sql):
         if "ORA-01039" in message or "PLAN_TABLE" in message.upper():
             # No PLAN_TABLE or no privilege to write it: that is an environment
             # problem, not bad SQL, so it must not be reported as invalid.
+            log.warning("[SQL_AGENT] dry_run_sql: PLAN_TABLE unavailable, skipping validation: %s", message)
             return True, f"dry-run skipped ({message})"
+        log.warning("[SQL_AGENT] dry_run_sql rejected generated SQL: %s", message)
         return False, message
     except Exception as e:
+        log.warning("[SQL_AGENT] dry_run_sql: unexpected error, skipping validation: %s", e, exc_info=True)
         return True, f"dry-run skipped (unexpected error: {e})"
     finally:
         if cursor is not None:
             cursor.close()
         try:
             conn.rollback()      # discard the PLAN_TABLE rows
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("[SQL_AGENT] dry_run_sql: rollback after EXPLAIN PLAN failed (non-critical): %s", exc)
         conn.close()
 
 
@@ -148,8 +152,8 @@ def execute_query(sql):
     try:
         conn = get_connection()
     except oracledb.DatabaseError as e:
-        log.info("[TIMING] execute_query connect_ms=%.1f (failed)",
-                 (time.perf_counter() - t0) * 1000)
+        log.error("[SQL_AGENT] execute_query: connection failed after %.1fms: %s",
+                  (time.perf_counter() - t0) * 1000, e)
         return [], [], f"Connection failed: {e}"
     connect_ms = (time.perf_counter() - t0) * 1000
 
@@ -175,12 +179,16 @@ def execute_query(sql):
         )
         return columns, rows, None
     except oracledb.DatabaseError as e:
-        log.info("[TIMING] execute_query connect_ms=%.1f total_ms=%.1f (query failed)",
-                 connect_ms, (time.perf_counter() - t0) * 1000)
+        log.error(
+            "[SQL_AGENT] execute_query: query execution failed after connect_ms=%.1f total_ms=%.1f: %s",
+            connect_ms, (time.perf_counter() - t0) * 1000, e,
+        )
         return [], [], f"Query execution failed: {e}"
     except Exception as e:
-        log.info("[TIMING] execute_query connect_ms=%.1f total_ms=%.1f (unexpected error)",
-                 connect_ms, (time.perf_counter() - t0) * 1000)
+        log.error(
+            "[SQL_AGENT] execute_query: unexpected error after connect_ms=%.1f total_ms=%.1f: %s",
+            connect_ms, (time.perf_counter() - t0) * 1000, e, exc_info=True,
+        )
         return [], [], f"Unexpected error: {e}"
     finally:
         if cursor is not None:

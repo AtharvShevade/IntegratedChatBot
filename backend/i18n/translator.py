@@ -236,6 +236,10 @@ class OllamaTranslator:
                         attempts=attempt, stripped_thinking=had_thinking,
                         model=self.model,
                     )
+                logger.info(
+                    "AI completed | flow=translation | model=%s | %s->%s | duration_ms=%.0f | chars=%d",
+                    self.model, src, tgt, _elapsed(), len(text),
+                )
                 return TranslationResult(
                     text=cleaned, latency_ms=_elapsed(), ok=True, attempts=attempt,
                     stripped_thinking=had_thinking, model=self.model,

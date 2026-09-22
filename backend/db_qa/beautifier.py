@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Generator
 
 import requests
@@ -76,6 +77,7 @@ def beautify_stream(
     
     base_url = ollama_url.rstrip("/")
     prompt = _build_prompt(question, result)
+    _t0 = time.monotonic()
 
     try:
         resp = requests.post(
@@ -90,10 +92,15 @@ def beautify_stream(
             timeout=120,
         )
         if not resp.ok:
-            logger.warning("Ollama %s: %s", resp.status_code, resp.text[:200])
+            logger.warning(
+                "AI request failed | flow=db_qa_beautify | model=%s | duration_ms=%.0f | "
+                "http_status=%s | error=%s",
+                model, (time.monotonic() - _t0) * 1000, resp.status_code, resp.text[:200],
+            )
             yield result.get("summary", "No data found.")
             return
 
+        token_count = 0
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -103,13 +110,25 @@ def beautify_stream(
                 continue
             token = chunk.get("response", "")
             if token:
+                token_count += 1
                 yield token
             if chunk.get("done"):
                 break
+        logger.info(
+            "AI completed | flow=db_qa_beautify | model=%s | duration_ms=%.0f | tokens=%d",
+            model, (time.monotonic() - _t0) * 1000, token_count,
+        )
 
-    except requests.ConnectionError:
-        logger.error("Cannot reach Ollama at %s", base_url)
+    except requests.ConnectionError as exc:
+        logger.warning(
+            "AI request failed | flow=db_qa_beautify | model=%s | duration_ms=%.0f | "
+            "error=unreachable at %s: %s",
+            model, (time.monotonic() - _t0) * 1000, base_url, exc,
+        )
         yield result.get("summary", "No data found.")
     except Exception as exc:
-        logger.error("Beautifier error: %s", exc)
+        logger.warning(
+            "AI request failed | flow=db_qa_beautify | model=%s | duration_ms=%.0f | error=%s",
+            model, (time.monotonic() - _t0) * 1000, exc, exc_info=True,
+        )
         yield result.get("summary", "No data found.")

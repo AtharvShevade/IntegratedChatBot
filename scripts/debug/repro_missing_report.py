@@ -1,4 +1,8 @@
 import asyncio
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root, after move to scripts/debug/
+
 from backend.agent import decide
 
 async def main():

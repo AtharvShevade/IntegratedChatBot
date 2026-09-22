@@ -145,12 +145,17 @@ class WhisperHttpClient:
         try:
             body = response.json()
         except ValueError as exc:
+            logger.warning("[STT] bad json response url=%s error=%s", self.url, exc)
             return TranscriptionResult(
                 text="", latency_ms=_elapsed(), ok=False, error=f"bad json: {exc}",
             )
 
         # duration / processing_ms / model are part of the EXTENDED contract and
         # are absent from the service as deployed; default rather than fail.
+        logger.info(
+            "[STT] transcription completed | duration_ms=%.0f | language=%s | model=%s",
+            _elapsed(), (body.get("language") or "?"), (body.get("model") or "?"),
+        )
         return TranscriptionResult(
             text=(body.get("text") or "").strip(),
             latency_ms=_elapsed(),

@@ -3,6 +3,28 @@ import os
 from backend import version_config
 
 # ---------------------------------------------------------------------------
+# Backend port — single source of truth is BACKEND_PORT in the process's
+# .env file. No port number is hardcoded here or anywhere else: each
+# deployed instance (5.5, 6.0, or any future one) sets its own value
+# directly in its own .env, e.g. BACKEND_PORT=8001. dev_server.py,
+# service_server.py and backend/main.py's startup log all import this one
+# constant instead of each reading/defaulting BACKEND_PORT independently,
+# so changing the port for a deployment is a one-line .env edit.
+# ---------------------------------------------------------------------------
+
+def _read_backend_port() -> int:
+    raw = os.getenv("BACKEND_PORT")
+    if not raw or not raw.strip():
+        raise RuntimeError(
+            "BACKEND_PORT is not set. Set it in this process's .env file "
+            "(e.g. BACKEND_PORT=8001) -- there is no hardcoded default."
+        )
+    return int(raw.strip())
+
+
+BACKEND_PORT: int = _read_backend_port()
+
+# ---------------------------------------------------------------------------
 # Base repository path (5.5 — single flat root)
 # ---------------------------------------------------------------------------
 
@@ -20,7 +42,6 @@ BASE_REPO_PATH: str = os.getenv(
 
 _USER_FILENAME:         str = "User.xml"         if version_config.IS_V6 else "XML_User.xml"
 _DEPT_FILENAME:         str = "Department.xml"   if version_config.IS_V6 else "XML_Dept.xml"
-_ROLE_FILENAME:         str = "Role.xml"         if version_config.IS_V6 else "XML_Role.xml"
 _ROLE_ACCESS_FILENAME:  str = "RoleAccess.xml"   if version_config.IS_V6 else "XML_RoleAccess.xml"
 _OPTION_FILENAME:       str = "Option.xml"       if version_config.IS_V6 else "XML_Option.xml"
 _RETURNS_FILENAME:      str = "Return.xml"       if version_config.IS_V6 else "Returns.xml"
@@ -61,10 +82,6 @@ def xml_user_path() -> str:
 
 def xml_dept_path() -> str:
     return _db_path(_DEPT_FILENAME)
-
-
-def xml_role_path() -> str:
-    return _db_path(_ROLE_FILENAME)
 
 
 def xml_role_access_path() -> str:

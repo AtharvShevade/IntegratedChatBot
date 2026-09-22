@@ -1,5 +1,9 @@
 import asyncio
-from backend.agent.__init__ import decide
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root, after move to scripts/debug/
+
+from backend.agent import decide
 
 async def test(q, login_id=None):
     try:

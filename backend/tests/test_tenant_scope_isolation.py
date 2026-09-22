@@ -191,7 +191,7 @@ def test_background_thread_sees_the_active_tenant_context():
         seen["tenant_id"] = version_config.get_active_tenant_id()
         seen["root"] = version_config.get_active_root()
 
-    import backend.agent as agent_module
+    from backend.agent import background_jobs as agent_module
     original = agent_module._run_error_enrichment_async
     agent_module._run_error_enrichment_async = _probe
     try:
@@ -233,7 +233,7 @@ def test_background_thread_under_5_5_sees_no_override():
     def _probe(job_id, form_id, row, dl, code):
         seen["root"] = version_config.get_active_root()
 
-    import backend.agent as agent_module
+    from backend.agent import background_jobs as agent_module
     original = agent_module._run_error_enrichment_async
     agent_module._run_error_enrichment_async = _probe
     try:

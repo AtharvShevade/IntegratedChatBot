@@ -867,60 +867,70 @@ function ErrorDetailsTablePanel({ details, downloadUrl, downloadLabel, errorMess
   const filteredRows = tableRows.filter(
     (r) => r.db_table_name || r.row_label || r.context || r.cell_code || r.validation_error
   )
+  // Whether real backtrack data exists is a DATASET-wide decision (not
+  // per-row), and deliberately excludes `validation_error` -- every error
+  // row has a message, so including it here would make this true for
+  // virtually any error set and defeat the whole point of this check.
   const hasBacktrackedData = filteredRows.some(
-    (r) => r.db_table_name || r.row_label || r.cell_code || r.validation_error
+    (r) => r.db_table_name || r.row_label || r.cell_code
   )
 
-  if (!hasBacktrackedData) {
-    return (
-      <PlainTextErrorPanel
-        details={details}
-        errorMessages={errorMessages}
-        downloadUrl={downloadUrl}
-        downloadLabel={downloadLabel}
-      />
-    )
-  }
+  const explanationCell = (explanation) => (
+    explanation
+      ? (
+          <ul>
+            {explanation
+              .split(/(?<=[.!?])\s+/)
+              .filter(Boolean)
+              .map((point, i) => <li key={i}>{point}</li>)
+            }
+          </ul>
+        )
+      : '—'
+  )
 
   return (
     <div className="error-details-panel">
       <div className="error-table-info-section">
         <div className="error-table-info-heading">📋 Validation Details</div>
         <div className="error-table-info-scroll">
-          <table className="error-table-info-tbl">
+          <table className={`error-table-info-tbl${hasBacktrackedData ? '' : ' error-table-info-tbl--compact'}`}>
             <thead>
-              <tr>
-                <th>{t('errors.columns.dbTableName')}</th>
-                <th>{t('errors.columns.rowLabel')}</th>
-                <th>{t('errors.columns.cellCode')}</th>
-                <th>{t('errors.columns.error')}</th>
-                <th>{t('errors.columns.explanation')}</th>
-              </tr>
+              {hasBacktrackedData ? (
+                <tr>
+                  <th>{t('errors.columns.dbTableName')}</th>
+                  <th>{t('errors.columns.rowLabel')}</th>
+                  <th>{t('errors.columns.cellCode')}</th>
+                  <th>{t('errors.columns.error')}</th>
+                  <th>{t('errors.columns.explanation')}</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th>{t('errors.columns.error')}</th>
+                  <th>{t('errors.columns.explanation')}</th>
+                </tr>
+              )}
             </thead>
             <tbody>
               {filteredRows.map((r) => (
-                <tr key={r.idx}>
-                  <td title={r.db_table_name}>{r.db_table_name || '—'}</td>
-                  <td title={r.row_label}>{r.row_label || '—'}</td>
-                  <td>{r.cell_code || '—'}</td>
-                  <td className="vd-error-cell" title={r.explanation || r.validation_error}>
-                    {r.validation_error || '—'}
-                  </td>
-                  <td className="vd-explanation-cell">
-                    {r.explanation
-                      ? (
-                          <ul>
-                            {r.explanation
-                              .split(/(?<=[.!?])\s+/)
-                              .filter(Boolean)
-                              .map((point, i) => <li key={i}>{point}</li>)
-                            }
-                          </ul>
-                        )
-                      : '—'
-                    }
-                  </td>
-                </tr>
+                hasBacktrackedData ? (
+                  <tr key={r.idx}>
+                    <td title={r.db_table_name}>{r.db_table_name || '—'}</td>
+                    <td title={r.row_label}>{r.row_label || '—'}</td>
+                    <td>{r.cell_code || '—'}</td>
+                    <td className="vd-error-cell" title={r.explanation || r.validation_error}>
+                      {r.validation_error || '—'}
+                    </td>
+                    <td className="vd-explanation-cell">{explanationCell(r.explanation)}</td>
+                  </tr>
+                ) : (
+                  <tr key={r.idx}>
+                    <td className="vd-error-cell" title={r.explanation || r.validation_error}>
+                      {r.validation_error || '—'}
+                    </td>
+                    <td className="vd-explanation-cell">{explanationCell(r.explanation)}</td>
+                  </tr>
+                )
               ))}
             </tbody>
           </table>

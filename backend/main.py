@@ -1,6 +1,7 @@
 # main.py — FastAPI entry point: /chat, /speech-to-text, /health.
 # Start with: python service_server.py (or dev_server.py), port from BACKEND_PORT
-# in .env (default 8001). See those two files for the actual uvicorn.run() calls.
+# in .env (required, no default -- see backend/config.py). See those two
+# files for the actual uvicorn.run() calls.
 
 from __future__ import annotations
 
@@ -65,6 +66,22 @@ async def lifespan(app: FastAPI):
     global _warmup_done
     logger.info("Application startup started")
     import asyncio
+
+    # One-line process identity summary — the first thing to check when a
+    # production issue looks like "wrong tenant/version data was used": which
+    # APP_VERSION, repo root, port, and log dir does THIS running process
+    # actually have. These are all fixed at process start (os.environ doesn't
+    # change afterward), so this line is the ground truth for the life of the process.
+    from backend import config as _config
+    logger.info(
+        "Process config | app_version=%s | base_repo_path=%s | app_600_repo_root=%s | "
+        "backend_port=%s | log_dir=%s",
+        version_config.APP_VERSION,
+        _config.BASE_REPO_PATH,
+        os.getenv("APP_600_REPO_ROOT", "(unset)"),
+        _config.BACKEND_PORT,
+        os.getenv("LOG_DIR", "(default: logs/)"),
+    )
 
     try:
         # ── Pre-load SentenceTransformer + FAISS indexes in a thread so the async
@@ -308,6 +325,11 @@ def _make_repo_scope(tenant_id: str | None, domain: str | None, jwt: str | None)
         return version_config.repo_scope(None, tenant_id=tenant_id, jwt=jwt)
 
     root = version_config.repo_root_for_tenant(resolved_tenant_id)
+    # 6.0's repo root varies per tenant, per request — unlike 5.5 (always
+    # BASE_REPO_PATH, already covered by the startup summary line), this is
+    # the one place worth a per-request log: which tenant's data this
+    # request will actually read/write.
+    logger.info("Repository selected | version=6.0 | tenant=%s | repo=%s", resolved_tenant_id, root)
     return version_config.repo_scope(root, tenant_id=resolved_tenant_id, jwt=jwt)
 
 
@@ -415,6 +437,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             exc,
             endpoint="/chat",
             session_id=request.session_id,
+            tenant_id=request.tenant_id,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -520,6 +543,7 @@ async def compare_execute(request: CompareRequest) -> ChatResponse:
             exc,
             endpoint="/compare-execute",
             session_id=request.session_id,
+            tenant_id=request.tenant_id,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -733,6 +757,8 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
             exc,
             endpoint="/explain-category",
             category=request.category,
+            form_id=request.form_id,
+            tenant_id=request.tenant_id,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -934,6 +960,11 @@ async def download_file(
         try:
             resolved.relative_to(base_real)
         except ValueError:
+            logger.warning(
+                "[DOWNLOAD_DENIED] path traversal or containment violation | type=%s form_id=%s "
+                "filename=%r resolved=%s base=%s",
+                type, safe_fid, filename, resolved, base_real,
+            )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
 
         if not resolved.is_file():
