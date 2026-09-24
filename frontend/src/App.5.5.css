@@ -2692,7 +2692,8 @@ html, body, #root {
 .formula-error-mono-block {
   display: block;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 0.8em;
+  font-size: 0.95em;
+  font-weight: 600;
   color: #4a0a7a;
   background: rgba(106, 13, 173, 0.08);
   padding: 4px 8px;
@@ -3510,3 +3511,38 @@ html, body, #root {
 .error-table-info-tbl--compact td:nth-child(1) { width: 26%; }
 .error-table-info-tbl--compact th:nth-child(2),
 .error-table-info-tbl--compact td:nth-child(2) { width: 74%; }
+
+/* ── Formula-error WHERE locator: DB TableName / Cell Code / Table Header ───
+   Label-above-value, like the Comparison section's Reported/Calculated
+   total pairs, with a clear gap BETWEEN fields so three stacked facts read
+   as three distinct rows instead of one crowded paragraph. A row carrying
+   these fields spans the full WHERE width instead of squeezing into its
+   normal ~200px grid track, which is what lets the fields sit side by side
+   (horizontally) rather than wrapping one per line. */
+.error-card-locator .formula-error-kv-row:has(.formula-error-kv-sublines) {
+  grid-column: 1 / -1;
+}
+.formula-error-kv-sublines {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  column-gap: 20px;
+  row-gap: 8px;
+}
+.formula-error-kv-subline {
+  display: flex;
+  flex-direction: column;
+  row-gap: 1px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.formula-error-kv-subline-label {
+  font-size: 0.78em;
+  font-weight: 600;
+  color: #6b7280;
+}
+.formula-error-kv-subline-value {
+  font-weight: 600;
+  color: #1f2937;
+  overflow-wrap: anywhere;
+}

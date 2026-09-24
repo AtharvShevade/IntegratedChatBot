@@ -23,7 +23,23 @@ logger = logging.getLogger(__name__)
 APP_VERSION: str = os.getenv("APP_VERSION", "5.5").strip()
 IS_V6: bool = APP_VERSION == "6.0"
 
-APP_600_REPO_ROOT: str = os.getenv("APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+
+def _read_app_600_repo_root() -> str:
+    """Required on APP_VERSION=6.0 -- there is no hardcoded default. A
+    5.5-only deployment's .env does not need to carry this var (BASE_REPO_PATH
+    in backend/config.py is used instead)."""
+    raw = os.getenv("APP_600_REPO_ROOT")
+    if raw and raw.strip():
+        return raw.strip()
+    if IS_V6:
+        raise RuntimeError(
+            "APP_600_REPO_ROOT is not set. Set it in this process's .env file "
+            "(e.g. APP_600_REPO_ROOT=D:\\Repo6.0) -- there is no hardcoded default."
+        )
+    return ""
+
+
+APP_600_REPO_ROOT: str = _read_app_600_repo_root()
 APP_600_TENANT_XML_PATH: str = os.path.join(APP_600_REPO_ROOT, "XML_Tenant.xml")
 
 _TENANT_TTL: float = float(os.getenv("TENANT_REGISTRY_TTL_SEC", "3600"))

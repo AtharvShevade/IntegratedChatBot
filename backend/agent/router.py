@@ -361,13 +361,26 @@ async def decide(
                     )
 
             if resolved_name is None:
-                # Keyword / partial selection: try to find the option that best matches
+                # Keyword / partial selection: try to find the option that best matches.
+                # An exact (case-insensitive) match always wins first — e.g. selecting
+                # "CIMS_LR (Quarterly)" must never resolve to a shorter, unrelated
+                # option like "LR (Quarterly)" just because it appears earlier in the
+                # list and the two strings happen to overlap as substrings.
                 raw_lower = raw_input.lower()
-                keyword_match = next(
-                    (name for name in pending_options if raw_lower in name.lower() or name.lower() in raw_lower),
+                exact_match = next(
+                    (name for name in pending_options if name.lower() == raw_lower),
                     None,
                 )
-                resolved_name = keyword_match if keyword_match else raw_input
+                if exact_match:
+                    resolved_name = exact_match
+                else:
+                    # No exact match: among substring matches, prefer the longest
+                    # (most specific) option rather than the first one in list order.
+                    substring_matches = [
+                        name for name in pending_options
+                        if raw_lower in name.lower() or name.lower() in raw_lower
+                    ]
+                    resolved_name = max(substring_matches, key=len) if substring_matches else raw_input
 
             if session_id:
                 _session_context.pop(session_id, None)

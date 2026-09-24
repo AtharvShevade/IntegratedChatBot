@@ -26,12 +26,32 @@ BACKEND_PORT: int = _read_backend_port()
 
 # ---------------------------------------------------------------------------
 # Base repository path (5.5 — single flat root)
+#
+# Required on APP_VERSION=5.5 -- there is no hardcoded default. Each deployed
+# instance sets its own repo root in its own .env; a missing value fails fast
+# at import time instead of silently resolving paths under a stale/wrong
+# drive. Not required on APP_VERSION=6.0 (which resolves its root per-tenant
+# from APP_600_REPO_ROOT instead -- see version_config.py), so a 6.0-only
+# deployment's .env does not need to carry this var.
 # ---------------------------------------------------------------------------
 
-BASE_REPO_PATH: str = os.getenv(
-    "BASE_REPO_PATH",
-    r"D:\Repo(new)"
-)
+
+def _read_base_repo_path() -> str:
+    raw = os.getenv("BASE_REPO_PATH")
+    if raw and raw.strip():
+        return raw.strip()
+    if version_config.IS_V6:
+        # Not used on 6.0 (per-request tenant root instead); keep a harmless
+        # placeholder so accidental 5.5-path helper calls fail loudly rather
+        # than resolving under someone else's real repo root.
+        return ""
+    raise RuntimeError(
+        "BASE_REPO_PATH is not set. Set it in this process's .env file "
+        "(e.g. BASE_REPO_PATH=D:\\RepoCore_5.5) -- there is no hardcoded default."
+    )
+
+
+BASE_REPO_PATH: str = _read_base_repo_path()
 
 # ---------------------------------------------------------------------------
 # 6.0 filename overrides — only the entities actually renamed under the

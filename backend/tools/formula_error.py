@@ -1034,6 +1034,42 @@ def _humanize_rule_name(name: str) -> str:
     ) or name
 
 
+_OPERATOR_SYMBOL = {
+    "=": "=", "!=": "≠", "<>": "≠",
+    "<": "<", "<=": "≤", ">": ">", ">=": "≥",
+}
+
+
+def _equation_text(comparison, labels: dict[str, str]) -> str:
+    """One side, or both sides joined by the comparison operator, rendered
+    with *labels* and with rounding/abs/constant-scaling wrappers peeled off
+    (formula_kind's own _strip_wrappers — the same logic classify() already
+    uses to see past those wrappers to a rule's real shape). Uses the
+    existing formula_expression.describe() renderer, unchanged — same tool
+    _rule_sentence() already uses for the "i.e." line below."""
+    if comparison is None:
+        return ""
+    lhs_text = formula_expression.describe(formula_kind._strip_wrappers(comparison.lhs), labels)
+    if comparison.boolean_only or comparison.rhs is None:
+        return lhs_text
+    rhs_text = formula_expression.describe(formula_kind._strip_wrappers(comparison.rhs), labels)
+    symbol = _OPERATOR_SYMBOL.get(comparison.operator, comparison.operator)
+    return f"{lhs_text} {symbol} {rhs_text}"
+
+
+def _satisfactory_condition_text(comparison) -> str:
+    """The rule's business relationship only — the same _equation_text()
+    rendering as "Validation Rule" above, but with variable ids shown in
+    lowercase (v1, v2, ...) instead of business labels, e.g. 'v3 = v1 ÷ v2'.
+    No calculation, comparison, or rounding logic is changed — this is
+    display only; rounding/abs/scaling wrappers are peeled the same way
+    formula_kind.classify() already sees past them, not evaluated differently."""
+    if comparison is None:
+        return ""
+    var_labels = {v: v.lower() for v in comparison.variables()}
+    return _equation_text(comparison, var_labels)
+
+
 # Longest AST restatement that still reads as a sentence. Beyond this the
 # expression is a nested conditional whose literal restatement is harder to
 # follow than the rule's own authored message — which is displayed instead.
@@ -2101,7 +2137,14 @@ def _entered_note(fact: dict, rule: dict) -> str:
 def _where_to_check_items(by_var, labels, rule) -> list[dict]:
     """Source locations, only from evidence — backtracking DB table/cell, or a
     JSON db_mapping. Nothing is synthesised; the section is omitted when
-    neither is available."""
+    neither is available.
+
+    When the error file also carries a Table Header (in addition to the DB
+    table/cell it already had), the location is shown as separate labelled
+    lines (DB TableName / Cell Code / Table Header) instead of the merged
+    "table — cell" string, so the reader also sees which table/section of the
+    form the value came from. Without a table header, behaviour is unchanged.
+    """
     items: list[dict] = []
     seen: set[str] = set()
     for var, facts in by_var.items():
@@ -2110,7 +2153,16 @@ def _where_to_check_items(by_var, labels, rule) -> list[dict]:
         fact = facts[0]
         table = (fact.get("db_table") or "").strip()
         cell = (fact.get("cell_code") or "").strip()
-        if table and cell:
+        table_header = (fact.get("table_header") or "").strip()
+        if table_header and (table or cell):
+            lines = []
+            if table:
+                lines.append(f"DB TableName: {table}")
+            if cell:
+                lines.append(f"Cell Code: {cell}")
+            lines.append(f"Table Header: {table_header}")
+            location = "\n".join(lines)
+        elif table and cell:
             location = f"{table} — cell {cell}"
         elif table:
             location = table
@@ -2970,12 +3022,51 @@ def build_card_sections(
         ),
     ]
 
-    locator_items = _card_locator_items_formula(rule, by_var, labels)
-    if locator_items:
-        sections.append(error_card.locator(locator_items))
+    # -- Validation Rule / Satisfactory condition / i.e. -----------------------
+    # The WHERE/locator strip (DB TableName/Cell Code/Table Header) is no
+    # longer shown for formula-error cards — removed per explicit request.
+    #
+    # Both lines below reuse the SAME existing tools already used elsewhere
+    # in this module for human-readable rendering: formula_kind's own
+    # wrapper-stripper (the exact logic classify() already uses to see past
+    # rounding/abs/constant-scaling to a rule's real shape) and
+    # formula_expression.describe() (the existing AST-to-words renderer, also
+    # used by _rule_sentence()/the i.e. line below). No new calculation,
+    # comparison or rounding logic is introduced — this only changes what
+    # text is shown, using variable-id labels for "Satisfactory condition"
+    # and the rule's real business labels (the same `labels` dict used
+    # everywhere else on this card) for "Validation Rule".
+    #
+    # Skipped for MANDATORY/COUNT: those aren't a value equation at all (a
+    # presence or record-count check), and describe()'s literal rendering of
+    # empty()/count() is exactly the awkward technical phrasing
+    # _business_rule_sentence()/_rule_sentence() already exist to avoid for
+    # these two kinds ("it is not the case that X is not reported", "the
+    # number of reported values for X"). The i.e. line below already states
+    # the requirement in plain words for every kind, so nothing is lost.
+    show_equation = kind not in (formula_kind.MANDATORY, formula_kind.COUNT)
+    validation_rule_text = _equation_text(comparison, labels) if show_equation else ""
+    if validation_rule_text:
+        sections.append(error_card.attach_emphasis(
+            {"kind": "labeled_text", "heading": "Validation Rule", "text": validation_rule_text},
+            terms, ops,
+        ))
+
+    condition_text = _satisfactory_condition_text(comparison) if show_equation else ""
+    if condition_text:
+        sections.append({
+            "kind": "labeled_text", "heading": "Satisfactory condition",
+            "text": condition_text, "mono": True,
+        })
 
     # A business-worded sentence for the shapes we classify confidently; ""
     # means "not certain", and the AST restatement below stands unchanged.
+    # kind/text/heading are UNCHANGED from before this format change (still
+    # kind=="rule", still the plain rule_sentence with no "i.e." prefix) so
+    # every existing lookup of the card's rule section keeps working; only
+    # heading="" changed (was "Rule"), which the frontend uses as the signal
+    # to render this one plain, prefixed with "i.e." instead of its own bold
+    # heading -- nothing else reads this section's heading.
     business_sentence = _business_rule_sentence(comparison, labels, kind, by_var)
     rule_sentence = business_sentence or _readable_rule_sentence(comparison, labels)
     if kind == formula_kind.MANDATORY and rows_expected(comparison, by_var):
@@ -2985,7 +3076,7 @@ def build_card_sections(
         rule_sentence = "Every value listed below must be reported."
     if rule_sentence:
         sections.append(error_card.attach_emphasis(
-            error_card.rule(rule_sentence), terms, ops))
+            error_card.rule(rule_sentence, heading=""), terms, ops))
     elif comparison is None:
         # No parsed expression, so no restatement from the AST — but the
         # validator's own message describes the rule, and saying what is being
@@ -2995,6 +3086,16 @@ def build_card_sections(
         if message_points:
             sections.append({"kind": "points", "heading": "What the rule checks",
                              "bullets": message_points})
+
+    # Batch scope moved up here (was previously after Calculation): the reader
+    # learns how many reported items failed right after learning what the
+    # rule requires, before seeing the one worked example below.
+    if len(instances) > 1:
+        sections.append({
+            "kind": "note",
+            "text": (f"This rule failed for {len(instances)} reported items; "
+                     f"the first is shown above."),
+        })
 
     rows = _card_matrix_rows_formula(comparison, result, by_var, labels, unit, rule, kind)
     if rows:
@@ -3040,35 +3141,17 @@ def build_card_sections(
     if disagreement:
         sections.append({"kind": "note", "text": disagreement})
 
-    # Batch scope belongs in the body, not the drawer: a reader who fixes the
-    # one shown item needs to know another eleven are waiting.
-    if len(instances) > 1:
-        sections.append({
-            "kind": "note",
-            "text": (f"This rule failed for {len(instances)} reported items; "
-                     f"the first is shown above."),
-        })
-
     fix_section = error_card.fix(_how_to_fix_points(comparison, result, labels, llm_text, kind))
     if llm_text and llm_text.get("_native_lang") and llm_text.get("how_to_fix"):
         fix_section["_i18n_native"] = llm_text["_native_lang"]
     sections.append(error_card.attach_emphasis(fix_section, terms, ops))
 
-    drawer_sections = _card_details_sections_formula(
-        comparison, result, by_var, labels, unit, rule, llm_text, kind,
-        omit_requirement=bool(business_sentence),
-        rule_sentence=business_sentence,
-    )
-    # "Why It Failed" restates the same labels and relation as the body, so it
-    # gets the same treatment — the drawer is where the reader goes when the
-    # summary was not enough, which is exactly when legibility matters most.
-    for section in drawer_sections:
-        if section.get("kind") == "points":
-            error_card.attach_emphasis(section, terms, ops)
-
-    drawer = error_card.details(drawer_sections)
-    if drawer:
-        sections.append(drawer)
+    # The collapsible "Technical details" drawer (Comparison / Why It Failed /
+    # Validator Message) is intentionally omitted for formula-error cards: its
+    # information is now already covered above — Comparison by Calculation,
+    # Why It Failed by the headline + i.e. sentence, and the rounding note by
+    # Calculation's own rounding line. _card_details_sections_formula still
+    # exists and is unchanged (used by callers/tests that build it directly).
     return sections
 
 

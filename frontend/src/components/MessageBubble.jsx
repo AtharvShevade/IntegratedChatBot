@@ -447,7 +447,26 @@ export function FormulaErrorSections({ sections }) {
                         <span className="formula-error-kv-label">{it.label}:</span>
                       )}
                       <span className="formula-error-kv-value">
-                        {it.mono ? <code>{it.value}</code> : it.value}
+                        {it.value && it.value.includes('\n')
+                          ? (
+                              <span className="formula-error-kv-sublines">
+                                {it.value.split('\n').map((line, k) => {
+                                  const sep = line.indexOf(': ')
+                                  const subLabel = sep >= 0 ? line.slice(0, sep) : ''
+                                  const subValue = sep >= 0 ? line.slice(sep + 2) : line
+                                  return (
+                                    <div key={k} className="formula-error-kv-subline">
+                                      {subLabel && (
+                                        <span className="formula-error-kv-subline-label">{subLabel}</span>
+                                      )}
+                                      <span className="formula-error-kv-subline-value">{subValue}</span>
+                                    </div>
+                                  )
+                                })}
+                              </span>
+                            )
+                          : (it.mono ? <code>{it.value}</code> : it.value)
+                        }
                       </span>
                     </div>
                   ))}
@@ -486,11 +505,35 @@ export function FormulaErrorSections({ sections }) {
           // are v1's, and are still reached in v2 from inside the `details`
           // drawer above.
           case 'rule':
+            // An empty heading marks the formula-error "i.e." sentence
+            // specifically (see backend/tools/formula_error.py) — shown as a
+            // plain "i.e. ..." line with no bold heading of its own, instead
+            // of its old standalone "Rule" heading. Every other 'rule'
+            // section (unchanged heading) renders exactly as before.
             return (
               // error-card-rule is a spacing hook only. It is applied
               // unconditionally, but the CSS targets it as a DIRECT child of
               // .error-card-body — so a rule section nested in the details
               // drawer (or a legacy v1 body) is unaffected.
+              <div key={i} className="formula-error-section error-card-rule">
+                {s.heading && (
+                  <div className="formula-error-section-heading">{s.heading}</div>
+                )}
+                {s.mono
+                  ? <code className="formula-error-mono-block">{s.text}</code>
+                  : (
+                    <p className="formula-error-rule-text">
+                      {!s.heading && 'i.e. '}
+                      <RichText text={s.text} terms={s.terms} ops={s.ops} />
+                    </p>
+                  )}
+              </div>
+            )
+          case 'labeled_text':
+            // Single labelled value line (e.g. "Validation Rule" / "Satisfactory
+            // condition") — same look as 'rule' above, kept as its own kind so
+            // it never collides with existing lookups of the card's rule section.
+            return (
               <div key={i} className="formula-error-section error-card-rule">
                 <div className="formula-error-section-heading">{s.heading}</div>
                 {s.mono

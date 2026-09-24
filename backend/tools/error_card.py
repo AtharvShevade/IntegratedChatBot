@@ -344,7 +344,17 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
         return lines
 
     if kind == "rule":
-        return [f"{indent}{section.get('heading', 'Rule')}",
+        heading = section.get("heading", "Rule")
+        # An explicitly empty heading (set only by the formula-error card's
+        # "i.e." sentence) means: no heading of its own, plain-text prefixed
+        # with "i.e." instead — see build_card_sections in formula_error.py.
+        if not heading:
+            return [f"{indent}i.e. {section.get('text', '')}", ""]
+        return [f"{indent}{heading}",
+                f"{indent}  {section.get('text', '')}", ""]
+
+    if kind == "labeled_text":
+        return [f"{indent}{section.get('heading', '')}",
                 f"{indent}  {section.get('text', '')}", ""]
 
     if kind == "matrix":
