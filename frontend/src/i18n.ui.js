@@ -241,8 +241,8 @@ export const UI = {
   // ── errors: validation-error panels and their tables ─────────────────────
   'errors.howToFix':            { en: 'How to fix', fr: 'Comment corriger', ar: 'كيفية الإصلاح', hi: 'कैसे ठीक करें' },
   'errors.dimensionalTitle':    { en: 'Dimensional Validation Errors', fr: 'Erreurs de validation dimensionnelle', ar: 'أخطاء التحقق البُعدي', hi: 'आयामी सत्यापन त्रुटियाँ' },
-  'errors.columns.dbTableName': { en: 'DB Table Name', fr: 'Nom de table BD', ar: 'اسم جدول قاعدة البيانات', hi: 'DB तालिका नाम' },
-  'errors.columns.rowLabel':    { en: 'Row Label', fr: 'Libellé de ligne', ar: 'تسمية الصف', hi: 'पंक्ति लेबल' },
+  'errors.columns.dbTableName': { en: 'Table/Sheet Name', fr: 'Nom de table/feuille', ar: 'اسم الجدول/الورقة', hi: 'तालिका/शीट नाम' },
+  'errors.columns.rowLabel':    { en: 'Row', fr: 'Ligne', ar: 'الصف', hi: 'पंक्ति' },
   'errors.columns.rowLabels':   { en: 'Row Label(s)', fr: 'Libellé(s) de ligne', ar: 'تسمية/تسميات الصف', hi: 'पंक्ति लेबल' },
   'errors.columns.cellCode':    { en: 'Cell Code', fr: 'Code de cellule', ar: 'رمز الخلية', hi: 'सेल कोड' },
   'errors.columns.context':     { en: 'Context', fr: 'Contexte', ar: 'السياق', hi: 'संदर्भ' },

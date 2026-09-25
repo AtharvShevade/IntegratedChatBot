@@ -1141,11 +1141,24 @@ def _group_schema_errors_by_root_cause(errors: list[dict]) -> list[dict]:
         base["all_element_names"]  = all_elements
         base["cascade_count"]      = len(group)
         if all_elements and all_values:
-            base["suggestion"] = (
-                f"The field(s) {', '.join(all_elements)} contain the value "
-                f"'{all_values[0]}' which is not a valid date. "
-                f"Use format YYYY-MM-DD (e.g. {_to_iso_date(all_values[0])})."
-            )
+            first_val = all_values[0]
+            # This cascade-summary "suggestion" previously assumed every
+            # cascade was a bad-date case unconditionally — wrong for e.g.
+            # an enumeration cascade ('Loss Asset' is not a date). Only build
+            # the date-specific wording when the value actually looks like
+            # one of the DD.MM.YYYY / DD-MM-YYYY / DD/MM/YYYY shapes this
+            # codebase treats as a date (see _to_iso_date / _build_root_cause_analysis).
+            if re.match(r'^\d{2}[.\-/]\d{2}[.\-/]\d{4}$', first_val):
+                base["suggestion"] = (
+                    f"The field(s) {', '.join(all_elements)} contain the value "
+                    f"'{first_val}' which is not a valid date. "
+                    f"Use format YYYY-MM-DD (e.g. {_to_iso_date(first_val)})."
+                )
+            else:
+                base["suggestion"] = (
+                    f"The field(s) {', '.join(all_elements)} contain the value "
+                    f"'{first_val}', which failed validation."
+                )
         result.append(base)
 
     result.extend(passthrough)
@@ -1288,6 +1301,19 @@ _QUOTED_VALUE_BEFORE_INVALID_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Xerces-style enumeration-facet violation, e.g.:
+#   cvc-enumeration-valid: Value 'Un-Audi' is not facet-valid with respect to
+#   enumeration '[Audited, Un-Audited]'. It must be a value from the
+#   enumeration.
+# Captures the bad value and the allowed set exactly as the validator states
+# it — never invented, only extracted. Confirmed against real Repo 5.5
+# SPECIFICATION_ERROR.html files (e.g. 4044/SHBK201231R00006Q, 4052/HDFC…).
+_ENUMERATION_RE = re.compile(
+    r"Value\s+['‘’“”]([^'‘’“”]+)['‘’“”]\s+is not facet-valid with respect to enumeration\s+"
+    r"['‘’“”]?\[([^\]]*)\]",
+    re.IGNORECASE,
+)
+
 
 def _build_fallback_business_explanation(err: dict) -> str:
     """
@@ -1304,6 +1330,29 @@ def _build_fallback_business_explanation(err: dict) -> str:
     import re as _re_fb
 
     is_direct = err.get("_source") == "directMsg"
+
+    # Enumeration-facet violation — a distinct schema-error shape from the
+    # datatype-mismatch cases below (no "is not a valid value for '<type>'"
+    # phrasing at all), so it is detected and handled first, straight from
+    # the raw validator message. The allowed-value list is shown exactly as
+    # the validator reported it — never invented.
+    raw_for_enum = (
+        err.get("message") or err.get("validation_message") or err.get("col_0") or ""
+    )
+    enum_m = _ENUMERATION_RE.search(raw_for_enum)
+    if enum_m:
+        bad_value = enum_m.group(1).strip()
+        allowed_values = [v.strip() for v in enum_m.group(2).split(",") if v.strip()]
+        enum_lines = [
+            "The selected/provided value is not valid.",
+            "Please provide or select a value from the given values in the dropdown for the particular column.",
+        ]
+        if bad_value:
+            enum_lines.insert(0, f"The entered value is '{bad_value}'.")
+        if allowed_values:
+            enum_lines.append(f"Allowed values: {', '.join(allowed_values)}.")
+        enum_lines.append("Correct the value and revalidate the report.")
+        return " ".join(enum_lines)
 
     # Invalid value — from parsed fields only
     actual = (
@@ -1346,14 +1395,29 @@ def _build_fallback_business_explanation(err: dict) -> str:
         )
 
     if expected:
-        lines_out.append(
-            _XBRL_DATATYPE_EXPECTATION.get(expected_key, f"This value is not a valid {expected}.")
-        )
-        example_val = _example_value_for_datatype(expected)
-        if expected_key == "boolean":
-            lines_out.append("Use a valid value such as true or false.")
-        elif example_val:
-            lines_out.append(f"For example, enter a value like {example_val}.")
+        if expected_key == "decimal" and actual.endswith("%"):
+            # A '%'-suffixed value rejected against the 'decimal' type — the
+            # schema wants a plain number, not a percentage-formatted cell.
+            # Confirmed against real Repo 5.5 samples (e.g. 4001/APBL251231…,
+            # '12.54%' / '10.96%' rejected by cvc-datatype-valid.1.2.1).
+            lines_out.append("The value should be reported in the actual format.")
+            lines_out.append(
+                "Please change the data type to General for the respective "
+                "columns in which the value is reported."
+            )
+        elif expected_key == "date":
+            # Confirmed against real Repo 5.5 samples (e.g. 4044/SHBK201231…,
+            # '01-10-2022' / '31-12-2020' rejected by cvc-datatype-valid.1.2.1).
+            lines_out.append("The date should be reported in YYYY-MM-DD format.")
+        else:
+            lines_out.append(
+                _XBRL_DATATYPE_EXPECTATION.get(expected_key, f"This value is not a valid {expected}.")
+            )
+            example_val = _example_value_for_datatype(expected)
+            if expected_key == "boolean":
+                lines_out.append("Use a valid value such as true or false.")
+            elif example_val:
+                lines_out.append(f"For example, enter a value like {example_val}.")
 
     lines_out.append("Correct the value and revalidate the report.")
     return " ".join(lines_out)
@@ -3694,6 +3758,13 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
             if (e.get("errorType") or "").strip().upper().replace(" ", "_").replace("-", "_")
             in ("XBRL_SCHEMA", "XBRL_SCHEMA_ERROR")
         ]
+        # Same cascade grouping explain_errors_by_category() applies before
+        # explaining/paginating — counting the raw per-message list here
+        # disagreed with the grouped list actually shown (an enumeration
+        # failure plus its cvc-complex-type.2.2 cascade counted as 2 raw
+        # "unkeyed" entries instead of 1 root-cause item), producing a
+        # "showing 1-3 of 5" header for a list with only 3 explainable items.
+        xbrl_schema_entries = _group_schema_errors_by_root_cause(xbrl_schema_entries)
         rule_keys: set[str] = set()
         unkeyed = 0
         for e in xbrl_schema_entries:
@@ -3861,7 +3932,16 @@ def explain_errors_by_category(
                 e for e in errors
                 if (e.get("errorType") or "").strip().upper() in _XBRL_SCHEMA_LABELS
             ]
-            trimmed = (xbrl_only or errors)[offset:offset + _MAX_EXPLAIN]
+            # Group same-line cascade errors into one root-cause entry BEFORE
+            # paginating — slicing the raw per-message list first can split a
+            # cascade across two _MAX_EXPLAIN-sized pages (e.g. an
+            # enumeration failure on page N and its cvc-complex-type.2.2
+            # consequence alone on page N+1), which then explains the
+            # consequence as though it were its own independent error.
+            # Grouping the full list first guarantees every page only ever
+            # contains root-cause entries.
+            grouped_all = _group_schema_errors_by_root_cause(xbrl_only or errors)
+            trimmed = grouped_all[offset:offset + _MAX_EXPLAIN]
 
             # Root-cause analysis: parse other categories for downstream linkage
             try:
