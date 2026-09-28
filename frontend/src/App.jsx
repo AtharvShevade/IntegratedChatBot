@@ -4,20 +4,37 @@ import VoiceInput from './components/VoiceInput.jsx'
 import { LanguageContext, makeT, isRtl } from './i18n.js'
 import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback, fetchStatusErrors } from './services/api.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
-// On first load with URL params, save them to sessionStorage so identity
-// survives a page refresh (the .NET params are only in the URL on first load).
+// On first load with URL params, save them so identity survives later
+// reloads (the .NET params are only in the URL on first load).
+//
+// Backed by BOTH sessionStorage and localStorage, not sessionStorage alone:
+// sessionStorage is scoped to one tab's browsing-context session, which is
+// usually enough for an in-tab refresh but is not guaranteed to survive the
+// outer .NET app reloading/recreating this iframe when the user switches
+// application modules and comes back (a fresh iframe load with no identity
+// URL param re-attached, a webview quirk, ...). localStorage has no such
+// lifetime limit for the same origin, so it is the durable source of truth;
+// sessionStorage is kept alongside it only because it already existed and
+// costs nothing to keep in sync. See _historyId below for which of these
+// values chat history is actually keyed by, and why.
 const _params     = new URLSearchParams(window.location.search)
 
 function _readParam(urlKey, sessionKey) {
   const fromUrl = _params.get(urlKey) || ''
   if (fromUrl) {
     sessionStorage.setItem(sessionKey, fromUrl)
+    try { localStorage.setItem(sessionKey, fromUrl) } catch { /* private mode */ }
     return fromUrl
   }
-  return sessionStorage.getItem(sessionKey) || ''
+  return sessionStorage.getItem(sessionKey)
+    || (() => { try { return localStorage.getItem(sessionKey) || '' } catch { return '' } })()
 }
 
 const _loginId    = _readParam('loginId',    'chat_loginId')
+// `uid` is kept exactly as before (never defaulted to a synthetic value) —
+// it is passed straight through to backend API calls as user_id (see
+// sendMessage/sendGuidedMessage/etc. below), and those calls must keep
+// seeing a real uid or null, never a made-up placeholder.
 const _uid        = _readParam('uid',         'chat_uid')
 const _roleId     = _readParam('roleId',      'chat_roleId') || _readParam('rid', 'chat_rid') || ''
 const _aspSession = _params.get('aspSession') || ''  // never persisted — cookie-like, must be fresh
@@ -51,8 +68,51 @@ if (_isV6) {
   import('./App.5.5.css')
 }
 
-// ── Persistent storage key (isolated per uid) ─────────────────────────────
-const STORAGE_KEY = `chat_history_${_uid}`
+// ── Persistent storage key (isolated per logged-in user) ─────────────────
+// Keyed off _loginId, NOT _uid: the real .NET embed (WebiDEALReact's
+// ChatbotIframe.jsx, confirmed by reading its source directly) sends
+// `loginId` + `tenant_id` in the iframe URL on every load and NEVER sends
+// `uid` at all — so keying history off `_uid` meant it was never actually
+// populated outside of manual testing with an explicit `?uid=` param, which
+// is the real reason history never survived a real module-switch/refresh
+// even though the localStorage read/write plumbing itself was correct.
+// `_uid` is kept as a secondary fallback for any caller that DOES pass it,
+// and a stable per-browser anonymous id is the last resort — only reached
+// when NEITHER real identity param is present at all (e.g. this frontend
+// opened standalone with no query string whatsoever).
+function _anonymousHistoryId() {
+  const key = 'chat_anon_uid'
+  try {
+    const existing = localStorage.getItem(key)
+    if (existing) return existing
+    const fresh = `anon_${crypto.randomUUID()}`
+    localStorage.setItem(key, fresh)
+    return fresh
+  } catch {
+    return 'anon_session'  // private-browsing/storage-denied — still isolates within this one tab
+  }
+}
+const _historyId  = _loginId || _uid || _anonymousHistoryId()
+const STORAGE_KEY = `chat_history_${_historyId}`
+
+// ── TEMPORARY diagnostic logging — remove once the real .NET flow is
+// confirmed fixed. Fires once per module load (this file runs once per
+// iframe (re)creation, so this line IS the "mount" log point). ────────────
+console.log('[CHAT_HISTORY] module evaluated — origin =', window.location.origin,
+  '| full URL =', window.location.href)
+console.log('[CHAT_HISTORY] identity received — loginId =', JSON.stringify(_loginId),
+  '| uid =', JSON.stringify(_uid), '| tenantId =', JSON.stringify(_tenantId),
+  '| historyId (resolved) =', JSON.stringify(_historyId))
+console.log('[CHAT_HISTORY] storage key =', STORAGE_KEY)
+;(() => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    const count = raw ? (JSON.parse(raw)?.length ?? 'unparseable') : 0
+    console.log('[CHAT_HISTORY] stored history found =', !!raw, '| stored message count =', count)
+  } catch (e) {
+    console.log('[CHAT_HISTORY] stored history read FAILED —', e?.message)
+  }
+})()
 
 // Extract the last n user/assistant messages for conversation context.
 // Skips system roles (welcome, error, action_menu, etc.).
@@ -69,11 +129,18 @@ function _getRecentHistory(messages, n = 7) {
 
 // Load saved messages from localStorage; fall back to the welcome card.
 function _loadHistory() {
-  if (!_uid) return [{ role: 'welcome' }]
+  console.log('[CHAT_HISTORY] _loadHistory() called — historyId =', JSON.stringify(_historyId),
+    '| key =', STORAGE_KEY)
+  if (!_historyId) {
+    console.log('[CHAT_HISTORY] _loadHistory() -> no historyId at all, returning welcome')
+    return [{ role: 'welcome' }]
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
+    console.log('[CHAT_HISTORY] _loadHistory() raw read =', raw ? `${raw.length} chars` : 'null')
     if (raw) {
       const parsed = JSON.parse(raw)
+      console.log('[CHAT_HISTORY] _loadHistory() parsed message count =', Array.isArray(parsed) ? parsed.length : 'not an array')
       if (Array.isArray(parsed) && parsed.length > 0) {
         // Restored history is READ-ONLY as far as the backend is concerned:
         // re-rendering an old message must never kick off new work. Variance
@@ -87,9 +154,10 @@ function _loadHistory() {
         ))
       }
     }
-  } catch {
-    // Corrupted data — start fresh
+  } catch (e) {
+    console.log('[CHAT_HISTORY] _loadHistory() parse FAILED —', e?.message, '— starting fresh')
   }
+  console.log('[CHAT_HISTORY] _loadHistory() -> nothing usable found, returning welcome')
   return [{ role: 'welcome' }]
 }
 
@@ -194,11 +262,36 @@ export default function App() {
 
   // ── Persist messages to localStorage on every change ─────────────────────
   useEffect(() => {
-    if (!_uid) return
+    if (!_historyId) {
+      console.log('[CHAT_HISTORY] save skipped — no historyId, message count would have been', messages.length)
+      return
+    }
+    const serialized = JSON.stringify(messages)
+    // Accurate UTF-8 byte length, not character count — Blob is the cheapest
+    // accurate way to get this without a manual UTF-8 encoder.
+    const byteSize = new Blob([serialized]).size
+    // Per-message breakdown, largest first, so a single oversized message
+    // (rather than gradual accumulation) is visible immediately.
+    const perMessage = messages
+      .map((m, i) => ({ i, role: m.role, resultType: m.resultType, bytes: new Blob([JSON.stringify(m)]).size }))
+      .sort((a, b) => b.bytes - a.bytes)
+    let totalLocalStorageBytes = 0
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      totalLocalStorageBytes += new Blob([k + (localStorage.getItem(k) || '')]).size
+    }
+    console.log('[CHAT_HISTORY] messages =', messages.length,
+      '| serialized chars =', serialized.length, '| serialized bytes =', byteSize,
+      '| largest message =', perMessage[0]?.bytes ?? 0, 'bytes (idx', perMessage[0]?.i,
+      'role', perMessage[0]?.role, 'resultType', perMessage[0]?.resultType, ')')
+    console.log('[CHAT_HISTORY] top 5 largest messages =', perMessage.slice(0, 5))
+    console.log('[CHAT_HISTORY] total localStorage usage (this origin) =', totalLocalStorageBytes, 'bytes across', localStorage.length, 'keys')
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages))
-    } catch {
-      // Storage quota exceeded or private-browsing restriction — ignore silently
+      localStorage.setItem(STORAGE_KEY, serialized)
+      console.log('[CHAT_HISTORY] saving history — key =', STORAGE_KEY, '| message count =', messages.length, '| bytes =', byteSize)
+    } catch (e) {
+      console.log('[CHAT_HISTORY] save FAILED —', e?.name, e?.message,
+        '| attempted bytes =', byteSize, '| messages =', messages.length)
     }
   }, [messages])
 
@@ -208,6 +301,29 @@ export default function App() {
     setMessages([{ role: 'welcome' }])
     setIsGuidedFlow(false)
   }
+
+  // ── Logout: wipe identity + this user's history so the next login on this
+  // browser never inherits it ────────────────────────────────────────────────
+  // Mirrors the existing CHATBOT_READY/CHATBOT_AUTH handshake below (same
+  // postMessage channel, same "outer .NET app talks, this iframe listens"
+  // pattern) rather than inventing a new mechanism. The outer app is
+  // expected to send `{ type: 'CHATBOT_LOGOUT' }` once its own logout
+  // completes; until it does, this is inert and changes nothing.
+  useEffect(() => {
+    function handleLogoutMessage(event) {
+      if (!event.data || event.data.type !== 'CHATBOT_LOGOUT') return
+      try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+      for (const key of ['chat_uid', 'chat_loginId', 'chat_roleId', 'chat_rid', 'chat_tenant_id', 'chat_domain', 'chat_anon_uid']) {
+        try { sessionStorage.removeItem(key) } catch { /* ignore */ }
+        try { localStorage.removeItem(key) } catch { /* ignore */ }
+      }
+      setMessages([{ role: 'welcome' }])
+      setIsGuidedFlow(false)
+    }
+    window.addEventListener('message', handleLogoutMessage)
+    return () => window.removeEventListener('message', handleLogoutMessage)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Result types that represent a fully completed workflow.
   // After these, the action menu re-appears so the user can start another task.
@@ -295,7 +411,29 @@ const _pushResult = (result, extra = {}) => {
     ...extra,
   }
 
-  setMessages((prev) => [...prev, resultMsg])
+  setMessages((prev) => {
+    // Explain-category results (Formula/Schema/Dimension) must land directly
+    // below the failed-report card, not below a "what would you like to do
+    // next?" menu that auto-appeared 800ms after the status check — before
+    // the user had a chance to click an Explain button (see App.jsx's
+    // isTerminal setTimeout below). If the array currently ends with that
+    // trailing feedback_prompt/action_menu block, insert ahead of it instead
+    // of appending after it; any other push (a brand-new turn, a menu that
+    // hasn't appeared yet, ...) keeps the normal tail-append behavior.
+    if (!extra.insertBeforeTrailingMenu) {
+      return [...prev, resultMsg]
+    }
+    let insertAt = prev.length
+    while (insertAt > 0 && ['action_menu', 'feedback_prompt'].includes(prev[insertAt - 1].role)) {
+      insertAt -= 1
+    }
+    if (insertAt === prev.length) {
+      return [...prev, resultMsg]
+    }
+    const next = [...prev]
+    next.splice(insertAt, 0, resultMsg)
+    return next
+  })
   // After step 2 of the guided workflow the backend clears _guided_sessions and
   // hands control to _session_context (handled by /chat → decide()).
   // Any result_type that is NOT 'guided_input' or 'guided_menu' means the guided
@@ -324,7 +462,14 @@ const _pushResult = (result, extra = {}) => {
   // handleSummaryLoaded fires on success, on an empty result, AND on Stop,
   // so every path still reaches the follow-up.
   const awaitingSummary = result.result_type === 'variance_table' && !result.llm_summary
-  if (awaitingSummary) {
+  if (extra.insertBeforeTrailingMenu) {
+    // This result was spliced in just above the report's EXISTING trailing
+    // feedback_prompt/action_menu block (see the setMessages call above) —
+    // that block still applies to it, so no second one is scheduled here,
+    // regardless of this result's own result_type (explain-category results
+    // report result_type "final", which would otherwise re-trigger the
+    // isTerminal branch below and append a duplicate menu).
+  } else if (awaitingSummary) {
     // The originating user message is resolved at FLUSH time, from the live
     // list — not captured here — so the follow-up carries the same query it
     // would have had on the 800ms path.
@@ -626,6 +771,11 @@ const pollForErrors = (jobId) => {
         batchErrorFilePath: errorFilePath,
         batchFormId: formId,
         batchReportName: reportName,
+        // See _pushResult: an explain-category result belongs directly under
+        // the failed-report card the user is still reading, not after the
+        // "what would you like to do next?" menu that auto-appeared while
+        // they were choosing which category to explain.
+        insertBeforeTrailingMenu: true,
       })
     } catch (err) {
       if (err.name === 'AbortError') return

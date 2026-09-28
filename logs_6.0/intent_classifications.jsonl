@@ -1,0 +1,6 @@
+{"ts": "2026-09-28T06:25:12.276574+00:00", "query": "BANKING_PIIB1_CONSOL_SA", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T06:25:12.283602+00:00", "query": "BANKING_PIIB1_CONSOL_SA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T06:25:26.179247+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T06:25:26.181456+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T06:25:28.078096+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T06:25:28.082499+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}

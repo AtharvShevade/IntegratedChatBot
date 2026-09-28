@@ -1314,6 +1314,65 @@ _ENUMERATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def _contains_word_sequence(haystack: list[str], needle: list[str]) -> bool:
+    """True when *needle* appears as a contiguous, whole-word run inside
+    *haystack* (both already lowercased word lists)."""
+    if not needle or len(needle) > len(haystack):
+        return False
+    for i in range(len(haystack) - len(needle) + 1):
+        if haystack[i:i + len(needle)] == needle:
+            return True
+    return False
+
+
+def find_matching_allowed_values(reported_value: str, allowed_values: list[str]) -> list[str]:
+    """The allowed enumeration value(s) that genuinely correspond to
+    *reported_value*, or [] when nothing does — never invents a match.
+
+    Two tiers only, both grounded in the reported/allowed text itself:
+      1. case-insensitive EXACT match ('Sub-Standard' == 'Sub-standard');
+      2. one side's whole-word sequence is a contiguous run inside the
+         other's ('Loss Asset' contains the whole word 'Loss').
+    A single, low-confidence tier is deliberately not attempted — e.g. no
+    fuzzy/partial-substring scoring — so a value with no real correspondence
+    (see 'Something Unknown' against 'Standard, Loss, Doubtful 1') returns []
+    rather than a guessed value.
+    """
+    reported_norm = (reported_value or "").strip().lower()
+    if not reported_norm or not allowed_values:
+        return []
+
+    exact = [a for a in allowed_values if a.strip().lower() == reported_norm]
+    if exact:
+        return exact
+
+    reported_words = _WORD_RE.findall(reported_norm)
+    matches: list[str] = []
+    for a in allowed_values:
+        a_words = _WORD_RE.findall(a.strip().lower())
+        if not a_words:
+            continue
+        if (_contains_word_sequence(reported_words, a_words)
+                or _contains_word_sequence(a_words, reported_words)):
+            matches.append(a)
+    return matches
+
+
+def _join_with_and(items: list[str]) -> str:
+    """'A, B, and C' — an Oxford-comma list, used for the enumeration
+    allowed-options sentence. Never drops or reorders an item."""
+    items = [i for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + ", and " + items[-1]
+
 
 def _build_fallback_business_explanation(err: dict) -> str:
     """
@@ -1342,17 +1401,15 @@ def _build_fallback_business_explanation(err: dict) -> str:
     enum_m = _ENUMERATION_RE.search(raw_for_enum)
     if enum_m:
         bad_value = enum_m.group(1).strip()
+        # group(2) is already the content BETWEEN the brackets ('[' and ']'
+        # are matched but not captured), so the allowed-options list never
+        # carries the square brackets to begin with.
         allowed_values = [v.strip() for v in enum_m.group(2).split(",") if v.strip()]
-        enum_lines = [
-            "The selected/provided value is not valid.",
-            "Please provide or select a value from the given values in the dropdown for the particular column.",
-        ]
-        if bad_value:
-            enum_lines.insert(0, f"The entered value is '{bad_value}'.")
-        if allowed_values:
-            enum_lines.append(f"Allowed values: {', '.join(allowed_values)}.")
-        enum_lines.append("Correct the value and revalidate the report.")
-        return " ".join(enum_lines)
+        options_text = _join_with_and(allowed_values)
+        return (
+            f"The entered value '{bad_value}' is **Invalid**. "
+            f"The allowed options are **{options_text}**."
+        )
 
     # Invalid value — from parsed fields only
     actual = (
@@ -1400,10 +1457,12 @@ def _build_fallback_business_explanation(err: dict) -> str:
             # schema wants a plain number, not a percentage-formatted cell.
             # Confirmed against real Repo 5.5 samples (e.g. 4001/APBL251231…,
             # '12.54%' / '10.96%' rejected by cvc-datatype-valid.1.2.1).
-            lines_out.append("The value should be reported in the actual format.")
-            lines_out.append(
-                "Please change the data type to General for the respective "
-                "columns in which the value is reported."
+            # One compact, complete sentence — no generic "entered value"/
+            # "correct the value" lines appended after it.
+            return (
+                "Taxonomy is expecting the value in actuals. To resolve this, "
+                "change the data type of the column containing the reported "
+                "value to **General** and regenerate the return."
             )
         elif expected_key == "date":
             # Confirmed against real Repo 5.5 samples (e.g. 4044/SHBK201231…,
@@ -1770,6 +1829,16 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
                 actual = _m.group(1).strip()
         expected = _expected_type_from_err(err)
 
+        # An enumeration-facet violation (cvc-enumeration-valid) never matches
+        # the "is not a valid value for '<type>'" phrasing _expected_type_from_err
+        # looks for, so `expected` is always "" for this shape — without this
+        # check the condition below would send every enumeration error through
+        # a full LLM round-trip for an answer that is already fully
+        # deterministic (bad value + allowed list, both read verbatim off the
+        # validator's own message).
+        raw_for_enum_check = err.get("message") or err.get("validation_message") or err.get("col_0") or ""
+        is_enumeration = bool(_ENUMERATION_RE.search(raw_for_enum_check))
+
         # The common "wrong data type" shape (an entered value + the type it
         # should have been) is rendered deterministically, concisely, and
         # WITHOUT surfacing cascade/downstream noise from the same location
@@ -1778,7 +1847,7 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
         # short and predictable and the example value can never be mangled.
         # Anything without a clear entered value + expected type still goes
         # through the LLM's more flexible narrative composition.
-        if actual and expected:
+        if is_enumeration or (actual and expected):
             explanation = _build_fallback_business_explanation(err)
         else:
             explanation = _explain_single_error(err, ollama_base, model, timeout, keep_alive)

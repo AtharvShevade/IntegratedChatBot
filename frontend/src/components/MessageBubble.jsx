@@ -811,6 +811,18 @@ function _renderInlineCode(text, keyPrefix) {
   )
 }
 
+// Minimal '**bold**' -> <strong> renderer for plain-text explanation
+// fragments that are not run through ReactMarkdown (e.g. Validation Details
+// table cells) — avoids the literal '**' asterisks reaching the user.
+function _renderBoldText(text, keyPrefix) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) => {
+    const m = /^\*\*([^*]+)\*\*$/.exec(part)
+    return m
+      ? <strong key={`${keyPrefix}-${i}`}>{m[1]}</strong>
+      : <React.Fragment key={`${keyPrefix}-${i}`}>{part}</React.Fragment>
+  })
+}
+
 function DimensionalErrorPanel({ details, downloadUrl, downloadLabel }) {
   const t = useT()
   if (!details || details.length === 0) return null
@@ -925,7 +937,7 @@ function ErrorDetailsTablePanel({ details, downloadUrl, downloadLabel, errorMess
             {explanation
               .split(/(?<=[.!?])\s+/)
               .filter(Boolean)
-              .map((point, i) => <li key={i}>{point}</li>)
+              .map((point, i) => <li key={i}>{_renderBoldText(point, `exp-${i}`)}</li>)
             }
           </ul>
         )

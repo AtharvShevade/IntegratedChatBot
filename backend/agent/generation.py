@@ -252,6 +252,20 @@ async def _handle_gen_date(
     return await _finalize_generation(ret, date_str, session_id, asp_session, login_id)
 
 
+_MONTH_NUM = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+
+def _example_date(day: int, mon_abbr: str, year: int) -> str:
+    """'31-Mar-2026/31-03-2026' -- both the DD-Mon-YYYY and DD-MM-YYYY shapes
+    for one date, side by side, so a user who prefers typing the numeric form
+    sees it's accepted too. Both halves are independently protected from
+    translation garbling by i18n/protect.py's existing date patterns."""
+    return f"{day:02d}-{mon_abbr}-{year}/{day:02d}-{_MONTH_NUM[mon_abbr]:02d}-{year}"
+
+
 def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
     """Build a dynamic date-entry prompt based on the report's frequency."""
     import calendar as _cal
@@ -266,7 +280,7 @@ def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
         lines += [
             "Quarterly reports must use:",
             "• 31-Mar", "• 30-Jun", "• 30-Sep", "• 31-Dec",
-            "", f"Example: 31-Mar-{year}",
+            "", f"Example: {_example_date(31, 'Mar', year)}",
         ]
     elif freq == "M":
         today = _date.today()
@@ -274,31 +288,31 @@ def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
         mname = today.strftime("%b")
         lines += [
             "Monthly reports must use the last day of the month.",
-            "", f"Example: {last:02d}-{mname}-{year}",
+            "", f"Example: {_example_date(last, mname, year)}",
         ]
     elif freq == "H":
         lines += [
             "Half Yearly reports must use:",
             "• 31-Mar", "• 30-Sep",
-            "", f"Example: 31-Mar-{year}",
+            "", f"Example: {_example_date(31, 'Mar', year)}",
         ]
     elif freq == "C":
         lines += [
             "Half Yearly (Calendar Year) reports must use:",
             "• 30-Jun", "• 31-Dec",
-            "", f"Example: 30-Jun-{year}",
+            "", f"Example: {_example_date(30, 'Jun', year)}",
         ]
     elif freq == "Y":
         lines += [
             "Yearly (Financial Year) reports must use:",
             "• 31-Mar",
-            "", f"Example: 31-Mar-{year}",
+            "", f"Example: {_example_date(31, 'Mar', year)}",
         ]
     elif freq == "B":
         lines += [
             "Yearly (Calendar Year) reports must use:",
             "• 31-Dec",
-            "", f"Example: 31-Dec-{year}",
+            "", f"Example: {_example_date(31, 'Dec', year)}",
         ]
     elif freq == "W":
         lines += [
@@ -314,7 +328,7 @@ def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
             f"{freq_label} reports must use:",
             "• 15th of the month",
             "• Last day of the month",
-            "", f"Example: 15-{mname}-{year} or {last:02d}-{mname}-{year}",
+            "", f"Example: {_example_date(15, mname, year)} or {_example_date(last, mname, year)}",
         ]
     elif freq == "E":
         lines += [
@@ -323,12 +337,12 @@ def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
     elif freq == "D":
         lines += [
             "Daily reports accept any valid past date.",
-            "", f"Example: 26-May-{year}",
+            "", f"Example: {_example_date(26, 'May', year)}",
         ]
     else:
         lines += [
             f"Enter a valid reporting date for this {label} report.",
-            "", f"Example: 31-Mar-{year}",
+            "", f"Example: {_example_date(31, 'Mar', year)}",
         ]
 
     return "\n".join(lines)
