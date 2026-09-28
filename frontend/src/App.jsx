@@ -3,6 +3,7 @@ import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
 import { LanguageContext, makeT, isRtl } from './i18n.js'
 import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback, fetchStatusErrors } from './services/api.js'
+import { loadHistory as _idbLoadHistory, saveHistory as _idbSaveHistory, deleteHistory as _idbDeleteHistory } from './services/historyStorage.js'
 // Read loginId / uid / aspSession injected by the .NET iframe URL.
 // On first load with URL params, save them so identity survives later
 // reloads (the .NET params are only in the URL on first load).
@@ -93,26 +94,6 @@ function _anonymousHistoryId() {
   }
 }
 const _historyId  = _loginId || _uid || _anonymousHistoryId()
-const STORAGE_KEY = `chat_history_${_historyId}`
-
-// ── TEMPORARY diagnostic logging — remove once the real .NET flow is
-// confirmed fixed. Fires once per module load (this file runs once per
-// iframe (re)creation, so this line IS the "mount" log point). ────────────
-console.log('[CHAT_HISTORY] module evaluated — origin =', window.location.origin,
-  '| full URL =', window.location.href)
-console.log('[CHAT_HISTORY] identity received — loginId =', JSON.stringify(_loginId),
-  '| uid =', JSON.stringify(_uid), '| tenantId =', JSON.stringify(_tenantId),
-  '| historyId (resolved) =', JSON.stringify(_historyId))
-console.log('[CHAT_HISTORY] storage key =', STORAGE_KEY)
-;(() => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const count = raw ? (JSON.parse(raw)?.length ?? 'unparseable') : 0
-    console.log('[CHAT_HISTORY] stored history found =', !!raw, '| stored message count =', count)
-  } catch (e) {
-    console.log('[CHAT_HISTORY] stored history read FAILED —', e?.message)
-  }
-})()
 
 // Extract the last n user/assistant messages for conversation context.
 // Skips system roles (welcome, error, action_menu, etc.).
@@ -127,42 +108,48 @@ function _getRecentHistory(messages, n = 7) {
     .slice(-n)
 }
 
-// Load saved messages from localStorage; fall back to the welcome card.
-function _loadHistory() {
-  console.log('[CHAT_HISTORY] _loadHistory() called — historyId =', JSON.stringify(_historyId),
-    '| key =', STORAGE_KEY)
-  if (!_historyId) {
-    console.log('[CHAT_HISTORY] _loadHistory() -> no historyId at all, returning welcome')
-    return [{ role: 'welcome' }]
-  }
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    console.log('[CHAT_HISTORY] _loadHistory() raw read =', raw ? `${raw.length} chars` : 'null')
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      console.log('[CHAT_HISTORY] _loadHistory() parsed message count =', Array.isArray(parsed) ? parsed.length : 'not an array')
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        // Restored history is READ-ONLY as far as the backend is concerned:
-        // re-rendering an old message must never kick off new work. Variance
-        // messages are saved with llmSummary:"" whenever the inline 8s
-        // attempt failed, and without this flag the AI-summary effect saw
-        // that empty value on every page load and re-generated a summary for
-        // every past comparison — explanations appearing on their own after
-        // a backend restart, with no user action at all.
-        return parsed.map((m) => (
-          m && m.resultType === 'variance_table' ? { ...m, noAutoSummary: true } : m
-        ))
-      }
-    }
-  } catch (e) {
-    console.log('[CHAT_HISTORY] _loadHistory() parse FAILED —', e?.message, '— starting fresh')
-  }
-  console.log('[CHAT_HISTORY] _loadHistory() -> nothing usable found, returning welcome')
-  return [{ role: 'welcome' }]
+// Restored history is READ-ONLY as far as the backend is concerned:
+// re-rendering an old message must never kick off new work. Variance
+// messages are saved with llmSummary:"" whenever the inline 8s attempt
+// failed, and without this flag the AI-summary effect saw that empty value
+// on every page load and re-generated a summary for every past comparison —
+// explanations appearing on their own after a backend restart, with no user
+// action at all.
+function _markRestoredVarianceMessages(messages) {
+  return messages.map((m) => (
+    m && m.resultType === 'variance_table' ? { ...m, noAutoSummary: true } : m
+  ))
 }
 
 export default function App() {
-  const [messages, setMessages]       = useState(_loadHistory)
+  // Safe synchronous default — IndexedDB is async, so the real history (if
+  // any) is loaded in the effect below and swapped in once it resolves.
+  // historyReadyRef gates the save-effect until that swap has happened (or
+  // definitively found nothing), so an early save can never overwrite the
+  // real stored history with this placeholder before it's even read.
+  const [messages, setMessages]       = useState([{ role: 'welcome' }])
+  const historyReadyRef = useRef(false)
+
+  useEffect(() => {
+    if (!_historyId) { historyReadyRef.current = true; return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const loaded = await _idbLoadHistory(_historyId)
+        if (cancelled) return
+        if (Array.isArray(loaded) && loaded.length > 0) {
+          setMessages(_markRestoredVarianceMessages(loaded))
+        }
+      } catch (e) {
+        console.error('[CHAT_HISTORY] initial load from IndexedDB failed —', e)
+      } finally {
+        if (!cancelled) historyReadyRef.current = true
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [inputText, setInputText]     = useState('')
   // 'idle' | 'recording' | 'processing', mirrored up from VoiceInput so the
   // composer can prompt in the textarea itself.
@@ -260,44 +247,23 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Persist messages to localStorage on every change ─────────────────────
+  // ── Persist messages to IndexedDB on every change ─────────────────────────
+  // Gated on historyReadyRef so the initial ["welcome"] placeholder can never
+  // race ahead of the async load above and overwrite real stored history.
   useEffect(() => {
-    if (!_historyId) {
-      console.log('[CHAT_HISTORY] save skipped — no historyId, message count would have been', messages.length)
-      return
-    }
-    const serialized = JSON.stringify(messages)
-    // Accurate UTF-8 byte length, not character count — Blob is the cheapest
-    // accurate way to get this without a manual UTF-8 encoder.
-    const byteSize = new Blob([serialized]).size
-    // Per-message breakdown, largest first, so a single oversized message
-    // (rather than gradual accumulation) is visible immediately.
-    const perMessage = messages
-      .map((m, i) => ({ i, role: m.role, resultType: m.resultType, bytes: new Blob([JSON.stringify(m)]).size }))
-      .sort((a, b) => b.bytes - a.bytes)
-    let totalLocalStorageBytes = 0
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      totalLocalStorageBytes += new Blob([k + (localStorage.getItem(k) || '')]).size
-    }
-    console.log('[CHAT_HISTORY] messages =', messages.length,
-      '| serialized chars =', serialized.length, '| serialized bytes =', byteSize,
-      '| largest message =', perMessage[0]?.bytes ?? 0, 'bytes (idx', perMessage[0]?.i,
-      'role', perMessage[0]?.role, 'resultType', perMessage[0]?.resultType, ')')
-    console.log('[CHAT_HISTORY] top 5 largest messages =', perMessage.slice(0, 5))
-    console.log('[CHAT_HISTORY] total localStorage usage (this origin) =', totalLocalStorageBytes, 'bytes across', localStorage.length, 'keys')
-    try {
-      localStorage.setItem(STORAGE_KEY, serialized)
-      console.log('[CHAT_HISTORY] saving history — key =', STORAGE_KEY, '| message count =', messages.length, '| bytes =', byteSize)
-    } catch (e) {
-      console.log('[CHAT_HISTORY] save FAILED —', e?.name, e?.message,
-        '| attempted bytes =', byteSize, '| messages =', messages.length)
-    }
+    if (!_historyId) return
+    if (!historyReadyRef.current) return
+    _idbSaveHistory(_historyId, messages).catch((e) => {
+      // The in-memory conversation is unaffected either way — React state
+      // does not depend on this write succeeding. This is purely "the next
+      // reload may not see this change"; logged, never surfaced to the user.
+      console.error('[CHAT_HISTORY] save to IndexedDB failed —', e)
+    })
   }, [messages])
 
   // ── Clear chat ────────────────────────────────────────────────────────────
   const handleClearChat = () => {
-    try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+    _idbDeleteHistory(_historyId).catch((e) => console.error('[CHAT_HISTORY] clear failed —', e))
     setMessages([{ role: 'welcome' }])
     setIsGuidedFlow(false)
   }
@@ -312,7 +278,7 @@ export default function App() {
   useEffect(() => {
     function handleLogoutMessage(event) {
       if (!event.data || event.data.type !== 'CHATBOT_LOGOUT') return
-      try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+      _idbDeleteHistory(_historyId).catch((e) => console.error('[CHAT_HISTORY] logout clear failed —', e))
       for (const key of ['chat_uid', 'chat_loginId', 'chat_roleId', 'chat_rid', 'chat_tenant_id', 'chat_domain', 'chat_anon_uid']) {
         try { sessionStorage.removeItem(key) } catch { /* ignore */ }
         try { localStorage.removeItem(key) } catch { /* ignore */ }

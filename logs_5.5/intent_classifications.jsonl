@@ -58,3 +58,15 @@
 {"ts": "2026-09-28T11:01:04.178797+00:00", "query": "12 dec 2026 at 5 pm", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-09-28T11:29:28.595356+00:00", "query": "LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-09-28T11:29:28.600312+00:00", "query": "LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T11:39:32.598908+00:00", "query": "30-Sep-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T11:39:32.602767+00:00", "query": "30-Sep-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T11:39:34.193783+00:00", "query": "31-Aug-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T11:39:34.198306+00:00", "query": "31-Aug-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T11:48:17.057817+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T11:48:17.060685+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T12:19:21.791173+00:00", "query": "RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T12:19:21.846470+00:00", "query": "RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T12:23:43.709734+00:00", "query": "CIMS_FormGPB", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T12:23:43.716985+00:00", "query": "CIMS_FormGPB", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-09-28T12:23:45.338032+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-09-28T12:23:45.343750+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
