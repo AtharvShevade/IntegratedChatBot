@@ -15,8 +15,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    base: '/AiChatbot/',
-    // base: '/AiChatBot6.0/',
+    // base: '/AiChatbot/',
+    base: '/AiChatBot6.0/',
 
     server: {
       port: 3000,
