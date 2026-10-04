@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from backend import version_config
@@ -137,6 +138,10 @@ async def _finalize_generation(
     # ── Auth: role-based Instance Generation permission ───────────────────────
     # Single enforcement point for generate_instance — every path (guided menu,
     # free-text, staged date-entry) converges here before the .NET API call.
+    # SECURITY (H-01 fix): previously, omitting login_id entirely skipped this
+    # check outright (fail-open) -- instance generation is one of the more
+    # consequential actions in this app, so it must deny by default when
+    # REQUIRE_AUTH is set and no login_id is present, same as /chat (C-02).
     if login_id:
         from backend.services.auth_service import can_generate_instance as _chk_create
         if not _chk_create(login_id):
@@ -149,6 +154,16 @@ async def _finalize_generation(
                 response_text="Sorry, you do not have access to generate report instances.",
                 result_type="error",
             )
+    elif (
+        os.getenv("REQUIRE_AUTH", "true").lower() == "true"
+        and os.getenv("AUTHORIZATION_ENABLED", "true").lower() == "true"
+    ):
+        logger.warning("[AUTH_DENY] generate_instance: no login_id provided and REQUIRE_AUTH=true")
+        return _build(
+            intent="generate_instance", report_name=ret.get("name"),
+            response_text="Authentication required. Please access this application through the authorised portal.",
+            result_type="error",
+        )
 
     validation = validate_reporting_date(reporting_date, ret["frequency"])
     if not validation["valid"]:

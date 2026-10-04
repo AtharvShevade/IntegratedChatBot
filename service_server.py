@@ -28,12 +28,20 @@ from backend.config import BACKEND_PORT
 assert_port_matches_web_config(BACKEND_PORT, ROOT_DIR)
 
 if __name__ == "__main__":
+    # H-07 hardening: default to loopback-only so this process is reachable
+    # only through the local IIS reverse proxy (confirmed same-machine
+    # deployment: Server 228 runs both IIS and this backend), not directly
+    # from the network. BACKEND_HOST stays env-overridable in case a future
+    # deployment genuinely needs a different bind address.
+    _host = os.environ.get("BACKEND_HOST", "127.0.0.1")
+
     print("[SERVICE] Starting FastAPI backend...")
+    print(f"[SERVICE] Host: {_host}")
     print(f"[SERVICE] Port: {BACKEND_PORT}")
 
     uvicorn.run(
         "backend.main:app",
-        host="0.0.0.0",
+        host=_host,
         port=BACKEND_PORT,
         reload=False,
         log_level="info",

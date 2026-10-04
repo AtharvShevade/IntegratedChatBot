@@ -74,6 +74,18 @@ def _map_row(headers: list[str], cells: list[str]) -> dict:
 def parse_formula_errors_v2(html_path: str) -> list[dict]:
     """Formula errors from either error-file product.
 
+    M-16: memoized by (path, mtime) -- see _parse_formula_errors_v2_uncached
+    for the actual parsing logic and docs. Repeating this parse for the same
+    unchanged file (as happens across every batch of "Explain next" clicks)
+    is pure wasted I/O/CPU, since parsing is deterministic for a given file.
+    """
+    from backend.tools.mtime_cache import cached_by_mtime
+    return cached_by_mtime(html_path, lambda: _parse_formula_errors_v2_uncached(html_path))
+
+
+def _parse_formula_errors_v2_uncached(html_path: str) -> list[dict]:
+    """Formula errors from either error-file product.
+
     Returns one dict per assertion:
         {
           "rule_name", "formula_expression", "error_count",
@@ -197,7 +209,11 @@ def _json_variable_map(taxonomy_json: dict | None, rule_name: str) -> dict[str, 
         return {}
     try:
         from backend.tools import taxonomy_lookup
-    except Exception:
+    except Exception as exc:
+        # M-19: was a silent `except: return {}` -- a real import failure
+        # (typo, circular import, missing dependency) looked identical to
+        # "this return simply has no taxonomy data".
+        logger.warning("taxonomy_lookup import failed: %s", exc, exc_info=True)
         return {}
 
     by_assertion = taxonomy_json.get("by_assertion_id") or {}

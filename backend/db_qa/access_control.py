@@ -51,6 +51,44 @@ def is_admin(login_id: str) -> bool:
     return role_id == config.APP_DB_ADMIN_ROLE_ID
 
 
+def resolve_allowed_form_ids(login_id: str) -> set[str] | None:
+    """The union of a department's XBRL + non-XBRL allowed FormIds for
+    *login_id*, or None when authorization is disabled (a deliberate,
+    admin-controlled bypass -- caller must treat None as "no filtering").
+
+    Extracted out of scope_query()'s "return" branch (H-11) so any handler
+    that needs the same department-scoping set outside of a named-return
+    question (e.g. a self-scoped log/audit query with no target_return) can
+    reuse this exact logic instead of re-deriving or omitting it.
+    """
+    # Both halves of the department's access list. get_allowed_form_ids
+    # covers only the XBRL Forms attribute (every other caller in the
+    # app deals exclusively in XBRL forms), so on its own it denied
+    # EVERY non-XBRL return here — a question about a return the user
+    # genuinely has NXForms access to came back as "I couldn't find a
+    # return matching X", listing X itself among the suggestions.
+    # db_qa's return-scoped questions span both types, so this is the
+    # layer that has to union them.
+    xbrl_ids = auth_service.get_allowed_form_ids(login_id)
+    nx_ids = auth_service.get_allowed_nx_form_ids(login_id)
+    if xbrl_ids is None and nx_ids is None:
+        # get_allowed_form_ids/get_allowed_nx_form_ids overload None for
+        # two very different cases: "AUTHORIZATION_ENABLED=false, caller
+        # decides" (a deliberate, admin-controlled bypass) and "login_id
+        # doesn't resolve in XML_User.xml at all" (an unauthenticated or
+        # unknown caller). SECURITY (H-01 fix): these must NOT be treated
+        # the same -- only the FIRST is actually "no filtering"; the
+        # second must deny, not silently fall through to an unscoped
+        # query. auth_service.AUTHORIZATION_ENABLED is the single source
+        # of truth for which case this is.
+        if not auth_service.AUTHORIZATION_ENABLED:
+            return None
+        raise PermissionError(
+            "Your account was not recognised. Please contact your administrator."
+        )
+    return (xbrl_ids or set()) | (nx_ids or set())
+
+
 def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
     """Authorize *intent* for *session_user* and return a scope dict.
 
@@ -113,23 +151,7 @@ def scope_query(session_user: dict, intent: str, entities: dict) -> dict:
         # set used everywhere else in the app (auth_service), not a
         # separate reimplementation.
         scope["is_admin"] = is_admin(login_id)
-        # Both halves of the department's access list. get_allowed_form_ids
-        # covers only the XBRL Forms attribute (every other caller in the
-        # app deals exclusively in XBRL forms), so on its own it denied
-        # EVERY non-XBRL return here — a question about a return the user
-        # genuinely has NXForms access to came back as "I couldn't find a
-        # return matching X", listing X itself among the suggestions.
-        # db_qa's return-scoped questions span both types, so this is the
-        # layer that has to union them.
-        xbrl_ids = auth_service.get_allowed_form_ids(login_id)
-        nx_ids = auth_service.get_allowed_nx_form_ids(login_id)
-        if xbrl_ids is None and nx_ids is None:
-            # Authorization disabled, or the user isn't resolvable at all —
-            # None keeps the existing "no filtering / caller decides"
-            # contract rather than collapsing to an empty (deny-all) set.
-            scope["allowed_form_ids"] = None
-        else:
-            scope["allowed_form_ids"] = (xbrl_ids or set()) | (nx_ids or set())
+        scope["allowed_form_ids"] = resolve_allowed_form_ids(login_id)
         return scope
 
     # Unknown/unrecognized target_type — deny by default rather than

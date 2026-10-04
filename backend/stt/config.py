@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import os
 
-# Read from OLLAMA_BASE_URL's neighbour by default: the Whisper service is
-# published on the same host as the Ollama proxy.
-_DEFAULT_BASE_URL = "http://3.109.51.228/whisper-api"
+# H-07 hardening: no hardcoded public-IP default. A deployment that forgets
+# to set STT_BASE_URL previously defaulted silently to a public, plain-HTTP
+# endpoint -- voice recordings would leave the network unencrypted without
+# anyone choosing that. Set STT_BASE_URL explicitly in .env instead.
+_DEFAULT_BASE_URL = ""
 
 
 def is_enabled() -> bool:

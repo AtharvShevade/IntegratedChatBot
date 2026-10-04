@@ -7,6 +7,7 @@ import calendar
 import logging
 import os
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import date, datetime
 from typing import Any
@@ -15,6 +16,7 @@ import httpx
 
 from backend import version_config
 from backend import config as _config
+from backend.utils.file_cache import FileCache
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,21 @@ _ROOT        = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 _DOTNET_URL            = os.getenv("DOTNET_API_URL",        "https://localhost:5000")
 _DOTNET_CONTROLLER     = os.getenv("DOTNET_CONTROLLER",     "CreateInstance")
 _DOTNET_SESSION_COOKIE = os.getenv("DOTNET_SESSION_COOKIE", "")
+# H-04 hardening: the static fallback cookie above lets ANY caller with no
+# real forwarded browser session still successfully authenticate to .NET as
+# whatever account owns that cookie -- effectively a shared backdoor
+# credential. It must never be usable in a real deployment by default; an
+# operator who genuinely needs it for local/manual testing (no browser
+# session to forward) must opt in explicitly.
+_ALLOW_STATIC_DOTNET_COOKIE = os.getenv("ALLOW_STATIC_DOTNET_COOKIE", "false").lower() == "true"
+
+# H-04 hardening: verify=False (previously hardcoded on every outbound call
+# to .NET) accepted any certificate, including a forged one from a
+# man-in-the-middle -- the exact channel the session cookie/JWT travels on.
+# Default to real verification; only point at a custom CA bundle (e.g. an
+# internal self-signed root) via DOTNET_CA_BUNDLE, never disable it outright.
+_DOTNET_CA_BUNDLE = os.getenv("DOTNET_CA_BUNDLE", "").strip()
+_TLS_VERIFY: bool | str = _DOTNET_CA_BUNDLE or True
 
 # 6.0 instance-generation API (CreateInstanceController.GenerateReportDB) —
 # separate host/auth mechanism from the 5.5 .NET app above.
@@ -29,12 +46,22 @@ _DOTNET_V6_URL: str = os.getenv("DOTNET_V6_API_URL", "https://localhost:7072")
 _DATE_FMT    = "%d-%b-%Y"
 _EXTRA_FMTS  = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
 
+if _DOTNET_SESSION_COOKIE and not _ALLOW_STATIC_DOTNET_COOKIE:
+    logger.warning(
+        "[GENERATE_CONFIG] DOTNET_SESSION_COOKIE is set but ALLOW_STATIC_DOTNET_COOKIE is not "
+        "'true' -- the static fallback cookie will NOT be used. This is the safe default for "
+        "any real deployment; set ALLOW_STATIC_DOTNET_COOKIE=true only for local/manual testing "
+        "with no real browser session to forward.",
+    )
+
 logger.info(
     "[GENERATE_CONFIG] DOTNET_API_URL=%s  DOTNET_CONTROLLER=%s  "
-    "DOTNET_SESSION_COOKIE=%s",
+    "DOTNET_SESSION_COOKIE=%s  TLS_VERIFY=%s",
     _DOTNET_URL,
     _DOTNET_CONTROLLER,
-    "SET" if _DOTNET_SESSION_COOKIE else "NOT SET (will rely on forwarded aspSession)",
+    "SET (dev fallback enabled)" if (_DOTNET_SESSION_COOKIE and _ALLOW_STATIC_DOTNET_COOKIE)
+        else "NOT SET (will rely on forwarded aspSession)",
+    _DOTNET_CA_BUNDLE or "system CA bundle",
 )
 
 # Valid (day, month) terminal pairs per frequency type
@@ -45,13 +72,21 @@ _H_CY_ENDS = {(30, 6), (31, 12)}                       # Half-Yearly Calendar Ye
 
 # -- Period master XML parser (TTL-cached, refreshes every 24 hours) ------------
 
-_period_ttl    = float(os.getenv("PERIOD_TTL_SEC", "86400"))  # 24 hours
-_period_caches: dict[str, dict] = {}  # path -> {"data": ..., "ts": ...} (path-keyed: 6.0 serves multiple tenants)
+_period_ttl   = float(os.getenv("PERIOD_TTL_SEC", "86400"))  # 24 hours
+# M-15: was a plain {path: {"data", "ts"}} dict with a TTL but NO mtime
+# check at all -- an edit to Period.xml within the 24h window went
+# unnoticed until the TTL happened to expire. FileCache's get_or_load(...,
+# path=...) adds that missing mtime check (reload as soon as the file
+# changes, not just after 24h) while keeping the same TTL as a ceiling, and
+# bounds how many distinct tenant paths' period data stay cached at once
+# (unbounded growth was also explicitly called out in M-15).
+_period_cache: "FileCache[str, dict]" = FileCache(max_size=32)
 
 
 def _parse_period_master() -> dict[str, dict]:
     """Parse the period master and return {period_id: attrib_dict}.
-    Cached for PERIOD_TTL_SEC seconds (default 24 hours), keyed by the
+    Cached for PERIOD_TTL_SEC seconds (default 24 hours) OR until the
+    source file's mtime changes, whichever comes first -- keyed by the
     resolved path so a change of tenant/repo root (or an edit to
     BASE_REPO_PATH) is picked up on its own cache entry rather than
     reusing another tenant's stale data.
@@ -71,31 +106,28 @@ def _parse_period_master() -> dict[str, dict]:
     path = _config.period_xml_path()
     id_attr = "Id" if version_config.IS_V6 else "Period_Id"
 
-    now = time.monotonic()
-    cache = _period_caches.get(path)
-    if cache is not None and (now - cache["ts"]) < _period_ttl:
-        return cache["data"]
+    def _load() -> dict[str, dict]:
+        if not os.path.exists(path):
+            logger.warning("[PERIOD_MASTER] file not found: %s", path)
+            return {}
+        try:
+            root = ET.parse(path).getroot()
+            out: dict[str, dict] = {}
+            for el in root.findall("Row"):
+                pid = el.attrib.get(id_attr, "").strip()
+                if pid:
+                    out[pid] = el.attrib
+            logger.info(
+                "[PERIOD_MASTER] loaded %d period(s) from %s (cache refreshed): %s",
+                len(out), path,
+                {pid: attrs.get("Frequency", "") for pid, attrs in out.items()},
+            )
+            return out
+        except ET.ParseError as exc:
+            logger.error("[PERIOD_MASTER] XML parse error in %s: %s", path, exc)
+            return {}
 
-    if not os.path.exists(path):
-        logger.warning("[PERIOD_MASTER] file not found: %s", path)
-        return {}
-    try:
-        root = ET.parse(path).getroot()
-        out: dict[str, dict] = {}
-        for el in root.findall("Row"):
-            pid = el.attrib.get(id_attr, "").strip()
-            if pid:
-                out[pid] = el.attrib
-        logger.info(
-            "[PERIOD_MASTER] loaded %d period(s) from %s (cache refreshed): %s",
-            len(out), path,
-            {pid: attrs.get("Frequency", "") for pid, attrs in out.items()},
-        )
-        _period_caches[path] = {"data": out, "ts": now}
-        return out
-    except ET.ParseError as exc:
-        logger.error("[PERIOD_MASTER] XML parse error in %s: %s", path, exc)
-        return {}
+    return _period_cache.get_or_load(path, _load, path=path, ttl=_period_ttl)
 
 
 def get_period_info(period_id: str | int) -> dict | None:
@@ -666,17 +698,22 @@ async def call_generate_api(
         "FilingIndicators":      "",
     }
 
-    # ASP.NET Core session auth — prefer live cookie forwarded from browser,
-    # fall back to static env var (useful for manual testing via .env)
+    # ASP.NET Core session auth — prefer live cookie forwarded from browser.
+    # H-04: the static env-var fallback is now used only when an operator has
+    # explicitly opted in (ALLOW_STATIC_DOTNET_COOKIE=true) -- see module
+    # comment above. A real deployment never silently authenticates every
+    # caller as whatever account owns that one shared cookie.
     cookies: dict[str, str] = {}
-    cookie_value = asp_session or _DOTNET_SESSION_COOKIE
+    cookie_value = asp_session or (_DOTNET_SESSION_COOKIE if _ALLOW_STATIC_DOTNET_COOKIE else None)
     if cookie_value:
         # URL-decode in case the value arrived percent-encoded (from .env or URL param)
-        import urllib.parse
         cookie_value = urllib.parse.unquote(cookie_value)
         cookies[".AspNetCore.Session"] = cookie_value
+        # H-04: never log any part of the cookie value itself -- only whether
+        # one is present and where it came from.
         logger.info(
-            "[GENERATE_API] session cookie present (first 16 chars): %s", cookie_value[:16],
+            "[GENERATE_API] session cookie present (source=%s)",
+            "forwarded" if asp_session else "static-dev-fallback",
         )
     else:
         logger.warning(
@@ -689,13 +726,15 @@ async def call_generate_api(
     )
     _t0 = time.time()
     try:
-        # verify=False bypasses the self-signed dev certificate on localhost.
+        # H-04: TLS verification is on by default (see _TLS_VERIFY above) --
+        # point DOTNET_CA_BUNDLE at an internal CA if this host uses one,
+        # rather than disabling verification outright.
         # follow_redirects=False so we can distinguish an HTTPS-upgrade redirect
         # (HTTP→HTTPS, safe to follow) from a Login-page redirect (auth failure).
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
             follow_redirects=False,
-            verify=False,
+            verify=_TLS_VERIFY,
         ) as client:
             resp = await client.post(
                 url,
@@ -719,13 +758,28 @@ async def call_generate_api(
             location = resp.headers.get("location", "")
             logger.info("[GENERATE_API] Redirect → %s", location)
 
-            # Case 1: HTTPS upgrade — location starts with https:// and same host
-            if location.lower().startswith("https://") and "/account" not in location.lower() and "/login" not in location.lower():
+            # H-04: only ever follow a redirect that stays on the configured
+            # .NET host/port -- previously any https:// location without
+            # "/account"/"/login" in it was followed blindly, including to a
+            # completely different host, which would replay the session
+            # cookie to wherever the redirect pointed.
+            _dotnet_host = urllib.parse.urlsplit(_DOTNET_URL).netloc.lower()
+            _redirect_host = urllib.parse.urlsplit(location).netloc.lower()
+            _same_host = bool(_redirect_host) and _redirect_host == _dotnet_host
+
+            # Case 1: HTTPS upgrade — location starts with https://, stays on
+            # the same host/port, and isn't a login/account redirect.
+            if (
+                _same_host
+                and location.lower().startswith("https://")
+                and "/account" not in location.lower()
+                and "/login" not in location.lower()
+            ):
                 logger.info("[GENERATE_API] HTTP→HTTPS redirect detected — retrying over HTTPS")
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(30.0),
                     follow_redirects=False,
-                    verify=False,
+                    verify=_TLS_VERIFY,
                 ) as client2:
                     resp = await client2.post(
                         location,
@@ -748,11 +802,19 @@ async def call_generate_api(
                         ),
                     }
             else:
-                # Case 2: login redirect
-                logger.error(
-                    "[API_FAILURE] Generate API redirect to login → %s "
-                    "(session not authenticated)", location,
-                )
+                # Case 2: login redirect, OR a redirect to a different host —
+                # never followed, always treated as an auth failure.
+                if not _same_host:
+                    logger.error(
+                        "[API_FAILURE] Generate API redirected to a DIFFERENT host (%s != %s) — "
+                        "refusing to follow, treating as auth failure: %s",
+                        _redirect_host, _dotnet_host, location,
+                    )
+                else:
+                    logger.error(
+                        "[API_FAILURE] Generate API redirect to login → %s "
+                        "(session not authenticated)", location,
+                    )
                 return {
                     "success": False,
                     "message": (
@@ -895,10 +957,11 @@ async def call_generate_api_v6(
     )
     _t0 = time.time()
     try:
+        # H-04: TLS verification on by default (see _TLS_VERIFY above).
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
             follow_redirects=False,
-            verify=False,
+            verify=_TLS_VERIFY,
         ) as client:
             resp = await client.post(url, data=form_data, headers=headers, cookies=cookies)
 

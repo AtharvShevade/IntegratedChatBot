@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from backend.db_qa.versions.loader import build_index
 from backend.db_qa.xml_store import XMLStore, get_attr, is_active_status
+# L-08: reuse the one named threshold + the safe-int parser from
+# audit_handlers.py rather than a second hardcoded `>= 5`/unsafe int() here.
+from backend.db_qa.query_handlers.audit_handlers import _safe_int
 from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 from backend.db_qa.query_handlers.role_handlers import _role_not_found
 
@@ -140,8 +143,8 @@ def handle_user_list(scope: dict, entities: dict, store: XMLStore) -> dict:
         rows = [u for u in users if not u.get("LastLoginDT", "").strip()]
         label, summary = "Users Who Never Logged In", f"Found {len(rows)} users who have never logged in."
     elif query_type == "failed_login":
-        rows = [u for u in users if int(u.get("FailedLoginCount", "0") or "0") > 0]
-        rows.sort(key=lambda u: int(u.get("FailedLoginCount", "0") or "0"), reverse=True)
+        rows = [u for u in users if _safe_int(u.get("FailedLoginCount", "0")) > 0]
+        rows.sort(key=lambda u: _safe_int(u.get("FailedLoginCount", "0")), reverse=True)
         label, summary = "Users with Failed Login Attempts", f"Found {len(rows)} users with failed login attempts."
         # The failed-login count is hidden from ordinary user tables
         # (agent/db_qa_router._CONDITIONAL_FIELDS) — this question is

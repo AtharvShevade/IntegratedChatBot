@@ -2,16 +2,34 @@
 # ChatRequest: user message + optional session. ChatResponse: extracted intent, report_name, reply text.
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+class HistoryItem(BaseModel):
+    """One prior turn replayed by the client for conversational context.
+
+    H-04 (M-04 in the review numbering): the client is the only source of
+    truth for this history — there is no server-side session transcript to
+    check it against — so this model can only close the *shape* gaps (an
+    arbitrary role value, an unbounded message, an unbounded history list),
+    not verify that an "assistant" turn was genuinely said by the assistant.
+    That is a standing architectural limitation, not something this model
+    can fix on its own.
+    """
+    role: Literal["user", "assistant"]
+    text: str = Field(..., max_length=2000)
+
 
 class ChatRequest(BaseModel):
     message:              str            = Field(..., min_length=1, max_length=2000)
     session_id:           Optional[str]  = Field(None, max_length=128)
     asp_session:          Optional[str]  = Field(None, max_length=1024)  # forwarded .AspNetCore.Session cookie
     login_id:             Optional[str]  = Field(None, max_length=256)   # user login ID for report authorisation
-    conversation_history: list[dict]     = Field(default_factory=list)   # last 6-7 msgs: [{"role":"user"|"assistant","text":"..."}]
+    # last 6-7 msgs; role restricted to user/assistant (no system/tool/developer
+    # injection), each message capped, and the list itself capped at 7 items.
+    conversation_history: list[HistoryItem] = Field(default_factory=list, max_length=7)
     beautify:             bool           = Field(True)  # when True, use LLM to format DB Q&A results
     user_id:              Optional[str]  = Field(None, max_length=128)  # current user's ID (for DB Q&A role check)
     role_id:              Optional[str]  = Field(None, max_length=64)   # current user's role ID (for DB Q&A admin check)
@@ -140,6 +158,9 @@ class CompareSummaryRequest(BaseModel):
     label_b:     str = Field("", max_length=256)
     report_name: str = Field("", max_length=256)
     request_id:  Optional[str] = Field(None, max_length=64)  # enables Stop Generation
+    # M-05: optional so existing callers that don't send it are unaffected;
+    # checked by main.py's _caller_is_authenticated() fail-closed gate.
+    login_id:    Optional[str] = Field(None, max_length=256)
 
     # Chat language, same contract as ChatRequest.lang: absent/"en" keeps the
     # exact English behaviour and makes no translation call.
@@ -147,10 +168,17 @@ class CompareSummaryRequest(BaseModel):
 
 
 class ExplainCategoryRequest(BaseModel):
-    """Request body for /explain-category — on-demand error explanation."""
-    error_file_path: str = Field(..., max_length=1024)
+    """Request body for /explain-category — on-demand error explanation.
+
+    L-17 / C-04: the client supplies only a bare filename (never a full
+    path) plus form_id; the server rebuilds the real path via
+    build_error_file_path() (backend/agent/error_explanation.py), the same
+    helper /download-file already uses, instead of trusting a client-sent
+    path. form_id is now required -- it's the other half of that rebuild.
+    """
+    filename:        str = Field(..., max_length=255)
     category:        str = Field(..., max_length=64)   # formula_error | xbrl_schema | dimensional
-    form_id:         Optional[str] = Field(None, max_length=64)
+    form_id:         str = Field(..., max_length=64)
     report_name:     Optional[str] = Field(None, max_length=256)
     request_id:      Optional[str] = Field(None, max_length=64)  # client-generated ID; enables Stop Generation
     offset:          int = Field(0, ge=0)  # how many errors in this category are already explained (batching)

@@ -1,7 +1,7 @@
 # ── Environment / secrets ─────────────────────────────────────────────────────
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
+backups/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
@@ -34,8 +34,17 @@ desktop.ini
 *.swo
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
+# M-27: runtime logs/query-mining datasets can carry raw user query text and
+# grow without bound -- none of this belongs in git. Covers every deployment
+# variant's LOG_DIR (default "logs/", 5.5's "logs_5.5/", 6.0's "logs_6.0/",
+# and any other "logs*"-named directory), not just the literal default.
 *.log
 logs/
+logs_*/
+logs*/
+eval/results/hallucination_log.jsonl
+feedback.jsonl
+intent_classifications.jsonl
 
 # ── Jupyter ──────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
@@ -78,6 +87,7 @@ backend/sql_agent/scripts/
 #    `python -m backend.db_qa.intents.embedding_index`) ───────────────────────
 backend/db_qa/intents/output/*.faiss
 backend/db_qa/intents/output/*.pkl
+backend/db_qa/intents/output/*.json
 
 # ── Temporary audio files (recorded by speech input) ─────────────────────────
 *.wav

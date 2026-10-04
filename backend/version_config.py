@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 
@@ -108,14 +109,33 @@ def resolve_tenant_id(tenant_id: str | None, domain: str | None) -> str | None:
     return None
 
 
+_TENANT_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,32}$")
+
+
 def repo_root_for_tenant(tenant_id: str) -> str:
     """D:\\Repo6\\Repo6\\{TenantId} — the tenant-scoped repo root.
 
     Every subsequent path (DataBase\\, Instance\\, Render\\, ...) is built
     under THIS root, never under the bare APP_600_REPO_ROOT (which is a
     legacy/shared staging area, not per-tenant master data).
+
+    tenant_id is client-supplied (see resolve_tenant_id) and must be validated
+    before it reaches a filesystem join: a bare os.path.join would let an
+    absolute path or a UNC share (\\\\host\\share) silently replace
+    APP_600_REPO_ROOT entirely instead of being appended to it. Reject
+    anything that isn't a plain token, and require it to be a real,
+    registered tenant rather than any syntactically valid string.
     """
-    return os.path.join(APP_600_REPO_ROOT, tenant_id)
+    if not _TENANT_ID_RE.fullmatch(tenant_id):
+        raise ValueError(f"invalid tenant_id: {tenant_id!r}")
+    if tenant_id not in _get_tenant_registry().values():
+        raise ValueError(f"unknown tenant_id: {tenant_id!r}")
+
+    base = os.path.abspath(APP_600_REPO_ROOT)
+    root = os.path.abspath(os.path.join(base, tenant_id))
+    if os.path.commonpath([root, base]) != base:
+        raise ValueError(f"resolved tenant path escapes repo root: {tenant_id!r}")
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +165,16 @@ _active_tenant_id: "contextvars.ContextVar[str | None]" = contextvars.ContextVar
 _active_jwt: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
     "active_jwt", default=None
 )
+# H-03: the caller's login_id, exposed the same way as tenant_id/jwt above --
+# so download_url strings built deep in report_lookup.py (_get_download_info)
+# can embed it for the /download-file object-level ACL check, without
+# threading login_id as an explicit parameter through every function in that
+# call chain (get_report_status_fast -> _build_status_result ->
+# _get_download_info -> ...). Applies to both 5.5 and 6.0 (unlike
+# _active_tenant_id/_active_jwt, which are 6.0-only concepts).
+_active_login_id: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "active_login_id", default=None
+)
 
 
 def get_active_tenant_id() -> str | None:
@@ -153,6 +183,10 @@ def get_active_tenant_id() -> str | None:
 
 def get_active_jwt() -> str | None:
     return _active_jwt.get()
+
+
+def get_active_login_id() -> str | None:
+    return _active_login_id.get()
 
 
 def scoped_session_id(session_id: str | None) -> str | None:
@@ -216,16 +250,21 @@ class repo_scope:
     should ever override BASE_REPO_PATH).
     """
 
-    def __init__(self, root: str | None, tenant_id: str | None = None, jwt: str | None = None):
+    def __init__(
+        self, root: str | None, tenant_id: str | None = None, jwt: str | None = None,
+        login_id: str | None = None,
+    ):
         self._root = root
         self._tenant_id = tenant_id
         self._jwt = jwt
+        self._login_id = login_id
         self._tokens: list = []
 
     def __enter__(self) -> "repo_scope":
         self._tokens.append((_active_root, _active_root.set(self._root)))
         self._tokens.append((_active_tenant_id, _active_tenant_id.set(self._tenant_id)))
         self._tokens.append((_active_jwt, _active_jwt.set(self._jwt)))
+        self._tokens.append((_active_login_id, _active_login_id.set(self._login_id)))
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:

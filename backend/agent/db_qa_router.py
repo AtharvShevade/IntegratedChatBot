@@ -18,7 +18,8 @@ from typing import Generator
 import backend.config as config
 from backend.db_qa import access_control, query_handlers, templates, xml_store
 from backend.db_qa.intent_classifier import classify
-from backend.db_qa.beautifier import beautify_stream
+from backend.db_qa.beautifier import beautify_stream, is_grounded
+from backend.services import llm_config
 from backend.models import ChatResponse
 from backend.utils.debug import debug_log
 from backend.utils.intent_log import log_intent_outcome
@@ -531,7 +532,7 @@ def handle_db_qa_query(
     user_id: str,
     role_id: str,
     beautify: bool = False,
-    model: str = "phi3:mini",
+    model: str | None = None,
     login_id: str | None = None,
 ) -> dict:
     """Execute DB Q&A intent using LLM-extracted parameters.
@@ -563,6 +564,12 @@ def handle_db_qa_query(
     Returns:
         Response dict compatible with ChatResponse model with db_* fields populated
     """
+    # L-04: was a hardcoded "phi3:mini" default -- every real call site
+    # already passes its own explicit model (backend.config.APP_DB_BEAUTIFY_MODEL),
+    # so this is a fallback-of-last-resort, now resolved from the same
+    # centralized config beautify_stream() itself falls back to.
+    if model is None:
+        model = llm_config.chat_model()
     try:
         # Feature gate: gracefully return if not configured
         if not config.app_db_base_path():
@@ -704,8 +711,19 @@ def handle_db_qa_query(
                         full_response = ""
                         for token in beautify_stream(message, new_result, model=model, ollama_url=None):
                             full_response += token
-                        response_dict["db_beautified"] = full_response
-                        response_dict["response_text"] = full_response
+                        # H-09: the deterministic `rendered` answer is the source of
+                        # truth. Only accept the LLM rewrite if it is grounded in the
+                        # same result; otherwise keep the deterministic response_text
+                        # already set above.
+                        ok, reason = is_grounded(full_response, new_result)
+                        if ok:
+                            response_dict["db_beautified"] = full_response
+                            response_dict["response_text"] = full_response
+                        else:
+                            logger.warning(
+                                "[DB_QA] Beautifier output rejected (ungrounded) on new-taxonomy result: %s",
+                                reason,
+                            )
                     except Exception as exc:
                         logger.warning("[DB_QA] Beautifier failed on new-taxonomy result, using template: %s", exc)
                 return response_dict
@@ -758,7 +776,11 @@ def handle_db_qa_query(
             "db_qa_data":  _build_db_qa_data(result, intent),
         }
         
-        # Beautify if enabled and config allows
+        # Beautify if enabled and config allows. The deterministic answer is
+        # always computed first and used as the fallback (H-09): the LLM
+        # rewrite is only accepted once it passes a grounding check against
+        # the same `result` dict.
+        response_dict["response_text"] = _format_plain(result)
         if beautify and config.APP_DB_ENABLE_BEAUTIFY:
             try:
                 logger.debug("[DB_QA] Beautifying response with model=%s", model)
@@ -767,15 +789,15 @@ def handle_db_qa_query(
                     message, result, model=model, ollama_url=None
                 ):
                     full_response += token
-                response_dict["db_beautified"] = full_response
-                response_dict["response_text"] = full_response
-                logger.debug("[DB_QA] Beautified response: %d chars", len(full_response))
+                ok, reason = is_grounded(full_response, result)
+                if ok:
+                    response_dict["db_beautified"] = full_response
+                    response_dict["response_text"] = full_response
+                    logger.debug("[DB_QA] Beautified response: %d chars", len(full_response))
+                else:
+                    logger.warning("[DB_QA] Beautifier output rejected (ungrounded): %s", reason)
             except Exception as exc:
-                logger.warning("[DB_QA] Beautifier failed, using summary: %s", exc)
-                response_dict["response_text"] = result.get("summary", "No data found.")
-        else:
-            # Beautify disabled — build a readable response from records directly
-            response_dict["response_text"] = _format_plain(result)
+                logger.warning("[DB_QA] Beautifier failed, using deterministic answer: %s", exc)
         
         return response_dict
         
@@ -794,11 +816,14 @@ def handle_db_qa_query(
 def stream_db_qa_beautifier(
     message: str,
     result: dict,
-    model: str = "phi3:mini",
+    model: str | None = None,
 ) -> Generator[str, None, None]:
     """Stream beautified DB Q&A response as plain text tokens.
-    
+
     Used for SSE endpoints where responses are streamed back to the client.
+    L-04: was a hardcoded "phi3:mini" default -- beautify_stream() itself
+    now resolves None to the centralized llm_config default, so this
+    signature just stops shadowing that with its own separate literal.
     """
     try:
         yield from beautify_stream(message, result, model=model)

@@ -537,6 +537,9 @@ INTENT_SPECS: dict[Intent, IntentSpec] = {
 
 
 # Sanity: every Intent member has a spec, and vice versa.
-assert set(Intent) == set(INTENT_SPECS.keys()), (
-    "Intent enum and INTENT_SPECS must define exactly the same members"
-)
+# L-15: was a bare `assert` -- silently skipped under `python -O`. An
+# explicit exception always runs regardless of the optimization flag.
+if set(Intent) != set(INTENT_SPECS.keys()):
+    raise RuntimeError(
+        "Intent enum and INTENT_SPECS must define exactly the same members"
+    )

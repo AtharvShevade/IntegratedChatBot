@@ -220,8 +220,14 @@ class TestUnits:
         result_row = rows(built)[-1]
         assert "₹" not in result_row["actual"] and "₹" not in result_row["expected"]
         assert "₹" not in (result_row.get("note") or "")
-        comparison = heading(built, "Comparison")
-        assert all("₹" not in i["value"] for i in comparison["items"]), comparison
+        # The ratio figures also appear in Calculation (which replaced the old
+        # Comparison drawer block). The division's two operands ARE rupee
+        # amounts and keep their symbol; nothing derived from them may.
+        calculation = heading(built, "Calculation")["bullets"]
+        assert "₹0.03" not in " ".join(calculation)
+        assert "₹279.0095" not in " ".join(calculation)
+        assert "₹" not in calculation[-1]        # "nearest ₹0.0001" was R096's
+        assert calculation[0].endswith("= -0.0279009478")
         # The monetary components keep their own symbol.
         assert any("₹" in r["actual"] for r in rows(built)[:-1])
 
@@ -513,9 +519,14 @@ class TestNoRegression:
         )
 
     def test_the_card_still_emits_the_shared_section_spine(self):
+        """A formula card carries four of the six shared section kinds: the
+        locator strip and the technical-details drawer were removed on purpose
+        by the explanation reframe (a formula rule has no single cell to point
+        at, and the drawer only restated the body). Order is unchanged."""
         kinds = [s["kind"] for s in self._aggregate()["sections"]]
         spine = ["headline", "locator", "rule", "matrix", "fix", "details"]
-        assert [k for k in kinds if k in spine] == spine
+        assert [k for k in kinds if k in spine] == [
+            "headline", "rule", "matrix", "fix"]
 
     def test_the_matrix_still_ends_in_an_emphasised_result_row(self):
         final = rows(self._aggregate())[-1]
@@ -525,9 +536,16 @@ class TestNoRegression:
         assert "1,650,000" in final["expected"] and "2,360,000" in final["actual"]
 
     def test_the_drawer_still_carries_comparison_and_why_it_failed(self):
+        """Both facts the drawer used to carry are still on the card, one tier
+        up: the comparison as the Calculation points, the reason as the
+        headline. Neither was deleted, only re-tiered."""
         built = self._aggregate()
-        assert heading(built, "Comparison") is not None
-        assert heading(built, "Why It Failed") is not None
+        assert heading(built, "Comparison") is None        # drawer is gone
+        assert heading(built, "Why It Failed") is None
+        assert heading(built, "Calculation")["bullets"] == [
+            "₹450,000 + ₹1,200,000 = ₹1,650,000"]
+        assert section(built, "headline")["text"] == (
+            "Total Assets is ₹710,000 higher than the sum of the component values.")
 
     def test_the_v1_sections_are_untouched_by_all_of_this(self):
         """ERROR_CARD_V2=0 is the rollback path and is specified elsewhere; it
@@ -547,11 +565,17 @@ class TestNoRegression:
 
     def test_the_card_drawer_does_not_repeat_the_matrix_figures(self):
         """Problem 6: the same two numbers were stated in the matrix, in
-        Comparison and again in Why It Failed."""
-        why = heading(self._aggregate(), "Why It Failed")["bullets"]
-        assert not any("is reported as" in b for b in why)
-        assert any("The rule requires" in b for b in why)
-        assert any("so the check fails" in b for b in why)
+        Comparison and again in Why It Failed. The reframe settled this by
+        removing the drawer outright, so the pair is stated once — in the
+        matrix — with the requirement carried by the Rule line."""
+        built = self._aggregate()
+        assert "is reported as" not in built["text"]
+        # The two figures appear in the matrix and nowhere else on the card.
+        body = " ".join(s.get("text", "") for s in built["sections"])
+        assert "2,360,000" not in body and "1,650,000" not in body
+        # The requirement is still stated, by the Rule line.
+        assert section(built, "rule")["text"] == (
+            "Total Assets must be equal to Cash + Investments")
 
     def test_emphasis_hints_still_accompany_the_prose(self):
         rule_section = section(self._aggregate(), "rule")
@@ -759,18 +783,28 @@ class TestInternalScalingIsNotShownAsTheResult:
                               "0.03 reported.")
 
     def test_the_scaled_intermediate_is_gone_from_the_comparison_block(self):
-        items = {i["label"]: i["value"] for i in heading(self._built(), "Comparison")["items"]}
-        assert "279.0095" not in " ".join(items.values())
-        assert "300" not in " ".join(items.values())
-        # The scaling is acknowledged as a secondary note, not as a result.
-        assert "precision device" in items["Note"]
-        assert "10,000" in items["Note"]
+        """The comparison block is now the Calculation points (the drawer that
+        held the old "Comparison"/"Note" item list was removed by the
+        explanation reframe). The × 10,000 intermediate must not surface there
+        — and, with no block presenting it as a result any more, there is also
+        nothing left for the old "precision device" disclaimer to disclaim."""
+        built = self._built()
+        joined = " ".join(heading(built, "Calculation")["bullets"])
+        assert "279.0095" not in joined
+        assert "× 10,000" not in joined
+        assert rows(built)[-1]["expected"] == "0.0279"
+        assert "300" not in rows(built)[-1]["expected"]
 
     def test_a_sign_flip_is_never_presented_as_a_rounding_step(self):
         """The rule compares absolute values; '-0.0279 → rounds to 0.0279'
         would state a falsehood about the sign."""
-        items = {i["label"]: i["value"] for i in heading(self._built(), "Comparison")["items"]}
-        assert items["Calculated ratio"] == "0.0279"
+        built = self._built()
+        bullets = heading(built, "Calculation")["bullets"]
+        assert rows(built)[-1]["expected"] == "0.0279"
+        assert "→ rounds to" not in " ".join(bullets)
+        assert "-0.0279 expected" not in " ".join(bullets)
+        assert bullets[1] == ("Rounded to the nearest 0.0001: 0.0279 expected, "
+                              "0.03 reported.")
 
     def test_the_engines_own_figures_are_untouched(self):
         result = self._built()["result"]
@@ -790,10 +824,16 @@ class TestInternalScalingIsNotShownAsTheResult:
             concepts={"V1": "Total", "V2": "LossAdvances", "V3": "Other"},
         )
         assert fe._internal_scaling_hidden(built["comparison"], built["kind"]) is False
-        items = {i["label"]: i["value"] for i in heading(built, "Comparison")["items"]}
-        assert items["Reported"] == "₹608,709,000 → rounds to ₹608,700,000"
-        assert items["Calculated total"] == "₹34,000 → rounds to ₹0"
-        assert "Note" not in items
+        # The engine's own rounded pair, with the rupee rounding step intact
+        # (here the × 100,000 IS the rule's own rounding, not a precision
+        # device, so it is reported rather than hidden).
+        assert heading(built, "Calculation")["bullets"] == [
+            "₹34,000 + ₹0 = ₹34,000",
+            "Rounded to the nearest ₹100,000: ₹0 expected, ₹608,700,000 reported.",
+        ]
+        assert rows(built)[-1]["actual"] == "₹608,700,000"
+        assert rows(built)[-1]["expected"] == "₹0"
+        assert "precision device" not in built["text"]
 
 
 class TestValidatorMessageVersusAst:
@@ -916,12 +956,16 @@ class TestCountRules:
         assert "₹" not in row["actual"] and "₹" not in row["expected"]
 
     def test_the_prose_talks_about_records_throughout(self):
-        why = heading(self._short(), "Why It Failed")["bullets"]
-        joined = " ".join(why)
-        assert "The rule requires at least 50." in joined
-        assert "40 fewer than required" in joined
-        assert "Sector Code is" not in joined            # not a value claim
-        fix = section(self._short(), "fix")["steps"][0]
+        """The Why It Failed drawer is gone; its two points are now carried by
+        the Rule line ("at least 50 … records must be reported") and the matrix
+        shortfall note ("short by 40")."""
+        built = self._short()
+        assert section(built, "rule")["text"] == (
+            "At least 50 Sector Code records must be reported.")
+        assert rows(built)[-1]["note"] == "short by 40"
+        # Never a claim about the FIELD's value, only about record counts.
+        assert "Sector Code is" not in built["text"]
+        fix = section(built, "fix")["steps"][0]
         assert "how many Sector Code records" in fix
 
     def test_a_maximum_count_is_worded_as_a_limit_not_a_requirement(self):
@@ -930,8 +974,12 @@ class TestCountRules:
             "7 Branch Code records are reported, but at most 5 are allowed.")
         row = rows(built)[-1]
         assert row["expected"] == "at most 5" and row["note"] == "over by 2"
-        assert "2 more than allowed" in " ".join(
-            heading(built, "Why It Failed")["bullets"])
+        # The Rule line (which replaced the Why It Failed drawer) must word a
+        # ceiling as a permission, never as a requirement.
+        assert section(built, "rule")["text"] == (
+            "At most 5 Branch Code records may be reported.")
+        assert "are required" not in built["text"]
+        assert "must be reported" not in built["text"]
 
     def test_uniqueness_is_never_claimed(self):
         """fn:count counts rows. Nothing may imply it counts DISTINCT values."""
@@ -1119,10 +1167,14 @@ class TestAggregateIsUntouched:
         assert rows(built)[-1]["note"] == "over by ₹201,300,000"
 
     def test_why_it_failed_still_states_the_requirement(self):
-        """The requirement bullet is only dropped where the Rule line restates
-        it in business words — which aggregate deliberately does not."""
-        why = heading(self._built(), "Why It Failed")["bullets"]
-        assert any("The rule requires" in b for b in why)
+        """The requirement is still stated for an aggregate — by the Validation
+        Rule line and the "i.e." restatement, which took over from the Why It
+        Failed drawer the explanation reframe removed."""
+        built = self._built()
+        assert heading(built, "Validation Rule")["text"] == (
+            "Limit Total = the total of Limit A + the total of Limit B")
+        assert section(built, "rule")["text"] == (
+            "Limit Total must be equal to the total of Limit A + the total of Limit B")
 
 
 class TestConditionalBranch:

@@ -1,27 +1,27 @@
 # backend/sql_agent/_bootstrap.py
 #
-# Makes the vendored engine at backend/sql_agent/src/ importable under its own
-# internal package name, `src`, and translates this project's .env variable
-# names into the ones its src/config.py reads.
+# Makes the vendored engine at backend/sql_agent/sqlcore/ importable under its own
+# internal package name, `sqlcore`, and translates this project's .env variable
+# names into the ones its sqlcore/config.py reads.
 #
-# This package is fully self-contained: the engine (src/), its prebuilt
+# This package is fully self-contained: the engine (sqlcore/), its prebuilt
 # artifacts (embeddings/), and its DDL fallback (data/schema.sql) all live
 # under THIS folder — there is no separate top-level sql_agent/ checkout, and
 # no reference anywhere to embedding_building/ or any other build-time tree.
 # `sys.path` is pointed at this folder (not the project root) purely so the
-# engine's internal `from src import config` / `from src.retriever import
+# engine's internal `from sqlcore import config` / `from sqlcore.retriever import
 # ...` imports keep resolving without editing all fifteen of its modules —
 # that indirection is the only thing standing between "one folder" and a
 # package rename across the whole engine.
 #
 # Env translation is required because the two projects independently named the
 # same settings: this project has used ORACLE_* / OLLAMA_BASE_URL /
-# SQL_OLLAMA_MODEL since the old agent, while src/config.py reads
+# SQL_OLLAMA_MODEL since the old agent, while sqlcore/config.py reads
 # DB_* / OLLAMA_URL / OLLAMA_MODEL. Rather than duplicate credentials in .env
-# under two names, we map them here, before src.config is ever imported.
+# under two names, we map them here, before sqlcore.config is ever imported.
 #
 # Import this module (or anything in this package — __init__ does it) before
-# touching `src.*`.
+# touching `sqlcore.*`.
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def _setenv(name: str, value: str | None, *, override: bool) -> None:
 
 
 def _restore_env() -> None:
-    """Undo every _setenv() write, once src.config has read them.
+    """Undo every _setenv() write, once sqlcore.config has read them.
 
     This is not tidiness — it is required for correctness. The agent's settings
     live under names the chatbot ALSO uses for different things: OLLAMA_MODEL is
@@ -88,7 +88,7 @@ def _restore_env() -> None:
     backend/services/llm_service.py). Leaving SQLCoder in the process env would
     silently hand those features a model that can only emit SQL.
 
-    Safe to restore immediately, because src/config.py snapshots every value
+    Safe to restore immediately, because sqlcore/config.py snapshots every value
     into module-level constants at import time and nothing downstream in the
     agent re-reads os.environ.
     """
@@ -100,7 +100,7 @@ def _restore_env() -> None:
 
 
 def ensure() -> None:
-    """Idempotent: put this package's src/ on sys.path, apply the agent's env
+    """Idempotent: put this package's sqlcore/ on sys.path, apply the agent's env
     long enough for its config module to load, then hand the process env back
     untouched."""
     global _done
@@ -242,12 +242,12 @@ def ensure() -> None:
 
     # ── Load the agent's config, then hand the process env back ──────────────
     # Imported HERE, explicitly, rather than left to whichever shim gets imported
-    # first: src.config snapshots os.environ at import time, so the read has to
+    # first: sqlcore.config snapshots os.environ at import time, so the read has to
     # happen while the agent's values are in place and before _restore_env().
     embedding_dir = os.environ.get("EMBEDDING_DIR")
     sql_model = os.environ.get("OLLAMA_MODEL")
     try:
-        import src.config  # noqa: F401
+        import sqlcore.config  # noqa: F401
     finally:
         _restore_env()
 

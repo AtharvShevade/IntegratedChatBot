@@ -23,6 +23,13 @@ const STORE_NAME  = 'histories'
 // can find prior data; the IndexedDB key itself is just historyId.
 const LS_KEY_PREFIX = 'chat_history_'
 
+// M-32: previously unbounded -- saveHistory() put() the entire messages
+// array every time with no cap, so a very long-running conversation (or
+// one with large comparative-analysis payloads) could grow a single
+// IndexedDB record indefinitely. Keeps only the most recent N messages;
+// oldest ones are dropped, not the newest.
+export const MAX_STORED_MESSAGES = 200
+
 let _dbPromise = null
 
 function _openDatabase() {
@@ -120,11 +127,15 @@ export async function loadHistory(historyId) {
   return migrated
 }
 
-/** Persist *messages* under *historyId*, replacing whatever was there. */
+/** Persist *messages* under *historyId*, replacing whatever was there.
+ * M-32: bounded to the most recent MAX_STORED_MESSAGES entries. */
 export async function saveHistory(historyId, messages) {
   if (!historyId) return
+  const bounded = Array.isArray(messages) && messages.length > MAX_STORED_MESSAGES
+    ? messages.slice(messages.length - MAX_STORED_MESSAGES)
+    : messages
   await _runTransaction('readwrite', (store) => (
-    _requestToPromise(store.put({ historyId, messages, updatedAt: Date.now() }))
+    _requestToPromise(store.put({ historyId, messages: bounded, updatedAt: Date.now() }))
   ))
 }
 

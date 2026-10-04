@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import MessageBubble from './MessageBubble.jsx'
 
-export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback, onExplainCategory, onSummaryLoaded, allowedActions, lang, onLanguageChange }) {
+export default function ChatWindow({ messages, isLoading, onSuggestion, onGuidedAction, onCompare, onFeedback, onExplainCategory, onSummaryLoaded, allowedActions, lang, onLanguageChange, loginId }) {
   const bottomRef = useRef(null)
 
   // Auto-scroll to the latest message whenever messages change
@@ -38,7 +38,6 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           instancesData={msg.instancesData}
           downloadUrl={msg.downloadUrl}
           downloadLabel={msg.downloadLabel}
-          statusNote={msg.statusNote}
           errorDetails={msg.errorDetails}
           jobId={msg.jobId}
           batchCategory={msg.batchCategory}
@@ -46,7 +45,6 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           batchFormId={msg.batchFormId}
           batchReportName={msg.batchReportName}
 
-          onFollowUp={onFollowUp}
           onSuggestion={onSuggestion}
           onGuidedAction={onGuidedAction}
           onCompare={onCompare}
@@ -57,6 +55,7 @@ export default function ChatWindow({ messages, isLoading, onFollowUp, onSuggesti
           // dropdown lives in the chatbot menu section.
           lang={lang}
           onLanguageChange={onLanguageChange}
+          loginId={loginId}
         />
       ))}
 

@@ -170,7 +170,7 @@ def _resolve_period(store: XMLStore, token: str) -> dict | None:
         if exact_id:
             return exact_id
     tl = token.lower()
-    exact_name = next((p for p in periods if p.get("PeriodName", "").lower() == tl), None)
+    exact_name = next((p for p in periods if get_attr(p, "PeriodName").lower() == tl), None)
     if exact_name:
         return exact_name
     exact_ebr = next((p for p in periods if (p.get("EBRFrequency") or "").lower() == tl), None)
@@ -181,10 +181,10 @@ def _resolve_period(store: XMLStore, token: str) -> dict | None:
     # Yearly") — normalize both sides (strip spaces/hyphens) before
     # giving up on an exact match.
     tl_norm = re.sub(r"[\s\-]+", "", tl)
-    norm_name = next((p for p in periods if re.sub(r"[\s\-]+", "", p.get("PeriodName", "").lower()) == tl_norm), None)
+    norm_name = next((p for p in periods if re.sub(r"[\s\-]+", "", get_attr(p, "PeriodName").lower()) == tl_norm), None)
     if norm_name:
         return norm_name
-    substr = [p for p in periods if tl in p.get("PeriodName", "").lower()]
+    substr = [p for p in periods if tl in get_attr(p, "PeriodName").lower()]
     return substr[0] if len(substr) == 1 else None
 
 
@@ -1352,17 +1352,32 @@ def handle_nonxbrl_return_list(scope: dict, entities: dict, store: XMLStore) -> 
     target_department = entities.get("target_department", "")
     returns = list(store.non_xbrl_returns())
 
-    if target_department:
+    # H-11: check scope["target_type"] BEFORE looking at target_department.
+    # The classifier can extract a target_department entity ("Treasury")
+    # from the question text even when it classifies the overall intent as
+    # target_type=="self" -- checking target_department first (the old
+    # order) let a self-scoped caller see a NAMED OTHER department's data
+    # with no authorization check at all, since access_control.scope_query()
+    # only enforces admin-only access when target_type=="department", and
+    # never even sees this mismatch. _resolve_target_department() already
+    # encodes the correct rule (self always resolves the caller's OWN
+    # department, never entities) -- this handler must defer to it instead
+    # of re-implementing (and getting wrong) the same self/department split.
+    if scope["target_type"] == "self":
+        dept = _resolve_target_department(store, scope, entities)
+        if dept:
+            nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
+            returns = [r for r in returns if r.get("Id") in nx_ids or r.get("ReturnId") in nx_ids]
+    elif target_department:
+        # Only reachable for a non-self target_type -- access_control.
+        # scope_query() has already required admin for "department" (and
+        # denied any target_type it doesn't recognise), so trusting
+        # entities["target_department"] here is safe.
         dept = store.dept_by_name(target_department)
         if not dept:
             return _not_found("nonxbrl_return_list", "Non-XBRL Returns", not_found_summary("Department '{name}' not found.", target_department, "Please specify a department name."))
         nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
         returns = [r for r in returns if r.get("Id") in nx_ids or r.get("ReturnId") in nx_ids]
-    elif scope["target_type"] == "self":
-        dept = _resolve_target_department(store, scope, entities)
-        if dept:
-            nx_ids = {f.strip() for f in dept.get("NXForms", "").split("|") if f.strip()}
-            returns = [r for r in returns if r.get("Id") in nx_ids or r.get("ReturnId") in nx_ids]
 
     if query_type == "no_due_days":
         returns = [r for r in returns if not (r.get("DueDays") or "").strip()]

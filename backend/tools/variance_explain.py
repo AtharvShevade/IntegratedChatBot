@@ -61,6 +61,8 @@ import os
 import re
 import time
 
+from backend.services import llm_config
+
 logger = logging.getLogger(__name__)
 
 # ── Selection ────────────────────────────────────────────────────────────────
@@ -695,7 +697,13 @@ def build_facts(
         try:
             f["movement_score"] = _movement_of(r)
 
-        except Exception:
+        except Exception as exc:
+            # M-19: was silent -- a per-row scoring failure fed straight
+            # into the explanation output with no trace of why.
+            logger.warning(
+                "movement_score computation failed for concept=%r: %s",
+                r.get("concept"), exc, exc_info=True,
+            )
             f["movement_score"] = None
 
         share = compute_share(r, all_rows, index, label_a, label_b)
@@ -715,7 +723,11 @@ def _movement_of(row: dict) -> float | None:
 
         return round(_movement_score(row), 1)
 
-    except Exception:
+    except Exception as exc:
+        # M-19: this is the only place the real failure is visible -- the
+        # caller above (_movement_of's caller) only sees None either way.
+        logger.debug("movement_score unavailable for concept=%r: %s",
+                     row.get("concept"), exc, exc_info=True)
         return None
 
 # ── Deterministic sentence ───────────────────────────────────────────────────
@@ -1232,9 +1244,9 @@ async def generate_explanations(
     if not polish:
         return _render(templates, "template(draft)")
 
-    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    base_url = llm_config.base_url()
 
-    model    = os.getenv("OLLAMA_COMPARE_MODEL", "llama3.1:latest")
+    model    = llm_config.compare_model()
 
     if timeout is None:
         timeout = float(os.getenv("OLLAMA_SUMMARY_TIMEOUT", "8"))
@@ -1245,7 +1257,7 @@ async def generate_explanations(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
+        "keep_alive": llm_config.keep_alive(),
         "options": {
             "temperature": 0.45,
             # Room for one sentence per fact plus overhead. The old 450 was

@@ -12,7 +12,7 @@ from backend.sql_agent import _bootstrap
 
 _bootstrap.ensure()
 
-from src.vectorizer import (                                     # noqa: E402,F401
+from sqlcore.vectorizer import (                                     # noqa: E402,F401
     build_faiss_index,
     build_row_label_index,
     embed_documents,

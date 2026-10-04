@@ -286,7 +286,7 @@ class TestRealDataFrequencyResolution:
         without leaking state into every other test in this session).
         _normalize_frequency() is what applies the "A"->"Y" alias; this
         only confirms the raw code get_period_info() surfaces."""
-        monkeypatch.setattr(ig, "_period_caches", {})
+        ig._period_cache.clear()  # M-15: was a plain dict (_period_caches), now a shared FileCache
         monkeypatch.setattr(
             ig._config, "period_xml_path",
             lambda: str(PATH_6_0_TENANT_1001 / "Period.xml"),

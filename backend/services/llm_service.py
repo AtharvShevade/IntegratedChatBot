@@ -1,26 +1,99 @@
 # llm_service.py -- Async Ollama client: LLM intent/entity extraction + conversational fallback.
-# Model roles:
-#   OLLAMA_EXTRACT_MODEL  (default: phi3:mini)      — intent/entity extraction + fallback chat
-#   OLLAMA_MODEL          (default: phi3:mini)      — conversational fallback / unknown intent
-#   comparative analysis summaries use OLLAMA_COMPARE_MODEL (mistral:latest) via xbrl_comparator.py
+# Model roles (defaults centralized in backend/services/llm_config.py -- see
+# that module for the single source of truth each falls back to):
+#   OLLAMA_EXTRACT_MODEL  — intent/entity extraction + fallback chat
+#   OLLAMA_MODEL          — conversational fallback / unknown intent; also the
+#                           model used by error/formula explanation call sites
+#   OLLAMA_COMPARE_MODEL  — comparative analysis summaries (xbrl_comparator.py)
 # Env vars: OLLAMA_BASE_URL, OLLAMA_EXTRACT_MODEL, OLLAMA_MODEL, OLLAMA_TIMEOUT
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
 
 import httpx
 
+from backend.services import llm_config
+from backend.services.http_client import client_scope
+
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE_URL:      str   = os.getenv("OLLAMA_BASE_URL",      "http://127.0.0.1:11434")
-OLLAMA_EXTRACT_MODEL: str   = os.getenv("OLLAMA_EXTRACT_MODEL", "phi3:mini")       # intent/entity extraction
-OLLAMA_MODEL:         str   = os.getenv("OLLAMA_MODEL",         "phi3:mini")       # conversational fallback
-REQUEST_TIMEOUT:      float = float(os.getenv("OLLAMA_TIMEOUT",          "180"))   # 180 s for chat/summary calls
+# M-12: bounded retry for genuinely TRANSIENT Ollama failures only -- a
+# dropped/refused connection, a timeout establishing or writing the
+# request, or a 502/503/504 from a flaky reverse proxy (the shared
+# OLLAMA_BASE_URL in this deployment is itself a proxy -- see .env). Never
+# retried: any other HTTP status (a 4xx means Ollama rejected the request
+# itself -- retrying resends the same rejected request), a JSON-parsing
+# failure, or any other exception -- those are deterministic/application
+# errors that a retry cannot fix.
+#
+# This does not touch backend/i18n/translator.py's own retry (a separate,
+# already-bounded, budget-aware mechanism with its own well-documented
+# reasoning) or llm_service._normalize_llm_action's existing 2-attempt loop
+# (a deliberate, narrow retry around a single-word classification) -- both
+# predate this change and are left exactly as they were to avoid duplicating
+# or compounding retry behavior that already exists and already works.
+_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
+# Retries AFTER the first attempt -- "1" means at most 2 total attempts.
+OLLAMA_MAX_RETRIES: int = int(os.getenv("OLLAMA_MAX_RETRIES", "1"))
+_RETRY_BASE_DELAY_S = 0.25
+_RETRY_MAX_DELAY_S = 2.0
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRYABLE_STATUS_CODES
+    # TransportError covers ConnectError/ConnectTimeout/ReadTimeout/
+    # WriteTimeout/PoolTimeout/NetworkError -- every connection-level
+    # transient failure httpx can raise, deliberately NOT a bare `Exception`
+    # catch (a JSON/KeyError bug in a caller must never look "retryable").
+    return isinstance(exc, httpx.TransportError)
+
+
+async def _post_with_retry(url: str, json_payload: dict, timeout: float, flow: str) -> httpx.Response:
+    """POST to *url* with a small number of bounded retries for transient
+    failures only. Each individual attempt still uses *timeout* as its own
+    budget (unchanged from before this change, and independent of the
+    shared client's own LLM_HTTP_CONNECT_TIMEOUT/LLM_HTTP_READ_TIMEOUT/
+    LLM_HTTP_WRITE_TIMEOUT/LLM_HTTP_POOL_TIMEOUT from Batch 2, which this
+    does not bypass or alter) -- retrying only adds a short, capped delay
+    BETWEEN attempts, never changes how long any one attempt itself waits.
+
+    *flow* is a short label for the retry log line only (e.g. "llm_chat") --
+    never the prompt or any user content.
+    """
+    for attempt in range(OLLAMA_MAX_RETRIES + 1):
+        try:
+            async with client_scope() as client:
+                resp = await client.post(url, json=json_payload, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            if not _is_retryable_llm_error(exc) or attempt >= OLLAMA_MAX_RETRIES:
+                raise
+            delay = min(_RETRY_BASE_DELAY_S * (2 ** attempt), _RETRY_MAX_DELAY_S)
+            delay += random.uniform(0, delay * 0.25)  # jitter
+            logger.warning(
+                "[LLM_RETRY] flow=%s attempt=%d/%d error_type=%s delay_s=%.2f",
+                flow, attempt + 1, OLLAMA_MAX_RETRIES + 1, type(exc).__name__, delay,
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")  # loop above always returns or raises
+
+# L-02: model names/base URL now come from the centralized llm_config module
+# (one source of truth for the default when OLLAMA_MODEL etc. are unset) --
+# these names are kept as module attributes since other modules (e.g.
+# backend/main.py) import them directly from here.
+OLLAMA_BASE_URL:      str   = llm_config.base_url()
+OLLAMA_EXTRACT_MODEL: str   = llm_config.extract_model()       # intent/entity extraction
+OLLAMA_MODEL:         str   = llm_config.chat_model()          # conversational fallback
+REQUEST_TIMEOUT:      float = llm_config.request_timeout()     # 180 s for chat/summary calls
 EXTRACT_TIMEOUT:      float = float(os.getenv("OLLAMA_EXTRACT_TIMEOUT",  "30"))    # 30 s for fast intent extraction
 # _call_ollama() backs disambiguate_intent/classify_conversational_intent/chat_response
 # — the "I didn't understand / let me answer generally" fallback path a plain-worded
@@ -33,7 +106,7 @@ EXTRACT_TIMEOUT:      float = float(os.getenv("OLLAMA_EXTRACT_TIMEOUT",  "30")) 
 CHAT_FALLBACK_TIMEOUT: float = float(os.getenv("OLLAMA_CHAT_FALLBACK_TIMEOUT", "12"))
 
 # Keep models resident in memory between requests — avoids 60-80 s cold-start penalty.
-_KEEP_ALIVE: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+_KEEP_ALIVE: str = llm_config.keep_alive()
 
 # ---------------------------------------------------------------------------
 # LLM extraction prompt — instructs the model to return structured JSON only.
@@ -142,6 +215,20 @@ JSON schema (complete):
 
 """.strip()
 
+# H-13: the single shared source of truth for which intent names are valid.
+# Before this, llm_extractor.py's post-call validator hard-coded its OWN
+# separate 6-value set (no db_* names at all), independently of the list
+# above — so the LLM could correctly classify a DB Q&A question and have the
+# validator silently reset it to "unknown" every single time, because the
+# validator's set and this prompt's list had drifted apart. Extracting the
+# valid names directly out of the prompt text itself (rather than hand-typing
+# a second list anywhere) makes that drift structurally impossible: whatever
+# intent name appears here IS what the validator accepts, always, by
+# construction. Matches lines of the form `  "intent_name"       — ...`.
+VALID_INTENTS: frozenset[str] = frozenset(
+    re.findall(r'^\s*"([a-zA-Z_]+)"\s*—', _EXTRACT_SYSTEM_PROMPT, re.MULTILINE)
+)
+
 _CHAT_SYSTEM_PROMPT = """\
 You are a Report Assistant. You help users with:
 - Report status checks
@@ -223,12 +310,21 @@ async def _call_ollama(
     # CHAT_FALLBACK_TIMEOUT (not REQUEST_TIMEOUT) — see its definition above for why
     # this call in particular needs a short leash.
     try:
-        async with httpx.AsyncClient(timeout=CHAT_FALLBACK_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json=payload,
-            )
-            resp.raise_for_status()
+        # L-01: shared client (one per process, created at app startup)
+        # instead of opening a new AsyncClient per call -- client_scope()
+        # (used inside _post_with_retry) yields that shared client here
+        # (and leaves it open -- it outlives this call) or, outside the
+        # app's lifespan, a temporary client it closes on exit so it can
+        # never leak. The *timeout=* passed through preserves this call
+        # site's existing CHAT_FALLBACK_TIMEOUT budget for each individual
+        # attempt exactly (same as the old
+        # `httpx.AsyncClient(timeout=CHAT_FALLBACK_TIMEOUT)` applying that
+        # value to every phase of this one request).
+        # M-12: _post_with_retry() retries ONLY a transient connection/
+        # timeout/502/503/504 failure, up to OLLAMA_MAX_RETRIES times.
+        resp = await _post_with_retry(
+            f"{OLLAMA_BASE_URL}/api/chat", payload, CHAT_FALLBACK_TIMEOUT, flow="llm_chat",
+        )
     except Exception as exc:
         logger.warning(
             "AI request failed | flow=llm_chat | model=%s | duration_ms=%.0f | error=%s",
@@ -237,10 +333,13 @@ async def _call_ollama(
         raise
 
     _elapsed = time.monotonic() - _t0
-    content: str = resp.json()["message"]["content"]
+    response_json = resp.json()
+    content: str = response_json["message"]["content"]
+    from backend.tools.llm_telemetry import extract_token_info
+    token_info = extract_token_info(response_json)
     logger.info(
-        "[PERF] operation=llm_chat model=%s duration=%.2fs response_len=%d",
-        _model, _elapsed, len(content),
+        "[PERF] operation=llm_chat model=%s duration=%.2fs response_len=%d %s",
+        _model, _elapsed, len(content), token_info.as_log_str(),
     )
     logger.debug("[LLM_RESPONSE] content_preview=%r", content[:200])
     return content
@@ -445,18 +544,23 @@ async def extract_intent_entities_llm(user_query: str, history: list[dict] | Non
         OLLAMA_EXTRACT_MODEL, OLLAMA_BASE_URL, _KEEP_ALIVE, EXTRACT_TIMEOUT,
     )
     _t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=EXTRACT_TIMEOUT) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-        )
-        resp.raise_for_status()
+    # L-01: shared client -- see _call_ollama()'s comment above.
+    # M-12: bounded retry for a transient failure only -- see
+    # _post_with_retry()'s docstring. Still raises (uncaught here, exactly
+    # as before this change) once retries are exhausted or the failure is
+    # not retryable -- callers' existing exception handling is unchanged.
+    resp = await _post_with_retry(
+        f"{OLLAMA_BASE_URL}/api/chat", payload, EXTRACT_TIMEOUT, flow="llm_extract",
+    )
 
     _elapsed = time.monotonic() - _t0
-    content: str = resp.json()["message"]["content"]
+    response_json = resp.json()
+    content: str = response_json["message"]["content"]
+    from backend.tools.llm_telemetry import extract_token_info
+    token_info = extract_token_info(response_json)
     logger.info(
-        "[PERF] operation=llm_extract model=%s duration=%.2fs",
-        OLLAMA_EXTRACT_MODEL, _elapsed,
+        "[PERF] operation=llm_extract model=%s duration=%.2fs %s",
+        OLLAMA_EXTRACT_MODEL, _elapsed, token_info.as_log_str(),
     )
     logger.debug("[LLM_EXTRACT_RAW] content_preview=%r", content[:200])
     return json.loads(content)

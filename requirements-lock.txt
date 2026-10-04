@@ -1,0 +1,137 @@
+# requirements-lock.txt — exact, reproducible snapshot of this project's
+# ENTIRE working virtual environment (runtime + dev/test tooling combined),
+# generated via `pip freeze` from the environment this whole backend/test
+# suite was developed and verified against. Every version here is already
+# confirmed working -- M-30 explicitly does NOT upgrade anything just to
+# produce this lockfile.
+#
+# requirements.txt and requirements-dev.txt remain the human-maintained,
+# loosely-pinned (>=) top-level declarations that describe WHAT this
+# project depends on and why (see their own section comments); this file
+# is the companion "exactly WHICH versions, down to every transitive
+# dependency" reference for a fully reproducible install:
+#
+#   pip install -r requirements-lock.txt
+#
+# Regenerate after deliberately changing requirements.txt/requirements-dev.txt:
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   pip freeze > requirements-lock.txt
+#
+# Supported Python version: 3.13 (see .python-version). This project has
+# not been tested against other major versions.
+
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+arelle-release==2.41.0
+attrs==26.1.0
+bandit==1.9.4
+boolean.py==5.0
+bottle==0.13.4
+CacheControl==0.14.4
+certifi==2026.4.22
+cffi==2.0.0
+charset-normalizer==3.4.7
+click==8.4.0
+colorama==0.4.6
+cryptography==48.0.0
+cyclonedx-python-lib==11.12.0
+defusedxml==0.7.1
+duckdb==1.5.6
+edge-tts==7.2.8
+et_xmlfile==2.0.0
+faiss-cpu==1.13.2
+fastapi==0.136.1
+filelock==3.29.0
+frozenlist==1.8.0
+fsspec==2026.4.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.7.1
+httpx==0.28.1
+huggingface_hub==0.36.2
+idna==3.15
+iniconfig==2.3.0
+isodate==0.7.2
+jaconv==0.5.0
+Jinja2==3.1.6
+joblib==1.5.3
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+license-expression==30.4.4
+lxml==6.1.1
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+mpmath==1.3.0
+msgpack==1.2.3
+multidict==6.7.1
+networkx==3.6.1
+numpy==2.4.6
+openpyxl==3.1.5
+oracledb==4.0.1
+packageurl-python==0.17.6
+packaging==26.2
+pandas==3.0.3
+pillow==12.2.0
+pip-requirements-parser==32.0.1
+pip_api==0.0.35
+pip_audit==2.10.1
+platformdirs==4.12.2
+pluggy==1.6.0
+portalocker==4.4.0
+propcache==0.5.2
+py-serializable==2.1.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+pyparsing==3.3.2
+pypdfium2==5.13.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.29
+PyYAML==6.0.3
+rank-bm25==0.2.2
+RapidFuzz==3.14.5
+referencing==0.37.0
+regex==2026.5.9
+requests==2.34.2
+rich==15.0.0
+rpds-py==0.30.0
+ruff==0.16.9
+safetensors==0.7.0
+scikit-learn==1.8.0
+scipy==1.17.1
+sentence-transformers==2.7.0
+sentencepiece==0.2.2
+setuptools==81.0.0
+six==1.17.0
+sortedcontainers==2.4.0
+sounddevice==0.5.5
+soundfile==0.13.1
+starlette==1.0.0
+stevedore==5.9.1
+sympy==1.14.0
+tabulate==0.10.0
+threadpoolctl==3.6.0
+tokenizers==0.22.2
+tomli==2.4.1
+tomli_w==1.2.0
+torch==2.12.0
+tqdm==4.67.3
+transformers==4.57.6
+truststore==0.10.4
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2026.2
+urllib3==2.7.0
+uvicorn==0.47.0
+watchfiles==1.2.0
+websockets==16.0
+yarl==1.24.5

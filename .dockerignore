@@ -1,0 +1,30 @@
+# H-15: keep the build context small and, critically, never let a real
+# secret or local dev artifact end up baked into an image layer.
+
+.env
+.env.*
+!.env.example
+
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+logs/
+logs_*/
+logs*/
+
+frontend/node_modules/
+frontend/dist/
+
+backend/tests/
+backend/**/tests/
+backend/**/__pycache__/
+
+.pytest_cache/
+*.egg-info/
+
+# Local dev/editor cruft
+.vscode/
+.idea/

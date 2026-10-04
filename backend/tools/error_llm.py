@@ -32,6 +32,8 @@ import os
 import re
 import time as _time
 
+from backend.services import llm_config
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["llm_settings", "phrase", "is_grounded", "collect_numbers"]
@@ -40,16 +42,12 @@ __all__ = ["llm_settings", "phrase", "is_grounded", "collect_numbers"]
 def llm_settings() -> dict:
     """Ollama connection settings, read from the same environment variables the
     existing explainers already use — no new configuration is introduced."""
-    try:
-        max_concurrency = max(1, int(os.getenv("OLLAMA_MAX_CONCURRENCY", "2")))
-    except ValueError:
-        max_concurrency = 2
     return {
-        "base": os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-        "model": os.getenv("OLLAMA_MODEL", "llama3.1:latest"),
-        "timeout": float(os.getenv("OLLAMA_TIMEOUT", "180")),
-        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
-        "max_concurrency": max_concurrency,
+        "base": llm_config.base_url(),
+        "model": llm_config.chat_model(),
+        "timeout": llm_config.request_timeout(),
+        "keep_alive": llm_config.keep_alive(),
+        "max_concurrency": llm_config.max_concurrency(),
         "enabled": os.getenv("ERROR_EXPLAIN_LLM", "1").strip().lower()
                    not in ("0", "false", "no", "off"),
     }
@@ -407,7 +405,8 @@ def phrase(
         with _httpx.Client(timeout=settings["timeout"]) as client:
             resp = client.post(f"{settings['base']}/api/chat", json=body)
             resp.raise_for_status()
-        content = resp.json()["message"]["content"].strip()
+        response_json = resp.json()
+        content = response_json["message"]["content"].strip()
         content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
         parsed = _parse_json_object(content, list(fields))
         if parsed is None:
@@ -432,9 +431,11 @@ def phrase(
         logger.info("[error_llm] rejected: %s", reason)
         return None
 
+    from backend.tools.llm_telemetry import extract_token_info
+    token_info = extract_token_info(response_json)
     logger.info(
-        "AI completed | flow=error_explanation | model=%s | duration_ms=%.0f",
-        settings["model"], (_time.monotonic() - _t0) * 1000,
+        "AI completed | flow=error_explanation | model=%s | duration_ms=%.0f | %s",
+        settings["model"], (_time.monotonic() - _t0) * 1000, token_info.as_log_str(),
     )
     return out
 

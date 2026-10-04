@@ -36,6 +36,7 @@ import threading
 import xml.etree.ElementTree as ET
 
 from backend import config
+from backend.utils.file_cache import FileCache
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,15 @@ _TAXONOMY_ROOTS = ("DataBase", "conf", "confCims")
 # document or data dump from dominating index build time.
 _MAX_SNIFF_BYTES = 24 * 1024 * 1024
 
+# M-15: both were previously raw, unbounded dicts (one additionally
+# unlocked at the dict-access level) -- now bounded, generically
+# thread-safe FileCache instances. _CACHE_LOCK is kept for
+# get_index_for_paths()'s check-then-construct below, which deliberately
+# needs a stronger single-construction guarantee than FileCache's own
+# internal locking provides on its own (see that function's comment).
 _CACHE_LOCK = threading.Lock()
-_INDEX_CACHE: dict[tuple, "TaxonomyIndex"] = {}
+_INDEX_CACHE: "FileCache[tuple, TaxonomyIndex]" = FileCache(max_size=32)
+_SCHEMA_LOCATION_CACHE: "FileCache[tuple[str, str], tuple[str, ...]]" = FileCache(max_size=128)
 
 
 def local_name(qname: str) -> str:
@@ -696,7 +704,6 @@ def _example_for_base_type(base: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _TAXONOMY_DIR_NAME = "Taxonomy"
-_SCHEMA_LOCATION_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 
 
 def _all_taxonomy_dirs(active_root: str) -> list[str]:
@@ -742,23 +749,25 @@ def find_roots_for_schema(schema_href: str) -> tuple[str, ...]:
         return ()
     active_root = config._active_root()
     key = (os.path.normcase(active_root), name)
-    with _CACHE_LOCK:
-        cached = _SCHEMA_LOCATION_CACHE.get(key)
-    if cached is not None:
-        return cached
 
-    matches: list[str] = []
-    for root in _all_taxonomy_dirs(active_root):
-        for dirpath, _dirs, files in os.walk(root):
-            if any(f.lower() == name for f in files):
-                matches.append(root)
-                break
-    result = tuple(matches)
-    with _CACHE_LOCK:
-        _SCHEMA_LOCATION_CACHE[key] = result
-    if result:
-        logger.info("[taxonomy_index] schemaRef %r resolved to %s", name, result)
-    return result
+    def _load() -> tuple[str, ...]:
+        matches: list[str] = []
+        for root in _all_taxonomy_dirs(active_root):
+            for dirpath, _dirs, files in os.walk(root):
+                if any(f.lower() == name for f in files):
+                    matches.append(root)
+                    break
+        result = tuple(matches)
+        if result:
+            logger.info("[taxonomy_index] schemaRef %r resolved to %s", name, result)
+        return result
+
+    # M-15: freshness here is encoded in the key itself (repo root + schema
+    # name), same as before -- the only change is bounding how many distinct
+    # (root, name) pairs stay cached (the previous dict grew unboundedly
+    # over a process's lifetime) and routing through the shared, generically
+    # thread-safe FileCache instead of a bespoke dict + lock.
+    return _SCHEMA_LOCATION_CACHE.get_or_load(key, _load)
 
 
 def _candidate_roots(form_id: str, extra_roots: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -799,12 +808,20 @@ def get_index_for_paths(roots: tuple[str, ...]) -> "TaxonomyIndex | None":
     except OSError as exc:
         logger.warning("[taxonomy_index] cannot stat %s: %s", roots, exc)
         return None
+    # M-15: _CACHE_LOCK is held across the whole check-then-construct (not
+    # just the dict access) deliberately -- unchanged from before this
+    # change -- so two threads racing on the same signature cannot both
+    # construct a duplicate TaxonomyIndex. FileCache's own internal lock is
+    # NOT used here for that reason (it only serializes its own dict
+    # access, not an arbitrary block of caller code); _CACHE_LOCK plus
+    # FileCache's plain get/set (bounded, unlike the previous raw dict)
+    # keeps that exact guarantee.
     with _CACHE_LOCK:
         cached = _INDEX_CACHE.get(signature)
         if cached is not None:
             return cached
         index = TaxonomyIndex(roots)
-        _INDEX_CACHE[signature] = index
+        _INDEX_CACHE.set(signature, index)
         return index
 
 

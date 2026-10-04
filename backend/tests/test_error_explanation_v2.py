@@ -1572,6 +1572,15 @@ class TestDimensionPresentation:
         required dimensions are absent."""
         if not F_2047.is_file():
             pytest.skip("file absent")
+        # H-14 reproducibility: this is the one test in the file that needs the
+        # run's instance XML to be resolvable through the *configured* repo
+        # (BASE_REPO_PATH), not merely to exist in CORPUS. resolve_instance_doc_path
+        # deliberately refuses to go looking outside the configured repo, so when
+        # CORPUS and BASE_REPO_PATH are two different trees there is no instance
+        # evidence to find and the enrichment correctly does not happen.
+        if not Path(rl.build_instance_doc_path(
+                "2047", F_2047.with_suffix(".xml").name)).is_file():
+            pytest.skip("run's instance XML not present under BASE_REPO_PATH")
         monkeypatch.setattr(rl, "_parse_instances", lambda: (
             {"FormId": "2047",
              "ErrorDocPath": "ICICI231231R21202Q_19-05-26_04-04-19_Instance.html",

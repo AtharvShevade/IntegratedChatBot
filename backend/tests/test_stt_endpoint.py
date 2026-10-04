@@ -27,6 +27,10 @@ def _enabled(monkeypatch):
     monkeypatch.setenv("STT_LANGUAGE_MODE", "ui")
     monkeypatch.setenv("STT_LANGUAGES", "en,fr,ar,hi")
     monkeypatch.setenv("STT_VOCABULARY_ENABLED", "false")
+    # M-11: /stop now gates on a resolvable login_id when REQUIRE_AUTH is on.
+    # These tests exercise STT/cancellation plumbing, not auth (covered
+    # separately in test_m05_m11_endpoint_auth.py).
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ structural pass.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -81,7 +82,15 @@ async def decide(
     # ── Auth: resolve allowed FormIds for this user ───────────────────────────────
     # None  = no login_id provided — allow all (dev / backward compat)
     # set   = restrict to this user's department forms
-    _REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+    # SECURITY (C-02/H-01 interim fix): REQUIRE_AUTH now defaults to "true".
+    # An operator who never sets REQUIRE_AUTH at all (it was previously absent
+    # from .env.example, so a fresh deployment could silently ship wide open)
+    # now gets the safe, fail-closed behavior by default; a real deployment
+    # that intentionally wants unauthenticated access must opt in explicitly
+    # with REQUIRE_AUTH=false. This deployment's own .env already sets
+    # REQUIRE_AUTH=true, so this flip changes nothing here — it only changes
+    # what happens where that variable is left unset.
+    _REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "true").lower() == "true"
     allowed_form_ids: set[str] | None = None
     if login_id:
         from backend.services.auth_service import get_allowed_form_ids as _get_auth
@@ -118,11 +127,27 @@ async def decide(
             response_text="Authentication required. Please access this application through the authorised portal.",
             result_type="error",
         )
-    # ── Auth: resolve role_id from XML_User.xml when caller didn't supply it ──
-    # The .NET app only passes loginId/uid — it never sends roleId.
-    # Use auth_service.get_user_role_id() (same XML read already cached) so
-    # every downstream handler (DB Q&A, SQL agent, etc.) sees the correct role.
-    if login_id and (not role_id or role_id == "0"):
+    # ── Auth: role_id is ALWAYS resolved server-side from XML_User.xml, never
+    # taken from the client (C-02 interim fix) ────────────────────────────────
+    # SECURITY: role_id used to be honoured as-given whenever the caller (the
+    # client, not .NET -- the .NET app never sends roleId) supplied a non-empty
+    # value, e.g. POST /chat {"role_id":"101"}. That let any caller assert an
+    # arbitrary role -- including the admin role -- for any login_id, which is
+    # a privilege-escalation vulnerability independent of whether login_id
+    # itself is genuine (login_id remains client-asserted and unverified until
+    # the .NET-issued JWT can be cryptographically checked -- see C-02 in
+    # doc/CODE_REVIEW_REPORT_2026-09-29.md and doc/CRITICAL_FIXES_LOG.md for
+    # what remains unresolved). Whatever role_id the client sent is discarded
+    # here and replaced with the server-looked-up value for every downstream
+    # handler (DB Q&A, SQL agent, etc.).
+    if role_id:
+        logger.warning(
+            "[AUTH_ROLE_IGNORED] client-supplied role_id=%r discarded; role is always "
+            "server-resolved from XML_User.xml. login_id=%r session=%s",
+            role_id, login_id, session_id,
+        )
+    role_id = None
+    if login_id:
         from backend.services.auth_service import get_user_role_id as _get_role
         _resolved_role = _get_role(login_id)
         if _resolved_role:
@@ -141,13 +166,31 @@ async def decide(
         role_source=("auth_service (XML_User.xml)" if login_id else "not resolved — no login_id"),
     )
 
-    # Persist the live cookie so staged flows (multi-turn generate) can use it
+    # Persist the live cookie so staged flows (multi-turn generate) can use it.
+    # SECURITY (H-04): bind the cached credential to the login_id that
+    # supplied it. Without this, knowing/guessing a victim's session_id
+    # alone was enough to retrieve their cached .NET session cookie on a
+    # later request -- session_id is a client-chosen conversation key (see
+    # doc/CRITICAL_FIXES_LOG.md's H-04 entry), not a credential. login_id is
+    # resent on every single frontend call identically to session_id/
+    # asp_session (verified in frontend/src/App.jsx: all three of
+    # submitMessage/submitGuidedStep/handleGuidedAction send it every time),
+    # so a legitimate staged multi-turn flow (e.g. "generate X" -> bot asks
+    # for a date -> user's date-only reply) always presents the same
+    # login_id it started with, and is unaffected by this check.
+    # NOTE: login_id itself remains client-supplied and unverified (same
+    # standing caveat as C-02) -- this closes the "session_id alone is
+    # enough" hijack path, it is not cryptographic identity verification.
     if asp_session and session_id:
         session["asp_session"] = asp_session
+        session["asp_session_login_id"] = login_id
         _session_context[session_id] = session
 
-    # Prefer the freshly-forwarded cookie; fall back to one stored earlier in session
-    effective_asp = asp_session or session.get("asp_session")
+    # Prefer the freshly-forwarded cookie; fall back to one stored earlier in
+    # session ONLY if it was cached under this same login_id.
+    effective_asp = asp_session or (
+        session.get("asp_session") if session.get("asp_session_login_id") == login_id else None
+    )
     logger.info("decide: asp_session=%s effective=%s",
                 "provided" if asp_session else "MISSING",
                 "yes" if effective_asp else "NONE — will use .env fallback")
@@ -171,7 +214,9 @@ async def decide(
         if dtc_from_label:
             form_id     = session["pending_form_id"]
             return_name = session["pending_return_name"]
-            result = _get_instance_by_dtc_fast_with_bg_job(form_id, dtc_from_label, return_name)
+            result = _get_instance_by_dtc_fast_with_bg_job(
+                form_id, dtc_from_label, return_name, allowed_form_ids,
+            )
             if result["type"] == "date_not_found":
                 available = get_available_instances(form_id)
                 return _build(
@@ -225,7 +270,9 @@ async def decide(
                 return_name = session["pending_return_name"]
 
                 # Fallback: user typed a raw date string
-                result = _get_instance_by_date_fast_with_bg_job(form_id, user_query.strip(), return_name)
+                result = _get_instance_by_date_fast_with_bg_job(
+                    form_id, user_query.strip(), return_name, allowed_form_ids,
+                )
 
                 if result["type"] == "date_not_found":
                     available = get_available_instances(form_id)
@@ -387,7 +434,7 @@ async def decide(
             auth_err = _check_name_auth(resolved_name, allowed_form_ids, "get_status")
             if auth_err:
                 return auth_err
-            result = _get_status_exact_fast_with_bg_job(resolved_name)
+            result = _get_status_exact_fast_with_bg_job(resolved_name, allowed_form_ids)
             if allowed_form_ids is not None:
                 result = _apply_auth_to_status_result(result, allowed_form_ids)
             return _from_result(result, intent="get_status", session_id=session_id)
@@ -462,7 +509,12 @@ async def decide(
             from backend.agent.db_qa_router import handle_db_qa_query
             final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
             final_role_id = role_id if role_id and role_id != "0" else "0"
-            return handle_db_qa_query(
+            # H-05: handle_db_qa_query is a synchronous function that can
+            # reach the beautifier's blocking requests.post() (up to 120s) --
+            # run it in a worker thread so it doesn't stall every other
+            # in-flight request on this process.
+            return await asyncio.to_thread(
+                handle_db_qa_query,
                 message=resolved_qa_name,
                 intent=db_intent,
                 params=db_params,
@@ -961,7 +1013,7 @@ async def decide(
                         "[INTENT:STEP1] status-by-id fast-path id=%s session=%s",
                         _instance_id, session_id,
                     )
-                    result = _get_status_by_id_fast_with_bg_job(_instance_id)
+                    result = _get_status_by_id_fast_with_bg_job(_instance_id, allowed_form_ids)
                     if allowed_form_ids is not None:
                         result = _apply_auth_to_status_result(result, allowed_form_ids)
                     return _from_result(result, intent="get_status", session_id=session_id)
@@ -1007,7 +1059,7 @@ async def decide(
                         )
                         if session_id:
                             _session_context[session_id] = {"last_search_terms": extracted_query}
-                        result = _get_status_fast_with_bg_job(extracted_query)
+                        result = _get_status_fast_with_bg_job(extracted_query, allowed_form_ids)
                         if allowed_form_ids is not None:
                             result = _apply_auth_to_status_result(result, allowed_form_ids)
                         return _from_result(result, intent="get_status", session_id=session_id)
@@ -1060,7 +1112,10 @@ async def decide(
                 )
                 final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
                 final_role_id = role_id if role_id and role_id != "0" else "0"
-                db_result = handle_db_qa_query(
+                # H-05: see the comment on the other handle_db_qa_query() call
+                # above -- same blocking-beautifier concern, same fix.
+                db_result = await asyncio.to_thread(
+                    handle_db_qa_query,
                     message=user_query,
                     intent=db_intent,
                     params=db_params,
@@ -1130,7 +1185,11 @@ async def decide(
             # Prefer login_id when user_id is missing, "0", or a session GUID
             final_user_id = user_id if _is_real_user_id(user_id) else (login_id or "0")
             final_role_id = role_id if role_id and role_id != "0" else "0"
-            return handle_db_qa_query(
+            # H-05: same blocking-call concern as the other handle_db_qa_query
+            # call sites above, even with beautify=False here -- the XML
+            # store reads/parses inside it are still synchronous work.
+            return await asyncio.to_thread(
+                handle_db_qa_query,
                 message=user_query,
                 intent=intent,
                 params=extracted,  # Contains all LLM-extracted entities
@@ -1257,7 +1316,7 @@ async def decide(
             # Default: treat as a status query
             if session_id:
                 _session_context[session_id] = {"last_search_terms": _matched_query}
-            result = _get_status_fast_with_bg_job(_matched_query)
+            result = _get_status_fast_with_bg_job(_matched_query, allowed_form_ids)
             if allowed_form_ids is not None:
                 result = _apply_auth_to_status_result(result, allowed_form_ids)
             return _from_result(result, intent="get_status", session_id=session_id)
@@ -1448,7 +1507,7 @@ async def decide(
     # name here bypasses that check and jumps directly to instance lookup,
     # which gives a misleading "No instances found" when the user typed only
     # a partial name like "raq".
-    result = _get_status_fast_with_bg_job(search_terms or user_query)
+    result = _get_status_fast_with_bg_job(search_terms or user_query, allowed_form_ids)
     if allowed_form_ids is not None:
         result = _apply_auth_to_status_result(result, allowed_form_ids)
     _decide_elapsed = time.monotonic() - _decide_start

@@ -113,8 +113,10 @@ class XMLStore:
         "users":            ["__user_index__"],
         "departments":      ["__dept_index__"],
         "roles":            ["__role_index__"],
-        "returns":          ["__return_index__"],
-        "nonxbrl_returns":  ["__return_index__"],
+        "returns":          ["__return_index__", "__return_name_index__"],
+        "nonxbrl_returns":  ["__return_index__", "__return_name_index__"],
+        "periods":          ["__period_name_index__"],
+        "options":          ["__option_name_index__"],
     }
 
     # Entities not present in the schema still resolve here as best-effort
@@ -338,12 +340,67 @@ class XMLStore:
         d = self.dept_by_id(did)
         return d.get("Name", did) if d else did
 
+    def _period_name_index(self) -> dict[str, str]:
+        """L-09: period_name_by_id() was an O(n) linear scan repeated on
+        every single call -- a dict built once per XMLStore lifetime, keyed
+        under a sentinel in self._cache, then reused for every subsequent
+        lookup.
+
+        self.periods() is called UNCONDITIONALLY, before the cache check --
+        it is cheap on a cache hit (just an mtime stat + dict lookup inside
+        _load(), not a re-parse), and it is also the single point where
+        _load()'s _INDEX_DEPS eviction of this very index fires when
+        XML_Period.xml changes on disk. Checking `key not in self._cache`
+        BEFORE calling periods() would skip that eviction check entirely
+        once this index exists, permanently serving a stale index no matter
+        how many times the source file changes afterward.
+        """
+        periods = self.periods()
+        key = "__period_name_index__"
+        if key not in self._cache:
+            index: dict[str, str] = {}
+            for p in periods:
+                pid = get_attr(p, "Period_Id", "PeriodId", "Id")
+                # Preserve the original linear scan's first-match-wins
+                # semantics for a duplicate id.
+                if pid and pid not in index:
+                    index[pid] = p.get("PeriodName", pid)
+            self._cache[key] = index  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
+
     def period_name_by_id(self, period_id: str) -> str:
         pid = str(period_id)
-        for p in self.periods():
-            if get_attr(p, "Period_Id", "PeriodId", "Id") == pid:
-                return p.get("PeriodName", pid)
-        return period_id
+        return self._period_name_index().get(pid, period_id)
+
+    def _return_name_index(self) -> dict[str, str]:
+        """L-09: same O(n)-per-call problem as period_name_by_id(), now a
+        dict built once covering BOTH id schemes (internal Id and the
+        ReturnId code) across BOTH returns() and non_xbrl_returns() -- see
+        return_name_by_id()'s own docstring for why both id schemes must be
+        checked. returns() entries are inserted first so a (theoretical)
+        Id/ReturnId collision between the two lists preserves the original
+        scan order's priority (returns() was always checked before
+        non_xbrl_returns()). See _period_name_index()'s docstring for why
+        both source accessors are called BEFORE the cache check, not inside
+        the `if key not in self._cache` guard -- the same eviction-ordering
+        requirement applies here."""
+        returns_rows = self.returns()
+        non_xbrl_rows = self.non_xbrl_returns()
+        key = "__return_name_index__"
+        if key not in self._cache:
+            index: dict[str, str] = {}
+            for r in list(returns_rows) + list(non_xbrl_rows):
+                name = r.get("Name")
+                if not name:
+                    continue
+                rid = r.get("Id")
+                if rid and rid not in index:
+                    index[rid] = name
+                return_code = r.get("ReturnId")
+                if return_code and return_code not in index:
+                    index[return_code] = name
+            self._cache[key] = index  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
 
     def return_name_by_id(self, return_id: str) -> str:
         """Resolve a return's internal Id OR its ReturnId code to its Name.
@@ -358,13 +415,7 @@ class XMLStore:
         passing a ReturnId code instead of a numeric Id still resolves.
         """
         rid = str(return_id)
-        for r in self.returns():
-            if r.get("Id") == rid or r.get("ReturnId") == rid:
-                return r.get("Name", rid)
-        for r in self.non_xbrl_returns():
-            if r.get("Id") == rid or r.get("ReturnId") == rid:
-                return r.get("Name", rid)
-        return return_id
+        return self._return_name_index().get(rid, return_id)
 
     def _user_index(self) -> tuple[dict, dict]:
         """Build and cache (by_id, by_loginid) lookup maps from XML_User.xml.
@@ -462,12 +513,28 @@ class XMLStore:
 
     # ── enrichment helpers ───────────────────────────────────────────────────
 
+    def _option_name_index(self) -> dict[str, str]:
+        """L-09: built once per XMLStore lifetime instead of a linear scan
+        over options() on every single enrich_role_access() call. See
+        _period_name_index()'s docstring for why options() is called BEFORE
+        the cache check, not inside the `if key not in self._cache` guard."""
+        options = self.options()
+        key = "__option_name_index__"
+        if key not in self._cache:
+            index: dict[str, str] = {}
+            for o in options:
+                oid = o.get("OptionId")
+                # Preserve the original linear scan's first-match-wins
+                # semantics: a duplicate OptionId must not let a later row
+                # overwrite the name resolved from the first one.
+                if oid and oid not in index:
+                    index[oid] = o.get("OptionName", oid)
+            self._cache[key] = index  # type: ignore[assignment]
+        return self._cache[key]  # type: ignore[return-value]
+
     def option_name_by_id(self, option_id: str) -> str:
         """Return human-readable OptionName for an OptionId from XML_Option.xml."""
-        for o in self.options():
-            if o.get("OptionId") == option_id:
-                return o.get("OptionName", option_id)
-        return option_id
+        return self._option_name_index().get(option_id, option_id)
 
     def enrich_role_access(self, access: dict) -> dict:
         """Add OptionName (human-readable module name) to a RoleAccess row."""

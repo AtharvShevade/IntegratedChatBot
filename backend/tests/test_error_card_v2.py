@@ -176,16 +176,25 @@ class TestNothingIsLost:
         assert any(point in text for point in de._what_is_wrong_points(evidence))
 
     def test_formula_comparison_breakdown_survives_in_the_drawer(self):
+        """The formula card no longer has a drawer: the explanation reframe
+        promoted the old "Comparison" / "Why It Failed" drawer content into the
+        card body (Calculation + headline + the "i.e." rule sentence), because
+        the drawer only ever restated figures the matrix already showed. The
+        contract this test guards is "nothing is lost", so it asserts the
+        breakdown is still reachable — now from the body rather than a drawer."""
         rule, comparison, result, labels = _formula_case(
             "$V1 = $V2 + $V3",
             {"V1": ["2360000"], "V2": ["450000"], "V3": ["1200000"]},
             {"V1": "Total assets", "V2": "Cash", "V3": "Investments"},
         )
-        drawer = _by_kind(
-            fe.build_card_sections(rule, comparison, result, labels), "details")
-        text = _all_text(drawer)
-        assert "Comparison" in text
-        assert "Why It Failed" in text
+        sections = fe.build_card_sections(rule, comparison, result, labels)
+        calculation = next(
+            s for s in sections if s.get("heading") == "Calculation")
+        # The component-by-component arithmetic the drawer used to carry.
+        assert "₹450,000 + ₹1,200,000 = ₹1,650,000" in _all_text(calculation)
+        # And the reason it failed, which the drawer used to spell out.
+        assert "higher than the sum of the component values" in _all_text(
+            _by_kind(sections, "headline"))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -305,7 +314,13 @@ class TestGenericShape:
 
         expected = ["headline", "locator", "rule", "matrix", "fix", "details"]
         assert [k for k in dimension if k in expected] == expected
-        assert [k for k in formula if k in expected] == expected
+        # A formula card drops two of the six deliberately (explanation
+        # reframe): the WHERE/locator strip, which names a cell a formula rule
+        # does not belong to, and the technical-details drawer, whose
+        # Comparison / Why It Failed content is now stated inline. The sections
+        # it does emit remain the shared ones, in the shared order.
+        assert [k for k in formula if k in expected] == [
+            "headline", "rule", "matrix", "fix"]
 
     def test_locator_decodes_the_period_but_never_the_dimension_segments(self):
         """A context id concatenates every dimension value, and which axis a

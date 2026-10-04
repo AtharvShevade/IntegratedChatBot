@@ -18,6 +18,30 @@ import { loadHistory as _idbLoadHistory, saveHistory as _idbSaveHistory, deleteH
 // sessionStorage is kept alongside it only because it already existed and
 // costs nothing to keep in sync. See _historyId below for which of these
 // values chat history is actually keyed by, and why.
+// M-23: postMessage listeners below previously accepted a message from ANY
+// origin/source — any window holding a reference to this iframe could send a
+// fake CHATBOT_AUTH/CHATBOT_LANG/CHATBOT_LOGOUT message to inject a JWT,
+// change the language, or wipe the conversation. Configurable per deployment
+// via VITE_TRUSTED_PARENT_ORIGINS (comma-separated), since this app is
+// embedded by different .NET hosts across environments; defaults to this
+// page's own origin, which covers the common case of the .NET host serving
+// this app same-origin behind its reverse proxy.
+const _TRUSTED_PARENT_ORIGINS = (
+  (import.meta.env && import.meta.env.VITE_TRUSTED_PARENT_ORIGINS) ||
+  (typeof window !== 'undefined' && window.location && window.location.origin) ||
+  ''
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+function isTrustedParentMessage(event) {
+  // Every message handled here is expected from the embedding parent frame
+  // specifically, never from an arbitrary descendant/opener window.
+  if (event.source !== window.parent) return false
+  return _TRUSTED_PARENT_ORIGINS.includes(event.origin)
+}
+
 const _params     = new URLSearchParams(window.location.search)
 
 function _readParam(urlKey, sessionKey) {
@@ -93,7 +117,16 @@ function _anonymousHistoryId() {
     return 'anon_session'  // private-browsing/storage-denied — still isolates within this one tab
   }
 }
-const _historyId  = _loginId || _uid || _anonymousHistoryId()
+// M-32: previously just the bare identity (_loginId || _uid || anon), with
+// no tenant component at all. Under APP_VERSION=6.0, two different tenants'
+// users could share the same loginId string (plausible across separate
+// client orgs) and collide on the same IndexedDB record, exposing one
+// tenant's conversation history to a different tenant's user. Only prefixed
+// when a tenant is actually present (_isV6) -- 5.5 (_tenantId always empty)
+// keeps the EXACT key it always used, so no existing 5.5 user's stored
+// history goes missing on upgrade.
+const _bareHistoryId = _loginId || _uid || _anonymousHistoryId()
+const _historyId  = _isV6 ? `${_tenantId}::${_bareHistoryId}` : _bareHistoryId
 
 // Extract the last n user/assistant messages for conversation context.
 // Skips system roles (welcome, error, action_menu, etc.).
@@ -191,6 +224,7 @@ export default function App() {
 
     function handleAuthMessage(event) {
       if (!event.data) return
+      if (!isTrustedParentMessage(event)) return
       if (event.data.type === 'CHATBOT_AUTH') {
         if (typeof event.data.jwt === 'string' && event.data.jwt) {
           jwtRef.current = event.data.jwt
@@ -278,6 +312,7 @@ export default function App() {
   useEffect(() => {
     function handleLogoutMessage(event) {
       if (!event.data || event.data.type !== 'CHATBOT_LOGOUT') return
+      if (!isTrustedParentMessage(event)) return
       _idbDeleteHistory(_historyId).catch((e) => console.error('[CHAT_HISTORY] logout clear failed —', e))
       for (const key of ['chat_uid', 'chat_loginId', 'chat_roleId', 'chat_rid', 'chat_tenant_id', 'chat_domain', 'chat_anon_uid']) {
         try { sessionStorage.removeItem(key) } catch { /* ignore */ }
@@ -491,7 +526,9 @@ const pollForErrors = (jobId) => {
     try {
       // lang so the enriched error cards come back in the selected language;
       // the poll is the only delivery point for them (backend/main.py:776).
-      const data = await fetchStatusErrors(jobId, { lang })
+      // loginId (H-03): required for the backend's object-level ownership
+      // check on this job.
+      const data = await fetchStatusErrors(jobId, { lang, loginId: _loginId || null })
 
       // ── Fix: stop polling if job was cleaned up before we got it ──────────
         if (data.status === "not_found") {
@@ -866,6 +903,7 @@ const pollForErrors = (jobId) => {
           allowedActions={allowedActions}
           lang={lang}
           onLanguageChange={setLang}
+          loginId={_loginId || null}
         />
       </main>
 

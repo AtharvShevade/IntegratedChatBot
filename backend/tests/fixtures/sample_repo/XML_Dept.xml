@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- H-14: synthetic fixture, see XML_User.xml for rationale. -->
+<Departments>
+  <Row DeptId="1" Name="Sample Department" EmailId="sample.dept@example.test"
+       Status="true" Forms="" NXForms=""
+       Level1UserEmails="" Level2UserEmails="" Level3UserEmails="" />
+</Departments>

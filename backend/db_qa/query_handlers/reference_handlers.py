@@ -5,7 +5,7 @@ the legacy handle_bank_info/handle_segment_info behavior.
 """
 from __future__ import annotations
 
-from backend.db_qa.xml_store import XMLStore
+from backend.db_qa.xml_store import XMLStore, get_attr
 from backend.db_qa.query_handlers._return_resolution import resolve_named_return
 
 
@@ -39,7 +39,7 @@ def handle_notification_query(scope: dict, entities: dict, store: XMLStore) -> d
     details = list(store.notification_details())
 
     if notification_type:
-        notifs = [n for n in notifs if n.get("NotificationType", "").lower() == notification_type.lower()]
+        notifs = [n for n in notifs if get_attr(n, "NotificationType").lower() == notification_type.lower()]
 
     if target_return:
         # target_return is an OPTIONAL filter here (unlike return_profile

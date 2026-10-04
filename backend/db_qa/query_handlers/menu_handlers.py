@@ -1,7 +1,7 @@
 """New-taxonomy handlers — MENU_OPTIONS category."""
 from __future__ import annotations
 
-from backend.db_qa.xml_store import XMLStore
+from backend.db_qa.xml_store import XMLStore, get_attr
 from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 
 
@@ -16,7 +16,7 @@ def _not_found(intent: str, label: str, msg: str) -> dict:
 def handle_menu_list(scope: dict, entities: dict, store: XMLStore) -> dict:
     section = entities.get("section", "")
     query_type = (entities.get("query_type") or "").lower()
-    options = [o for o in store.options() if o.get("IsMenu", "").lower() == "true"]
+    options = [o for o in store.options() if get_attr(o, "IsMenu").lower() == "true"]
     if query_type == "top_level":
         # "Top-level" means no ParentOptionId — IsMenu alone doesn't
         # distinguish a parent section (e.g. "User Management") from its
@@ -24,7 +24,7 @@ def handle_menu_list(scope: dict, entities: dict, store: XMLStore) -> dict:
         # over-counts by including every nested item too.
         options = [o for o in options if not (o.get("ParentOptionId") or "").strip()]
     if section:
-        options = [o for o in options if section.lower() in o.get("OptionName", "").lower()]
+        options = [o for o in options if section.lower() in get_attr(o, "OptionName").lower()]
     label = "My Menu" if scope["target_type"] == "self" else "System Menu & Modules"
     level_phrase = "top-level " if query_type == "top_level" else ""
     return _result("menu_list", label, options,
@@ -40,7 +40,7 @@ def handle_module_detail(scope: dict, entities: dict, store: XMLStore) -> dict:
     if option_id:
         match = next((o for o in options if o.get("OptionId", "") == option_id), None)
     elif module:
-        match = next((o for o in options if o.get("OptionName", "").lower() == module.lower()), None)
+        match = next((o for o in options if get_attr(o, "OptionName").lower() == module.lower()), None)
     if not match:
         return _not_found("module_detail", "Module Detail",
                           not_found_summary("Module '{name}' not found.", module or option_id,
@@ -53,7 +53,7 @@ def handle_module_children(scope: dict, entities: dict, store: XMLStore) -> dict
     module = entities.get("module", "")
     if not module:
         return _not_found("module_children", "Module Children", "Please specify a parent module name.")
-    parent = next((o for o in store.options() if o.get("OptionName", "").lower() == module.lower()), None)
+    parent = next((o for o in store.options() if get_attr(o, "OptionName").lower() == module.lower()), None)
     if not parent:
         return _not_found("module_children", "Module Children", not_found_summary("Module '{name}' not found.", module, "Please specify a parent module name."))
     children = [o for o in store.options() if o.get("ParentOptionId", "") == parent.get("OptionId", "")]

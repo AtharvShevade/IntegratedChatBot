@@ -1,6 +1,6 @@
 # backend/sql_agent/config.py
 #
-# Re-exports the vendored agent's settings (sql_agent/src/config.py, populated
+# Re-exports the vendored agent's settings (sql_agent/sqlcore/config.py, populated
 # from this project's .env by _bootstrap) under the import path the chatbot has
 # always used: `backend.sql_agent.config`.
 #
@@ -17,7 +17,7 @@ from backend.sql_agent import _bootstrap
 
 _bootstrap.ensure()
 
-from src.config import (                                        # noqa: E402
+from sqlcore.config import (                                        # noqa: E402
     BUSINESS_SEMANTICS_LEVEL,
     DB_HOST,
     DB_MAX_ROWS,
@@ -37,7 +37,7 @@ from src.config import (                                        # noqa: E402
     TOP_K_COLUMNS,
     TOP_K_TABLES,
 )
-import src.config as _src_config                                # noqa: E402
+import sqlcore.config as _src_config                                # noqa: E402
 
 # The live settings module. Read mutable settings through this (the agent's own
 # modules read `config.EMBEDDING_DIR` at call time on purpose) rather than

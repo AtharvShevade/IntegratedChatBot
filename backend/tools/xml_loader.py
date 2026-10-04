@@ -4,9 +4,17 @@
 
 from __future__ import annotations
 
+# L-14: defusedxml.ElementTree is a drop-in replacement for
+# xml.etree.ElementTree (same parse()/fromstring()/ParseError surface) that
+# additionally rejects XXE/billion-laughs/external-entity constructs instead
+# of silently resolving them -- this loader is the single most-reused XML
+# entry point in the codebase (Returns.xml, XML_InstanceLog, and other
+# repository-sourced files read through load_xml_tree()).
 import logging
 import os
-import xml.etree.ElementTree as ET
+
+import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,9 @@ def load_xml_tree(path: str, label: str = "") -> ET.Element | None:
         return root
     except ET.ParseError as exc:
         logger.error("[xml_loader] XML parse error in %s: %s", display, exc)
+        return None
+    except DefusedXmlException as exc:
+        logger.error("[xml_loader] Rejected unsafe XML construct in %s: %s", display, exc)
         return None
     except OSError as exc:
         logger.error("[xml_loader] Cannot read %s: %s", display, exc)

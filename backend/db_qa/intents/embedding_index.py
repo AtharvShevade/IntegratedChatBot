@@ -23,8 +23,11 @@ sets never collide).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import threading
 
 from backend.db_qa.intents.exemplars import EXEMPLARS
 from backend.db_qa.intents.taxonomy import Intent
@@ -35,6 +38,93 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(_HERE, "output")
 INDEX_PATH = os.path.join(OUTPUT_DIR, "intent_exemplar_index.faiss")
 META_PATH = os.path.join(OUTPUT_DIR, "intent_exemplar_meta.pkl")
+
+# H-17: a deterministic fingerprint of EXEMPLARS + the embedding model name,
+# written alongside the index/metadata every time build_index() runs. Kept as
+# its own small JSON file rather than folded into META_PATH's pickle, so the
+# existing per-vector meta list format (consumed by _search_dedup via
+# meta[idx]["intent"]/["text"]) never changes shape.
+MANIFEST_PATH = os.path.join(OUTPUT_DIR, "intent_exemplar_manifest.json")
+
+
+def _current_embed_model_name() -> str:
+    """The embedding model name currently configured for this process.
+
+    Read-only import of the SQL agent's config constant (EMBED_MODEL) --
+    the same model embedding_index.py already borrows the loaded
+    SentenceTransformer instance from via backend.sql_agent.vectorizer.
+    Does not modify or call into any SQL agent behavior.
+    """
+    from backend.sql_agent.sqlcore.config import EMBED_MODEL
+    return EMBED_MODEL
+
+
+def _fingerprint_exemplars() -> str:
+    """Deterministic hash of every (intent, phrasing) pair in EXEMPLARS.
+
+    Order-independent (sorted first) so reordering entries in exemplars.py
+    without changing their content does not look like drift; any actual
+    addition, removal, or edit of a phrasing changes the hash.
+    """
+    items = sorted(
+        (intent.value, phrasing)
+        for intent, phrasings in EXEMPLARS.items()
+        for phrasing in phrasings
+    )
+    h = hashlib.sha256()
+    for intent_value, phrasing in items:
+        h.update(intent_value.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(phrasing.encode("utf-8"))
+        h.update(b"\x01")
+    return h.hexdigest()
+
+
+def _write_manifest() -> None:
+    from backend.sql_agent.sqlcore.integrity import sha256_of_file
+
+    manifest = {
+        "fingerprint": _fingerprint_exemplars(),
+        "embed_model": _current_embed_model_name(),
+        "exemplar_count": sum(len(p) for p in EXEMPLARS.values()),
+        # M-08: lets _load_index() verify META_PATH's integrity (same
+        # {"checksums": {filename: sha256}} convention the SQL agent's own
+        # build_stamp.json already uses) before ever unpickling it -- not
+        # just checking it's semantically fresh (the fingerprint above),
+        # but that the bytes on disk are exactly what this build wrote.
+        "checksums": {os.path.basename(META_PATH): sha256_of_file(META_PATH)},
+    }
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+
+
+def check_index_freshness() -> tuple[bool, str]:
+    """Compare the on-disk manifest against the exemplars/model currently
+    configured. Returns (fresh, reason) -- *reason* is empty when fresh,
+    otherwise names exactly what mismatched (or that the manifest is simply
+    missing, e.g. an index built before H-17 existed)."""
+    if not os.path.exists(MANIFEST_PATH):
+        return False, "no manifest found (index predates freshness tracking, or was never built)"
+
+    try:
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"manifest unreadable: {exc}"
+
+    current_fingerprint = _fingerprint_exemplars()
+    if manifest.get("fingerprint") != current_fingerprint:
+        return False, "exemplars.py has changed since the index was built"
+
+    current_model = _current_embed_model_name()
+    if manifest.get("embed_model") != current_model:
+        return False, (
+            f"embedding model changed (index built with {manifest.get('embed_model')!r}, "
+            f"currently configured {current_model!r})"
+        )
+
+    return True, ""
 
 # Minimum cosine similarity for a candidate to be considered a match at
 # all (below this, treat as "nothing in the taxonomy covers this query").
@@ -86,25 +176,58 @@ def build_index() -> None:
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     save_index(index, meta, INDEX_PATH, META_PATH)
+    _write_manifest()
+    _INDEX_CACHE.clear()  # force the next _load_index() to re-read the fresh files
     logger.info("Wrote intent exemplar index: %s (%d vectors)", INDEX_PATH, len(texts))
 
 
 _INDEX_CACHE: dict = {}
+# L-12: guards the lazy-init check-then-load below. Without this, two
+# concurrent first callers (e.g. two requests racing on cold start) could
+# both see "index" missing and both re-read/rebuild the index, wasting work
+# and briefly leaving _INDEX_CACHE in an inconsistent partial state.
+_index_lock = threading.Lock()
 
 
 def _load_index():
     if "index" not in _INDEX_CACHE:
-        import faiss
-        import pickle
+        with _index_lock:
+            if "index" not in _INDEX_CACHE:  # re-check: another thread may have just finished
+                import faiss
 
-        if not os.path.exists(INDEX_PATH) or not os.path.exists(META_PATH):
-            raise FileNotFoundError(
-                f"Intent exemplar index not found at {INDEX_PATH} — "
-                "run `python -m backend.db_qa.intents.embedding_index` to build it."
-            )
-        _INDEX_CACHE["index"] = faiss.read_index(INDEX_PATH)
-        with open(META_PATH, "rb") as fh:
-            _INDEX_CACHE["meta"] = pickle.load(fh)
+                if not os.path.exists(INDEX_PATH) or not os.path.exists(META_PATH):
+                    raise FileNotFoundError(
+                        f"Intent exemplar index not found at {INDEX_PATH} — "
+                        "run `python -m backend.db_qa.intents.embedding_index` to build it."
+                    )
+
+                # H-17: never silently serve a stale index. Detect mismatch against
+                # the exemplars/model currently configured and rebuild automatically
+                # -- this architecture already supports an on-demand rebuild
+                # (build_index() just needs the SentenceTransformer, already loaded).
+                # This runs at most once per process (the result is cached below), so
+                # it costs one rebuild at warm-up/first-use, not a per-request delay.
+                fresh, reason = check_index_freshness()
+                if not fresh:
+                    logger.warning(
+                        "Intent exemplar index is stale (%s) — rebuilding automatically.", reason,
+                    )
+                    try:
+                        build_index()
+                    except Exception as exc:
+                        logger.error(
+                            "Automatic rebuild of the intent exemplar index failed (%s); "
+                            "continuing with the existing (possibly stale) index. Run "
+                            "`python -m backend.db_qa.intents.embedding_index` manually to rebuild.",
+                            exc,
+                        )
+
+                # M-08: verified against MANIFEST_PATH's recorded checksum (when one
+                # exists -- i.e. this index was built after M-08) before this file
+                # is ever unpickled.
+                from backend.sql_agent.sqlcore.integrity import safe_pickle_load
+                _INDEX_CACHE["index"] = faiss.read_index(INDEX_PATH)
+                _INDEX_CACHE["meta"] = safe_pickle_load(META_PATH, stamp_path=MANIFEST_PATH)
     return _INDEX_CACHE["index"], _INDEX_CACHE["meta"]
 
 

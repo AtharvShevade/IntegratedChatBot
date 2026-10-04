@@ -22,10 +22,20 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.agent import decide, _session_context
+
+
+@pytest.fixture(autouse=True)
+def _no_auth_required(monkeypatch):
+    # H-14: REQUIRE_AUTH now defaults to "true" (H-01/C-02 fail-closed fix).
+    # These tests exercise the disambiguation flow with login_id=None, not
+    # auth, so they opt out the same way test_h01_fail_closed.py does.
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
 
 
 def _run_compare_query(query: str, session_id: str, *, login_id=None):

@@ -257,6 +257,13 @@ def _spy_make_repo_scope(monkeypatch):
     calls: list[tuple] = []
     real = main_module._make_repo_scope
 
+    # repo_root_for_tenant() (C-03 fix) now requires tenant_id to be a real,
+    # registered tenant -- "TenantA" below is a test fixture, not a real one,
+    # so register it here rather than hitting the real XML_Tenant.xml lookup.
+    monkeypatch.setattr(
+        version_config, "_get_tenant_registry", lambda: {"tenanta.example.com": "TenantA"},
+    )
+
     def _spy(tenant_id, domain, jwt):
         calls.append((tenant_id, domain, jwt))
         return real(tenant_id, domain, jwt)
@@ -299,7 +306,7 @@ def test_explain_category_establishes_repo_scope(client, monkeypatch):
     )
 
     resp = client.post("/explain-category", json={
-        "error_file_path": r"D:\Repo6\Repo6\TenantA\Instance\1042\x.html",
+        "filename": "x.html", "form_id": "1042",
         "category": "formula_error",
         "tenant_id": "TenantA", "domain": None, "jwt": "tok123",
     })
@@ -321,7 +328,7 @@ def test_compare_request_model_accepts_tenant_fields():
 def test_explain_category_request_model_accepts_tenant_fields():
     from backend.models import ExplainCategoryRequest
     req = ExplainCategoryRequest(
-        error_file_path="x.html", category="formula_error",
+        filename="x.html", category="formula_error", form_id="1042",
         tenant_id="TenantA", domain="example.com", jwt="tok",
     )
     assert req.tenant_id == "TenantA"
@@ -335,5 +342,5 @@ def test_compare_request_still_works_with_no_tenant_fields_at_all():
     from backend.models import CompareRequest, ExplainCategoryRequest
     c = CompareRequest(session_id="s1", instance_a=0, instance_b=1)
     assert c.tenant_id is None and c.domain is None and c.jwt is None
-    e = ExplainCategoryRequest(error_file_path="x.html", category="formula_error")
+    e = ExplainCategoryRequest(filename="x.html", category="formula_error", form_id="1042")
     assert e.tenant_id is None and e.domain is None and e.jwt is None

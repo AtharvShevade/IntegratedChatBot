@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  H-14: a small, fully synthetic fixture (no real tenant/user data) used as
+  the default BASE_REPO_PATH fallback so the non-live test suite can import
+  and run from a clean checkout with no D:\ production data present. Only
+  covers a couple of entities/rows -- most real-data-dependent tests still
+  correctly skip themselves against this minimal fixture (by design; this is
+  not a substitute for the real data tree), same as they already do today
+  when real data is absent.
+-->
+<Users>
+  <Row UserId="1" Name="Sample Checker" EmailId="sample.checker@example.test"
+       RoleId="2" DepartmentId="1" LoginId="sample.checker" Status="true"
+       QuestionId="1" LastLoginDT="" PasswordUpdateDate="" FailedLoginCount="0"
+       ActionBy="" ActionDate="" LastFailedLoginDT="" MobileNumber=""
+       CreatedBy="system" UserCreationDate="2026-01-01" />
+  <Row UserId="2" Name="Sample Maker" EmailId="sample.maker@example.test"
+       RoleId="3" DepartmentId="1" LoginId="sample.maker" Status="true"
+       QuestionId="1" LastLoginDT="" PasswordUpdateDate="" FailedLoginCount="0"
+       ActionBy="" ActionDate="" LastFailedLoginDT="" MobileNumber=""
+       CreatedBy="system" UserCreationDate="2026-01-01" />
+</Users>

@@ -17,6 +17,8 @@ import os
 import xml.etree.ElementTree as ET
 from typing import Tuple
 
+import portalocker
+
 from backend.config import scheduler_queue_xml_path
 
 logger = logging.getLogger(__name__)
@@ -120,63 +122,105 @@ def append_schedule_entry(
     On failure *success* is ``False`` and *schedule_id* is an empty string.
     """
     path = scheduler_queue_xml_path()
+    lock_path = path + ".lock"
 
     try:
-        # ── Initialise the file if it does not exist ──────────────────────────
-        if not os.path.isfile(path):
-            _create_empty_xml(path)
+        _ensure_parent_dir(path)
+        # M-13: the whole read-modify-write below was previously unlocked --
+        # two concurrent confirms (or a write racing the .NET consumer) could
+        # interleave and silently lose or duplicate an entry. portalocker
+        # gives an OS-level exclusive lock on a sibling .lock file (not the
+        # XML file itself, so a reader elsewhere is never blocked by this
+        # lock file's own existence), held for the entire critical section
+        # below -- matching the existing 10s dry-run-style timeout convention
+        # used elsewhere in this codebase rather than blocking forever.
+        with portalocker.Lock(lock_path, mode="w", timeout=10):
+            # ── Initialise the file if it does not exist ──────────────────
+            if not os.path.isfile(path):
+                _create_empty_xml(path)
 
-        # ── Parse the file ────────────────────────────────────────────────────
-        try:
-            tree = ET.parse(path)
-        except ET.ParseError as exc:
-            logger.error(
-                "[scheduler_queue] XML parse error in %s: %s — cannot append entry.",
-                path, exc,
+            # ── Parse the file ──────────────────────────────────────────────
+            try:
+                tree = ET.parse(path)
+            except ET.ParseError as exc:
+                logger.error(
+                    "[scheduler_queue] XML parse error in %s: %s — cannot append entry.",
+                    path, exc,
+                )
+                return False, ""
+
+            root = tree.getroot()
+
+            if root.tag != _ROOT_TAG:
+                logger.error(
+                    "[scheduler_queue] Unexpected root tag <%s> in %s — expected <%s>. "
+                    "Cannot append entry.",
+                    root.tag, path, _ROOT_TAG,
+                )
+                return False, ""
+
+            # ── Auto-generate next incremental Id ────────────────────────────
+            existing_ids: list[int] = [
+                int(entry.findtext("Id", "0"))
+                for entry in root.findall(_ENTRY_TAG)
+                if (entry.findtext("Id") or "").strip().isdigit()
+            ]
+            next_id  = (max(existing_ids) + 1) if existing_ids else 1
+            str_id   = str(next_id)
+
+            # ── Build new <Schedule> element ─────────────────────────────────
+            entry = ET.SubElement(root, _ENTRY_TAG)
+            _sub(entry, "Id",               str_id)
+            _sub(entry, "ReportName",       report_name)
+            _sub(entry, "FormId",           form_id)
+            _sub(entry, "ReportingDate",    reporting_date)
+            _sub(entry, "ScheduleDateTime", schedule_dt)
+            _sub(entry, "UserId",           user_id)
+            _sub(entry, "Status",           "PENDING")
+
+            # ── Pretty-print and persist atomically ──────────────────────────
+            # M-13: write to a temp file in the SAME directory (so the
+            # final os.replace() is an atomic rename on the same filesystem,
+            # not a cross-device copy), then replace the original only once
+            # the write has fully succeeded -- a crash mid-write now leaves
+            # either the untouched original or a complete temp file on disk,
+            # never a truncated SchedulerQueue.xml.
+            _pretty_print(root)
+            tree = ET.ElementTree(root)
+            tmp_path = path + ".tmp"
+            try:
+                with open(tmp_path, "wb") as fh:
+                    tree.write(fh, encoding="utf-8", xml_declaration=True)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, path)
+            except BaseException:
+                # Never leave a stray .tmp file behind on any failure here
+                # (a write error, or a failure in os.replace itself) --
+                # best-effort cleanup; a failure to remove it is logged but
+                # does not mask the original error being raised below.
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError as cleanup_exc:
+                    logger.warning(
+                        "[scheduler_queue] could not remove stray temp file %s: %s",
+                        tmp_path, cleanup_exc,
+                    )
+                raise
+
+            logger.info(
+                "[scheduler_queue] Appended entry id=%s report=%r form_id=%r user=%r to %s",
+                str_id, report_name, form_id, user_id, path,
             )
-            return False, ""
+            return True, str_id
 
-        root = tree.getroot()
-
-        if root.tag != _ROOT_TAG:
-            logger.error(
-                "[scheduler_queue] Unexpected root tag <%s> in %s — expected <%s>. "
-                "Cannot append entry.",
-                root.tag, path, _ROOT_TAG,
-            )
-            return False, ""
-
-        # ── Auto-generate next incremental Id ─────────────────────────────────
-        existing_ids: list[int] = [
-            int(entry.findtext("Id", "0"))
-            for entry in root.findall(_ENTRY_TAG)
-            if (entry.findtext("Id") or "").strip().isdigit()
-        ]
-        next_id  = (max(existing_ids) + 1) if existing_ids else 1
-        str_id   = str(next_id)
-
-        # ── Build new <Schedule> element ──────────────────────────────────────
-        entry = ET.SubElement(root, _ENTRY_TAG)
-        _sub(entry, "Id",               str_id)
-        _sub(entry, "ReportName",       report_name)
-        _sub(entry, "FormId",           form_id)
-        _sub(entry, "ReportingDate",    reporting_date)
-        _sub(entry, "ScheduleDateTime", schedule_dt)
-        _sub(entry, "UserId",           user_id)
-        _sub(entry, "Status",           "PENDING")
-
-        # ── Pretty-print and persist ───────────────────────────────────────────
-        _pretty_print(root)
-        tree = ET.ElementTree(root)
-        with open(path, "wb") as fh:
-            tree.write(fh, encoding="utf-8", xml_declaration=True)
-
-        logger.info(
-            "[scheduler_queue] Appended entry id=%s report=%r form_id=%r user=%r to %s",
-            str_id, report_name, form_id, user_id, path,
+    except portalocker.exceptions.LockException as exc:
+        logger.error(
+            "[scheduler_queue] Could not acquire lock on %s within timeout: %s",
+            lock_path, exc,
         )
-        return True, str_id
-
+        return False, ""
     except OSError as exc:
         logger.error(
             "[scheduler_queue] File I/O error while updating %s: %s",

@@ -118,6 +118,16 @@ def _parse_variable_row(cells: list[str], headers: list[str] | None) -> dict:
 def parse_generic_formula_errors(html_path: str) -> list[dict]:
     """Parse formula errors from the non-backtracking (7-column) table shape.
 
+    M-16: memoized by (path, mtime) -- see _parse_generic_formula_errors_uncached
+    for the actual parsing logic and docs.
+    """
+    from backend.tools.mtime_cache import cached_by_mtime
+    return cached_by_mtime(html_path, lambda: _parse_generic_formula_errors_uncached(html_path))
+
+
+def _parse_generic_formula_errors_uncached(html_path: str) -> list[dict]:
+    """Parse formula errors from the non-backtracking (7-column) table shape.
+
     Returns a list of rule dicts:
         {
             "rule_name": str, "formula_expression": str,
@@ -1035,7 +1045,7 @@ def explain_generic_formula_errors(rules: list[dict], form_id: str = "") -> list
     try/except falling back to a deterministic template), so one rule's
     Ollama failure can never drop or block the others in the batch.
     """
-    import os as _os
+    from backend.services import llm_config
 
     if not rules:
         return []
@@ -1048,15 +1058,11 @@ def explain_generic_formula_errors(rules: list[dict], form_id: str = "") -> list
         except Exception as exc:
             logger.warning("[formula_error_generic] taxonomy lookup failed for form_id=%s: %s", form_id, exc)
 
-    ollama_base = _os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = _os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-    timeout     = float(_os.getenv("OLLAMA_TIMEOUT", "180"))
-    keep_alive  = _os.getenv("OLLAMA_KEEP_ALIVE", "30m")
-    try:
-        max_concurrency = int(_os.getenv("OLLAMA_MAX_CONCURRENCY", "2"))
-    except ValueError:
-        max_concurrency = 2
-    max_concurrency = max(1, max_concurrency)
+    ollama_base = llm_config.base_url()
+    model       = llm_config.chat_model()
+    timeout     = llm_config.request_timeout()
+    keep_alive  = llm_config.keep_alive()
+    max_concurrency = llm_config.max_concurrency()
 
     def _worker(rule: dict) -> dict:
         return explain_one_generic_rule(rule, taxonomy, ollama_base, model, timeout, keep_alive)
@@ -1066,8 +1072,18 @@ def explain_generic_formula_errors(rules: list[dict], form_id: str = "") -> list
         return [_worker(rule) for rule in rules]
 
     from concurrent.futures import ThreadPoolExecutor
+    import contextvars
+    # H-06: same contextvar-propagation gap as loop.run_in_executor -- this
+    # pool's own worker threads don't inherit the calling thread's context by
+    # default, so copy it explicitly into each submitted call. A single
+    # Context object cannot be .run() by more than one thread at once
+    # (raises "cannot enter context: ... is already entered" the moment two
+    # pooled workers overlap) -- .copy() gives each task its own independent
+    # Context carrying the SAME captured contextvar values, which is safe
+    # for concurrent use.
+    base_ctx = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        return list(executor.map(_worker, rules))
+        return list(executor.map(lambda rule: base_ctx.copy().run(_worker, rule), rules))
 
 
 def explain_generic_formula_error_file(

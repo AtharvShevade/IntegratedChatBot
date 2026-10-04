@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 INTENT_LOG_PATH = os.path.join(LOG_DIR, "intent_classifications.jsonl")
 FEEDBACK_LOG_PATH = os.path.join(LOG_DIR, "feedback.jsonl")
 
+# L-16: /feedback has no auth gate (see main.py's submit_feedback docstring),
+# so this file is the one place an abusive caller could grow without bound
+# purely by posting feedback repeatedly. A single size-based rotation (keep
+# one previous generation as .1, same idea as a logrotate `maxsize` rule)
+# caps that growth without discarding the file outright or needing a new
+# dependency -- past feedback isn't mined in real time, so losing the oldest
+# generation on rotation is an acceptable tradeoff for an unauthenticated
+# endpoint's abuse protection.
+FEEDBACK_LOG_MAX_BYTES = int(os.environ.get("FEEDBACK_LOG_MAX_BYTES", str(10 * 1024 * 1024)))  # 10 MB
+
 _lock = threading.Lock()
 _feedback_lock = threading.Lock()
 
@@ -84,6 +94,22 @@ def log_intent_outcome(
         logger.warning("Failed to write intent classification log: %s", exc)
 
 
+def _rotate_feedback_log_if_oversized() -> None:
+    """Caller must already hold _feedback_lock. Best-effort: a rotation
+    failure is logged and swallowed, never allowed to block writing
+    feedback."""
+    try:
+        if os.path.getsize(FEEDBACK_LOG_PATH) < FEEDBACK_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return  # file doesn't exist yet -- nothing to rotate
+    rotated_path = FEEDBACK_LOG_PATH + ".1"
+    try:
+        os.replace(FEEDBACK_LOG_PATH, rotated_path)
+    except OSError as exc:
+        logger.warning("Failed to rotate feedback log: %s", exc)
+
+
 def log_feedback(
     rating: str,
     query: str | None = None,
@@ -110,6 +136,7 @@ def log_feedback(
     try:
         with _feedback_lock:
             os.makedirs(LOG_DIR, exist_ok=True)
+            _rotate_feedback_log_if_oversized()
             with open(FEEDBACK_LOG_PATH, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
     except OSError as exc:

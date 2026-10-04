@@ -23,6 +23,7 @@ wins, as before).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -2834,7 +2835,13 @@ async def classify_new_with_semantic_tiers(question: str) -> tuple[Intent | None
             return None
         return Intent(chosen_value) if chosen_value is not None else None
 
-    embedding_result = classify_by_embedding(question)
+    # H-05: classify_by_embedding() runs a BGE-large SentenceTransformer
+    # encode + FAISS search on CPU -- synchronous, non-trivial work that
+    # would otherwise block the event loop (and every other in-flight
+    # request) for its duration. asyncio.to_thread runs it in a worker
+    # thread instead, same pattern already used elsewhere in this codebase
+    # (e.g. agent/router.py's SQL-agent call).
+    embedding_result = await asyncio.to_thread(classify_by_embedding, question)
     tier = embedding_result["tier"]
 
     resolved_intent: Intent | None = None

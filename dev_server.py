@@ -51,9 +51,16 @@ if __name__ == "__main__":
     print("[DEV SERVER] Watching only: backend/")
     print("[DEV SERVER] Excluding logs, frontend, pycache, temp files\n")
 
+    # H-07 hardening: default to loopback-only so this process is reachable
+    # only through the local IIS reverse proxy (confirmed same-machine
+    # deployment), not directly from the network. BACKEND_HOST stays
+    # env-overridable for a dev setup that genuinely needs LAN access.
+    _host = os.environ.get("BACKEND_HOST", "127.0.0.1")
+    print(f"[DEV SERVER] Host: {_host}")
+
     uvicorn.run(
         "backend.main:app",
-        host="0.0.0.0",
+        host=_host,
         port=BACKEND_PORT,
 
         # Auto reload

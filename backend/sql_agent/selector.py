@@ -12,4 +12,4 @@ from backend.sql_agent import _bootstrap
 
 _bootstrap.ensure()
 
-from src.selector import select_tables                           # noqa: E402,F401
+from sqlcore.selector import select_tables                           # noqa: E402,F401

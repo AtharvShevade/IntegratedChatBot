@@ -38,6 +38,15 @@ def _clean_registries():
     _stopped_request_ids.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_auth_required(monkeypatch):
+    # M-11: /stop now gates on a resolvable login_id when REQUIRE_AUTH is on.
+    # These tests exercise cancellation plumbing, not auth, so they opt out
+    # the same way test_h01_fail_closed.py does; auth itself is covered
+    # separately in test_m05_m11_endpoint_auth.py.
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
+
+
 async def _slow(seconds: float = 30):
     await asyncio.sleep(seconds)
     return {"never": "reached"}

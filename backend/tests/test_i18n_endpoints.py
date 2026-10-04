@@ -33,6 +33,11 @@ def _enabled(monkeypatch):
     monkeypatch.setenv("TRANSLATION_MODEL", "qwen3:14b")
     monkeypatch.setenv("SUPPORTED_LANGUAGES", "en,fr,ar,hi")
     monkeypatch.setenv("TRANSLATION_MAX_CHARS", "2000")
+    # M-05: /compare-summary now gates on a resolvable login_id when
+    # REQUIRE_AUTH is on. These tests exercise translation wiring, not auth
+    # (covered separately in test_m05_m11_endpoint_auth.py), so they opt out
+    # the same way test_h01_fail_closed.py does.
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
 
 
 class Recorder:
@@ -730,7 +735,7 @@ def test_explain_category_honours_lang(client, monkeypatch, lang):
     monkeypatch.setattr("backend.main.explain_category_for_report", _explain)
     _install(monkeypatch, translator=StubTranslator())
 
-    body = {"error_file_path": "f.xml", "category": "formula_error"}
+    body = {"filename": "f.xml", "form_id": "4046", "category": "formula_error"}
     if lang != "en":
         body["lang"] = lang
     resp = client.post("/explain-category", json=body)

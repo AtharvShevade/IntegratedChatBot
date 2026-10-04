@@ -38,7 +38,14 @@ import logging
 import os
 import re
 import threading
-import xml.etree.ElementTree as ET
+
+# L-14: this module parses the actual user-submitted XBRL instance document
+# (see _load() below) -- defusedxml.ElementTree is a drop-in replacement for
+# xml.etree.ElementTree that rejects XXE/billion-laughs/external-entity
+# constructs instead of silently resolving them. Its exceptions are
+# ValueError subclasses, already covered by the existing
+# `except (ET.ParseError, OSError, ValueError)` below.
+import defusedxml.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 

@@ -136,8 +136,8 @@ def handle_cross_entity_query(scope: dict, entities: dict, store: XMLStore) -> d
     # "active users not logged in for more than N days" — best-effort without a
     # date-parsing dependency: treat blank LastLoginDT as "never", not "recent".
     if days_n:
-        active = [u for u in store.users() if u.get("Status", "").lower() == "true"]
-        stale = [u for u in active if not u.get("LastLoginDT", "").strip()]
+        active = [u for u in store.users() if get_attr(u, "Status").lower() == "true"]
+        stale = [u for u in active if not get_attr(u, "LastLoginDT").strip()]
         return _result("cross_entity_query", "Active Users With No Recent Login",
                        [store.enrich_user(u) for u in stale],
                        f"{len(stale)} active user(s) have no recorded login "

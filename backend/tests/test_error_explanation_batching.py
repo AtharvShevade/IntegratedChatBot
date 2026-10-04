@@ -56,13 +56,41 @@ def _xbrl_entry(rule_key: str | None) -> dict:
     return {"errorType": "XBRL_SCHEMA", "rule": rule_key} if rule_key else {"errorType": "XBRL_SCHEMA"}
 
 
+_DUMMY_FORM_ID = "4046"
+_DUMMY_FILENAME = "errors.html"
+
+
 @pytest.fixture
-def dummy_html_file(tmp_path):
+def dummy_html_file(tmp_path, monkeypatch):
     """A real file path (count_errors_by_category requires os.path.isfile),
     with harmless placeholder content — every parsing function used inside
     it is monkeypatched in these tests, so the actual content is never
-    exercised."""
-    path = tmp_path / "errors.html"
+    exercised.
+
+    explain_category_for_report() now takes (filename, form_id) and rebuilds
+    the real path via report_lookup.build_error_file_path() (L-17 fix)
+    rather than a client-sent path -- that helper's layout is
+    instance_base_dir()/form_id/filename, so the fixture writes the file at
+    that same nested location (using _DUMMY_FORM_ID/_DUMMY_FILENAME) while
+    still returning the full path string for the many tests here that only
+    exercise the lower-level count_errors_by_category()/
+    explain_errors_by_category() functions directly with a path, unaffected
+    by the L-17 signature change.
+
+    Two separate bindings of instance_base_dir must both be patched:
+    build_error_file_path (report_lookup.py) reads it via `config.
+    instance_base_dir()` (module attribute access, patchable on
+    backend.config directly), while error_explanation.py's containment
+    check imported the name directly (`from backend.config import
+    instance_base_dir`), which captured its own local reference at import
+    time and needs patching on that module instead.
+    """
+    from backend import config as _config_module
+    monkeypatch.setattr(_config_module, "instance_base_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("backend.agent.error_explanation.instance_base_dir", lambda: str(tmp_path))
+    form_dir = tmp_path / _DUMMY_FORM_ID
+    form_dir.mkdir()
+    path = form_dir / _DUMMY_FILENAME
     path.write_text("<html><body>placeholder</body></html>", encoding="utf-8")
     return str(path)
 
@@ -79,6 +107,24 @@ def legacy_flow(monkeypatch):
     TestUnifiedFlowBatching below.
     """
     monkeypatch.setenv("ERROR_EXPLAIN_V2", "0")
+
+
+# ── 0. count_errors_by_category exposes only a filename (L-17) ────────────
+
+class TestCountErrorsByCategoryNeverLeaksAbsolutePath:
+    def test_result_carries_bare_filename_not_absolute_path(self, monkeypatch, dummy_html_file):
+        """count_errors_by_category()'s result dict becomes
+        error_category_counts in the /chat, /guided, etc. API responses --
+        it must carry only the bare filename (L-17), never the absolute
+        server path (drive letter, tenant folder layout) it used to."""
+        counts = rl.count_errors_by_category(dummy_html_file, form_id=_DUMMY_FORM_ID)
+        assert counts["filename"] == _DUMMY_FILENAME
+        assert "error_file_path" not in counts
+        assert "\\" not in counts["filename"] and "/" not in counts["filename"]
+
+    def test_empty_input_still_returns_empty_filename(self):
+        counts = rl.count_errors_by_category("", form_id="4046")
+        assert counts["filename"] == ""
 
 
 # ── 1. Unique-rule summary counts (requirement 3) ──────────────────────────
@@ -286,7 +332,7 @@ class TestExplainCategoryForReportBatchMetadata:
         monkeypatch.setattr(rl, "count_errors_by_category", lambda path, form_id="": {"formula_error": 8})
 
         result = self._run(agent.explain_category_for_report(
-            dummy_html_file, "formula_error", form_id="4046", offset=0,
+            _DUMMY_FILENAME, "formula_error", form_id=_DUMMY_FORM_ID, offset=0,
         ))
         assert result["data"]["has_more"] is True
         assert result["data"]["next_offset"] == 3
@@ -304,7 +350,7 @@ class TestExplainCategoryForReportBatchMetadata:
         monkeypatch.setattr(rl, "count_errors_by_category", lambda path, form_id="": {"formula_error": 8})
 
         result = self._run(agent.explain_category_for_report(
-            dummy_html_file, "formula_error", form_id="4046", offset=6,
+            _DUMMY_FILENAME, "formula_error", form_id=_DUMMY_FORM_ID, offset=6,
         ))
         assert result["data"]["has_more"] is False
         assert result["data"]["next_offset"] == 8
@@ -317,7 +363,155 @@ class TestExplainCategoryForReportBatchMetadata:
         monkeypatch.setattr(rl, "count_errors_by_category", lambda path, form_id="": {"formula_error": 8})
 
         result = self._run(agent.explain_category_for_report(
-            dummy_html_file, "formula_error", form_id="4046", offset=8,
+            _DUMMY_FILENAME, "formula_error", form_id=_DUMMY_FORM_ID, offset=8,
         ))
         assert result["result_type"] == "error"
         assert "no further" in result["response_text"].lower()
+
+
+# ── 4. filename/form_id containment (C-04 fix, updated for L-17) ──────────
+#
+# L-17 changed the client-facing contract: the client no longer sends any
+# path at all, only a bare filename + form_id. explain_category_for_report()
+# rebuilds the real path server-side via report_lookup.build_error_file_path
+# (the same helper /download-file already uses: os.path.basename() on both
+# inputs, then joined under instance_base_dir()/form_id/). These tests cover
+# what a malicious filename/form_id can and cannot still do to that rebuild,
+# plus the _is_contained_error_file() containment check (C-04) as the
+# second, independent layer behind it.
+
+class TestExplainCategoryPathContainment:
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def _patch_instance_base_dir(self, monkeypatch, path):
+        from backend import config as _config_module
+        monkeypatch.setattr(_config_module, "instance_base_dir", lambda: str(path))
+        monkeypatch.setattr("backend.agent.error_explanation.instance_base_dir", lambda: str(path))
+
+    def test_traversal_in_filename_is_stripped_to_a_bare_name(self, monkeypatch, tmp_path):
+        """os.path.basename() strips any directory component from filename
+        before it's ever joined -- a traversal attempt collapses to a plain
+        filename inside the legitimate form_id folder, never escaping it.
+        Since that stripped name has a disallowed extension here, it's
+        rejected anyway (this is the common case: traversal payloads target
+        a specific real file, which rarely happens to end in .xml/.html)."""
+        import backend.agent as agent
+
+        base = tmp_path / "Instance"
+        base.mkdir()
+        self._patch_instance_base_dir(monkeypatch, base)
+
+        called = {"n": 0}
+        monkeypatch.setattr(
+            rl, "explain_errors_by_category_for_form",
+            lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [],
+        )
+
+        for bad_filename in (
+            "../../../Windows/win.ini",
+            r"..\..\Windows\win.ini",
+            r"\\evilhost\share\x.ini",
+        ):
+            result = self._run(agent.explain_category_for_report(bad_filename, "formula_error", form_id="9999"))
+            assert result["result_type"] == "error"
+        assert called["n"] == 0
+
+    def test_traversal_in_filename_with_allowed_extension_still_lands_inside_base(self, monkeypatch, tmp_path):
+        """Even when the stripped basename DOES have an allowed extension,
+        it can only ever resolve to instance_base_dir()/form_id/<basename>
+        -- there is no way for a value with no real path separator survival
+        (basename already stripped them) to escape that folder. This is
+        the containment check confirming success, not failure -- the fix
+        does not merely reject traversal, it makes it structurally
+        impossible to reach anywhere outside the form's own folder."""
+        import backend.agent as agent
+
+        base = tmp_path / "Instance"
+        form_dir = base / "9999"
+        form_dir.mkdir(parents=True)
+        (form_dir / "win.xml").write_text("<x/>", encoding="utf-8")
+        self._patch_instance_base_dir(monkeypatch, base)
+
+        monkeypatch.setattr(rl, "explain_errors_by_category_for_form", lambda *a, **k: [])
+        result = self._run(agent.explain_category_for_report(
+            "../../../Windows/win.xml", "formula_error", form_id="9999",
+        ))
+        # Reaches the real pipeline (file found inside form 9999's own
+        # folder), not the containment-rejection branch.
+        assert "no error file is available" not in result["response_text"].lower()
+
+    def test_form_id_escape_attempt_is_rejected_by_containment_check(self, monkeypatch, tmp_path):
+        """form_id="..' has no separator, so os.path.basename() leaves it
+        unchanged -- build_error_file_path would join base/../secret.xml,
+        landing in base's PARENT. The _is_contained_error_file() containment
+        check (C-04) is the layer that catches this, independent of
+        basename()'s inability to help here."""
+        import backend.agent as agent
+
+        base = tmp_path / "Instance"
+        base.mkdir()
+        (tmp_path / "secret.xml").write_text("<x/>", encoding="utf-8")
+        self._patch_instance_base_dir(monkeypatch, base)
+
+        called = {"n": 0}
+        monkeypatch.setattr(
+            rl, "explain_errors_by_category_for_form",
+            lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [],
+        )
+
+        result = self._run(agent.explain_category_for_report("secret.xml", "formula_error", form_id=".."))
+        assert result["result_type"] == "error"
+        assert called["n"] == 0
+
+    def test_form_id_with_separators_collapses_to_its_last_segment(self, monkeypatch, tmp_path):
+        """A multi-segment form_id also only ever survives as its LAST
+        component through os.path.basename() -- it cannot be used to
+        reconstruct a multi-level traversal in one shot either."""
+        import backend.agent as agent
+
+        base = tmp_path / "Instance"
+        form_dir = base / "9999"
+        form_dir.mkdir(parents=True)
+        (form_dir / "errors.xml").write_text("<x/>", encoding="utf-8")
+        self._patch_instance_base_dir(monkeypatch, base)
+
+        monkeypatch.setattr(rl, "explain_errors_by_category_for_form", lambda *a, **k: [])
+        result = self._run(agent.explain_category_for_report(
+            "errors.xml", "formula_error", form_id=r"..\9999",
+        ))
+        assert "no error file is available" not in result["response_text"].lower()
+
+    def test_rejects_disallowed_extension_even_for_a_real_in_tree_file(self, monkeypatch, tmp_path):
+        import backend.agent as agent
+
+        base = tmp_path / "Instance"
+        form_dir = base / _DUMMY_FORM_ID
+        form_dir.mkdir(parents=True)
+        (form_dir / "not_really_an_error_file.exe").write_text("x", encoding="utf-8")
+        self._patch_instance_base_dir(monkeypatch, base)
+
+        result = self._run(agent.explain_category_for_report(
+            "not_really_an_error_file.exe", "formula_error", form_id=_DUMMY_FORM_ID,
+        ))
+        assert result["result_type"] == "error"
+
+    def test_missing_filename_or_form_id_returns_friendly_error(self, monkeypatch, dummy_html_file):
+        import backend.agent as agent
+
+        result = self._run(agent.explain_category_for_report("", "formula_error", form_id=_DUMMY_FORM_ID))
+        assert result["result_type"] == "error"
+        result = self._run(agent.explain_category_for_report(_DUMMY_FILENAME, "formula_error", form_id=""))
+        assert result["result_type"] == "error"
+
+    def test_allows_legitimate_in_tree_file(self, monkeypatch, dummy_html_file):
+        import backend.agent as agent
+
+        monkeypatch.setattr(rl, "explain_errors_by_category_for_form", lambda *a, **k: [])
+        result = self._run(agent.explain_category_for_report(
+            _DUMMY_FILENAME, "formula_error", form_id=_DUMMY_FORM_ID,
+        ))
+        # Reaches the "no rules parsed" branch, not the containment-rejection
+        # branch -- i.e. the file was actually opened/processed.
+        assert result["result_type"] == "error"
+        assert "no formula errors could be parsed" in result["response_text"].lower()

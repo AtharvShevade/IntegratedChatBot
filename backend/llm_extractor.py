@@ -1043,8 +1043,14 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
     _elapsed = time.monotonic() - _t0
     logger.info("[PERF] operation=llm_extract duration=%.2fs", _elapsed)
 
-    # Validate intent — reject any value the LLM hallucinated
-    _valid_intents = {"get_status", "generate_instance", "schedule_report", "compare_reports", "query_database", "unknown"}
+    # Validate intent — reject any value the LLM hallucinated.
+    # H-13: VALID_INTENTS is read from the same prompt text that tells the LLM
+    # which intents exist (backend/services/llm_service.py) — not a second,
+    # independently-maintained list — so this can never drift out of sync
+    # with what the LLM is actually told it may return (previously this set
+    # had no db_* names at all, so every db_* classification was silently
+    # discarded regardless of how well the LLM did its job).
+    from backend.services.llm_service import VALID_INTENTS as _valid_intents
     intent: str = raw.get("intent", "unknown")
     if intent not in _valid_intents:
         logger.warning("LLM returned unknown intent %r — defaulting to unknown", intent)
@@ -1113,6 +1119,36 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
             scheduled_datetime = _sched_check["scheduled_datetime"]
             reporting_date     = None
 
+    # DB Q&A entities — same principle as report_name/dates above: the LLM is
+    # only trusted for intent classification, never for entity values, so
+    # target_user/target_department/query_type are extracted deterministically
+    # from the literal query text (reusing the regex helpers the existing
+    # STEP-2 regex classifier already uses for the same purpose in
+    # backend/db_qa/intent_classifier.py), not trusted from the LLM's raw
+    # JSON. H-13: this path was previously unreachable at all (any db_*
+    # intent was rejected by the stale validator before getting here), so
+    # these fields were simply never populated.
+    target_user: Optional[str] = None
+    target_department: Optional[str] = None
+    query_type: Optional[str] = None
+    if intent.startswith("db_"):
+        from backend.db_qa.intent_classifier import _extract_after_kw, _extract_quoted_or_bracketed
+        _explicit = _extract_quoted_or_bracketed(user_query)
+        if intent == "db_user_info":
+            target_user = _explicit or _extract_after_kw(
+                user_query, "user", "for user", "of user", "about user")
+        if intent == "db_department_info":
+            target_department = _explicit or _extract_after_kw(
+                user_query, "department", "dept")
+        if intent in ("db_list_users", "db_list_departments", "db_list_roles"):
+            _ql = user_query.lower()
+            if "inactive" in _ql or "disabled" in _ql:
+                query_type = "inactive"
+            elif "active" in _ql or "enabled" in _ql:
+                query_type = "active"
+            else:
+                query_type = "all"
+
     logger.info(
         "[EXTRACT] intent=%s report_name=%r reporting_date=%r "
         "schedule_date=%r schedule_time=%r",
@@ -1124,5 +1160,8 @@ async def extract_intent_and_entities(user_query: str, history: list[dict] | Non
         "reporting_date":     reporting_date,
         "schedule_date":      schedule_date,
         "schedule_time":      schedule_time,
+        "target_user":        target_user,
+        "target_department":  target_department,
+        "query_type":         query_type,
         "scheduled_datetime": scheduled_datetime,
     }

@@ -57,6 +57,16 @@ class TestLooksLikeRequestIdAttempt:
 class TestGuidedStatusRequestIdLookup:
     SESSION = "test-session-request-id"
 
+    @pytest.fixture(autouse=True)
+    def _no_login_id_dev_mode(self, monkeypatch):
+        """These tests exercise the STAGE_STATUS_REPORT request-ID-vs-name
+        resolution logic with no login_id -- unrelated to authorization.
+        guided_step() now denies (H-01 fix) when REQUIRE_AUTH is set and no
+        login_id is present, so opt into the explicit dev-mode bypass here
+        rather than testing this class's actual subject through a real
+        login_id/auth_service mock it doesn't otherwise need."""
+        monkeypatch.setenv("REQUIRE_AUTH", "false")
+
     def setup_method(self):
         guided._guided_sessions[self.SESSION] = {"stage": guided.STAGE_STATUS_REPORT}
 

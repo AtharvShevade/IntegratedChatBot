@@ -14,7 +14,7 @@ from backend.sql_agent import _bootstrap
 
 _bootstrap.ensure()
 
-from src.retriever import (                                      # noqa: E402,F401
+from sqlcore.retriever import (                                      # noqa: E402,F401
     STRONG_MATCH_MIN_RATIO,
     compute_query_embedding,
     find_exact_qa_match,

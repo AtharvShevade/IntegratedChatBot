@@ -1,4 +1,14 @@
 # requirements.txt
+#
+# Supported Python version: 3.13 (see .python-version). Not tested against
+# other major versions.
+#
+# M-30: these are loose (>=) top-level declarations of WHAT this project
+# depends on. For an exact, fully reproducible install (every transitive
+# dependency pinned to the versions this project was actually developed and
+# tested against), use requirements-lock.txt instead. Development/test-only
+# tooling (pytest, ruff, bandit, pip-audit) lives in requirements-dev.txt,
+# not here.
 
 # ── Core framework ──────────────────────────────────────────────────────────
 
@@ -86,3 +96,13 @@ orjson>=3.10.0
 # ── Retry / resilience ───────────────────────────────────────────────────────
 
 tenacity>=8.2.3
+
+# ── File locking (M-13: atomic, locked read-modify-write of SchedulerQueue.xml) ──
+
+portalocker>=2.10.0
+
+# ── Safe XML parsing (L-14: XXE-hardened parsing of user-submitted XBRL instance
+# documents and validator-generated error XML; already present transitively, now
+# depended on directly by backend/tools/xml_loader.py and friends) ──────────────
+
+defusedxml>=0.7.1

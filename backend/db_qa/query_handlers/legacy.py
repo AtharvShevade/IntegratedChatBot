@@ -70,7 +70,7 @@ def handle_user_list(store: XMLStore, params: dict, user_id: str, is_admin: bool
 def handle_user_list_active(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
     if not is_admin:
         return _admin_denied("USER_LIST_ACTIVE")
-    active = [store.enrich_user(u) for u in store.users() if u.get("Status", "").lower() == "true"]
+    active = [store.enrich_user(u) for u in store.users() if get_attr(u, "Status").lower() == "true"]
     return _result("USER_LIST_ACTIVE", "Active Users", active,
                    f"There are {len(active)} active users.", count=len(active))
 
@@ -78,7 +78,7 @@ def handle_user_list_active(store: XMLStore, params: dict, user_id: str, is_admi
 def handle_user_list_inactive(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
     if not is_admin:
         return _admin_denied("USER_LIST_INACTIVE")
-    inactive = [store.enrich_user(u) for u in store.users() if u.get("Status", "").lower() != "true"]
+    inactive = [store.enrich_user(u) for u in store.users() if get_attr(u, "Status").lower() != "true"]
     return _result("USER_LIST_INACTIVE", "Inactive / Disabled Users", inactive,
                    f"There are {len(inactive)} inactive users.", count=len(inactive))
 
@@ -87,7 +87,7 @@ def handle_user_count(store: XMLStore, params: dict, user_id: str, is_admin: boo
     if not is_admin:
         return _admin_denied("USER_COUNT")
     all_users = store.users()
-    active = [u for u in all_users if u.get("Status", "").lower() == "true"]
+    active = [u for u in all_users if get_attr(u, "Status").lower() == "true"]
     return _result("USER_COUNT", "User Count",
                    [{"total": len(all_users), "active": len(active), "inactive": len(all_users) - len(active)}],
                    f"Total users: {len(all_users)} ({len(active)} active, {len(all_users) - len(active)} inactive).",
@@ -143,7 +143,7 @@ def handle_user_never_login(store: XMLStore, params: dict, user_id: str, is_admi
     if not is_admin:
         return _admin_denied("USER_NEVER_LOGIN")
     never = [store.enrich_user(u) for u in store.users()
-             if not u.get("LastLoginDT", "").strip()]
+             if not get_attr(u, "LastLoginDT").strip()]
     return _result("USER_NEVER_LOGIN", "Users Who Never Logged In",
                    never, f"Found {len(never)} users who have never logged in.", count=len(never))
 
@@ -165,10 +165,10 @@ def handle_user_duplicate_email(store: XMLStore, params: dict, user_id: str, is_
     if not is_admin:
         return _admin_denied("USER_DUPLICATE_EMAIL")
     from collections import Counter
-    emails = [u.get("EmailId", "").lower() for u in store.users() if u.get("EmailId")]
+    emails = [get_attr(u, "EmailId").lower() for u in store.users() if u.get("EmailId")]
     dup_emails = {e for e, cnt in Counter(emails).items() if cnt > 1}
     dupes = [store.enrich_user(u) for u in store.users()
-             if u.get("EmailId", "").lower() in dup_emails]
+             if get_attr(u, "EmailId").lower() in dup_emails]
     if not dupes:
         return _result("USER_DUPLICATE_EMAIL", "Duplicate Email Check",
                        [], "No duplicate email addresses found. All user emails are unique.")
@@ -229,7 +229,7 @@ def handle_my_mobile(store: XMLStore, params: dict, user_id: str, is_admin: bool
     u = _resolve_user(store, user_id)
     if not u:
         return _not_found("MY_MOBILE", "My Mobile", "Your profile could not be found.")
-    mob = u.get("MobileNumber", "").strip() or "Not set"
+    mob = get_attr(u, "MobileNumber").strip() or "Not set"
     return _result("MY_MOBILE", "My Mobile Number",
                    [{"MobileNumber": mob}], f"Your mobile number: {mob}.")
 
@@ -238,7 +238,7 @@ def handle_my_last_login(store: XMLStore, params: dict, user_id: str, is_admin: 
     u = _resolve_user(store, user_id)
     if not u:
         return _not_found("MY_LAST_LOGIN", "My Last Login", "Your profile could not be found.")
-    last = u.get("LastLoginDT", "").strip() or "Never"
+    last = get_attr(u, "LastLoginDT").strip() or "Never"
     return _result("MY_LAST_LOGIN", "My Last Login",
                    [{"LastLoginDT": last}], f"Your last login was: {last}.")
 
@@ -258,7 +258,7 @@ def handle_my_status(store: XMLStore, params: dict, user_id: str, is_admin: bool
     u = _resolve_user(store, user_id)
     if not u:
         return _not_found("MY_STATUS", "My Account Status", "Your profile could not be found.")
-    active = u.get("Status", "").lower() == "true"
+    active = get_attr(u, "Status").lower() == "true"
     label = "Active" if active else "Inactive / Disabled"
     return _result("MY_STATUS", "My Account Status",
                    [{"Status": label}], f"Your account is currently {label}.")
@@ -268,8 +268,8 @@ def handle_my_created_date(store: XMLStore, params: dict, user_id: str, is_admin
     u = _resolve_user(store, user_id)
     if not u:
         return _not_found("MY_CREATED_DATE", "My Account Creation", "Your profile could not be found.")
-    created = u.get("UserCreationDate", "").strip() or "Not recorded"
-    created_by = u.get("CreatedBy", "").strip() or "Not recorded"
+    created = get_attr(u, "UserCreationDate").strip() or "Not recorded"
+    created_by = get_attr(u, "CreatedBy").strip() or "Not recorded"
     return _result("MY_CREATED_DATE", "My Account Creation",
                    [{"UserCreationDate": created, "CreatedBy": created_by}],
                    f"Your account was created on {created}" + (f" by {created_by}." if created_by != "Not recorded" else "."))
@@ -288,7 +288,7 @@ def handle_my_user_code(store: XMLStore, params: dict, user_id: str, is_admin: b
     u = _resolve_user(store, user_id)
     if not u:
         return _not_found("MY_USER_CODE", "My User Code", "Your profile could not be found.")
-    code = u.get("Code", "").strip() or "Not set"
+    code = get_attr(u, "Code").strip() or "Not set"
     return _result("MY_USER_CODE", "My User Code",
                    [{"Code": code}], f"Your user code is: {code}.")
 
@@ -298,7 +298,7 @@ def handle_my_password_date(store: XMLStore, params: dict, user_id: str, is_admi
     if not u:
         return _not_found("MY_PASSWORD_DATE", "My Password Update", "Your profile could not be found.")
     # XML_User.xml stores password date in PasswordUpdateDate (ActionDate is a different field)
-    pwd_date = u.get("PasswordUpdateDate", "").strip() or "Not recorded"
+    pwd_date = get_attr(u, "PasswordUpdateDate").strip() or "Not recorded"
     return _result("MY_PASSWORD_DATE", "My Last Password Update",
                    [{"PasswordUpdateDate": pwd_date}],
                    f"Your password was last updated on: {pwd_date}.")
@@ -556,7 +556,7 @@ def handle_period_list(store: XMLStore, params: dict, user_id: str, is_admin: bo
 
 def handle_returns_list(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
     returns = [store.enrich_return(r) for r in store.returns()]
-    active = [r for r in returns if r.get("Status", "").lower() == "true"]
+    active = [r for r in returns if get_attr(r, "Status").lower() == "true"]
     return _result("RETURNS_LIST", "XBRL Returns", returns,
                    f"There are {len(returns)} XBRL returns ({len(active)} active).",
                    count=len(returns), active=len(active))
@@ -578,7 +578,7 @@ def handle_returns_by_period(store: XMLStore, params: dict, user_id: str, is_adm
     period_id = None
     if period_name:
         for p in periods:
-            if p.get("PeriodName", "").lower() == period_name.lower():
+            if get_attr(p, "PeriodName").lower() == period_name.lower():
                 period_id = p.get("Period_Id")
                 break
     if not period_id:
@@ -678,7 +678,7 @@ def handle_submission_approved(store: XMLStore, params: dict, user_id: str, is_a
 # ── MENU ──────────────────────────────────────────────────────────────────────
 
 def handle_menu_list(store: XMLStore, params: dict, user_id: str, is_admin: bool) -> dict:
-    options = [o for o in store.options() if o.get("IsMenu", "").lower() == "true"]
+    options = [o for o in store.options() if get_attr(o, "IsMenu").lower() == "true"]
     return _result("MENU_LIST", "System Menu & Modules",
                    options, f"There are {len(options)} menu items in the system.", count=len(options))
 
@@ -758,7 +758,7 @@ def handle_my_cross_validation_log(store: XMLStore, params: dict, user_id: str, 
     entries = [store.enrich_cross_val_entry(e)
                for e in store.cross_validation_log()
                if e.get("GeneratedBy", "") in ids]
-    failed = [e for e in entries if e.get("Status", "").lower() == "fail"]
+    failed = [e for e in entries if get_attr(e, "Status").lower() == "fail"]
     return _result("MY_CROSS_VAL_LOG", "My Cross-Validation Results",
                    entries,
                    f"Found {len(entries)} cross-validation run(s); {len(failed)} failure(s).",
@@ -774,8 +774,8 @@ def handle_audit_log(store: XMLStore, params: dict, user_id: str, is_admin: bool
     if target:
         t = target.lower()
         entries = [e for e in entries
-                   if t in e.get("UserId", "").lower()
-                   or t in e.get("UserName", "").lower()]
+                   if t in get_attr(e, "UserId").lower()
+                   or t in get_attr(e, "UserName").lower()]
     entries.sort(key=lambda e: e.get("AuditDateTime", ""), reverse=True)
     return _result("AUDIT_LOG", "Audit Log",
                    entries,
@@ -792,9 +792,9 @@ def handle_cross_validation_log(store: XMLStore, params: dict, user_id: str, is_
     if target:
         t = target.lower()
         entries = [e for e in entries
-                   if t in e.get("FirstReportName", "").lower()
-                   or t in e.get("SecondReportName", "").lower()]
-    failed = [e for e in entries if e.get("Status", "").lower() == "fail"]
+                   if t in get_attr(e, "FirstReportName").lower()
+                   or t in get_attr(e, "SecondReportName").lower()]
+    failed = [e for e in entries if get_attr(e, "Status").lower() == "fail"]
     return _result("CROSS_VAL_LOG", "Cross-Validation Log",
                    entries,
                    f"Found {len(entries)} cross-validation record(s); {len(failed)} failure(s)" +
@@ -808,7 +808,7 @@ def handle_upload_log(store: XMLStore, params: dict, user_id: str, is_admin: boo
         return _admin_denied("UPLOAD_LOG")
     entries = [store.enrich_log_entry(e)
                for e in store.upload_file_log()
-               if e.get("FileName", "").strip()]
+               if get_attr(e, "FileName").strip()]
     return _result("UPLOAD_LOG", "Uploaded File Log",
                    entries,
                    f"Found {len(entries)} file upload record(s).",

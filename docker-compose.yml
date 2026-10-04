@@ -1,0 +1,47 @@
+# H-15: optional, additive local/dev convenience for running the backend in
+# a container. Does not replace the IIS deployment (service_server.py +
+# frontend/public/web.config) and is not required by it.
+#
+# Oracle DB, Ollama, and the Whisper STT service are NOT defined here -- in
+# every real deployment of this app they are separate, already-running
+# infrastructure reached over the network (ORACLE_*, OLLAMA_BASE_URL,
+# STT_BASE_URL in .env), not something this backend container should also
+# try to own/start. Point this container's .env at wherever those already
+# live (a host service, another container, a remote server).
+#
+# No secret is defined or committed here: `env_file` points at a real .env
+# that stays local/untracked (see .gitignore's `.env*` / `!.env.example`).
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # BACKEND_PORT is never hardcoded -- it comes from the same .env this
+    # backend would use natively, and the published port mapping reads it
+    # from the host's shell environment (export BACKEND_PORT=... or a
+    # top-level .env next to this compose file -- see Docker Compose's own
+    # .env handling, separate from the application's --env-file below).
+    ports:
+      - "${BACKEND_PORT:?set BACKEND_PORT in your shell or a .env next to this file}:${BACKEND_PORT}"
+    env_file:
+      - .env
+    environment:
+      # Overrides whatever BACKEND_HOST the .env file sets -- loopback-only
+      # would make the service unreachable through the port mapping above
+      # (see Dockerfile's BACKEND_HOST comment).
+      - BACKEND_HOST=0.0.0.0
+    volumes:
+      # Operational logs survive a container recreate. LOG_DIR in .env must
+      # point inside this mount (e.g. LOG_DIR=/app/logs) for this to work;
+      # if unset, backend/utils/logger.py's own default (./logs under the
+      # app, i.e. /app/logs here) already matches it.
+      - ./logs:/app/logs
+      # The XML data repository root (BASE_REPO_PATH / APP_600_REPO_ROOT)
+      # lives outside the image by design -- it is real, mutable production
+      # data, never something to bake into a build. Point this at wherever
+      # that data actually is on the Docker host and set BASE_REPO_PATH (or
+      # APP_600_REPO_ROOT) in .env to the path on the RIGHT of this mount.
+      # Commented out by default since the real path is host-specific.
+      # - /path/on/host/to/repo-data:/data/repo
+    restart: unless-stopped

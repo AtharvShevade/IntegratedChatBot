@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from backend.sql_agent import _bootstrap
 
-# Runs before any `src.*` import anywhere in this package: puts the vendored
+# Runs before any `sqlcore.*` import anywhere in this package: puts the vendored
 # agent on sys.path and maps this project's .env names onto the ones it reads.
 _bootstrap.ensure()
 

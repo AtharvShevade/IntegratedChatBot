@@ -48,7 +48,12 @@ def test_cril_does_not_return_cims_lr():
     assert "CIMS_LR" not in names
 
 
-def test_unknown_status_query_with_no_report_match():
+def test_unknown_status_query_with_no_report_match(monkeypatch):
+    # H-14: REQUIRE_AUTH now defaults to "true" (H-01/C-02 fail-closed fix);
+    # this test is about report-matching/intent logic, not auth, so it opts
+    # out of the auth gate the same way test_h01_fail_closed.py does.
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
+
     async def _run_query():
         with patch(
             "backend.agent.extract_intent_and_entities",
@@ -76,7 +81,9 @@ def test_unknown_status_query_with_no_report_match():
     assert "Please check the report name and try again." in result["response_text"]
 
 
-def test_conversational_greeting_reply():
+def test_conversational_greeting_reply(monkeypatch):
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
+
     async def _run_query():
         with patch(
             "backend.agent.extract_intent_and_entities",
@@ -98,7 +105,9 @@ def test_conversational_greeting_reply():
     assert "report status" in result["response_text"]
 
 
-def test_conversational_acknowledgement_reply():
+def test_conversational_acknowledgement_reply(monkeypatch):
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
+
     async def _run_query():
         with patch(
             "backend.agent.extract_intent_and_entities",
@@ -119,7 +128,9 @@ def test_conversational_acknowledgement_reply():
     assert "You're welcome" in result["response_text"]
 
 
-def test_conversational_classifier_fallback_for_variation():
+def test_conversational_classifier_fallback_for_variation(monkeypatch):
+    monkeypatch.setenv("REQUIRE_AUTH", "false")
+
     async def _run_query():
         with patch(
             "backend.agent.classify_conversational_intent",

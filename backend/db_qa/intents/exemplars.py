@@ -907,8 +907,13 @@ THIN_COVERAGE_INTENTS: list[Intent] = [
 
 # Sanity: every Intent has at least one exemplar, and every exemplar list
 # key is a real Intent (guards against typos in this file).
-assert set(Intent) == set(EXEMPLARS.keys()), (
-    "Intent enum and EXEMPLARS must define exactly the same members — "
-    f"missing: {set(Intent) - set(EXEMPLARS.keys())}, "
-    f"extra: {set(EXEMPLARS.keys()) - set(Intent)}"
-)
+# L-15: was a bare `assert` -- silently skipped entirely when the interpreter
+# runs with `python -O` (assertions are compiled out), which would let the
+# enum/EXEMPLARS pair drift apart with no indication at import time. An
+# explicit exception always runs regardless of the optimization flag.
+if set(Intent) != set(EXEMPLARS.keys()):
+    raise RuntimeError(
+        "Intent enum and EXEMPLARS must define exactly the same members — "
+        f"missing: {set(Intent) - set(EXEMPLARS.keys())}, "
+        f"extra: {set(EXEMPLARS.keys()) - set(Intent)}"
+    )

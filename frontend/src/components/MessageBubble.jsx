@@ -112,7 +112,12 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
   const [loadingCat, setLoadingCat] = useState(null)
 
-  const errorFilePath = counts?.error_file_path ?? ''
+  // L-17: backend now exposes only the bare filename (never the absolute
+  // server path) -- kept in a variable/prop named errorFilePath throughout
+  // this component tree to minimise the diff, but it now holds just a
+  // filename, round-tripped with formId into /explain-category, which
+  // rebuilds the real path server-side.
+  const errorFilePath = counts?.filename ?? ''
   const activeCategories = _CAT_ORDER.filter(
     (cat) => counts && counts[cat] && counts[cat] > 0
   )
@@ -1125,16 +1130,17 @@ function BubbleText({ text, errorDetails }) {
 export default function MessageBubble({
   role, text, data, options, resultType, reportName, sqlData, dbQaData,
   varianceData, varianceAll, varianceMeta, labelA, labelB, llmSummary, summaryIsDraft, instancesData,
-  downloadUrl, downloadLabel, statusNote,
+  downloadUrl, downloadLabel,
   errorDetails,
   errorMessages,
   feedbackQuery, feedbackIntent,
-  onFollowUp, onSuggestion, onGuidedAction, onCompare, onFeedback,
+  onSuggestion, onGuidedAction, onCompare, onFeedback,
   onExplainCategory,
   batchCategory, batchErrorFilePath, batchFormId, batchReportName,
   allowedActions,
   noAutoSummary, onSummaryLoaded,
   lang, onLanguageChange,
+  loginId,
 }) {
   const t = useT()
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -1258,6 +1264,7 @@ export default function MessageBubble({
           reportName={reportName}
           noAutoSummary={noAutoSummary}
           onSummaryLoaded={onSummaryLoaded}
+          loginId={loginId}
         />
       </div>
     )
@@ -2193,7 +2200,7 @@ const vtFilters = (t) => [
 ]
 
 
-function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, reportName, noAutoSummary, onSummaryLoaded }) {
+function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, reportName, noAutoSummary, onSummaryLoaded, loginId }) {
   const t = useT()
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
@@ -2323,7 +2330,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     fetchCompareSummary(summaryScope, labelA, labelB, resolvedReportName,
       // t.lang is the active language from the shared LanguageContext -- no
       // second language state anywhere.
-      { signal: controller.signal, requestId, lang: t.lang })
+      { signal: controller.signal, requestId, lang: t.lang, loginId })
       .then((text) => {
         if (summaryCancelledRef.current) return
         // Loading is cleared in the SAME callback as the result, so the two

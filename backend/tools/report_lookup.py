@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime
+from urllib.parse import quote
 
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,9 @@ def _to_iso_date(date_str: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 from backend import config, version_config
+from backend.services import llm_config
 from backend.tools.xml_loader import load_xml_tree
+from backend.utils.file_cache import FileCache
 
 _INSTANCE_LOG_ATTR_5_5 = {
     "form_id":     "FormId",
@@ -191,87 +194,18 @@ _SUCCESS_STATUSES:  frozenset[int] = _SUCCESS_STATUSES_5_5
 _returns_ttl   = float(os.getenv("RETURNS_TTL_SEC",   "3600"))
 _instances_ttl = float(os.getenv("INSTANCES_TTL_SEC", "120"))
 
-
-class _TTLCache:
-    __slots__ = ("_ttl", "_data", "_ts", "_file_path", "_file_mtime")
-
-    def __init__(self, ttl: float, file_path: str = "") -> None:
-        self._ttl        = ttl
-        self._data       = None
-        self._ts         = 0.0
-        self._file_path  = file_path
-        self._file_mtime = 0.0
-
-    @property
-    def loaded_at(self) -> float:
-        return self._ts
-
-    def _file_changed(self) -> bool:
-        """Return True if the tracked file has been modified since last cache load."""
-        if not self._file_path or self._data is None:
-            return False
-        try:
-            return os.path.getmtime(self._file_path) != self._file_mtime
-        except OSError:
-            return False
-
-    def get(self):
-        if self._data is None:
-            return None
-        if self._file_changed():
-            logger.info(
-                "[cache] %s changed on disk — invalidating cache",
-                os.path.basename(self._file_path),
-            )
-            self._data = None
-            return None
-        if (time.monotonic() - self._ts) >= self._ttl:
-            return None
-        return self._data
-
-    def set(self, data, *, cache_empty: bool = True):
-        if not cache_empty and not data:
-            return data
-        self._data = data
-        self._ts   = time.monotonic()
-        if self._file_path:
-            try:
-                self._file_mtime = os.path.getmtime(self._file_path)
-            except OSError:
-                self._file_mtime = 0.0
-        return data
+# M-15: these three were each a path-keyed dict-of-`_TTLCache` with no size
+# bound (a 6.0 process serving many tenants over its lifetime accumulated
+# one entry per distinct tenant path forever) and no lock (a concurrent
+# check-then-insert on the outer dict could race). Replaced with the shared,
+# thread-safe, bounded backend.utils.file_cache.FileCache -- same
+# per-path/per-file mtime-aware TTL caching behavior, now with a cap on how
+# many distinct paths stay cached and a lock around every access.
+_returns_cache:   "FileCache[str, tuple]" = FileCache(max_size=64)
+_instances_cache: "FileCache[str, tuple]" = FileCache(max_size=64)
+_norm_cache:      "FileCache[str, tuple]" = FileCache(max_size=64)
 
 
-# Path-keyed (not single global) so a 6.0 process serving multiple tenants
-# in successive requests keeps one correctly-invalidated cache per tenant
-# path, rather than one cache frozen to whichever tenant hit it first.
-_returns_caches:   dict[str, "_TTLCache"] = {}
-_instances_caches: dict[str, "_TTLCache"] = {}
-_norm_caches:      dict[str, "_TTLCache"] = {}
-
-
-def _returns_cache_for(path: str) -> "_TTLCache":
-    cache = _returns_caches.get(path)
-    if cache is None:
-        cache = _TTLCache(ttl=_returns_ttl, file_path=path)
-        _returns_caches[path] = cache
-    return cache
-
-
-def _instances_cache_for(path: str) -> "_TTLCache":
-    cache = _instances_caches.get(path)
-    if cache is None:
-        cache = _TTLCache(ttl=_instances_ttl, file_path=path)
-        _instances_caches[path] = cache
-    return cache
-
-
-def _norm_cache_for(path: str) -> "_TTLCache":
-    cache = _norm_caches.get(path)
-    if cache is None:
-        cache = _TTLCache(ttl=_returns_ttl, file_path=path)
-        _norm_caches[path] = cache
-    return cache
 
 
 # 6.0's Return.xml uses <Row> elements; 5.5's Returns.xml uses <Return>.
@@ -280,34 +214,34 @@ _RETURNS_ROW_TAG: str = "Row" if version_config.IS_V6 else "Return"
 
 def _parse_returns() -> tuple[dict, ...]:
     path = config.returns_xml_path()
-    cache = _returns_cache_for(path)
-    cached = cache.get()
-    if cached is not None:
-        return cached
-    root = load_xml_tree(path, os.path.basename(path))
-    if root is None:
-        return ()
-    seen_names: set[str] = set()
-    rows: list[dict] = []
-    for el in root.findall(_RETURNS_ROW_TAG):
-        name = el.attrib.get("Name", "").strip()
-        if name and name not in seen_names:
-            seen_names.add(name)
-            attrs = dict(el.attrib)
-            if version_config.IS_V6:
-                # 6.0's Return.xml has no separate ReturnId attribute — Id
-                # serves both the FormId and ReturnId role (confirmed: the
-                # .NET DTO's ReturnId field is populated with the FormId
-                # value). Aliasing it here means every downstream reader of
-                # r.get("ReturnId") — unchanged from 5.5 — keeps working.
-                attrs["ReturnId"] = attrs.get("Id", "")
-            rows.append(attrs)
-    result = tuple(rows)
-    logger.info(
-        "Loaded %d unique return(s) from %s (cache refreshed)",
-        len(rows), os.path.basename(path),
-    )
-    return cache.set(result)
+
+    def _load() -> tuple[dict, ...]:
+        root = load_xml_tree(path, os.path.basename(path))
+        if root is None:
+            return ()
+        seen_names: set[str] = set()
+        rows: list[dict] = []
+        for el in root.findall(_RETURNS_ROW_TAG):
+            name = el.attrib.get("Name", "").strip()
+            if name and name not in seen_names:
+                seen_names.add(name)
+                attrs = dict(el.attrib)
+                if version_config.IS_V6:
+                    # 6.0's Return.xml has no separate ReturnId attribute — Id
+                    # serves both the FormId and ReturnId role (confirmed: the
+                    # .NET DTO's ReturnId field is populated with the FormId
+                    # value). Aliasing it here means every downstream reader of
+                    # r.get("ReturnId") — unchanged from 5.5 — keeps working.
+                    attrs["ReturnId"] = attrs.get("Id", "")
+                rows.append(attrs)
+        result = tuple(rows)
+        logger.info(
+            "Loaded %d unique return(s) from %s (cache refreshed)",
+            len(rows), os.path.basename(path),
+        )
+        return result
+
+    return _returns_cache.get_or_load(path, _load, path=path, ttl=_returns_ttl)
 
 
 # 6.0's InstanceLog.xml renames several attributes relative to 5.5's
@@ -350,32 +284,36 @@ def _normalize_v6_instance_row(raw: dict) -> dict:
 
 def _parse_instances() -> tuple[dict, ...]:
     path = config.instance_log_xml_path()
-    cache = _instances_cache_for(path)
-    cached = cache.get()
-    if cached is not None:
-        return cached
-    label = os.path.basename(path)
-    logger.debug("[report_lookup] _parse_instances: loading from %s", path)
-    root = load_xml_tree(path, label)
-    if root is None:
-        logger.error(
-            "[report_lookup] _parse_instances: %s could not be loaded. Path: %s", label, path,
-        )
-        return ()
-    rows = [el.attrib for el in root.findall("Row")]
-    if version_config.IS_V6:
-        rows = [_normalize_v6_instance_row(r) for r in rows]
-    result = tuple(rows)
-    if not result:
-        logger.warning(
-            "[report_lookup] _parse_instances: 0 <Row> elements. Path: %s", path
-        )
-        return cache.set(result, cache_empty=False)
-    logger.info(
-        "[report_lookup] _parse_instances: loaded %d instance(s) (cache refreshed)",
-        len(rows),
+
+    def _load() -> tuple[dict, ...]:
+        label = os.path.basename(path)
+        logger.debug("[report_lookup] _parse_instances: loading from %s", path)
+        root = load_xml_tree(path, label)
+        if root is None:
+            logger.error(
+                "[report_lookup] _parse_instances: %s could not be loaded. Path: %s", label, path,
+            )
+            return ()
+        rows = [el.attrib for el in root.findall("Row")]
+        if version_config.IS_V6:
+            rows = [_normalize_v6_instance_row(r) for r in rows]
+        result = tuple(rows)
+        if not result:
+            logger.warning(
+                "[report_lookup] _parse_instances: 0 <Row> elements. Path: %s", path
+            )
+        else:
+            logger.info(
+                "[report_lookup] _parse_instances: loaded %d instance(s) (cache refreshed)",
+                len(rows),
+            )
+        return result
+
+    # cache_empty-equivalent: an empty parse result is never persisted, so a
+    # transient 0-row read can't evict a previous good cached result.
+    return _instances_cache.get_or_load(
+        path, _load, path=path, ttl=_instances_ttl, should_cache=lambda r: bool(r),
     )
-    return cache.set(result)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -721,6 +659,18 @@ def explain_dimensional_errors(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def parse_backtrack_html_errors(html_path: str) -> list[dict]:
+    """Parse a backtrack HTML validation report (BTDetails / 4000-series).
+
+    M-16: memoized by (path, mtime) -- this file is re-parsed for every
+    batch of "Explain next" clicks on the same report, and the parse is
+    pure/deterministic for a given file's content, so repeating it when the
+    file hasn't changed on disk is pure wasted I/O and CPU.
+    """
+    from backend.tools.mtime_cache import cached_by_mtime
+    return cached_by_mtime(html_path, lambda: _parse_backtrack_html_errors_uncached(html_path))
+
+
+def _parse_backtrack_html_errors_uncached(html_path: str) -> list[dict]:
     """Parse a backtrack HTML validation report (BTDetails / 4000-series).
 
     Handles two table formats:
@@ -1783,11 +1733,11 @@ def explain_validation_errors(errors: list[dict]) -> list[dict]:
     if not errors:
         return errors
  
-    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "180"))
-    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
- 
+    ollama_base = llm_config.base_url()
+    model       = llm_config.chat_model()
+    timeout     = llm_config.request_timeout()
+    keep_alive  = llm_config.keep_alive()
+
     logger.info(
         "[STATUS_FLOW] Starting XBRL schema LLM enrichment, errors=%d", len(errors)
     )
@@ -3530,15 +3480,11 @@ def explain_formula_errors(rules: list[dict], form_id: str = "") -> list[dict]:
                 "[FORMULA_LLM] taxonomy lookup failed for form_id=%s: %s", form_id, exc
             )
 
-    ollama_base = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model       = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-    timeout     = float(os.getenv("OLLAMA_TIMEOUT", "180"))
-    keep_alive  = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
-    try:
-        max_concurrency = int(os.getenv("OLLAMA_MAX_CONCURRENCY", "2"))
-    except ValueError:
-        max_concurrency = 2
-    max_concurrency = max(1, max_concurrency)
+    ollama_base = llm_config.base_url()
+    model       = llm_config.chat_model()
+    timeout     = llm_config.request_timeout()
+    keep_alive  = llm_config.keep_alive()
+    max_concurrency = llm_config.max_concurrency()
 
     logger.info(
         "[STATUS_FLOW] Starting FORMULA_ERROR LLM enrichment, rules=%d concurrency=%d model=%s",
@@ -3554,8 +3500,21 @@ def explain_formula_errors(rules: list[dict], form_id: str = "") -> list[dict]:
         results = [_worker(rule) for rule in rules]
     else:
         from concurrent.futures import ThreadPoolExecutor
+        import contextvars
+        # H-06: this ThreadPoolExecutor's own worker threads do not inherit
+        # contextvars either (same gap as loop.run_in_executor) -- this
+        # function is itself already invoked off the main event loop via
+        # asyncio.to_thread, which DOES carry the calling thread's context
+        # into it, so copying that same context into each of THIS pool's
+        # workers keeps it flowing all the way down instead of resetting to
+        # defaults one level in. A single Context object cannot be .run() by
+        # more than one thread at once (raises "cannot enter context: ... is
+        # already entered" the moment two pooled workers overlap) -- .copy()
+        # gives each task its own independent Context carrying the SAME
+        # captured contextvar values, which is safe for concurrent use.
+        base_ctx = contextvars.copy_context()
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(_worker, rules))
+            results = list(executor.map(lambda rule: base_ctx.copy().run(_worker, rule), rules))
 
     logger.info(
         "[STATUS_FLOW] FORMULA_ERROR enrichment complete — rules=%d  elapsed=%.3fs",
@@ -3638,13 +3597,17 @@ def _classify_error_category(html_path: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _extract_error_summary_from_xml(error_file_path: str) -> dict:
-    import xml.etree.ElementTree as ET
+    # L-14: parses the XBRL-validator-generated error XML for a
+    # user-submitted report -- defusedxml.ElementTree rejects XXE/
+    # entity-expansion constructs; its exceptions are ValueError subclasses,
+    # covered by the existing except tuple below.
+    import defusedxml.ElementTree as ET
     _FALLBACK = {"messages": ["Detailed error information could not be extracted."]}
     if not error_file_path or not os.path.isfile(error_file_path):
         return _FALLBACK
     try:
         tree = ET.parse(error_file_path); root = tree.getroot()
-    except (ET.ParseError, OSError) as exc:
+    except (ET.ParseError, OSError, ValueError) as exc:
         logger.warning("[extract_error_summary] XML error: %s — %s", error_file_path, exc)
         return _FALLBACK
     messages: list[str] = []; seen: set[str] = set()
@@ -3725,7 +3688,13 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
     otherwise (form_id absent or 4000-series) counting is byte-for-byte the
     existing behavior below, unchanged.
     """
-    result: dict = {"error_file_path": error_file_path}
+    # L-17: expose only the bare filename to callers, never the absolute
+    # server path (this result dict becomes error_category_counts in the
+    # /chat, /guided, etc. API responses -- see MessageBubble.jsx). The
+    # frontend round-trips this filename (+ the form_id it already has)
+    # into /explain-category, which rebuilds the real path server-side via
+    # build_error_file_path() rather than trusting a client-sent path.
+    result: dict = {"filename": os.path.basename(error_file_path) if error_file_path else ""}
 
     if not error_file_path or not os.path.isfile(error_file_path):
         logger.warning("[count_errors_by_category] file not found: %s", error_file_path)
@@ -3735,7 +3704,7 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
 
     if ext != ".html":
         try:
-            import xml.etree.ElementTree as ET
+            import defusedxml.ElementTree as ET  # L-14: see _extract_error_summary_from_xml above
             root = ET.parse(error_file_path).getroot()
             count = len(root.findall("ErrorMessage"))
             if count:
@@ -4060,19 +4029,26 @@ def explain_errors_by_category_for_form(
 # SECTION 8: MAIN ERROR INFO ROUTER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get_error_counts(code: int, dl: dict, form_id: str = "") -> dict:
-    """Return error category counts for a failed status result. No LLM invoked."""
+def _get_error_counts(code: int, row: dict, form_id: str = "") -> dict:
+    """Return error category counts for a failed status result. No LLM invoked.
+
+    L-17: takes *row* (and resolves the error file path itself via
+    _resolve_error_file_path) rather than reading a path back out of the
+    `dl` dict _get_download_info() returns -- that dict is what (in several
+    callers) becomes part of the client-facing response, so it must never
+    carry the absolute server path.
+    """
     if code not in _FAILED_STATUSES:
         return {}
-    path = dl.get("error_file_path", "")
+    path = _resolve_error_file_path(row, form_id)
     if not path:
         return {}
     return count_errors_by_category(path, form_id=form_id)
 
 
-def _enrich_with_error_messages(code: int, dl: dict) -> list[str]:
+def _enrich_with_error_messages(code: int, row: dict, form_id: str = "") -> list[str]:
     if code not in _FAILED_STATUSES: return []
-    path = dl.get("error_file_path", "")
+    path = _resolve_error_file_path(row, form_id)
     if not path: return []
     return extract_error_summary(path).get("messages", [])
 
@@ -4098,18 +4074,25 @@ def _compact_normalise(s: str) -> str:
 
 def _normalised_returns() -> tuple[tuple[str, str, str, dict], ...]:
     returns_path = config.returns_xml_path()
-    norm_cache = _norm_cache_for(returns_path)
-    returns_cache = _returns_cache_for(returns_path)
-    if norm_cache.loaded_at < returns_cache.loaded_at:
-        norm_cache._data = None
-    cached = norm_cache.get()
-    if cached is not None:
-        return cached
-    result = tuple(
-        (_normalise(r.get("Name", "")), _normalise(r.get("ReturnId", "")), _normalise(r.get("AltName", "")), r)
-        for r in _parse_returns() if r.get("Name", "")
-    )
-    return norm_cache.set(result)
+
+    # norm_cache is DERIVED from _parse_returns()'s own cached result, not
+    # directly from the file -- so it must also be invalidated whenever
+    # _returns_cache was refreshed more recently than norm_cache itself was
+    # (e.g. _parse_returns() called directly, independently of this
+    # function, and picked up a file change), not only on norm_cache's own
+    # mtime check.
+    norm_loaded_at = _norm_cache.loaded_at(returns_path)
+    returns_loaded_at = _returns_cache.loaded_at(returns_path)
+    if norm_loaded_at is not None and returns_loaded_at is not None and norm_loaded_at < returns_loaded_at:
+        _norm_cache.invalidate(returns_path)
+
+    def _load() -> tuple[tuple[str, str, str, dict], ...]:
+        return tuple(
+            (_normalise(r.get("Name", "")), _normalise(r.get("ReturnId", "")), _normalise(r.get("AltName", "")), r)
+            for r in _parse_returns() if r.get("Name", "")
+        )
+
+    return _norm_cache.get_or_load(returns_path, _load, path=returns_path, ttl=_returns_ttl)
 
 
 # How a return name was resolved. The distinction is load-bearing, not
@@ -4407,10 +4390,48 @@ def _download_tenant_qs() -> str:
     return f"&tenant_id={tenant_id}" if tenant_id else ""
 
 
+def _download_login_qs() -> str:
+    """login_id query-string suffix for /download-file links (H-03).
+
+    Same reasoning as _download_tenant_qs() above: the download link is a
+    plain GET URL opened later, outside the request that resolved the
+    caller's identity, so login_id must be embedded in the URL itself for
+    /download-file's object-level ACL check to have anything to check
+    against. Read from the contextvar set by main.py's _make_repo_scope()
+    rather than threaded as an explicit parameter through this whole
+    call chain (get_report_status_fast -> _build_status_result ->
+    _get_download_info -> ...).
+    """
+    login_id = version_config.get_active_login_id()
+    return f"&login_id={quote(login_id)}" if login_id else ""
+
+
+def _resolve_error_file_path(row: dict, form_id: str) -> str:
+    """The absolute server path to *row*'s error file, for INTERNAL use only
+    (parsing it for error counts/messages) -- never put the return value of
+    this function into a dict that reaches the client. See
+    count_errors_by_category()'s own L-17 comment for the established
+    pattern this mirrors: the client gets a safe download_url (built from a
+    bare filename + form_id) and, separately, bare filenames where a path is
+    otherwise needed; it never gets the absolute path itself.
+
+    Returns "" if the row names no error file.
+    """
+    attrs = _instance_log_attrs()
+    path_str = row.get(attrs["error_doc"], "").strip()
+    if not path_str:
+        return ""
+    filename = os.path.basename(path_str)
+    if not filename:
+        return ""
+    return build_error_file_path(form_id, filename)
+
+
 def _get_download_info(row: dict, form_id: str) -> dict:
     code = _safe_status(row)
     attrs = _instance_log_attrs()
     tenant_qs = _download_tenant_qs()
+    login_qs = _download_login_qs()
 
     def _try_render():
         path_str = row.get(attrs["render_doc"], "").strip()
@@ -4419,17 +4440,24 @@ def _get_download_info(row: dict, form_id: str) -> dict:
         if not filename: return None
         full_path = build_render_file_path(form_id, filename)
         if file_exists(full_path):
-            return {"download_url": f"/download-file?form_id={form_id}&type=render&filename={filename}{tenant_qs}", "download_label": "Download Render File", "status_note": ""}
+            return {"download_url": f"/download-file?form_id={form_id}&type=render&filename={filename}{tenant_qs}{login_qs}", "download_label": "Download Render File", "status_note": ""}
         return {"download_url": "", "download_label": "", "status_note": "Render file not found."}
 
     def _try_error():
-        path_str = row.get(attrs["error_doc"], "").strip()
-        if not path_str: return None
-        filename = os.path.basename(path_str)
-        if not filename: return None
-        full_path = build_error_file_path(form_id, filename)
+        # L-17: _resolve_error_file_path() -- below -- is used here ONLY to
+        # check file existence and build the filename for the safe
+        # download_url; the absolute path itself is deliberately NOT put
+        # into this dict (it previously was, under "error_file_path",
+        # before this fix). Internal callers that need the real path
+        # (_get_error_counts/_enrich_with_error_messages) now call
+        # _resolve_error_file_path(row, form_id) themselves instead of
+        # reading it back out of this dict.
+        full_path = _resolve_error_file_path(row, form_id)
+        if not full_path:
+            return None
+        filename = os.path.basename(full_path)
         if file_exists(full_path):
-            return {"download_url": f"/download-file?form_id={form_id}&type=error&filename={filename}{tenant_qs}", "download_label": "Download Error File", "status_note": "", "error_file_path": full_path}
+            return {"download_url": f"/download-file?form_id={form_id}&type=error&filename={filename}{tenant_qs}{login_qs}", "download_label": "Download Error File", "status_note": ""}
         return {"download_url": "", "download_label": "", "status_note": "Error file not found."}
 
     if code in _FAILED_STATUSES:
@@ -4489,7 +4517,7 @@ def get_instance_by_dtc(form_id: str, dtc: str, return_name: str) -> dict:
         }
     code = _safe_status(row)
     dl   = _get_download_info(row, form_id)
-    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
+    error_category_counts = _get_error_counts(code, row, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
@@ -4525,7 +4553,7 @@ def get_instance_by_dtc_fast(form_id: str, dtc: str, return_name: str) -> dict:
         }
     code = _safe_status(row)
     dl   = _get_download_info(row, form_id)
-    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
+    error_category_counts = _get_error_counts(code, row, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     is_4000 = _is_4000_series(form_id)
@@ -4562,7 +4590,7 @@ def _build_status_result(form_id: str, ret_name: str, instances: list[dict]) -> 
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
     _t = time.monotonic()
-    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
+    error_category_counts = _get_error_counts(code, latest_row, form_id=form_id)
     logger.debug("[STATUS_FLOW] error count duration=%.3fs counts=%r", time.monotonic() - _t, error_category_counts)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
@@ -4611,7 +4639,7 @@ def _build_status_result_from_row(form_id: str, ret_name: str, row: dict) -> dic
     all_instances   = get_available_instances(form_id)
     other_instances = [i for i in all_instances if i["dtc"] != current_dtc]
 
-    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
+    error_category_counts = _get_error_counts(code, row, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)
@@ -4799,7 +4827,7 @@ def get_instance_by_date(form_id: str, date_query: str, return_name: str) -> dic
         }
     code = _safe_status(row)
     dl   = _get_download_info(row, form_id)
-    error_category_counts = _get_error_counts(code, dl, form_id=form_id)
+    error_category_counts = _get_error_counts(code, row, form_id=form_id)
 
     # ── 4000-series gate ──────────────────────────────────────────────────────
     return_id = _get_return_id_for_form(form_id)

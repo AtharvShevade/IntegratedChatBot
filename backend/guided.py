@@ -9,8 +9,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
+
+from backend.utils.ttl_registry import TTLDict
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +92,9 @@ _ACTIONS_REQUIRING_INSTANCE_GENERATION: frozenset[str] = frozenset({
 })
 
 # ── Per-session guided state ───────────────────────────────────────────────────
-_guided_sessions: dict[str, dict[str, Any]] = {}
+# M-01: previously a plain dict -- only popped on specific end-of-flow paths
+# (lines below), so an abandoned guided flow never cleaned up.
+_guided_sessions: dict[str, dict[str, Any]] = TTLDict(max_size=20_000, ttl_seconds=24 * 3600)
 
 # ── Request ID (Instance ID) detection for the status report-name step ────────
 # A real Request ID is a 32-char hex string or a hyphenated UUID (see
@@ -197,6 +202,14 @@ async def guided_step(
     msg     = message.strip()
 
     # ── Auth: resolve allowed FormIds for this user ────────────────────────
+    # SECURITY (H-01 fix): previously, omitting login_id entirely skipped
+    # this whole block (fail-open) -- unlike /chat's decide(), which was
+    # already fixed (C-02) to deny when REQUIRE_AUTH is set and no login_id
+    # is present. Mirror that same fail-closed check here so the guided flow
+    # cannot be used to bypass /chat's authorization requirement simply by
+    # using a different endpoint.
+    import os as _os_guided
+    _REQUIRE_AUTH = _os_guided.getenv("REQUIRE_AUTH", "true").lower() == "true"
     allowed_form_ids: set[str] | None = None  # None = no restriction
     if login_id:
         from backend.services.auth_service import (
@@ -215,6 +228,12 @@ async def guided_step(
                 response_text="Your account was not recognised. Please contact your administrator.",
                 result_type="error",
             )
+    elif _REQUIRE_AUTH and _os_guided.getenv("AUTHORIZATION_ENABLED", "true").lower() == "true":
+        logger.warning("[AUTH_DENY] guided: no login_id provided and REQUIRE_AUTH=true, session=%s", session_id)
+        return _build(
+            response_text="Authentication required. Please access this application through the authorised portal.",
+            result_type="error",
+        )
 
     # ── Step 1: action selection ───────────────────────────────────────────────
     if stage == STAGE_MENU or msg in GUIDED_ACTIONS:
@@ -325,7 +344,11 @@ async def guided_step(
                 "[GUIDED_DB_QUERY] XML-QA intent=%s params=%s session=%s",
                 db_intent, db_params, session_id,
             )
-            db_result = handle_db_qa_query(
+            # H-05: same blocking-call concern as router.py's handle_db_qa_query
+            # call sites -- run it in a worker thread rather than directly on
+            # the event loop.
+            db_result = await asyncio.to_thread(
+                handle_db_qa_query,
                 message=msg,
                 intent=db_intent,
                 params=db_params,

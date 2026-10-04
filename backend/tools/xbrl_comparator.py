@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -33,6 +34,7 @@ _ROOT     = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 _LOGS_DIR = os.path.join(_ROOT, "logs")
 
 from backend.config import instance_log_xml_path as _log_file_path
+from backend.services import llm_config
 from backend.tools.xml_loader import load_xml_tree
 
 # ---------------------------------------------------------------------------
@@ -250,6 +252,16 @@ def find_instances_by_prefix(prefix: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 _STUB_TEMP_DIR: str | None = None
+# M-20: guards the lazy-init check-then-create below. Without this, two
+# concurrent calls (comparison.py calls this from more than one request at
+# once) could both see _STUB_TEMP_DIR is None, both mkdtemp() a separate
+# temp dir, and both atexit.register() a cleanup for their own dir -- leaking
+# one directory and double-registering cleanup, while a caller that read a
+# half-set global in between could also see a leftover partially-initialized
+# value. The lock only protects the init check/assignment itself (not the
+# per-stub file write below, which is already idempotent via its own
+# os.path.exists check).
+_STUB_TEMP_DIR_LOCK = threading.Lock()
 
 _SCHEMA_STUBS: dict[str, str] = {
     # xbrldt-2005.xsd — dimensions schema (often returned as HTML by firewalls)
@@ -283,8 +295,10 @@ def _get_stub_xsd_path(fname: str) -> str | None:
     if stub_content is None:
         return None
     if _STUB_TEMP_DIR is None:
-        _STUB_TEMP_DIR = tempfile.mkdtemp(prefix="arelle_stubs_")
-        atexit.register(shutil.rmtree, _STUB_TEMP_DIR, ignore_errors=True)
+        with _STUB_TEMP_DIR_LOCK:
+            if _STUB_TEMP_DIR is None:  # re-check: another thread may have just finished
+                _STUB_TEMP_DIR = tempfile.mkdtemp(prefix="arelle_stubs_")
+                atexit.register(shutil.rmtree, _STUB_TEMP_DIR, ignore_errors=True)
     stub_path = os.path.join(_STUB_TEMP_DIR, fname)
     if not os.path.exists(stub_path):
         with open(stub_path, "w", encoding="utf-8") as fh:
@@ -399,37 +413,23 @@ def _configure_arelle_taxonomy(cntlr, file_path: str) -> None:
 _XBRL_FACTS_CACHE_MAX_ENTRIES = int(os.getenv("XBRL_FACTS_CACHE_MAX_ENTRIES", "50"))
 _XBRL_FACTS_CACHE_TTL_SEC     = float(os.getenv("XBRL_FACTS_CACHE_TTL_SEC", "600"))
 
-# Per-file-path cache of already-parsed facts, reusing report_lookup's
-# existing mtime+TTL _TTLCache (same invalidation semantics already relied
-# on elsewhere) rather than inventing a second caching mechanism. Bounded to
-# _XBRL_FACTS_CACHE_MAX_ENTRIES via simple LRU eviction on top, since unlike
-# Returns.xml/instance_log (a handful of fixed paths) every generated report
-# instance is its own file — an unbounded per-path cache would grow forever.
-# Global, not per-tenant/user: the cached value is just parsed XBRL facts
-# for a given file on disk, not scoped to who asked for it, so sharing it
-# across requests carries no cross-tenant data-leak risk (the file itself
-# is only reachable after the caller's own instance/auth lookup resolved
-# its path). A single lock around the ordered-dict bookkeeping (not held
-# during the actual Arelle parse) keeps concurrent to_thread callers safe.
-import threading as _threading
-from collections import OrderedDict as _OrderedDict
+# Per-file-path cache of already-parsed facts, on the shared
+# backend.utils.file_cache.FileCache utility (M-15) -- same mtime+TTL
+# invalidation semantics this previously got by reusing report_lookup.py's
+# own `_TTLCache` class directly (a cross-module reach-in that broke when
+# that class was replaced by the shared cache during the M-15 migration;
+# fixed here by migrating this cache onto the same shared utility instead of
+# patching the broken import). Bounded to _XBRL_FACTS_CACHE_MAX_ENTRIES via
+# FileCache's own LRU eviction, since unlike Returns.xml/instance_log (a
+# handful of fixed paths) every generated report instance is its own file —
+# an unbounded per-path cache would grow forever. Global, not
+# per-tenant/user: the cached value is just parsed XBRL facts for a given
+# file on disk, not scoped to who asked for it, so sharing it across
+# requests carries no cross-tenant data-leak risk (the file itself is only
+# reachable after the caller's own instance/auth lookup resolved its path).
+from backend.utils.file_cache import FileCache as _FileCache
 
-_xbrl_facts_caches: "_OrderedDict[str, object]" = _OrderedDict()
-_xbrl_facts_cache_lock = _threading.Lock()
-
-
-def _xbrl_facts_cache_for(path: str):
-    from backend.tools.report_lookup import _TTLCache
-    with _xbrl_facts_cache_lock:
-        cache = _xbrl_facts_caches.get(path)
-        if cache is not None:
-            _xbrl_facts_caches.move_to_end(path)
-            return cache
-        cache = _TTLCache(ttl=_XBRL_FACTS_CACHE_TTL_SEC, file_path=path)
-        _xbrl_facts_caches[path] = cache
-        if len(_xbrl_facts_caches) > _XBRL_FACTS_CACHE_MAX_ENTRIES:
-            _xbrl_facts_caches.popitem(last=False)
-        return cache
+_xbrl_facts_cache: "_FileCache[str, list]" = _FileCache(max_size=_XBRL_FACTS_CACHE_MAX_ENTRIES)
 
 
 def load_xbrl_facts(file_path: str) -> list[dict]:
@@ -440,21 +440,21 @@ def load_xbrl_facts(file_path: str) -> list[dict]:
     Returns list of dicts: {concept, period_type, period_end, value_str, value_num, unit}
     Raises ImportError if arelle-release is not installed.
 
-    Cached in-process per file path (see _xbrl_facts_cache_for), invalidated
-    automatically if the file's mtime changes, bounded by
+    Cached in-process per file path, invalidated automatically if the
+    file's mtime changes, bounded by
     XBRL_FACTS_CACHE_MAX_ENTRIES/XBRL_FACTS_CACHE_TTL_SEC — repeated
     comparisons of the same instance pair skip re-parsing entirely. Only a
     successful, non-empty result is cached; a failed/ImportError call is
-    never cached (the exception propagates before any cache write), so a
-    transient failure can't poison future lookups.
+    never cached (the exception propagates before any cache write, exactly
+    as before), so a transient failure can't poison future lookups.
     """
-    cache = _xbrl_facts_cache_for(file_path)
-    cached = cache.get()
-    if cached is not None:
-        return cached
-    facts = _load_xbrl_facts_uncached(file_path)
-    cache.set(facts, cache_empty=False)
-    return facts
+    return _xbrl_facts_cache.get_or_load(
+        file_path,
+        lambda: _load_xbrl_facts_uncached(file_path),
+        path=file_path,
+        ttl=_XBRL_FACTS_CACHE_TTL_SEC,
+        should_cache=lambda facts: bool(facts),
+    )
 
 
 def _load_xbrl_facts_uncached(file_path: str) -> list[dict]:
@@ -661,8 +661,10 @@ def _load_via_arelle(file_path: str) -> list[dict]:
         if model is not None:
             try:
                 cntlr.modelManager.close(model)
-            except Exception:
-                pass
+            except Exception as exc:
+                # M-19: was silent -- a cleanup failure here could mask a
+                # leaked/corrupted Arelle model across repeated comparisons.
+                logger.debug("Arelle modelManager.close() failed: %s", exc, exc_info=True)
 
 
 def _parse_xml_contexts(root) -> dict[str, dict]:
@@ -678,7 +680,12 @@ def _parse_xml_contexts(root) -> dict[str, dict]:
         dim_key, is_dimensional
     }
     """
-    import xml.etree.ElementTree as ET
+    # L-14: these functions parse a user-submitted XBRL instance document
+    # directly (the fallback path when Arelle doesn't produce facts) --
+    # defusedxml.ElementTree rejects XXE/entity-expansion constructs that
+    # xml.etree.ElementTree would silently resolve, with the same parse()/
+    # ParseError surface otherwise.
+    import defusedxml.ElementTree as ET
 
     _XBRLDI = "http://xbrl.org/2006/xbrldi"
     _TYPED  = f"{{{_XBRLDI}}}typedMember"
@@ -743,7 +750,12 @@ def _load_via_xml(file_path: str) -> list[dict]:
     is_dimensional for each fact, matching the fields produced by
     _load_via_arelle for consistent behaviour in _build_map.
     """
-    import xml.etree.ElementTree as ET
+    # L-14: these functions parse a user-submitted XBRL instance document
+    # directly (the fallback path when Arelle doesn't produce facts) --
+    # defusedxml.ElementTree rejects XXE/entity-expansion constructs that
+    # xml.etree.ElementTree would silently resolve, with the same parse()/
+    # ParseError surface otherwise.
+    import defusedxml.ElementTree as ET
 
     _SKIP = {"context", "unit", "schemaref", "xbrl", "roleref", "arcroleref",
              "linkbaseref", "taxonomy", "footnotelink"}
@@ -1622,9 +1634,9 @@ async def generate_llm_summary(
 
 
 
-    base_url   = os.getenv("OLLAMA_BASE_URL",      "http://127.0.0.1:11434")
-    model      = os.getenv("OLLAMA_COMPARE_MODEL", "llama3.1:latest")   # dedicated compare/summary model
-    keep_alive = os.getenv("OLLAMA_KEEP_ALIVE",    "30m")
+    base_url   = llm_config.base_url()
+    model      = llm_config.compare_model()   # dedicated compare/summary model
+    keep_alive = llm_config.keep_alive()
     # Short timeout: summary is decorative - must not block the comparison result.
     # Override via OLLAMA_SUMMARY_TIMEOUT; default 8 s. (The default previously
     # said 240 here, contradicting this comment — generate_llm_summary already

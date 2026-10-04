@@ -8,6 +8,15 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const target = env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
 
+  // L-19: the deployment base path (IIS virtual directory the built app is
+  // served under) used to be a hardcoded literal here, requiring a source
+  // edit + rebuild to switch between a 5.5-style and 6.0-style deployment
+  // path. VITE_BASE_PATH (set per environment in .env.development/
+  // .env.production, same convention as VITE_API_BASE_URL) makes this a
+  // config change instead. Defaults to this app's current deployed path so
+  // behavior is unchanged for any environment that doesn't set it.
+  const basePath = env.VITE_BASE_PATH || '/AiChatbot/'
+
   const proxiedPaths = [
     '/chat', '/guided', '/reports', '/compare-execute', '/speech-to-text',
     '/health', '/download-file', '/explain-category', '/status-errors',
@@ -15,8 +24,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    // base: '/AiChatbot/',
-    base: '/AiChatBot6.0/',
+    base: basePath,
 
     server: {
       port: 3000,

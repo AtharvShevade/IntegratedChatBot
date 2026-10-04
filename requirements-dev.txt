@@ -1,0 +1,14 @@
+# requirements-dev.txt — development/test-only tooling, not needed to run
+# the application itself. Install alongside requirements.txt for local
+# development or CI:
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# M-30: pinned to the exact versions already verified working in this
+# environment (not upgraded) -- the same "preserve currently working
+# versions" rule requirements-lock.txt follows for runtime dependencies.
+
+pytest==9.1.1          # test runner (backend/tests/, pytest.ini)
+ruff==0.16.9            # linter, wired into .github/workflows/ci.yml and .pre-commit-config.yaml
+bandit==1.9.4           # security scanner, same CI/pre-commit wiring
+pip-audit==2.10.1       # dependency vulnerability scanner, same CI wiring

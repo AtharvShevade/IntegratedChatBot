@@ -43,7 +43,7 @@ from backend.agent.router import decide
 __all__ = [
     "decide",
     # background_jobs
-    "_run_error_enrichment", "_get_instance_by_dtc_fast_with_bg_job",
+    "_get_instance_by_dtc_fast_with_bg_job",
     "_get_instance_by_date_fast_with_bg_job", "_run_error_enrichment_async",
     "_start_error_enrichment_thread", "_get_status_fast_with_bg_job",
     "_get_status_by_id_fast_with_bg_job", "_ask_another_date",

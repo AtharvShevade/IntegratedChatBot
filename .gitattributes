@@ -1,0 +1,16 @@
+# M-31: SQL Agent FAISS/.pkl embedding artifacts are large, binary, and
+# churn as a whole file on every rebuild (not line-diffable) -- exactly
+# what Git LFS exists for. Scoped specifically to backend/sql_agent's two
+# versioned embedding directories (5.5 and 6.0), NOT every .pkl/.faiss file
+# in the repository, so unrelated binary files elsewhere are unaffected.
+#
+# This file only prepares LFS tracking for files added/changed AFTER it
+# takes effect -- the files currently tracked in these directories were
+# committed as regular Git blobs before this change and remain so until a
+# separate, explicit history-migration step (`git lfs migrate import`) is
+# run. See doc/runbooks/ (or the M-31 report) for that step's exact command
+# and its consequences -- it was deliberately NOT run as part of this change.
+backend/sql_agent/embeddings_5.5/*.faiss filter=lfs diff=lfs merge=lfs -text
+backend/sql_agent/embeddings_5.5/*.pkl   filter=lfs diff=lfs merge=lfs -text
+backend/sql_agent/embeddings_6.0/*.faiss filter=lfs diff=lfs merge=lfs -text
+backend/sql_agent/embeddings_6.0/*.pkl   filter=lfs diff=lfs merge=lfs -text

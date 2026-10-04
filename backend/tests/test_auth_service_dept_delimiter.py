@@ -70,7 +70,7 @@ def _restore_real_version_after_each_test():
 # ---------------------------------------------------------------------------
 
 def test_6_0_return_id_splits_on_comma_not_pipe(monkeypatch):
-    with patch.dict(os.environ, {"APP_VERSION": "6.0"}):
+    with patch.dict(os.environ, {"APP_VERSION": "6.0", "APP_600_REPO_ROOT": r"D:\Repo6.0"}):
         auth_service = _reload_current()
         monkeypatch.setattr(auth_service, "xml_dept_path", lambda: str(REAL_6_0_DEPT))
         monkeypatch.setattr(auth_service, "xml_user_path", lambda: str(REAL_6_0_USER))
@@ -92,7 +92,7 @@ def test_6_0_return_id_splits_on_comma_not_pipe(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_6_0_nx_reads_nxreturnid_attribute(monkeypatch):
-    with patch.dict(os.environ, {"APP_VERSION": "6.0"}):
+    with patch.dict(os.environ, {"APP_VERSION": "6.0", "APP_600_REPO_ROOT": r"D:\Repo6.0"}):
         auth_service = _reload_current()
         monkeypatch.setattr(auth_service, "xml_dept_path", lambda: str(REAL_6_0_DEPT))
         monkeypatch.setattr(auth_service, "xml_user_path", lambda: str(REAL_6_0_USER))
@@ -148,7 +148,7 @@ def test_module_constants_are_version_aware():
         assert auth_5_5._DEPT_FORMS_DELIM == "|"
         assert auth_5_5._DEPT_NX_FORMS_ATTR == "NXForms"
 
-    with patch.dict(os.environ, {"APP_VERSION": "6.0"}):
+    with patch.dict(os.environ, {"APP_VERSION": "6.0", "APP_600_REPO_ROOT": r"D:\Repo6.0"}):
         auth_6_0 = _reload_current()
         assert auth_6_0._DEPT_FORMS_DELIM == ","
         assert auth_6_0._DEPT_NX_FORMS_ATTR == "NXReturnId"
@@ -159,6 +159,7 @@ def test_env_override_still_wins_over_version_default():
     for a deployment whose data does not match either default."""
     with patch.dict(os.environ, {
         "APP_VERSION": "6.0",
+        "APP_600_REPO_ROOT": r"D:\Repo6.0",
         "XML_DEPT_FORMS_DELIM": ";",
         "XML_DEPT_NX_FORMS_ATTR": "CustomNX",
     }):

@@ -10,10 +10,11 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import PurePosixPath
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -33,12 +34,14 @@ else:
 from backend.utils.logger import log_exception, setup_logging  # noqa: E402
 setup_logging(console_level=logging.INFO)
 
+from backend.utils import request_context  # noqa: E402
 from backend import version_config  # noqa: E402
 from backend.agent import decide, explain_category_for_report  # noqa: E402
 from backend.guided import guided_step, GUIDED_ACTIONS  # noqa: E402
 from backend import i18n  # noqa: E402
 from backend.i18n.translator import PlaceholderSafeTranslator  # noqa: E402
 from backend import stt  # noqa: E402
+from backend import rate_limit  # noqa: E402
 from backend.stt import config as stt_config, vocabulary as stt_vocabulary  # noqa: E402
 from backend.models import (  # noqa: E402
     ChatRequest, ChatResponse, CompareRequest, CompareSummaryRequest,
@@ -66,6 +69,12 @@ async def lifespan(app: FastAPI):
     global _warmup_done
     logger.info("Application startup started")
     import asyncio
+
+    # L-01: one shared httpx.AsyncClient for outbound LLM calls, created here
+    # and closed in the `finally` block below instead of each call site
+    # opening/closing its own client per request.
+    from backend.services import http_client as _http_client
+    _http_client.init()
 
     # One-line process identity summary — the first thing to check when a
     # production issue looks like "wrong tenant/version data was used": which
@@ -203,10 +212,27 @@ async def lifespan(app: FastAPI):
         log_exception(logger, "Application startup failed", exc)
         raise
     finally:
+        await _http_client.aclose()
+        # M-02: release the bounded error-enrichment thread pool. wait=False
+        # so shutdown is never blocked on a slow in-flight Ollama call.
+        from backend.agent.background_jobs import shutdown_executor
+        shutdown_executor(wait=False)
         logger.info("Application shutdown completed")
 
 
-app = FastAPI(title="Report Assistant", version="3.0.0", lifespan=lifespan)
+# H-07 hardening: the OpenAPI schema and Swagger/ReDoc UIs document every
+# request field (including the ones an attacker would want to see, e.g.
+# role_id/tenant_id/error_file_path) and are public by default in FastAPI.
+# Off by default; set ENABLE_API_DOCS=true for local/dev exploration only.
+_enable_api_docs = os.environ.get("ENABLE_API_DOCS", "false").lower() == "true"
+app = FastAPI(
+    title="Report Assistant",
+    version="3.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _enable_api_docs else None,
+    redoc_url="/redoc" if _enable_api_docs else None,
+    openapi_url="/openapi.json" if _enable_api_docs else None,
+)
 
 # ── In-flight request tracking (for Stop Generation) ──────────────────────────
 # Keyed by request_id (minted client-side per request). Lets /stop cancel the
@@ -272,14 +298,96 @@ def _stopped_response(intent: str = "stopped") -> ChatResponse:
         response_text="Request stopped.",
     )
 
-_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+# M-21: exact origins only (no wildcards), explicit methods/headers instead
+# of "*", and no plain-http origin is allowed to carry credentials except
+# localhost/127.0.0.1 (developer convenience) — a credentialed CORS origin
+# over plain http is a live MITM/network-sniffing exposure for a real host.
+def _is_safe_credentialed_origin(origin: str) -> bool:
+    if origin.startswith("https://"):
+        return True
+    if origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1"):
+        return True
+    return False
+
+
+_cors_origins_raw = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+_cors_origins = [o for o in _cors_origins_raw if _is_safe_credentialed_origin(o)]
+for _rejected in set(_cors_origins_raw) - set(_cors_origins):
+    logger.warning(
+        "[CORS] Ignoring configured origin %r: credentialed CORS requires https "
+        "(or localhost/127.0.0.1 for local development).",
+        _rejected,
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+# M-25: rate limiting on the expensive, LLM-backed endpoints. Disabled by
+# default (RATE_LIMIT_ENABLED unset) so local development and the rest of the
+# test suite are unaffected; a deployment opts in explicitly. Keyed by
+# (path, client IP) -- not by an authenticated principal read from the
+# request body, since consuming the body stream here would interfere with
+# downstream multipart parsing (/speech-to-text's UploadFile) and JSON
+# parsing alike. IP is one of the two keys the requirement explicitly allows
+# ("by authenticated principal and/or client IP").
+_RATE_LIMITED_PATHS = {
+    "/chat", "/compare-execute", "/compare-summary",
+    "/explain-category", "/speech-to-text", "/guided",
+    "/feedback",  # L-16: /feedback has no auth check (see submit_feedback's
+                  # docstring) -- rate limiting is its abuse-control mechanism.
+}
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    """M-28: mints (or reuses a client-supplied) X-Request-ID, makes it
+    available to every log line for the duration of this request via
+    request_context's contextvar, and echoes it back on the response so a
+    caller can correlate their own logs with ours.
+
+    Starlette's middleware stack runs the LAST-registered middleware
+    OUTERMOST -- this is registered after CORS/rate-limiting (below) so it
+    wraps them, meaning the request_id is already set before either of
+    those run and before any application code executes.
+
+    Distinct from the client-generated `request_id` in ChatRequest/etc. used
+    by the Stop Generation feature (/stop, _inflight_tasks) -- that one is
+    chosen by the frontend to name a cancellable in-flight operation and is
+    unrelated to log correlation; this one is a transport-level header any
+    caller (including non-browser clients, curl, load balancers) may or may
+    not send.
+    """
+    incoming = request.headers.get("x-request-id", "").strip()
+    request_id = incoming or request_context.new_request_id()
+    token = request_context.set_request_id(request_id)
+    try:
+        response = await call_next(request)
+    finally:
+        request_context.reset_request_id(token)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.middleware("http")
+async def _rate_limit_middleware(request: Request, call_next):
+    if rate_limit.is_enabled() and request.url.path in _RATE_LIMITED_PATHS:
+        client_ip = request.client.host if request.client else "unknown"
+        key = f"{request.url.path}:{client_ip}"
+        allowed, retry_after = rate_limit.limiter.check(
+            key, limit=rate_limit.max_requests(), window=rate_limit.window_seconds(),
+        )
+        if not allowed:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Too many requests. Please slow down and try again shortly."},
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+    return await call_next(request)
 
 
 @app.exception_handler(Exception)
@@ -290,7 +398,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         exc,
         method=request.method,
         path=request.url.path,
-        request_id=request.headers.get("x-request-id"),
+        # M-28: request_context's contextvar is always set by this point
+        # (the request-id middleware runs before this handler can fire) --
+        # falls back to the raw header only if that middleware is somehow
+        # bypassed (e.g. a future change reorders middleware registration).
+        request_id=request_context.get_request_id() or request.headers.get("x-request-id"),
     )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -298,7 +410,55 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-def _make_repo_scope(tenant_id: str | None, domain: str | None, jwt: str | None):
+def _caller_may_access_form(login_id: str | None, form_id: str) -> bool:
+    """H-03: shared object-level ACL check for /download-file, /reports and
+    /status-errors/{job_id} -- none of these previously checked whether the
+    caller's department is actually allowed to see the given form_id, only
+    that the path/job_id itself was well-formed.
+
+    Mirrors the exact fail-closed contract C-02/H-01 already established in
+    agent/router.py's decide() and backend/guided.py's guided_step(): a
+    resolvable login_id must have this form_id in its allowed set; a missing
+    or unresolvable login_id is denied whenever REQUIRE_AUTH/
+    AUTHORIZATION_ENABLED are on (the default), and allowed through only in
+    the explicit dev-mode bypass (REQUIRE_AUTH=false).
+    """
+    from backend.services.auth_service import AUTHORIZATION_ENABLED, get_allowed_form_ids
+
+    if login_id:
+        allowed = get_allowed_form_ids(login_id)
+        if not AUTHORIZATION_ENABLED:
+            return True
+        if allowed is None:
+            return False
+        return form_id in allowed
+
+    require_auth = os.getenv("REQUIRE_AUTH", "true").lower() == "true"
+    return not (require_auth and AUTHORIZATION_ENABLED)
+
+
+def _caller_is_authenticated(login_id: str | None) -> bool:
+    """M-05/M-11: lighter fail-closed check for endpoints that only need to
+    know THAT the caller is a resolvable identity -- there is no single
+    form_id to check against (unlike _caller_may_access_form above, used by
+    /download-file, /reports and /status-errors/{job_id}). Same
+    REQUIRE_AUTH/AUTHORIZATION_ENABLED fail-closed contract as
+    agent/router.py's decide() and _caller_may_access_form.
+    """
+    from backend.services.auth_service import AUTHORIZATION_ENABLED, get_allowed_form_ids
+
+    if login_id:
+        if not AUTHORIZATION_ENABLED:
+            return True
+        return get_allowed_form_ids(login_id) is not None
+
+    require_auth = os.getenv("REQUIRE_AUTH", "true").lower() == "true"
+    return not (require_auth and AUTHORIZATION_ENABLED)
+
+
+def _make_repo_scope(
+    tenant_id: str | None, domain: str | None, jwt: str | None, login_id: str | None = None,
+):
     """Build the version_config.repo_scope for one request.
 
     APP_VERSION=5.5 (default): always a no-op — root=None so
@@ -311,9 +471,15 @@ def _make_repo_scope(tenant_id: str | None, domain: str | None, jwt: str | None)
     tenant can be resolved, the scope is still a no-op — downstream reads
     fail closed (file-not-found -> empty results) rather than silently
     reading data under the bare, non-tenant-scoped repo root.
+
+    login_id (H-03): carried through purely so report_lookup.py's
+    _get_download_info() can embed it in the download_url it builds (via
+    version_config.get_active_login_id()), for /download-file's
+    object-level ACL check -- without threading login_id as an explicit
+    parameter through the whole status-lookup call chain.
     """
     if not version_config.IS_V6:
-        return version_config.repo_scope(None)
+        return version_config.repo_scope(None, login_id=login_id)
 
     resolved_tenant_id = version_config.resolve_tenant_id(tenant_id, domain)
     if not resolved_tenant_id:
@@ -322,15 +488,19 @@ def _make_repo_scope(tenant_id: str | None, domain: str | None, jwt: str | None)
             "request will run with no tenant repo root set.",
             tenant_id, domain,
         )
-        return version_config.repo_scope(None, tenant_id=tenant_id, jwt=jwt)
+        return version_config.repo_scope(None, tenant_id=tenant_id, jwt=jwt, login_id=login_id)
 
-    root = version_config.repo_root_for_tenant(resolved_tenant_id)
+    try:
+        root = version_config.repo_root_for_tenant(resolved_tenant_id)
+    except ValueError as exc:
+        logger.warning("Rejected tenant_id=%r: %s", resolved_tenant_id, exc)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid tenant.")
     # 6.0's repo root varies per tenant, per request — unlike 5.5 (always
     # BASE_REPO_PATH, already covered by the startup summary line), this is
     # the one place worth a per-request log: which tenant's data this
     # request will actually read/write.
     logger.info("Repository selected | version=6.0 | tenant=%s | repo=%s", resolved_tenant_id, root)
-    return version_config.repo_scope(root, tenant_id=resolved_tenant_id, jwt=jwt)
+    return version_config.repo_scope(root, tenant_id=resolved_tenant_id, jwt=jwt, login_id=login_id)
 
 
 @app.post("/chat", response_model=ChatResponse, status_code=status.HTTP_200_OK)
@@ -354,7 +524,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     # ── APP_VERSION=6.0: resolve tenant repo root for this request only.
     # No-op under 5.5 (root stays None -> BASE_REPO_PATH, unchanged behavior).
-    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt, request.login_id)
     _repo_scope.__enter__()
     try:
         # ── Multilingual boundary, INBOUND: user language → English ───────────
@@ -390,7 +560,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
             # Already English: the frontend replays data.i18n.english from the
             # previous turn, so the classifier and LLM extractor keep seeing
             # English context without seven extra translation calls.
-            conversation_history=request.conversation_history[-7:] if request.conversation_history else None,
+            conversation_history=(
+                [item.model_dump() for item in request.conversation_history[-7:]]
+                if request.conversation_history else None
+            ),
         ))
         elapsed = time.monotonic() - start
         intent_for_log = result.intent if isinstance(result, ChatResponse) else result.get("intent", "?")
@@ -569,6 +742,13 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
     """
     from backend.tools.variance_explain import generate_explanations
 
+    # M-05: was fully unauthenticated -- any caller could trigger the LLM
+    # narrative generation for arbitrary rows. Same fail-closed contract as
+    # every other endpoint (REQUIRE_AUTH/AUTHORIZATION_ENABLED).
+    if not _caller_is_authenticated(request.login_id):
+        logger.warning("[COMPARE_SUMMARY_DENIED] login_id=%r not authenticated", request.login_id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
     logger.info(
         "API request received: /compare-summary report=%s rows=%d",
         request.report_name or "?", len(request.rows),
@@ -717,7 +897,7 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
     _repo_scope.__enter__()
     try:
         result = await _run_cancellable(request.request_id, explain_category_for_report(
-            error_file_path=request.error_file_path,
+            filename=request.filename,
             category=request.category,
             form_id=request.form_id,
             report_name=request.report_name,
@@ -768,6 +948,55 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
         _repo_scope.__exit__(None, None, None)
 
 
+#: M-24. The upload is whatever format the browser's MediaRecorder produced
+#: (api.js records as webm/opus; other browsers may use mp4/ogg/wav). Content
+#: type is checked against this allowlist before transcription is attempted;
+#: the extension list is the server-chosen filename's extension and is
+#: intentionally the same set of formats.
+_ALLOWED_AUDIO_CONTENT_TYPES = {
+    "audio/webm", "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/m4a",
+    "audio/ogg", "audio/flac", "application/octet-stream",
+}
+_ALLOWED_AUDIO_EXTENSIONS = {".webm", ".wav", ".mp3", ".m4a", ".ogg", ".flac", ".mp4"}
+_STT_READ_CHUNK_BYTES = 1024 * 1024  # 1 MiB
+
+
+def _safe_recording_filename(original: str | None) -> str:
+    """Never forward the client-supplied filename/path downstream. The STT
+    service validates the upload by FILENAME EXTENSION (measured: a .txt
+    upload is rejected naming the allowed list), so the extension is
+    functionally required -- but only the extension, taken from an
+    allowlist, ever survives from the client's name. Everything else (any
+    path components, the base name) is replaced with a fixed,
+    server-controlled name."""
+    ext = PurePosixPath((original or "").strip()).suffix.lower()
+    if ext not in _ALLOWED_AUDIO_EXTENSIONS:
+        ext = ".webm"
+    return f"recording{ext}"
+
+
+async def _read_upload_with_limit(file: UploadFile, limit: int) -> bytes:
+    """Stream *file* in bounded chunks, rejecting as soon as *limit* is
+    exceeded instead of reading an arbitrarily large upload fully into
+    memory first (the previous ``await file.read()`` had no cap until after
+    the whole body was already buffered)."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_STT_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="That recording is too long. Please record a shorter message.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.post("/speech-to-text", status_code=status.HTTP_200_OK)
 async def speech_to_text(
     file: UploadFile = File(...),
@@ -792,26 +1021,29 @@ async def speech_to_text(
             detail="Voice input is turned off.",
         )
 
-    audio_bytes = await file.read()
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in _ALLOWED_AUDIO_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported audio format.",
+        )
+
+    # M-24: stream-read with the limit enforced as we go, instead of reading
+    # an arbitrarily large upload fully into memory before checking its size.
+    limit = stt_config.max_bytes()
+    audio_bytes = await _read_upload_with_limit(file, limit)
     if len(audio_bytes) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Empty audio file received.",
         )
 
-    limit = stt_config.max_bytes()
-    if len(audio_bytes) > limit:
-        # Bounds a runaway recorder before it costs a minute of serialized CPU
-        # on the STT host.
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="That recording is too long. Please record a shorter message.",
-        )
-
-    # The service validates by FILENAME EXTENSION -- measured: a .txt upload is
-    # rejected with the allowed list. api.js already names the blob
-    # "recording.webm"; fall back rather than send something unnamed.
-    filename = (file.filename or "recording.webm").strip() or "recording.webm"
+    # M-24: never forward the client-supplied filename/path downstream — only
+    # a validated extension survives, on a fixed server-controlled base name.
+    # The service still validates by FILENAME EXTENSION (measured: a .txt
+    # upload is rejected naming the allowed list), so the extension itself
+    # must be preserved.
+    filename = _safe_recording_filename(file.filename)
 
     # The selected UI language is the STT language hint. Whisper's own
     # detection is unreliable on short or noisy clips (measured
@@ -828,6 +1060,21 @@ async def speech_to_text(
         len(audio_bytes), requested, hint, filename,
     )
     start = time.monotonic()
+
+    # M-03: admission control, not a queue. The STT service transcribes one
+    # clip at a time (measured); the original `async with _stt_slots` here
+    # queued a 3rd+ caller invisibly behind however many are already
+    # in-flight, directly contradicting this semaphore's own comment above
+    # ("a third caller is told to retry instead of queueing invisibly").
+    # Checking .locked() and rejecting immediately is safe here (no `await`
+    # between the check and the actual acquire below, so nothing else can
+    # consume the slot in between on this single-threaded event loop).
+    if _stt_slots.locked():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many simultaneous voice transcription requests. Please try again in a moment.",
+            headers={"Retry-After": "5"},
+        )
 
     client = stt.get_client()
     try:
@@ -871,6 +1118,16 @@ async def stop_request(request: Request) -> dict:
     call). If the task has already finished, this is a harmless no-op.
     """
     body = await request.json()
+    # M-11: was fully unauthenticated -- any caller could cancel any
+    # in-flight request_id. Same fail-closed contract as every other
+    # endpoint (REQUIRE_AUTH/AUTHORIZATION_ENABLED); login_id is optional in
+    # the body so existing callers that don't send it are unaffected when
+    # REQUIRE_AUTH=false.
+    login_id = body.get("login_id")
+    if not _caller_is_authenticated(login_id):
+        logger.warning("[STOP_DENIED] login_id=%r not authenticated", login_id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
     request_id = body.get("request_id")
     task = _inflight_tasks.get(request_id) if request_id else None
     stopped = False
@@ -892,6 +1149,19 @@ async def submit_feedback(request: FeedbackRequest) -> dict:
     Persisted to logs/feedback.jsonl for later analysis — see
     backend.utils.intent_log.log_feedback. Never raises: a logging
     failure here should not surface as a chat-breaking error.
+
+    L-16: deliberately left without a login_id/REQUIRE_AUTH gate, unlike
+    /chat, /reports, /download-file, etc. -- the existing frontend
+    (sendFeedback() in api.js) fires this as a best-effort, fire-and-forget
+    call on every thumbs up/down click with no response handling, and it
+    carries no object-level access (it never reads or returns any user's
+    data, only appends a quality-signal record), so there is nothing an
+    object-level ACL check here would actually protect. The abuse surface
+    this endpoint has -- unbounded request volume writing unbounded log
+    growth -- is instead addressed by: (1) rate limiting (this path is in
+    _RATE_LIMITED_PATHS, same mechanism as /chat), (2) FeedbackRequest's
+    existing per-field max_length caps, and (3) log_feedback()'s per-record
+    truncation and file-size-bounded rotation (see intent_log.py).
     """
     log_feedback(
         rating=request.rating,
@@ -905,12 +1175,144 @@ async def submit_feedback(request: FeedbackRequest) -> dict:
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health() -> dict:
+    """Liveness only: the process is up and able to answer HTTP requests.
+    Deliberately does not touch Oracle/Ollama/STT/the data repo -- that is
+    what /health/ready is for (M-29). Keeping this endpoint trivial and
+    dependency-free is the point: it must stay fast and correct even while
+    every downstream dependency is down."""
     return {"status": "ok"}
+
+
+# M-29: readiness probe result is cached briefly so a tight orchestrator
+# polling loop (or several probes in quick succession) doesn't re-hit every
+# dependency on every single call.
+_READINESS_CACHE: dict = {"result": None, "checked_at": 0.0}
+_READINESS_CACHE_TTL_S = 5.0
+_READINESS_CHECK_TIMEOUT_S = 2.0
+
+
+def _check_data_repo_path() -> bool:
+    try:
+        if version_config.IS_V6:
+            return os.path.isdir(version_config.APP_600_REPO_ROOT)
+        from backend import config as _config
+        return os.path.isdir(_config.BASE_REPO_PATH)
+    except Exception:
+        # L-13: os.path.isdir() itself never raises, so reaching here means
+        # something unexpected (a missing config attribute, an import
+        # failure) -- worth a traceback, not just "data path check failed".
+        logger.warning("[health/ready] Data repo path check failed unexpectedly", exc_info=True)
+        return False
+
+
+def _check_oracle_sync() -> bool:
+    try:
+        from backend.sql_agent.sqlcore.executor import get_connection
+        conn = get_connection()
+        try:
+            conn.ping()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        # L-13: readiness checks already fail safe (False -> reported
+        # not-ready, never surfaced to the client beyond a boolean -- see
+        # health_ready()); the only thing missing was the traceback an
+        # operator needs to tell "Oracle is down" apart from "a bug in this
+        # check itself".
+        logger.warning("[health/ready] Oracle check failed", exc_info=True)
+        return False
+
+
+async def _check_oracle() -> bool:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_check_oracle_sync), timeout=_READINESS_CHECK_TIMEOUT_S,
+        )
+    except Exception:
+        # L-13: this wrapper's own except (a timeout from asyncio.wait_for,
+        # or a propagation failure out of asyncio.to_thread) was the one
+        # readiness-check path left without a traceback -- the result
+        # already failed closed (not_ready/503), but an operator got no
+        # signal distinguishing "Oracle timed out" from any other cause.
+        logger.warning("[health/ready] Oracle check timed out or failed", exc_info=True)
+        return False
+
+
+async def _check_ollama() -> bool:
+    try:
+        from backend.services.llm_service import OLLAMA_BASE_URL
+        async with httpx.AsyncClient(timeout=_READINESS_CHECK_TIMEOUT_S) as client:
+            resp = await client.get(OLLAMA_BASE_URL)
+        return resp.status_code < 500
+    except Exception:
+        logger.warning("[health/ready] Ollama check failed", exc_info=True)
+        return False
+
+
+async def _check_stt() -> bool | None:
+    """Returns None (not False) when STT is intentionally disabled -- that
+    is not a readiness failure, just an inapplicable check."""
+    if not stt_config.is_enabled():
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=_READINESS_CHECK_TIMEOUT_S) as client:
+            resp = await client.get(stt_config.health_url())
+        return resp.status_code < 500
+    except Exception:
+        logger.warning("[health/ready] STT check failed", exc_info=True)
+        return False
+
+
+@app.get("/health/ready", status_code=status.HTTP_200_OK)
+async def health_ready(response: Response) -> dict:
+    """Readiness: are the dependencies this process needs to actually serve
+    a request available? Distinct from /health (liveness) -- a process can
+    be alive (this endpoint itself always answers) while not ready (Oracle/
+    Ollama/STT/the data repo is down), and an orchestrator should route
+    traffic away from a not-ready instance without restarting it.
+
+    Each dependency check has its own short timeout and the whole set runs
+    concurrently, so one slow/hung dependency cannot make this endpoint
+    itself hang -- the slowest possible response is bounded by
+    _READINESS_CHECK_TIMEOUT_S, not by how long a dependency actually takes
+    to fail. Results are cached briefly (_READINESS_CACHE_TTL_S) so a tight
+    polling loop doesn't hammer every dependency on every single call.
+    """
+    now = time.monotonic()
+    cached = _READINESS_CACHE["result"]
+    if cached is not None and (now - _READINESS_CACHE["checked_at"]) < _READINESS_CACHE_TTL_S:
+        if not cached["ready"]:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return cached
+
+    oracle_ok, ollama_ok, stt_ok = await asyncio.gather(
+        _check_oracle(), _check_ollama(), _check_stt(),
+    )
+    data_path_ok = _check_data_repo_path()
+
+    checks = {
+        "oracle": oracle_ok,
+        "ollama": ollama_ok,
+        "stt": "disabled" if stt_ok is None else stt_ok,
+        "data_repo_path": data_path_ok,
+    }
+    # STT "disabled" never blocks readiness; every other check must be True.
+    required_ok = oracle_ok and ollama_ok and data_path_ok and (stt_ok is not False)
+    result = {"status": "ready" if required_ok else "not_ready", "ready": required_ok, "checks": checks}
+
+    _READINESS_CACHE["result"] = result
+    _READINESS_CACHE["checked_at"] = now
+
+    if not required_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return result
 
 
 @app.get("/download-file", status_code=status.HTTP_200_OK)
 async def download_file(
     form_id: str, type: str, filename: str,
+    login_id: str | None = None,
     tenant_id: str | None = None, domain: str | None = None,
 ):
     """Serve a render or error file for download.
@@ -919,12 +1321,17 @@ async def download_file(
         form_id   — numeric report ID (non-numeric chars stripped server-side)
         type      — "render" | "error"
         filename  — bare filename, no directory component allowed
+        login_id  — caller identity, used for the H-03 object-level ACL check
         tenant_id / domain — APP_VERSION=6.0 only; resolves the tenant repo root
 
     Security: form_id is sanitised to digits only; filename is reduced to its
     basename so path-traversal attempts ('../../../etc/passwd') are rejected.
     The resolved absolute path is verified to lie within the designated base
-    directory before the file is opened.
+    directory before the file is opened. H-03: the caller must also be
+    authorised for this specific form_id (their department's allowed-forms
+    list) -- the path-traversal check alone does not stop an authorised user
+    from downloading a DIFFERENT department's report by simply changing the
+    form_id query parameter.
     """
     import re as _re
     from pathlib import Path
@@ -943,6 +1350,13 @@ async def download_file(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
         if type not in ("render", "error"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request.")
+
+        # ── H-03: object-level authorization ────────────────────────────────
+        if not _caller_may_access_form(login_id, safe_fid):
+            logger.warning(
+                "[DOWNLOAD_DENIED] login_id=%r not authorised for form_id=%s", login_id, safe_fid,
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
 
         # ── Path construction ───────────────────────────────────────────────────
         if type == "render":
@@ -979,11 +1393,35 @@ async def download_file(
 
 
 @app.get("/reports", status_code=status.HTTP_200_OK)
-async def list_reports(tenant_id: str | None = None, domain: str | None = None) -> dict:
-    """Return all known report names from returns.xml — used for guided-mode autocomplete."""
+async def list_reports(
+    login_id: str | None = None,
+    tenant_id: str | None = None, domain: str | None = None,
+) -> dict:
+    """Return report names from returns.xml, filtered to the caller's allowed
+    forms — used for guided-mode autocomplete.
+
+    H-03: previously returned every report name to every caller regardless
+    of department. Filtering mirrors the exact fail-closed contract already
+    used by /chat's decide() and /download-file: a resolvable login_id only
+    sees names within its allowed_form_ids; a missing/unresolvable login_id
+    sees nothing whenever REQUIRE_AUTH/AUTHORIZATION_ENABLED are on.
+    """
     from backend.tools.report_lookup import _parse_returns
+    from backend.agent.auth_filters import _filter_names_by_auth
+    from backend.services.auth_service import AUTHORIZATION_ENABLED, get_allowed_form_ids
+
     with _make_repo_scope(tenant_id, domain, None):
         names = sorted({r.get("Name", "") for r in _parse_returns() if r.get("Name")})
+
+        if login_id:
+            if not AUTHORIZATION_ENABLED:
+                pass  # explicit bypass -- every name passes through unfiltered
+            else:
+                allowed = get_allowed_form_ids(login_id)
+                names = [] if allowed is None else _filter_names_by_auth(names, allowed)
+        elif os.getenv("REQUIRE_AUTH", "true").lower() == "true" and AUTHORIZATION_ENABLED:
+            names = []
+
     return {"reports": names}
 
 
@@ -1005,17 +1443,27 @@ async def allowed_actions(
 
 
 @app.get("/status-errors/{job_id}", status_code=status.HTTP_200_OK)
-async def get_status_errors(job_id: str, lang: str = "en") -> dict:
+async def get_status_errors(job_id: str, lang: str = "en", login_id: str | None = None) -> dict:
     """Poll for the result of a background LLM error-enrichment job.
 
     Returns:
-        {"status": "not_found"}  — unknown job_id
+        {"status": "not_found"}  — unknown job_id, OR the caller is not
+                                    authorised for the form this job belongs
+                                    to (H-03) -- deliberately indistinguishable
+                                    from "unknown", so this can't be used as
+                                    an oracle to probe other jobs' existence.
         {"status": "pending"}    — job still running
         {"status": "done", "error_messages": [...], "error_details": [...]}  — complete
     """
     from backend.agent import _error_jobs
     job = _error_jobs.get(job_id)
     if job is None:
+        return {"status": "not_found"}
+    if not _caller_may_access_form(login_id, job.get("form_id", "")):
+        logger.warning(
+            "[STATUS_ERRORS_DENIED] login_id=%r not authorised for job=%s form_id=%r",
+            login_id, job_id, job.get("form_id"),
+        )
         return {"status": "not_found"}
     if job["status"] == "pending":
         return {"status": "pending"}
@@ -1049,7 +1497,7 @@ async def guided(request: ChatRequest) -> ChatResponse:
         request.session_id, request.message,
     )
     start = time.monotonic()
-    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt)
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt, request.login_id)
     _repo_scope.__enter__()
     try:
         result = await _run_cancellable(request.request_id, guided_step(

@@ -24,6 +24,34 @@ function _err(detail, i18nKey) {
 }
 
 /**
+ * L-18: shared POST-JSON-and-parse tail for the several endpoints that all
+ * hand-rolled the identical fetch → check-status → parse-error sequence
+ * (sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory).
+ * Does not change any request's URL, headers, body shape, signal handling,
+ * or error semantics -- callers still build their own `body` object exactly
+ * as before and only this shared tail is factored out.
+ *
+ * @param {string} path - appended to BASE_URL, e.g. '/chat'.
+ * @param {object} body - already-built JSON-serializable request body.
+ * @param {AbortSignal|undefined} signal
+ * @param {string} i18nKey - fallback i18n key if the backend sends no `detail`.
+ * @returns {Promise<any>} parsed JSON response body.
+ */
+async function _postJson(path, body, signal, i18nKey) {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw _err(err.detail, i18nKey)
+  }
+  return res.json()
+}
+
+/**
  * Fetch the subset of guided-menu actions the given identity may see/perform.
  * Side-effect-free — does not touch any conversation session, unlike POSTing
  * a sentinel message through /guided.
@@ -128,19 +156,7 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
   if (tenantId) body.tenant_id = tenantId
   if (domain)   body.domain    = domain
   if (jwt)      body.jwt       = jwt
-  const res = await fetch(`${BASE_URL}/compare-execute`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw _err(body.detail, 'errors.compareFailed')
-  }
-
-  return res.json()
+  return _postJson('/compare-execute', body, signal, 'errors.compareFailed')
 }
 
 /**
@@ -164,10 +180,14 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
  * @param {string} [opts.requestId] - enables Stop: /compare-summary registers
  *   the task under this id, so POST /stop can cancel the in-flight LLM call
  *   server-side rather than just abandoning it client-side.
+ * @param {string|null} [opts.loginId] - required by the backend when
+ *   REQUIRE_AUTH is on; omitting it makes the endpoint 403 and this
+ *   function resolve to '' (see the catch-all below), same as a genuine
+ *   LLM failure.
  * @returns {Promise<string>} the summary text, or '' if unavailable.
  */
 export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts = {}) {
-  const { signal, requestId, lang } = opts
+  const { signal, requestId, lang, loginId } = opts
   try {
     const res = await fetch(`${BASE_URL}/compare-summary`, {
       method: 'POST',
@@ -203,6 +223,12 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
         label_b:     labelB ?? '',
         report_name: reportName ?? '',
         request_id:  requestId ?? null,
+        // M-05: /compare-summary now requires a resolvable login_id when the
+        // backend's REQUIRE_AUTH is on -- without this the endpoint 403s and
+        // this function's own catch-all silently resolves to '', which is
+        // exactly what showed up as "AI analysis is unavailable" with no
+        // visible error.
+        login_id:    loginId ?? null,
         // The AI narrative is model-authored, so it is translated at runtime by
         // the existing boundary. Omitted / 'en' leaves it in English.
         ...(lang && lang !== 'en' ? { lang } : {}),
@@ -262,19 +288,7 @@ export async function sendMessage(
   if (domain)                       body.domain               = domain
   if (jwt)                          body.jwt                  = jwt
 
-  const res = await fetch(`${BASE_URL}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw _err(body.detail, 'errors.requestFailed')
-  }
-
-  return await res.json()
+  return _postJson('/chat', body, signal, 'errors.requestFailed')
 }
 
 /**
@@ -311,19 +325,7 @@ export async function sendGuidedMessage(message, sessionId = null, aspSession = 
   if (domain)     body.domain      = domain
   if (jwt)        body.jwt         = jwt
 
-  const res = await fetch(`${BASE_URL}/guided`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw _err(err.detail, 'errors.requestFailed')
-  }
-
-  return await res.json()
+  return _postJson('/guided', body, signal, 'errors.requestFailed')
 }
 
 /**
@@ -375,10 +377,17 @@ export async function transcribeAudio(audioBlob, opts = {}) {
  * (formula_error | xbrl_schema | dimensional). Triggered when the user
  * clicks an "Explain ... Errors" button in the Error Summary panel.
  *
- * @param {string} errorFilePath - Absolute path to the error HTML/XML file
- *                                  (from error_category_counts.error_file_path).
+ * @param {string} errorFilePath - Bare filename of the error HTML/XML file
+ *                                  (from error_category_counts.filename).
+ *                                  L-17: NOT an absolute path -- the server
+ *                                  rebuilds the real path from this filename
+ *                                  + formId and never accepts a path directly.
  * @param {string} category - One of "formula_error", "xbrl_schema", "dimensional".
- * @param {string|null} formId - Report form ID (needed for xbrl_schema 4000-series tagging).
+ * @param {string} formId - Report form ID. REQUIRED -- the server needs it
+ *                           (together with errorFilePath) to rebuild the
+ *                           real server-side path; omitting it now fails
+ *                           the request with a 400/422 rather than silently
+ *                           trusting a client-sent path.
  * @param {string|null} reportName - Report display name (for the response header).
  * @param {object} [opts]
  * @param {AbortSignal} [opts.signal]
@@ -390,9 +399,8 @@ export async function transcribeAudio(audioBlob, opts = {}) {
  */
 export async function explainErrorCategory(errorFilePath, category, formId = null, reportName = null, opts = {}) {
   const { signal, requestId, offset, lang, tenantId, domain, jwt } = opts
-  const body = { error_file_path: errorFilePath, category }
+  const body = { filename: errorFilePath, category, form_id: formId }
   if (lang && lang !== 'en') body.lang = lang
-  if (formId)     body.form_id     = formId
   if (reportName) body.report_name = reportName
   if (requestId)  body.request_id  = requestId
   if (offset)     body.offset      = offset
@@ -402,17 +410,7 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
   // Use the same BASE_URL as sendMessage — relies on Vite proxy in dev,
   // VITE_API_BASE_URL in production. Do NOT use a hardcoded localhost fallback
   // here (unlike the polling fetch in App.jsx which correctly uses port 8001).
-  const res = await fetch(`${BASE_URL}/explain-category`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw _err(err.detail, 'errors.explanationFailed')
-  }
-  return await res.json()
+  return _postJson('/explain-category', body, signal, 'errors.explanationFailed')
 }
 
 /**
@@ -426,12 +424,19 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
  * @param {string} jobId
  * @param {object} [opts]
  * @param {string} [opts.lang] - Omitted / 'en' leaves the cards in English.
+ * @param {string|null} [opts.loginId] - H-03: required for the backend's
+ *   object-level ownership check -- without it, the job is treated as
+ *   belonging to an unauthenticated caller and denied whenever
+ *   REQUIRE_AUTH/AUTHORIZATION_ENABLED are on (the default).
  * @param {AbortSignal} [opts.signal]
  * @returns {Promise<object>} - { status: 'pending'|'done'|'not_found', ... }
  */
 export async function fetchStatusErrors(jobId, opts = {}) {
-  const { lang, signal } = opts
-  const qs = lang && lang !== 'en' ? `?lang=${encodeURIComponent(lang)}` : ''
+  const { lang, loginId, signal } = opts
+  const params = new URLSearchParams()
+  if (lang && lang !== 'en') params.set('lang', lang)
+  if (loginId) params.set('login_id', loginId)
+  const qs = params.toString() ? `?${params.toString()}` : ''
   const res = await fetch(`${BASE_URL}/status-errors/${jobId}${qs}`, { signal })
   if (!res.ok) throw _err('', 'errors.requestFailed')
   return res.json()

@@ -131,11 +131,11 @@ def handle_submission_list(scope: dict, entities: dict, store: XMLStore) -> dict
     if status in _STATUS_GROUPS:
         logs = [l for l in logs if l.get("Status", "") in _STATUS_GROUPS[status]]
     elif status == "cims_ok":
-        logs = [l for l in logs if l.get("CIMSUploadStatus", "").lower() in ("success", "ok", "true")]
+        logs = [l for l in logs if get_attr(l, "CIMSUploadStatus").lower() in ("success", "ok", "true")]
     elif status == "cims_failed":
-        logs = [l for l in logs if l.get("CIMSUploadStatus", "").lower() in ("failed", "fail", "false")]
+        logs = [l for l in logs if get_attr(l, "CIMSUploadStatus").lower() in ("failed", "fail", "false")]
     elif status == "has_error_doc":
-        logs = [l for l in logs if l.get("ErrorDocPath", "").strip()]
+        logs = [l for l in logs if get_attr(l, "ErrorDocPath").strip()]
 
     target_return = entities.get("target_return", "")
     if target_return:

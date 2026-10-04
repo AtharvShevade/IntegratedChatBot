@@ -11,7 +11,7 @@ from backend.sql_agent import _bootstrap
 
 _bootstrap.ensure()
 
-from src.semantic_layer import (                                 # noqa: E402,F401
+from sqlcore.semantic_layer import (                                 # noqa: E402,F401
     clear_cache,
     load_join_graph,
     load_semantic_layer,

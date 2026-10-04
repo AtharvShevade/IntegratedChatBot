@@ -16,8 +16,8 @@ from backend.sql_agent import _bootstrap
 
 _bootstrap.ensure()
 
-import src.sql_generator as _sql_generator                       # noqa: E402
-from src.sql_generator import (                                  # noqa: E402,F401
+import sqlcore.sql_generator as _sql_generator                       # noqa: E402
+from sqlcore.sql_generator import (                                  # noqa: E402,F401
     build_prompt,
     build_table_ddl,
     generate_sql,

@@ -8,11 +8,37 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from backend.agent.state import _build
+from backend.config import instance_base_dir
 
 logger = logging.getLogger(__name__)
+
+_ALLOWED_ERROR_FILE_EXTENSIONS = (".xml", ".html")
+
+
+def _is_contained_error_file(error_file_path: str) -> bool:
+    """True only if error_file_path resolves to a real path inside this
+    request's instance_base_dir() and has an allowed extension.
+
+    error_file_path is client-supplied (round-tripped from an earlier
+    response) with no server-side rebuild, so it must be validated the same
+    way /download-file validates form_id/filename before opening — otherwise
+    a client could point it at an arbitrary file on the host (or a UNC share)
+    and have its contents read back through the error-explanation pipeline.
+    """
+    if os.path.splitext(error_file_path)[1].lower() not in _ALLOWED_ERROR_FILE_EXTENSIONS:
+        return False
+    try:
+        resolved = Path(error_file_path).resolve()
+        base = Path(instance_base_dir()).resolve()
+        resolved.relative_to(base)
+    except (ValueError, OSError):
+        return False
+    return True
 
 _CATEGORY_DISPLAY = {
     "formula_error": "Formula Errors",
@@ -22,15 +48,15 @@ _CATEGORY_DISPLAY = {
 
 
 async def explain_category_for_report(
-    error_file_path: str,
+    filename: str,
     category: str,
-    form_id: str | None = None,
+    form_id: str,
     report_name: str | None = None,
     offset: int = 0,
     lang: str = "en",
 ) -> dict[str, Any]:
     """Explain one batch (size = report_lookup._MAX_EXPLAIN, currently 3) of
-    errors for the given category from error_file_path, starting at *offset*.
+    errors for the given category from the error file, starting at *offset*.
 
     Runs the existing on-demand explanation pipeline
     (explain_errors_by_category_for_form, unchanged) in a background thread
@@ -45,8 +71,18 @@ async def explain_category_for_report(
     and, if so, what offset to request next. Never regenerates errors
     already covered by [0, offset) — that range is simply not re-parsed
     into this batch.
+
+    L-17 / C-04 follow-up: the caller supplies only *filename* (a bare
+    basename, previously round-tripped as a full absolute error_file_path —
+    see git history) and *form_id*; the actual server path is rebuilt here
+    via build_error_file_path(), the same helper /download-file already
+    uses, instead of trusting any path from the client. This also stops the
+    absolute server path (drive letter, tenant folder layout) from ever
+    being returned to a caller in the first place.
     """
-    from backend.tools.report_lookup import explain_errors_by_category_for_form, count_errors_by_category
+    from backend.tools.report_lookup import (
+        explain_errors_by_category_for_form, count_errors_by_category, build_error_file_path,
+    )
 
     category_label = _CATEGORY_DISPLAY.get(category, category)
     offset = max(0, int(offset or 0))
@@ -59,7 +95,7 @@ async def explain_category_for_report(
             result_type="error",
         )
 
-    if not error_file_path:
+    if not filename or not form_id:
         return _build(
             intent="explain_errors",
             report_name=report_name,
@@ -67,10 +103,28 @@ async def explain_category_for_report(
             result_type="error",
         )
 
-    loop = asyncio.get_event_loop()
+    error_file_path = build_error_file_path(form_id, os.path.basename(filename))
+
+    if not _is_contained_error_file(error_file_path):
+        logger.warning(
+            "[EXPLAIN_CATEGORY_DENIED] rebuilt path outside instance_base_dir() or "
+            "disallowed extension: form_id=%r filename=%r", form_id, filename,
+        )
+        return _build(
+            intent="explain_errors",
+            report_name=report_name,
+            response_text="No error file is available for this report.",
+            result_type="error",
+        )
+
     try:
-        explained = await loop.run_in_executor(
-            None,
+        # H-06: loop.run_in_executor(None, ...) does NOT copy contextvars into
+        # the worker thread (unlike asyncio.to_thread), so config._active_root()
+        # would silently read the default/unset root instead of this request's
+        # actual tenant repo root under APP_VERSION=6.0 -- background_jobs.py
+        # already documents and fixes this exact bug for its own threads;
+        # this call site had the same bug and is fixed the same way here.
+        explained = await asyncio.to_thread(
             explain_errors_by_category_for_form,
             error_file_path,
             category,

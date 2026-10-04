@@ -235,12 +235,17 @@ class TestOllamaSummaryTimeoutDefault:
 
 class TestXbrlFactsCache:
     def setup_method(self):
-        xc._xbrl_facts_caches.clear()
+        # M-15: _xbrl_facts_caches (a raw OrderedDict) was migrated onto the
+        # shared backend.utils.file_cache.FileCache, now held as
+        # _xbrl_facts_cache (singular).
+        xc._xbrl_facts_cache.clear()
         self._orig_max = xc._XBRL_FACTS_CACHE_MAX_ENTRIES
+        self._orig_cache = xc._xbrl_facts_cache
 
     def teardown_method(self):
-        xc._xbrl_facts_caches.clear()
+        xc._xbrl_facts_cache.clear()
         xc._XBRL_FACTS_CACHE_MAX_ENTRIES = self._orig_max
+        xc._xbrl_facts_cache = self._orig_cache
 
     def test_same_file_served_from_cache_not_reparsed(self, tmp_path, monkeypatch):
         f = tmp_path / "instance_a.xml"
@@ -344,13 +349,17 @@ class TestXbrlFactsCache:
         assert len(calls) == 2, "an empty result must not be cached as if it were a real success"
 
     def test_cache_does_not_grow_indefinitely(self, monkeypatch):
+        # M-15: max_size is now fixed at FileCache construction time, so
+        # resizing requires swapping in a freshly-sized instance rather than
+        # monkeypatching the (now only import-time-read) env constant.
         monkeypatch.setattr(xc, "_XBRL_FACTS_CACHE_MAX_ENTRIES", 5)
+        monkeypatch.setattr(xc, "_xbrl_facts_cache", xc._FileCache(max_size=5))
         monkeypatch.setattr(xc, "_load_xbrl_facts_uncached", lambda path: [{"concept": "X", "value_num": 1.0}])
 
         for i in range(20):
             xc.load_xbrl_facts(f"/fake/path/instance_{i}.xml")
 
-        assert len(xc._xbrl_facts_caches) <= 5
+        assert len(xc._xbrl_facts_cache) <= 5
 
     def test_concurrent_cache_access_is_safe(self, monkeypatch):
         """Many threads hitting the cache (same and different paths)
@@ -361,6 +370,7 @@ class TestXbrlFactsCache:
 
         monkeypatch.setattr(xc, "_load_xbrl_facts_uncached", lambda path: [{"concept": "X", "value_num": 1.0}])
         monkeypatch.setattr(xc, "_XBRL_FACTS_CACHE_MAX_ENTRIES", 10)
+        monkeypatch.setattr(xc, "_xbrl_facts_cache", xc._FileCache(max_size=10))
 
         errors = []
 
@@ -378,4 +388,4 @@ class TestXbrlFactsCache:
             t.join()
 
         assert not errors
-        assert len(xc._xbrl_facts_caches) <= 10
+        assert len(xc._xbrl_facts_cache) <= 10

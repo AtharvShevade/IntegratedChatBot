@@ -65,14 +65,28 @@ class TestFivePointFivePathResolution:
 
 
 class TestSixPointZeroTenantAwarePathResolution:
+    """repo_root_for_tenant() now validates tenant_id against the registered
+    tenant list (C-03 fix), so these fake tenant IDs are registered via a
+    patched _get_tenant_registry() rather than being accepted as-is."""
+
+    @staticmethod
+    def _allow_tenants(monkeypatch, *tenant_ids):
+        monkeypatch.setattr(
+            version_config,
+            "_get_tenant_registry",
+            lambda: {t.lower(): t for t in tenant_ids},
+        )
+
     def test_tenant_scope_overrides_the_active_root(self, monkeypatch):
         monkeypatch.setattr(version_config, "APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+        self._allow_tenants(monkeypatch, "TENANT_A")
         with version_config.repo_scope(version_config.repo_root_for_tenant("TENANT_A")):
             path = config.app_db_base_path()
         assert path == r"D:\Repo6\Repo6\TENANT_A\DataBase"
 
     def test_different_tenants_resolve_to_different_isolated_paths(self, monkeypatch):
         monkeypatch.setattr(version_config, "APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+        self._allow_tenants(monkeypatch, "TENANT_A", "TENANT_B")
         with version_config.repo_scope(version_config.repo_root_for_tenant("TENANT_A")):
             path_a = config.instance_log_xml_path()
         with version_config.repo_scope(version_config.repo_root_for_tenant("TENANT_B")):
@@ -83,6 +97,8 @@ class TestSixPointZeroTenantAwarePathResolution:
 
     def test_scope_exit_restores_5_5_default(self, monkeypatch):
         monkeypatch.setattr(config, "BASE_REPO_PATH", r"D:\Fake5_5Root")
+        monkeypatch.setattr(version_config, "APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+        self._allow_tenants(monkeypatch, "TENANT_A")
         with version_config.repo_scope(version_config.repo_root_for_tenant("TENANT_A")):
             assert "TENANT_A" in config.app_db_base_path()
         # Outside the scope, must fall back to plain BASE_REPO_PATH again —
@@ -91,11 +107,25 @@ class TestSixPointZeroTenantAwarePathResolution:
 
     def test_nested_scopes_do_not_leak_into_each_other(self, monkeypatch):
         monkeypatch.setattr(version_config, "APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+        self._allow_tenants(monkeypatch, "OUTER", "INNER")
         with version_config.repo_scope(version_config.repo_root_for_tenant("OUTER")):
             assert "OUTER" in config.app_db_base_path()
             with version_config.repo_scope(version_config.repo_root_for_tenant("INNER")):
                 assert "INNER" in config.app_db_base_path()
             assert "OUTER" in config.app_db_base_path()
+
+    def test_rejects_tenant_id_not_in_registry(self, monkeypatch):
+        monkeypatch.setattr(version_config, "APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+        self._allow_tenants(monkeypatch, "TENANT_A")
+        with pytest.raises(ValueError):
+            version_config.repo_root_for_tenant("NOT_REGISTERED")
+
+    def test_rejects_path_traversal_and_absolute_paths(self, monkeypatch):
+        monkeypatch.setattr(version_config, "APP_600_REPO_ROOT", r"D:\Repo6\Repo6")
+        self._allow_tenants(monkeypatch, "TENANT_A")
+        for bad in (r"..\..\Windows", r"C:\Windows", r"\\evilhost\share", "tenant/../x"):
+            with pytest.raises(ValueError):
+                version_config.repo_root_for_tenant(bad)
 
 
 class TestMatchingInstanceLogRowsUsesAutoDerivedPathOnly:

@@ -15,10 +15,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.utils.ttl_registry import TTLDict
+
 # ── In-memory async error-enrichment job store ────────────────────────────────
 # Structure: { job_id: {"status": "pending"|"done", "payload": dict|None} }
 # For multi-worker deployments replace with Redis.
-_error_jobs: dict[str, dict] = {}
+# M-01: previously a plain dict with NO cleanup at all -- every enrichment
+# ever run left a permanent entry. TTLDict bounds it and expires entries a
+# client never polled for (/status-errors/{job_id}).
+_error_jobs: dict[str, dict] = TTLDict(max_size=5_000, ttl_seconds=3600)
 
 # Stage constants -- stored in session under key "awaiting"
 STAGE_DATE         = "AWAITING_DATE_SELECTION"    # status: picking a date
@@ -37,7 +42,13 @@ STAGE_PREV_DATES   = "AWAITING_PREV_DATES_CONFIRM"  # status: yes/no for previou
 STAGE_RETURN_QA = "AWAITING_RETURN_QA_SELECTION"  # db_qa: picking a return from disambiguation (any return-scoped intent)
 
 # In-memory session store per session_id
-_session_context: dict[str, dict[str, Any]] = {}
+# M-01: previously a plain dict -- cleanup was ~20 ad-hoc `.pop()` calls
+# scattered across router.py/comparison.py/generation.py on specific
+# flow-completion branches, so a session abandoned before reaching one of
+# those branches (closed tab, crashed browser) leaked forever. TTLDict adds a
+# generic bound + expiry UNDER those existing pops, not instead of them --
+# they still fire immediately on the success/error paths they already cover.
+_session_context: dict[str, dict[str, Any]] = TTLDict(max_size=20_000, ttl_seconds=24 * 3600)
 
 # Phrases that explicitly signal the user wants to start a new report query
 _NEW_REPORT_KWS = frozenset({

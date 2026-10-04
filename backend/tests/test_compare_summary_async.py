@@ -96,6 +96,15 @@ class TestSummaryTimeoutOverride:
 # ── the endpoint ─────────────────────────────────────────────────────────
 
 class TestCompareSummaryEndpoint:
+    @pytest.fixture(autouse=True)
+    def _no_auth_required(self, monkeypatch):
+        # M-05: REQUIRE_AUTH now defaults to "true" and /compare-summary gates
+        # on a resolvable login_id. These tests exercise the generation
+        # contract, not auth, so they opt out the same way
+        # test_h01_fail_closed.py does; auth itself is covered separately in
+        # test_m05_m11_endpoint_auth.py.
+        monkeypatch.setenv("REQUIRE_AUTH", "false")
+
     def test_returns_the_generated_summary(self, monkeypatch):
         async def _fake(rows, label_a, label_b, report_name="", timeout=None, **kw):
             return "AI Summary:\n• **Foreign Currency Balances** rose **+233.3%**."
@@ -174,7 +183,7 @@ class TestCompareSummaryEndpoint:
         assert res.json()["llm_summary"] == ""
         assert not called
 
-    def test_missing_labels_do_not_500(self):
+    def test_missing_labels_do_not_500(self, monkeypatch):
         """label_a/label_b are optional in the model; the endpoint falls back
         to A/B rather than building rows keyed by an empty string."""
         res = _client().post("/compare-summary", json={"rows": []})
