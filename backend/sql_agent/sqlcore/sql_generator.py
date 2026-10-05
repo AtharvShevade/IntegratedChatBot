@@ -9,6 +9,11 @@ import sqlcore.config as config
 # Safe at module level: description_fetcher imports only json/os/config up front
 # (oracledb and faiss are function-local there) and never imports this module.
 from sqlcore.description_fetcher import load_samples
+from sqlcore.sql_prompts import (
+    SQL_CORRECTION_PROMPT_VERSION, SQL_GENERATION_PROMPT_VERSION,
+    sanitize_user_query, wrap_tag,
+)
+from sqlcore.token_budget import enforce_token_budget
 
 log = logging.getLogger("sql_generator")
 
@@ -1064,6 +1069,11 @@ def _try_autocorrect_vertical_aggregation(sql: str, reason: str):
 
 def build_prompt(user_query, tables, columns, dialect="Oracle", today_date=None, matched_labels=None,
                  model_name=None, qa_example=None, selection=None, reasoning_plan=None):
+    # L-04: idempotent on already-sanitized input (generate_sql() sanitizes
+    # before calling here) -- kept here too as the one place every prompt
+    # style actually interpolates [QUESTION]{user_query}[/QUESTION], so a
+    # future direct caller of build_prompt() is covered as well.
+    user_query = sanitize_user_query(user_query)
     if today_date is None:
         today_date = date.today().isoformat()
 
@@ -1302,9 +1312,21 @@ SQL:"""
 
 def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None, matched_labels=None,
                  qa_example=None, selection=None, reasoning_plan=None):
+    # L-04: neutralise prompt-delimiter injection in the raw user question
+    # ONCE, before it is used in the initial prompt OR any correction-retry
+    # prompt below (both read this same local `user_query`) -- closes the
+    # "[/QUESTION]...injected instructions" vector C-05 identified, with no
+    # effect on an ordinary question.
+    user_query = sanitize_user_query(user_query)
+    log.info("[SQL_AGENT] prompt_version=%s", SQL_GENERATION_PROMPT_VERSION)
     prompt = build_prompt(user_query, tables, columns, dialect=dialect, today_date=today_date,
                           matched_labels=matched_labels, qa_example=qa_example,
                           selection=selection, reasoning_plan=reasoning_plan)
+    # M-10: no-op for the overwhelming majority of prompts (anything already
+    # within the model's safe context budget is returned unchanged) -- only
+    # intervenes when the assembled prompt would actually overflow
+    # OLLAMA_NUM_CTX.
+    prompt = enforce_token_budget(prompt, context="initial_generation")
     model_name = config.OLLAMA_MODEL
     model_profile = _get_model_profile(model_name)
 
@@ -1518,6 +1540,8 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
     attempt = 0
     while not is_valid and attempt < MAX_CORRECTION_RETRIES:
         attempt += 1
+        if attempt == 1:
+            log.info("[SQL_AGENT] prompt_version=%s", SQL_CORRECTION_PROMPT_VERSION)
         # Per-round timing: the caller's `llm_generation` timings_ms entry
         # covers this ENTIRE retry loop as one lump sum, so a slow first
         # attempt was indistinguishable from 3 slow retries. Logged
@@ -1583,20 +1607,40 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
         # Keep the retry prompt short: resending the full original prompt
         # doubles its size and can overflow the context window, which returns
         # nothing at all.
-        retry_prompt = (
-            "The previous SQL was invalid. Return ONLY the corrected raw SQL SELECT query "
-            "(no explanation, no markdown, no semicolon).\n\n"
-            f"User question: {user_query}\n\n"
-            f"Allowed tables (this is the COMPLETE list — do not use, JOIN to, or invent ANY table "
-            f"not in this list, including lookup/dimension tables for category or label columns):\n"
-            f"{valid_tables_str}\n\n"
-            f"Allowed columns (these are the ONLY columns that exist — do not invent a column name "
-            f"that merely sounds plausible, such as an ID, code, or country field not listed here):\n"
-            f"{valid_cols_str}\n\n"
-            f"Invalid SQL:\n{raw}\n\n"
-            f"Validation reason:\n{reason}{extra_hint}\n\n"
-            "Corrected SQL:"
-        )
+        # L-04: `raw` (the model's own previous output) and `reason` (a
+        # validate_sql() message -- which, via generate_sql's own dry-run
+        # check further down, can embed Oracle's own EXPLAIN PLAN error
+        # text) are both DATA describing what went wrong, not instructions
+        # -- tagged the same way [QUESTION]/[/QUESTION] already marks the
+        # question, so the model reads them as context to diagnose rather
+        # than as new directives.
+        def _build_retry_prompt(include_extra_hint: bool) -> str:
+            hint = extra_hint if include_extra_hint else ""
+            return (
+                "The previous SQL was invalid. Return ONLY the corrected raw SQL SELECT query "
+                "(no explanation, no markdown, no semicolon).\n\n"
+                f"User question: [QUESTION]{user_query}[/QUESTION]\n\n"
+                f"Allowed tables (this is the COMPLETE list — do not use, JOIN to, or invent ANY table "
+                f"not in this list, including lookup/dimension tables for category or label columns):\n"
+                f"{valid_tables_str}\n\n"
+                f"Allowed columns (these are the ONLY columns that exist — do not invent a column name "
+                f"that merely sounds plausible, such as an ID, code, or country field not listed here):\n"
+                f"{valid_cols_str}\n\n"
+                f"{wrap_tag('previous_sql', raw)}\n\n"
+                f"{wrap_tag('validation_reason', f'{reason}{hint}')}\n\n"
+                "Corrected SQL:"
+            )
+
+        retry_prompt = _build_retry_prompt(include_extra_hint=True)
+        # M-10: the "you already tried this" nudge is genuinely optional
+        # (informational, not required for correctness) -- drop it first,
+        # specifically for this prompt shape, before the generic optional-
+        # section stripper below (which targets a different set of markers
+        # that this prompt doesn't contain).
+        from sqlcore.token_budget import estimate_tokens, get_safe_input_token_budget
+        if extra_hint and estimate_tokens(retry_prompt) > get_safe_input_token_budget():
+            retry_prompt = _build_retry_prompt(include_extra_hint=False)
+        retry_prompt = enforce_token_budget(retry_prompt, context="correction_retry")
 
         # Final-round-only temperature bump: by the last attempt, the safe
         # information-only escalation above has already had two rounds to

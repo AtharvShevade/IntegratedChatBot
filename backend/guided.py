@@ -374,7 +374,7 @@ async def guided_step(
             return db_result
         logger.info("[GUIDED_DB_QUERY] no XML-QA match, falling back to SQL agent session=%s", session_id)
         from backend.sql_agent import handle_db_query
-        return await handle_db_query(msg, session_id=session_id)
+        return await handle_db_query(msg, session_id=session_id, login_id=login_id)
 
     return _menu(login_id)
 

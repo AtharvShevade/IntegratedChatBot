@@ -19,6 +19,8 @@ Returns a ``QueryResult`` dict::
 """
 from __future__ import annotations
 
+import sys
+
 from backend.db_qa.xml_store import XMLStore, SUBMISSION_STATUS_LABELS, _safe, get_attr
 from backend.db_qa.query_handlers._extraction_guard import not_found_summary
 
@@ -887,7 +889,6 @@ HANDLERS: dict[str, object] = {
     "ROLE_LIST":             handle_role_list,
     "ROLE_PERMISSIONS":      handle_role_permissions,
     "ROLE_USERS":            handle_role_users,
-    "MY_ROLE_PEER_COUNT":    handle_my_role_peer_count,
     "PERMISSION_CHECK":      handle_permission_check,
     "PERIOD_LIST":           handle_period_list,
     "USER_LEVEL_LIST":       handle_user_level_list,
@@ -1021,7 +1022,13 @@ def dispatch(intent: str, params: dict, user_id: str, role_id: str, is_admin: bo
     _base_handler = INTENT_TO_HANDLER.get(intent, handle_unknown)
     _fn_name = getattr(_base_handler, "__name__",
                        getattr(getattr(_base_handler, "__wrapped__", None), "__name__", None))
-    _this = sys.modules[__name__] if "sys" in dir() else __import__("sys").modules[__name__]
+    # L-07: was `sys.modules[__name__] if "sys" in dir() else __import__("sys")...` --
+    # a dead branch (the bare name `sys` was never actually bound at module
+    # scope; the monkey-patch block above only ever bound/deleted a local
+    # `_sys` alias), always falling through to the else. A real top-level
+    # `import sys` now makes this unconditional, with no behavior change
+    # (both branches already resolved to the same module object).
+    _this = sys.modules[__name__]
     handler = getattr(_this, _fn_name, _base_handler) if _fn_name else _base_handler
 
     debug_log(

@@ -1,6 +1,6 @@
 """DBQA utility sub-package.
 
-Exported helpers:
-    normalizer  — query normalisation, synonym expansion, typo correction
-    fuzzy       — difflib-based best_match / confidence scoring
+Modules:
+    extraction_helpers — regex extraction helpers shared by
+        backend.db_qa.intent_classifier and backend.db_qa.new_intent_classifier
 """

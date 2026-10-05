@@ -70,3 +70,5 @@
 {"ts": "2026-09-28T12:23:43.716985+00:00", "query": "CIMS_FormGPB", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-09-28T12:23:45.338032+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-09-28T12:23:45.343750+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-05T07:18:17.912583+00:00", "query": "What is the credit equivalent current credit exposure for domestic derivatives from ale?", "tier": "llm_disambiguation", "intent": null, "found": false}
+{"ts": "2026-10-05T07:18:17.925447+00:00", "query": "What is the credit equivalent current credit exposure for domestic derivatives from ale?", "tier": "regex_legacy", "intent": null, "found": false}

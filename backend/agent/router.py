@@ -1147,7 +1147,7 @@ async def decide(
             if _has_sql:
                 logger.info("[INTENT:STEP3] SQL keyword fast-path session=%s", session_id)
                 from backend.sql_agent import handle_db_query
-                return await handle_db_query(user_query, session_id=session_id)
+                return await handle_db_query(user_query, session_id=session_id, login_id=login_id)
 
             debug_log(
                 "DECIDE — STEP3 SQL+QA MISS → LLM fallback",
@@ -1209,7 +1209,7 @@ async def decide(
     if intent == "query_database":
         logger.info("[INTENT] routing to SQL agent for session=%s", session_id)
         from backend.sql_agent import handle_db_query
-        return await handle_db_query(user_query, session_id=session_id)
+        return await handle_db_query(user_query, session_id=session_id, login_id=login_id)
 
     if intent == "unknown":
         # Only attempt report lookup for unknown queries when the message

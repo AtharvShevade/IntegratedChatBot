@@ -61,6 +61,40 @@ def _has_time_context(query: str) -> bool:
     return any(re.search(p, q) for p in _TIME_PATTERNS)
 
 
+# M-07: matches a raw Oracle error code/message, or a Python exception's own
+# string form -- the shapes a real internal error takes, never a
+# validate_sql()-produced message (which is always plain English describing
+# a schema/keyword/structure problem). Applied as the ONE choke point every
+# response dict is built through (_build_result below), so a future call
+# site that accidentally passes a raw exception string into db_error cannot
+# ship it to the client -- it is caught here regardless of which code path
+# forgot to sanitize it itself.
+_RAW_INTERNAL_ERROR_PATTERN = re.compile(
+    r"ORA-\d{4,5}"                                   # Oracle error code
+    r"|Connection failed:|Query execution failed:"   # executor.py's own exception prefixes
+    r"|Unexpected error:|Traceback \(most recent call last\)"
+    r"|dry-run skipped",                              # executor.py's dry-run connection-failure prefix
+    re.IGNORECASE,
+)
+
+
+def _safe_client_error(db_error: str | None) -> str | None:
+    """M-07: never let a raw Oracle exception, Python exception, or internal
+    diagnostic string reach the client — only validate_sql()'s own plain-
+    English reasons (e.g. "Hallucinated columns...", "Dangerous keyword
+    detected...") pass through unchanged, since those describe the GENERATED
+    SQL's shape, not the server's internals, and are genuinely useful to a
+    caller building on top of this API. Anything matching an internal-error
+    shape is logged here (the one place it's about to be dropped) and
+    replaced with a generic message."""
+    if not db_error:
+        return db_error
+    if _RAW_INTERNAL_ERROR_PATTERN.search(db_error):
+        logger.warning("[SQL_AGENT] M-07: suppressed internal error detail from client response: %s", db_error)
+        return "A database error occurred while processing your query. Please try again."
+    return db_error
+
+
 def _build_result(
     response_text: str,
     result_type:   str,
@@ -73,6 +107,7 @@ def _build_result(
     needs_more_info: bool            = False,
     more_info_hint: str | None       = None,
 ) -> dict[str, Any]:
+    db_error = _safe_client_error(db_error)
     return {
         "intent":             "query_database",
         "report_name":        None,
@@ -128,6 +163,112 @@ def _rows_result(col_names, serialized_rows, sql, accuracy_hint) -> dict[str, An
     )
 
 
+def _resolve_target_return_form_ids(table_names: list[str]) -> tuple[set[str], list[str]]:
+    """H-02: map SQL-Agent-selected table(s) back to the regulatory return(s)
+    they belong to, and resolve each to the FormId the rest of the 5.5 app
+    already authorizes by (auth_service.get_allowed_form_ids's vocabulary).
+
+    Two existing, already-configured pieces are reused here — nothing new is
+    built or regenerated:
+      - sqlcore.sql_generator._load_table_entries(): reads schema.json (the
+        SAME file validate_sql() already reads for column-hallucination
+        checks) and returns each table's full entry, including its
+        `return_name` field. Read-only, no FAISS/embeddings/retrieval
+        involvement at all.
+      - backend.tools.report_lookup.find_matching_reports_tiered(): the
+        existing Returns.xml name resolver already used by the
+        status/generate/schedule flows. Only a MATCH_EXACT, single-candidate
+        result is trusted here — a fuzzy/ambiguous match is treated as
+        unresolved (see PART 10: never guess).
+
+    Returns (form_ids, unresolved_return_names). An unresolved return name
+    (one present in schema.json but not confidently mapped to a Returns.xml
+    FormId) means the caller must NOT treat this as an unscoped/allowed
+    query -- see _authorize_sql_agent_access.
+    """
+    from sqlcore.sql_generator import _load_table_entries
+    from backend.tools.report_lookup import find_matching_reports_tiered, MATCH_EXACT
+
+    entries = _load_table_entries(table_names)
+    return_names = sorted({
+        (entry.get("return_name") or "").strip()
+        for entry in entries.values()
+        if (entry.get("return_name") or "").strip()
+    })
+
+    form_ids: set[str] = set()
+    unresolved: list[str] = []
+    for name in return_names:
+        matches, tier = find_matching_reports_tiered(name)
+        fid = matches[0].get("Id", "").strip() if (tier == MATCH_EXACT and len(matches) == 1) else ""
+        if fid:
+            form_ids.add(fid)
+        else:
+            unresolved.append(name)
+
+    return form_ids, unresolved
+
+
+def _authorize_sql_agent_access(login_id: str | None, table_names: list[str]) -> tuple[bool, str | None]:
+    """H-02: gate SQL Agent access using the EXISTING 5.5 department/return
+    authorization (auth_service.get_allowed_form_ids/get_allowed_nx_form_ids,
+    via access_control.resolve_allowed_form_ids) -- no new authorization
+    system, no tenant concept. 5.5 only.
+
+    Returns (allowed, denial_message); denial_message is None when allowed.
+    Never calls into SQL generation/execution itself -- purely a gate the
+    caller must check before doing either.
+    """
+    if not login_id or not login_id.strip():
+        logger.warning("[SQL_AGENT] H-02: no login_id provided -- denying.")
+        return False, (
+            "You need to be signed in to use the database query assistant. "
+            "Please reload and try again."
+        )
+
+    from backend.db_qa.access_control import resolve_allowed_form_ids
+    try:
+        allowed_form_ids = resolve_allowed_form_ids(login_id)
+    except PermissionError as exc:
+        logger.warning("[SQL_AGENT] H-02: login_id=%r not recognised: %s", login_id, exc)
+        return False, str(exc)
+
+    if allowed_form_ids is None:
+        # AUTHORIZATION_ENABLED=false -- the same process-wide, admin-only
+        # bypass every other authorization check in this app already honors.
+        return True, None
+
+    target_form_ids, unresolved = _resolve_target_return_form_ids(table_names)
+    if unresolved or not target_form_ids:
+        # PART 10: retrieval could not reliably identify which return(s) this
+        # question targets (or a table's return_name didn't map to an exact
+        # Returns.xml entry) -- never guess the user's authorization here.
+        logger.info(
+            "[SQL_AGENT] H-02: could not verify target return(s) for tables=%s "
+            "(unresolved=%s) -- denying rather than guessing.", table_names, unresolved,
+        )
+        return False, (
+            "I couldn't determine which return this question refers to, so I "
+            "can't confirm you have access to it. Please mention the specific "
+            "return name in your question."
+        )
+
+    if not target_form_ids.issubset(allowed_form_ids):
+        # Require EVERY targeted return to be allowed, not just any overlap --
+        # a query spanning two returns where the user has access to only one
+        # must still be denied in full, not partially answered.
+        logger.info(
+            "[SQL_AGENT] H-02: login_id=%r denied -- target_form_ids=%s not all in "
+            "allowed set (%d forms)", login_id, target_form_ids, len(allowed_form_ids),
+        )
+        return False, (
+            "You don't currently have access to this return. Please try a "
+            "query for another return you have access to."
+        )
+
+    return True, None
+
+
 def _retrieve(query: str):
     """Steps 0-3, all blocking — run as one unit on a worker thread.
 
@@ -170,7 +311,9 @@ def _retrieve(query: str):
     return tables, columns, matched_labels, (qa_example, selection), None
 
 
-async def handle_db_query(message: str, session_id: str | None = None) -> dict[str, Any]:
+async def handle_db_query(
+    message: str, session_id: str | None = None, login_id: str | None = None,
+) -> dict[str, Any]:
     """
     Full NL → SQL → Execute pipeline.
 
@@ -178,6 +321,9 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
       1. Length guard — ask for more detail if query is too short
       2. Retrieve + select relevant schema (FAISS + selector), or short-circuit
          on a verified stored question
+      2.5. H-02: identify the target return(s) and authorize login_id against
+           them using the existing 5.5 department/return access check, BEFORE
+           any SQL is generated.
       3. Generate SQL via LLM (sql_generator)
       4. Validate SQL (SELECT-only + hallucination check)
       5. Execute on Oracle DB (executor)
@@ -245,6 +391,18 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
             "[SQL_AGENT] exact QA match (text_similarity=%.3f) table=%s",
             exact["text_similarity"], exact["table"],
         )
+
+        # H-02: authorize BEFORE validating/executing the stored SQL — a
+        # verified Q&A pair is still scoped to whatever return its table
+        # belongs to, and must not bypass the access check.
+        allowed, denial_message = _authorize_sql_agent_access(login_id, [exact["table"]])
+        if not allowed:
+            return _build_result(
+                response_text=denial_message,
+                result_type="db_result",
+                accuracy_hint=accuracy_hint,
+            )
+
         is_valid, reason = validate_sql(sql, [{"table": exact["table"]}], [])
         if not is_valid:
             logger.warning("[SQL_AGENT] stored SQL failed validation: %s", reason)
@@ -286,6 +444,18 @@ async def handle_db_query(message: str, session_id: str | None = None) -> dict[s
 
     qa_example, selection = gen_context
     logger.info("[SQL_AGENT] selected=%s", [t["table"] for t in tables])
+
+    # ── Step 1.5: H-02 authorization ──────────────────────────────────────────
+    # Identify the target return(s) from the final selected tables and
+    # authorize BEFORE any SQL is generated — never after. No LLM call, no
+    # Oracle connection, happens entirely here.
+    allowed, denial_message = _authorize_sql_agent_access(login_id, [t["table"] for t in tables])
+    if not allowed:
+        return _build_result(
+            response_text=denial_message,
+            result_type="db_result",
+            accuracy_hint=accuracy_hint,
+        )
 
     # ── Step 2: SQL generation ────────────────────────────────────────────────
     # Worker thread — see the note above on Step 1.

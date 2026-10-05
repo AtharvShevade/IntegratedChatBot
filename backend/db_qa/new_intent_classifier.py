@@ -6,6 +6,18 @@ the new taxonomy its own focused home. Both classifiers run independently;
 db_qa_router.check_new_taxonomy_intent() is tried first, and only falls
 back to the legacy check_db_qa_intent() if nothing here matches.
 
+M-17: the shared regex extraction helpers both classifiers need
+(_extract_action/_extract_after_kw/_extract_period/_extract_quoted_or_bracketed/
+_self_ref, ACTION_MAP/PERIOD_ALIASES) now live in
+backend.db_qa.utils.extraction_helpers, imported by both modules — this
+module no longer reaches into intent_classifier.py's private internals.
+Full consolidation of the two classifiers themselves was investigated and
+found NOT yet safe: empirically, check_new_taxonomy_intent() still returns
+no match for real submission-status/pending/approved phrasings that the
+legacy classifier does catch (e.g. "show pending submissions"), so the
+legacy fallback is still load-bearing, not dead code. See
+doc/CRITICAL_FIXES_LOG.md's M-17 entry for the full investigation.
+
 Two rule mechanisms coexist:
   - _KeywordRule (USER/DEPARTMENT/ROLE/ROLE_ACCESS only): word-order- and
     filler-independent — a rule matches if every required keyword GROUP has
@@ -29,7 +41,7 @@ import re
 
 from rapidfuzz import process as _fuzz
 
-from backend.db_qa.intent_classifier import (
+from backend.db_qa.utils.extraction_helpers import (
     _extract_action, _extract_after_kw, _extract_period,
     _extract_quoted_or_bracketed, _self_ref, ACTION_MAP, PERIOD_ALIASES,
 )
