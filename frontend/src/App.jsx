@@ -904,6 +904,9 @@ const pollForErrors = (jobId) => {
           lang={lang}
           onLanguageChange={setLang}
           loginId={_loginId || null}
+          tenantId={_tenantId || null}
+          domain={_domain || null}
+          jwtRef={jwtRef}
         />
       </main>
 

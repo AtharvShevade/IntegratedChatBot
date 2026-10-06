@@ -1140,7 +1140,7 @@ export default function MessageBubble({
   allowedActions,
   noAutoSummary, onSummaryLoaded,
   lang, onLanguageChange,
-  loginId,
+  loginId, tenantId, domain, jwtRef,
 }) {
   const t = useT()
   const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -1265,6 +1265,9 @@ export default function MessageBubble({
           noAutoSummary={noAutoSummary}
           onSummaryLoaded={onSummaryLoaded}
           loginId={loginId}
+          tenantId={tenantId}
+          domain={domain}
+          jwtRef={jwtRef}
         />
       </div>
     )
@@ -2063,6 +2066,31 @@ const SEV_CFG = {
   low:      { label: 'L', title: 'Low',      cls: 'vt-sev-low'      },
 }
 
+// Regulatory-importance tiers, highest first -- matches
+// backend/tools/xbrl_importance.py's TIER_ORDER exactly (the single source
+// of truth for what tiers a concept can be classified into).
+const TIER_ORDER = ['Critical', 'High', 'Medium', 'Low']
+
+// The default "what must I look at?" view is anchored to the HIGHEST tier
+// that actually has any changed concepts in THIS comparison, plus the next
+// tier down for context -- never hardcoded to Critical+High. A report with
+// no Critical concepts at all must fall to High+Medium, one with neither
+// Critical nor High falls to Medium+Low, and one with only Low changes
+// still shows those Low concepts rather than an empty table. This is a pure
+// VIEW decision over rows already computed by the backend; it never changes
+// what was compared, only what's highlighted by default.
+function selectHeadlineTiers(sourceRows) {
+  const counts = Object.fromEntries(TIER_ORDER.map((tier) => [tier, 0]))
+  for (const r of sourceRows) {
+    if (r.importance_matched && Object.prototype.hasOwnProperty.call(counts, r.importance_tier)) {
+      counts[r.importance_tier] += 1
+    }
+  }
+  const topIdx = TIER_ORDER.findIndex((tier) => counts[tier] > 0)
+  if (topIdx === -1) return []
+  return TIER_ORDER.slice(topIdx, topIdx + 2)
+}
+
 function fmtFinancial(v) {
   if (v === null || v === undefined) return '—'
   if (v === 0) return '0'
@@ -2200,7 +2228,7 @@ const vtFilters = (t) => [
 ]
 
 
-function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, reportName, noAutoSummary, onSummaryLoaded, loginId }) {
+function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, summaryIsDraft, headerText, reportName, noAutoSummary, onSummaryLoaded, loginId, tenantId, domain, jwtRef }) {
   const t = useT()
   const [showChart, setShowChart] = useState(false)
   const [sortBy,    setSortBy]    = useState(null)
@@ -2221,11 +2249,14 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
   // the table use it too. Falls back to `rows` if it is ever absent.
   const sourceRows = allRows?.length ? allRows : rows
 
-  // ── Chat table scope: Critical + High only ───────────────────────────────
+  // ── Chat table scope: the highest available tier(s) ──────────────────────
   // The chat table answers "what must I look at?", so it lists only the
-  // regulatory tiers that warrant attention. Everything else stays in the
-  // dataset and is one click away in Visualize — this narrows the VIEW, never
-  // the comparison.
+  // regulatory tiers that warrant attention right now in THIS comparison —
+  // never a hardcoded Critical+High pair. If Critical has zero changed
+  // concepts the window slides to High+Medium, then Medium+Low, down to
+  // "just Low" if that's all that exists. Everything else stays in the
+  // dataset and is one click away in Visualize — this narrows the VIEW,
+  // never the comparison. See selectHeadlineTiers() above.
   //
   // A concept the return's JSON did not classify carries importance_matched
   // false. It is deliberately excluded: unclassified is not a tier, and
@@ -2233,26 +2264,27 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
   const importanceAvailable = Boolean(
     meta?.importance_available ?? sourceRows.some((r) => r.importance_matched),
   )
+  const headlineTiers = useMemo(() => selectHeadlineTiers(sourceRows), [sourceRows])
   const headlineRows = useMemo(
     () => sourceRows.filter(
-      (r) => r.importance_matched
-        && (r.importance_tier === 'Critical' || r.importance_tier === 'High'),
+      (r) => r.importance_matched && headlineTiers.includes(r.importance_tier),
     ),
-    [sourceRows],
+    [sourceRows, headlineTiers],
   )
-  // With no importance data at all the table keeps its previous behaviour
-  // rather than rendering empty — "no JSON" and "nothing critical" are
-  // different facts and must not look the same.
-  const tableScope = importanceAvailable ? headlineRows : sourceRows
-  // What the AI Analysis describes. Capped so a very large Critical/High set
-  // still fits a prompt; the backend applies its own SUMMARY_ROWS cap too.
-  // The FULL eligible set is posted. Selection (top 20, max 3 variants per
+  // With no importance data at all (or no tier anywhere has a single
+  // changed concept) the table keeps its previous behaviour rather than
+  // rendering empty — "no JSON"/"truly nothing classified" and "nothing in
+  // the top tiers" are different facts and must not look the same.
+  const tableScope = (importanceAvailable && headlineRows.length > 0) ? headlineRows : sourceRows
+  // What the AI Analysis describes. Capped so a very large tier window still
+  // fits a prompt; the backend applies its own SUMMARY_ROWS cap too. The
+  // FULL eligible set is posted. Selection (top 20, max 3 variants per
   // concept) happens server-side in variance_explain, which needs every
   // eligible row to spread the cap across concepts — and every row of the
   // comparison to find parent totals for share-of-total. Slicing here would
   // pre-empt both.
   const summaryScope = useMemo(
-    () => (importanceAvailable ? headlineRows : rows.slice(0, 40)),
+    () => (importanceAvailable && headlineRows.length > 0 ? headlineRows : rows.slice(0, 40)),
     [importanceAvailable, headlineRows, rows],
   )
   const lines    = (headerText || '').split('\n')
@@ -2315,7 +2347,19 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     // the LLM would never run. A draft still needs polishing; only a summary
     // that has already been through the model is final.
     const isDraft = typeof llmSummary === 'string' && llmSummary.includes('•') && summaryIsDraft
-    if ((llmSummary && !isDraft) || noAutoSummary || !summaryScope?.length) return undefined
+    if ((llmSummary && !isDraft) || noAutoSummary) return undefined
+    if (!summaryScope?.length) {
+      // Nothing eligible to summarize (e.g. zero Critical/High concepts
+      // changed) -- not a failure, so this must still settle like any other
+      // completed attempt: record it (never requested again on reload) and
+      // release the deferred feedback prompt / action menu in App, which
+      // otherwise waits forever for a callback that would never come.
+      if (!summaryRequestedRef.current) {
+        summaryRequestedRef.current = true
+        onSummaryLoaded?.('')
+      }
+      return undefined
+    }
     if (summaryRequestedRef.current) return undefined
     summaryRequestedRef.current = true
     const controller = new AbortController()
@@ -2329,8 +2373,14 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     const resolvedReportName = reportName || ''
     fetchCompareSummary(summaryScope, labelA, labelB, resolvedReportName,
       // t.lang is the active language from the shared LanguageContext -- no
-      // second language state anywhere.
-      { signal: controller.signal, requestId, lang: t.lang, loginId })
+      // second language state anywhere. tenantId/domain/jwt are the same
+      // CHATBOT_AUTH-sourced values every other 6.0-aware call already
+      // sends -- without them, login_id below can't be resolved against
+      // the caller's own tenant and the endpoint 403s (see api.js).
+      {
+        signal: controller.signal, requestId, lang: t.lang, loginId,
+        tenantId, domain, jwt: jwtRef?.current || null,
+      })
       .then((text) => {
         if (summaryCancelledRef.current) return
         // Loading is cleared in the SAME callback as the result, so the two
@@ -2366,7 +2416,18 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
   // Same semantics as the chart modal's filters, deliberately: two views of
   // one comparison must not disagree about what "Increased" means.
   const filteredRows = useMemo(() => {
-    let out = tableScope
+    const q = search.trim().toLowerCase()
+    // tableScope (the Critical/High-only narrowing) is only the DEFAULT
+    // view, shown when the user hasn't asked for anything more specific.
+    // The filter chips display counts drawn from the complete sourceRows
+    // (filterCounts below) -- e.g. "Decreased (7)" -- so once the user picks
+    // one, or types a search, the base must be sourceRows too. Otherwise a
+    // comparison with zero Critical/High concepts shows 0 rows for EVERY
+    // chip, including ones that advertise real matches (the reported bug:
+    // "Decreased (7)" rendered an empty table because it was still filtering
+    // the already-empty Critical/High set instead of the full 110 rows).
+    const base = (filterMode === 'all' && !q) ? tableScope : sourceRows
+    let out = base
     if (filterMode === 'sig')           out = out.filter((r) => r.significant)
     else if (filterMode === 'up')       out = out.filter((r) => (r.diff ?? 0) > 0)
     else if (filterMode === 'down')     out = out.filter((r) => (r.diff ?? 0) < 0)
@@ -2374,13 +2435,12 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     else if (filterMode === 'zero') {
       out = out.filter((r) => r.pct_change === null || r.pct_change === undefined)
     }
-    const q = search.trim().toLowerCase()
     // Matching the concept string alone already covers dimension members: the
     // backend appends them as a "[OneMonth]" suffix, which is exactly what the
     // Concept column displays.
     if (q) out = out.filter((r) => (r.concept ?? '').toLowerCase().includes(q))
     return out
-  }, [tableScope, filterMode, search])
+  }, [tableScope, sourceRows, filterMode, search])
 
   // Sort the filtered set. With no explicit sort the backend's importance
   // ranking is preserved — that is what "ranked by variance" in the caption
@@ -2446,6 +2506,18 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     <div className="variance-block">
       {title    && <div className="variance-title">{title}</div>}
       {subtitle && <div className="variance-subtitle">{subtitle}</div>}
+      {/* Only shown when the default view fell back below Critical -- the
+          common Critical(+High) case needs no extra explanation, but once
+          the window has slid down to e.g. High+Medium or just Low, the user
+          should see which tiers they're actually looking at. */}
+      {importanceAvailable && headlineRows.length > 0 && headlineTiers[0] !== 'Critical'
+        && filterMode === 'all' && !search.trim() && (
+        <div className="variance-tier-note">
+          Showing {headlineTiers.join(' + ')} concepts — no changes in {
+            TIER_ORDER.slice(0, TIER_ORDER.indexOf(headlineTiers[0])).join('/')
+          }.
+        </div>
+      )}
       {/* ── Display controls ─────────────────────────────────────────────
           Filter, search and row count, all over the complete dataset. The
           same filter set as the chart modal so the two views never disagree
@@ -2593,11 +2665,15 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
               <tr>
                 <td className="vt-empty" colSpan={5}>
                   {/* Three different reasons for an empty table, and they must
-                      not read the same. "No Critical/High" is a finding about
-                      the data; "no importance data" is a gap in it. */}
+                      not read the same. "Nothing classified changed" is a
+                      finding about the data; "no importance data" is a gap
+                      in it. headlineRows is only empty here when NO tier
+                      (Critical/High/Medium/Low) has a single changed
+                      concept -- selectHeadlineTiers() already falls back
+                      through every lower tier before giving up. */}
                   {importanceAvailable && headlineRows.length === 0 && !isFiltered ? (
                     <>
-                      No Critical or High regulatory-importance concepts changed in this
+                      No regulatory-importance concepts changed in this
                       comparison. {sourceRows.length.toLocaleString()} concept(s) were
                       compared — open <b>{t('comparativeAnalysis.visualize')}</b> {t('variance.toSeeEveryTier')}
                     </>
@@ -2693,6 +2769,16 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
               Analysing the variance… this can take a minute or two.
               The table and chart above are ready now.
             </span>
+          </div>
+        ) : !summaryScope?.length ? (
+          // Deliberately skipped (nothing eligible to summarize), not a
+          // failed/timed-out call -- "unavailable" implies the latter and
+          // reads as a malfunction when there's simply nothing to analyze.
+          // Only reached when NO tier at all has a changed concept
+          // (selectHeadlineTiers() already fell back through every lower
+          // tier first).
+          <div className="variance-summary-text variance-summary-empty">
+            No regulatory-importance concepts changed, so there is nothing to analyse. The variance table and chart above are complete.
           </div>
         ) : (
           <div className="variance-summary-text variance-summary-empty">

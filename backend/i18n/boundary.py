@@ -108,6 +108,23 @@ _IDENTIFIER_RE = re.compile(r"^(?=.*[\d_()])[A-Za-z0-9_()\-./]{2,64}$")
 # The guided menu sentinel. Documented at main.py:726.
 _GUIDED_SENTINEL = "__GUIDED_START__"
 
+# An instance-picker option echoed back verbatim -- the exact format
+# report_lookup._fmt_instance_label() builds ("Initiated On: <DTC> |
+# Reporting Date: <date>", with "Generated On:" accepted for labels already
+# sitting in a user's chat history). This value is ALWAYS English -- outbound
+# option values are rendered byte-for-byte from options[], never translated
+# for display -- but should_translate() only gates on the session's language,
+# not on whether this particular message happens to already be English. Left
+# unprotected, an all-English label still gets sent through the inbound
+# translator whenever lang != "en", and an LLM round-trip is not byte-stable
+# (observed: "17-Aug-2026" became "17-08-2026"). backend.agent.conversational
+# ._parse_dtc_from_label() then does an exact-string match against the
+# untouched DTC stored in the instance log, so any reformatting breaks the
+# match and the picker re-prompts forever. Skipping translation here keeps
+# the label byte-identical to what _parse_dtc_from_label()/
+# get_instance_by_dtc_fast() require, in every language.
+_INSTANCE_LABEL_RE = re.compile(r"(?:Initiated|Generated) On:\s*.+?\s*\|\s*Reporting Date:")
+
 
 @dataclass
 class InboundResult:
@@ -248,6 +265,11 @@ def _inbound_skip_reason(message: str) -> str | None:
         # matcher at agent/__init__.py:1119-1122 is a raw ASCII substring test
         # against the English name -- a transliterated identifier cannot match.
         return "identifier"
+    if _INSTANCE_LABEL_RE.search(text):
+        # An instance-picker option echoed back verbatim -- see
+        # _INSTANCE_LABEL_RE above. Must reach _parse_dtc_from_label()
+        # byte-identical to how it was built, in every language.
+        return "instance-label"
     try:
         from backend.guided import GUIDED_ACTIONS, normalize_confirmation
         if text in GUIDED_ACTIONS:
@@ -726,10 +748,33 @@ async def _translate_error_batch(
     for name, segment in zip(names, segments):
         lost_here = [k for k in field_keys[name] if k in missing_set]
         if lost_here:
+            # A field losing its placeholder is sometimes an artefact of the
+            # OTHER fields/separators crowding the same combined prompt, not
+            # something wrong with this field's own text -- retried alone
+            # (its own masked text, its own small token map, no batch
+            # neighbours) the model regularly preserves the same
+            # placeholder it dropped under the combined call. Only a second
+            # loss here falls back to English.
+            retry = await client.translate(masked[name], "en", resolved)
+            if retry.ok and retry.text.strip():
+                restored_solo, missing_solo = protect.restore_entities(
+                    retry.text, entity_tokens.get(name) or {},
+                )
+                if not missing_solo:
+                    logger.info(
+                        "[I18N_OUT] %s: recovered via solo retry after batch "
+                        "%d/%d dropped %d placeholder%s", name, batch_no,
+                        total_batches, len(lost_here),
+                        "" if len(lost_here) == 1 else "s",
+                    )
+                    translated[name] = restored_solo.strip()
+                    meta.fields.append(name)
+                    continue
             logger.warning(
                 "[I18N_OUT] %s: translation lost %d protected entit%s in batch "
-                "%d/%d -- keeping English", name, len(lost_here),
-                "y" if len(lost_here) == 1 else "ies", batch_no, total_batches,
+                "%d/%d -- solo retry also failed -- keeping English", name,
+                len(lost_here), "y" if len(lost_here) == 1 else "ies",
+                batch_no, total_batches,
             )
             translated[name] = to_translate[name]
             meta.ok = False

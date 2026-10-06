@@ -162,6 +162,18 @@ class CompareSummaryRequest(BaseModel):
     # checked by main.py's _caller_is_authenticated() fail-closed gate.
     login_id:    Optional[str] = Field(None, max_length=256)
 
+    # APP_VERSION=6.0: without these, _caller_is_authenticated() resolves
+    # login_id against the default/unscoped repo root instead of the
+    # caller's own tenant -- a real 6.0 login_id is then never found and the
+    # endpoint 403s every time, which this function's own error handling
+    # silently turns into "AI analysis is unavailable" with no visible
+    # cause. Same three fields ExplainCategoryRequest already carries for
+    # the identical reason. No-op for 5.5 (all None -> _make_repo_scope's
+    # root stays None).
+    tenant_id:   Optional[str] = Field(None, max_length=128)
+    domain:      Optional[str] = Field(None, max_length=256)
+    jwt:         Optional[str] = Field(None, max_length=4096)
+
     # Chat language, same contract as ChatRequest.lang: absent/"en" keeps the
     # exact English behaviour and makes no translation call.
     lang:        Optional[str] = Field(None, max_length=8)

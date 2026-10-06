@@ -742,140 +742,151 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
     """
     from backend.tools.variance_explain import generate_explanations
 
-    # M-05: was fully unauthenticated -- any caller could trigger the LLM
-    # narrative generation for arbitrary rows. Same fail-closed contract as
-    # every other endpoint (REQUIRE_AUTH/AUTHORIZATION_ENABLED).
-    if not _caller_is_authenticated(request.login_id):
-        logger.warning("[COMPARE_SUMMARY_DENIED] login_id=%r not authenticated", request.login_id)
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
-
-    logger.info(
-        "API request received: /compare-summary report=%s rows=%d",
-        request.report_name or "?", len(request.rows),
-    )
-    if not request.rows:
-        return {"llm_summary": ""}
-
-    # generate_explanations reads each row's two values by the LABEL keys
-    # (r.get(label_a)), while the frontend holds them as val_a/val_b — the
-    # shape /compare-execute serialised them into. Map back rather than
-    # changing either side's contract.
-    label_a = request.label_a or "A"
-    label_b = request.label_b or "B"
-    rows = [
-        {
-            "concept":     row.concept,
-            label_a:       row.val_a,
-            label_b:       row.val_b,
-            "diff":        row.diff,
-            "pct_change":  row.pct_change,
-            "significant": row.significant,
-            # Carried through so the async narrative can name the supervisory
-            # section, exactly as the inline path already does.
-            "section":         row.section,
-            "importance_tier": row.importance_tier,
-            "mandated_by":     row.mandated_by,
-            # Selection + business context. concept_base drives the
-            # max-3-per-concept cap, context_key finds the parent row for
-            # share-of-total, and unit gates ₹ Cr formatting.
-            "concept_base":       row.concept_base or row.concept,
-            "context_key":        row.context_key or "BASE",
-            "unit":               row.unit,
-            "section_code":       row.section_code,
-            "importance":         row.importance,
-            "priority":           row.priority,
-            "importance_matched": row.importance_matched,
-        }
-        for row in request.rows
-    ]
-
+    # APP_VERSION=6.0: resolve the tenant repo root for this request BEFORE
+    # the auth check below -- _caller_is_authenticated() resolves login_id
+    # against whatever repo root is currently active, and without this a
+    # real 6.0 login_id is checked against the default/unscoped root,
+    # never found, and the endpoint 403s every time (surfacing to the user
+    # as "AI analysis is unavailable" with no visible cause). No-op for 5.5.
+    _repo_scope = _make_repo_scope(request.tenant_id, request.domain, request.jwt, request.login_id)
+    _repo_scope.__enter__()
     try:
-        timeout = float(os.getenv("OLLAMA_SUMMARY_ASYNC_TIMEOUT", "300"))
-    except ValueError:
-        timeout = 300.0
+        # M-05: was fully unauthenticated -- any caller could trigger the LLM
+        # narrative generation for arbitrary rows. Same fail-closed contract as
+        # every other endpoint (REQUIRE_AUTH/AUTHORIZATION_ENABLED).
+        if not _caller_is_authenticated(request.login_id):
+            logger.warning("[COMPARE_SUMMARY_DENIED] login_id=%r not authenticated", request.login_id)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
 
-    start = time.monotonic()
-    try:
-        summary = await _run_cancellable(
-            request.request_id,
-            generate_explanations(
-                rows, label_a, label_b, request.report_name,
-                timeout=timeout, all_rows=rows,
-            ),
+        logger.info(
+            "API request received: /compare-summary report=%s rows=%d",
+            request.report_name or "?", len(request.rows),
         )
-    except RequestStopped:
-        logger.info("Compare-summary request stopped by user: report=%s", request.report_name or "?")
-        return {"llm_summary": ""}
-    except Exception as exc:  # noqa: BLE001 — the summary is optional by design
-        log_exception(
-            logger, "Compare summary failed", exc,
-            endpoint="/compare-summary", report_name=request.report_name,
-        )
-        return {"llm_summary": ""}
+        if not request.rows:
+            return {"llm_summary": ""}
 
-    logger.info(
-        "[PERF] endpoint=/compare-summary duration=%.2fs chars=%d",
-        time.monotonic() - start, len(summary or ""),
-    )
+        # generate_explanations reads each row's two values by the LABEL keys
+        # (r.get(label_a)), while the frontend holds them as val_a/val_b — the
+        # shape /compare-execute serialised them into. Map back rather than
+        # changing either side's contract.
+        label_a = request.label_a or "A"
+        label_b = request.label_b or "B"
+        rows = [
+            {
+                "concept":     row.concept,
+                label_a:       row.val_a,
+                label_b:       row.val_b,
+                "diff":        row.diff,
+                "pct_change":  row.pct_change,
+                "significant": row.significant,
+                # Carried through so the async narrative can name the supervisory
+                # section, exactly as the inline path already does.
+                "section":         row.section,
+                "importance_tier": row.importance_tier,
+                "mandated_by":     row.mandated_by,
+                # Selection + business context. concept_base drives the
+                # max-3-per-concept cap, context_key finds the parent row for
+                # share-of-total, and unit gates ₹ Cr formatting.
+                "concept_base":       row.concept_base or row.concept,
+                "context_key":        row.context_key or "BASE",
+                "unit":               row.unit,
+                "section_code":       row.section_code,
+                "importance":         row.importance,
+                "priority":           row.priority,
+                "importance_matched": row.importance_matched,
+            }
+            for row in request.rows
+        ]
 
-    # GENUINELY DYNAMIC. This narrative is written by the model per comparison
-    # -- it is not a template and cannot be catalogued, so it is the one place
-    # on this endpoint that legitimately spends a runtime translation call.
-    # translate_outbound masks the concept names, figures and percentages out
-    # of it first, so the numbers a regulator reads are the pipeline's own.
-    #
-    # This narrative is several sentences long -- longer than a normal chat
-    # reply -- and the shared qwen3:14b Ollama proxy was measured reliably
-    # exceeding even a 180s budget on it. Benchmarked against aya-expanse:8b
-    # on realistic comparison-analysis text (short + long, en->hi/fr/ar):
-    # 81-157s, every [[E#]] placeholder preserved. So THIS endpoint only uses
-    # its own model (config.compare_summary_translation_model(), NOT
-    # TRANSLATION_MODEL/qwen3:14b -- every other translation path is
-    # unaffected) and keeps the existing 180s budget, which already covers
-    # the worst case measured (157s) with margin -- no need to raise it.
-    #
-    # PlaceholderSafeTranslator adds one more check on top of the existing
-    # restore_entities() safety net: the benchmark also found aya-expanse:8b
-    # can (rarely) reuse a placeholder for a second value or invent a bare
-    # number in prose next to an intact one, neither of which
-    # restore_entities() catches on its own (see translator.py). A rejected
-    # translation falls back to English via the SAME existing mechanism any
-    # other translation failure already uses -- no new fallback path.
-    if summary and i18n.should_translate(request.lang):
         try:
-            translation_timeout = float(os.getenv("COMPARE_SUMMARY_TRANSLATION_TIMEOUT", "180"))
+            timeout = float(os.getenv("OLLAMA_SUMMARY_ASYNC_TIMEOUT", "300"))
         except ValueError:
-            translation_timeout = 180.0
-        # i18n.boundary.get_translator (attribute access, not a bound import) so
-        # tests that monkeypatch "backend.i18n.boundary.get_translator" still
-        # intercept this call exactly as they do the default /chat path.
-        base_translator = i18n.boundary.get_translator(
-            timeout=translation_timeout,
-            model=i18n.config.compare_summary_translation_model(),
-            base_url=i18n.config.compare_summary_translation_base_url(),
-        )
-        translator = PlaceholderSafeTranslator(base_translator)
-        # The narrative is "AI Summary:\n• fact one\n• fact two\n...\n\n
-        # Overall pattern: ...", one bullet per fact. Sent as ONE model call
-        # this reliably hit ReadTimeout in production for a 12-bullet/
-        # 1092-char narrative (the shorter ones happened to fit; size, not
-        # language, decided pass/fail). translate_lines_in_batches sends a
-        # few bullet lines per call instead of the whole blob -- the same
-        # fix already applied to error-explanation translation.
-        localized_summary, _ok = await _run_cancellable(
-            request.request_id,
-            i18n.boundary.translate_lines_in_batches(
-                summary, request.lang, translator,
-                i18n.config.compare_summary_translation_batch_size(),
-            ),
-        )
-        # translate_lines_in_batches already degrades PER LINE -- a failed
-        # batch keeps just its own bullets English rather than the whole
-        # narrative, so the result is never empty; "or summary" is only a
-        # safety net for an unexpected empty string.
-        return {"llm_summary": localized_summary or summary}
+            timeout = 300.0
 
-    return {"llm_summary": summary or ""}
+        start = time.monotonic()
+        try:
+            summary = await _run_cancellable(
+                request.request_id,
+                generate_explanations(
+                    rows, label_a, label_b, request.report_name,
+                    timeout=timeout, all_rows=rows,
+                ),
+            )
+        except RequestStopped:
+            logger.info("Compare-summary request stopped by user: report=%s", request.report_name or "?")
+            return {"llm_summary": ""}
+        except Exception as exc:  # noqa: BLE001 — the summary is optional by design
+            log_exception(
+                logger, "Compare summary failed", exc,
+                endpoint="/compare-summary", report_name=request.report_name,
+            )
+            return {"llm_summary": ""}
+
+        logger.info(
+            "[PERF] endpoint=/compare-summary duration=%.2fs chars=%d",
+            time.monotonic() - start, len(summary or ""),
+        )
+
+        # GENUINELY DYNAMIC. This narrative is written by the model per comparison
+        # -- it is not a template and cannot be catalogued, so it is the one place
+        # on this endpoint that legitimately spends a runtime translation call.
+        # translate_outbound masks the concept names, figures and percentages out
+        # of it first, so the numbers a regulator reads are the pipeline's own.
+        #
+        # This narrative is several sentences long -- longer than a normal chat
+        # reply -- and the shared qwen3:14b Ollama proxy was measured reliably
+        # exceeding even a 180s budget on it. Benchmarked against aya-expanse:8b
+        # on realistic comparison-analysis text (short + long, en->hi/fr/ar):
+        # 81-157s, every [[E#]] placeholder preserved. So THIS endpoint only uses
+        # its own model (config.compare_summary_translation_model(), NOT
+        # TRANSLATION_MODEL/qwen3:14b -- every other translation path is
+        # unaffected) and keeps the existing 180s budget, which already covers
+        # the worst case measured (157s) with margin -- no need to raise it.
+        #
+        # PlaceholderSafeTranslator adds one more check on top of the existing
+        # restore_entities() safety net: the benchmark also found aya-expanse:8b
+        # can (rarely) reuse a placeholder for a second value or invent a bare
+        # number in prose next to an intact one, neither of which
+        # restore_entities() catches on its own (see translator.py). A rejected
+        # translation falls back to English via the SAME existing mechanism any
+        # other translation failure already uses -- no new fallback path.
+        if summary and i18n.should_translate(request.lang):
+            try:
+                translation_timeout = float(os.getenv("COMPARE_SUMMARY_TRANSLATION_TIMEOUT", "180"))
+            except ValueError:
+                translation_timeout = 180.0
+            # i18n.boundary.get_translator (attribute access, not a bound import) so
+            # tests that monkeypatch "backend.i18n.boundary.get_translator" still
+            # intercept this call exactly as they do the default /chat path.
+            base_translator = i18n.boundary.get_translator(
+                timeout=translation_timeout,
+                model=i18n.config.compare_summary_translation_model(),
+                base_url=i18n.config.compare_summary_translation_base_url(),
+            )
+            translator = PlaceholderSafeTranslator(base_translator)
+            # The narrative is "AI Summary:\n• fact one\n• fact two\n...\n\n
+            # Overall pattern: ...", one bullet per fact. Sent as ONE model call
+            # this reliably hit ReadTimeout in production for a 12-bullet/
+            # 1092-char narrative (the shorter ones happened to fit; size, not
+            # language, decided pass/fail). translate_lines_in_batches sends a
+            # few bullet lines per call instead of the whole blob -- the same
+            # fix already applied to error-explanation translation.
+            localized_summary, _ok = await _run_cancellable(
+                request.request_id,
+                i18n.boundary.translate_lines_in_batches(
+                    summary, request.lang, translator,
+                    i18n.config.compare_summary_translation_batch_size(),
+                ),
+            )
+            # translate_lines_in_batches already degrades PER LINE -- a failed
+            # batch keeps just its own bullets English rather than the whole
+            # narrative, so the result is never empty; "or summary" is only a
+            # safety net for an unexpected empty string.
+            return {"llm_summary": localized_summary or summary}
+
+        return {"llm_summary": summary or ""}
+    finally:
+        _repo_scope.__exit__(None, None, None)
 
 
 @app.post("/explain-category", response_model=ChatResponse, status_code=status.HTTP_200_OK)

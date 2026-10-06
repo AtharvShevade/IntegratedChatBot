@@ -224,7 +224,14 @@ async def _finalize_generation(
             "[GENERATE_SUCCESS] report=%r date=%s session=%s",
             ret["name"], reporting_date, session_id,
         )
-        instance_id = await _find_new_instance_log_id(ret["form_id"], reporting_date, login_id, before_ids)
+        # 6.0's call_generate_api_v6() already returns the new instance log
+        # ID straight from the .NET response body -- use it directly rather
+        # than polling the local XML cache (which can lag behind the .NET
+        # write and time out). 5.5's call_generate_api() never has this key,
+        # so it falls through to the existing poll-based lookup unchanged.
+        instance_id = api_result.get("instance_log_id")
+        if not instance_id:
+            instance_id = await _find_new_instance_log_id(ret["form_id"], reporting_date, login_id, before_ids)
         id_line = f"\nRequest ID     : {instance_id}" if instance_id else ""
         return _build(
             intent="generate_instance", report_name=ret["name"],

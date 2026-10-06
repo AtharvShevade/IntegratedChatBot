@@ -131,24 +131,35 @@ def _serialize_variance_rows(rows: list[dict], label_a: str, label_b: str) -> li
     ]
 
 
-# Tiers the chat table and the AI narrative are limited to. Everything else
-# stays in the dataset and remains reachable from the chart's tier filter —
-# this bounds what is DISPLAYED, never what was compared.
+# Kept for backward-compat import only — no longer the fixed filter; see
+# _headline_rows below, which selects dynamically via
+# variance_explain._select_eligible_tiers (the same logic the frontend's
+# selectHeadlineTiers mirrors). Everything outside the selected window stays
+# in the dataset and remains reachable from the chart's tier filter — this
+# bounds what is DISPLAYED/explained, never what was compared.
 _HEADLINE_TIERS = ("Critical", "High")
 
 
 def _headline_rows(rows: list[dict]) -> list[dict]:
-    """The Critical/High slice, in the order the rows were already ranked.
+    """The highest-available-tier(s) slice, in the order the rows were
+    already ranked -- never hardcoded to Critical/High. If a comparison has
+    zero Critical or High changes the window slides to High+Medium, then
+    Medium+Low, down to just Low, so the narrative/table never treat "no
+    Critical/High" as "nothing important" when a lower tier genuinely
+    changed.
 
-    Returns [] when the return has no importance data at all, which the caller
-    must treat as "fall back to the ranked top slice" rather than "nothing is
-    important" — the two look identical in the result and are not the same.
-    Rows the JSON did not classify are never included: unclassified is not a
-    tier, and promoting one here would assert an importance the data lacks.
+    Returns [] when the return has no importance data at all, OR when
+    nothing in any tier changed, which the caller must treat as "fall back
+    to the ranked top slice"/"nothing to analyse" respectively — the two
+    look identical in the result and are not the same. Rows the JSON did
+    not classify are never included: unclassified is not a tier, and
+    promoting one here would assert an importance the data lacks.
     """
+    from backend.tools.variance_explain import _select_eligible_tiers
+    tiers = _select_eligible_tiers(rows)
     return [
         r for r in rows
-        if r.get("importance_matched") and r.get("importance_tier") in _HEADLINE_TIERS
+        if r.get("importance_matched") and r.get("importance_tier") in tiers
     ]
 
 

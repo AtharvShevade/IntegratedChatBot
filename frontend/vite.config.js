@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react'
 // matching the backend's own single-source-of-truth BACKEND_PORT in .env.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const target = env.VITE_API_BASE_URL || 'http://127.0.0.1:8001'
+  const target = env.VITE_API_BASE_URL || 'http://127.0.0.1:8002'
 
   // L-19: the deployment base path (IIS virtual directory the built app is
   // served under) used to be a hardcoded literal here, requiring a source

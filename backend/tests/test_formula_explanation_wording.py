@@ -1010,7 +1010,7 @@ class TestRuleNameTerminology:
         def __init__(self, mapping):
             self._mapping = mapping
 
-        def concept_label(self, concept):
+        def concept_label(self, concept, lang="en"):
             return self._mapping.get(concept, "")
 
     def _rule(self, name=None):

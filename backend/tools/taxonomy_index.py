@@ -52,6 +52,7 @@ _XSD = "{http://www.w3.org/2001/XMLSchema}"
 _LINK = "{http://www.xbrl.org/2003/linkbase}"
 
 _STANDARD_LABEL_ROLE = "http://www.xbrl.org/2003/role/label"
+_XML_NS = "{http://www.w3.org/XML/1998/namespace}"
 
 # Arcroles that identify a definition linkbase carrying dimensional structure.
 _ARCROLE_ALL = "/arcrole/all"
@@ -154,7 +155,7 @@ class TaxonomyIndex:
         self._label_files: list[str] | None = None
         self._definition_files: list[str] | None = None
 
-        self._labels: dict[str, str] | None = None
+        self._labels: dict[str, dict[str, str]] | None = None
         self._elements: dict[str, dict] | None = None
         self._elements_by_id: dict[str, str] | None = None
         self._hypercube_cache: dict[str, dict | None] = {}
@@ -265,13 +266,22 @@ class TaxonomyIndex:
 
     # ── labels ──────────────────────────────────────────────────────────────
 
-    def _build_labels(self) -> dict[str, str]:
+    def _build_labels(self) -> dict[str, dict[str, str]]:
+        """concept local name -> {xml:lang -> label text}.
+
+        A label linkbase can carry one resource per concept per language
+        (e.g. xml:lang="en" and xml:lang="ar" for the same concept) -- the
+        xml:lang attribute, not file order, is what distinguishes them.
+        Ignoring it (as a flat concept->text map previously did) meant
+        whichever language happened to appear first in the file silently
+        won for every request, in every language, permanently.
+        """
         with self._lock:
             if self._labels is not None:
                 return self._labels
             self._classify_files()
             self._build_elements()   # resolve_ref needs the id index first
-            labels: dict[str, str] = {}
+            labels: dict[str, dict[str, str]] = {}
             for path in (self._label_files or []):
                 try:
                     root = ET.parse(path).getroot()
@@ -286,30 +296,46 @@ class TaxonomyIndex:
                         href = loc.get(f"{_XLINK}href") or ""
                         if lab:
                             loc_to_concept[lab] = self.resolve_ref(href)
-                    # resource label -> text, standard role preferred
-                    res_to_text: dict[str, str] = {}
+                    # resource label -> {lang: text}, standard role preferred
+                    res_to_text: dict[str, dict[str, str]] = {}
                     for res in link.findall(f"{_LINK}label"):
                         lab = res.get(f"{_XLINK}label")
                         role = res.get(f"{_XLINK}role") or ""
                         if not lab or (role and role != _STANDARD_LABEL_ROLE):
                             continue
                         text = (res.text or "").strip()
-                        if text:
-                            res_to_text.setdefault(lab, text)
+                        if not text:
+                            continue
+                        # BCP-47 tags like "en-US"/"ar-QA" are normalised to
+                        # their primary subtag ("en"/"ar") -- taxonomies in
+                        # this corpus use region-qualified tags, not bare
+                        # language codes, so matching on the full tag would
+                        # silently miss every label.
+                        lang = (res.get(f"{_XML_NS}lang") or "").strip().lower().split("-")[0]
+                        res_to_text.setdefault(lab, {}).setdefault(lang or "en", text)
                     for arc in link.findall(f"{_LINK}labelArc"):
                         concept = loc_to_concept.get(arc.get(f"{_XLINK}from") or "")
-                        text = res_to_text.get(arc.get(f"{_XLINK}to") or "")
-                        if concept and text:
-                            labels.setdefault(concept, text)
+                        by_lang = res_to_text.get(arc.get(f"{_XLINK}to") or "")
+                        if concept and by_lang:
+                            dest = labels.setdefault(concept, {})
+                            for lang, text in by_lang.items():
+                                dest.setdefault(lang, text)
             self._labels = labels
             logger.info("[taxonomy_index] %d concept labels indexed", len(labels))
             return labels
 
-    def concept_label(self, concept: str) -> str:
-        """Human label for a concept/axis/member local name, or ""."""
+    def concept_label(self, concept: str, lang: str = "en") -> str:
+        """Human label for a concept/axis/member local name, in *lang* if
+        available, else English, else whatever language was indexed first
+        for that concept. Never silently returns a different language than
+        requested when the requested one actually exists."""
         if not concept:
             return ""
-        return self._build_labels().get(local_name(concept), "")
+        by_lang = self._build_labels().get(local_name(concept))
+        if not by_lang:
+            return ""
+        lang = (lang or "en").strip().lower().split("-")[0]
+        return by_lang.get(lang) or by_lang.get("en") or next(iter(by_lang.values()), "")
 
     # ── element declarations (schemas) ───────────────────────────────────────
 

@@ -272,6 +272,7 @@ def resolve_labels(
     comparison,
     taxonomy_json: dict | None = None,
     index=None,
+    lang: str = "en",
 ) -> tuple[dict[str, str], dict[str, str]]:
     """(labels, sources) — one business label per variable id, plus where each
     came from, in strict priority order:
@@ -336,7 +337,7 @@ def resolve_labels(
         source = "json" if label else ""
 
         if not label and index is not None and concept:
-            label = (index.concept_label(concept) or "").strip()
+            label = (index.concept_label(concept, lang=lang) or "").strip()
             source = "label_linkbase" if label else source
 
         # Backtracking labels are only preferred over the message when they
@@ -393,13 +394,13 @@ def resolve_labels(
 
     # Still unnamed after every naming source: say what the value DOES in the
     # rule rather than repeating that it has no name. See _apply_role_labels.
-    _apply_role_labels(labels, sources, comparison, by_var, index)
+    _apply_role_labels(labels, sources, comparison, by_var, index, lang=lang)
 
     _prefer_message_when_labels_collide(
         labels, sources, lhs_vars, rhs_vars, message_lhs, message_rhs,
     )
     _disambiguate(labels, sources, by_var, index,
-                  protect=set(lhs_vars) if len(lhs_vars) == 1 else None)
+                  protect=set(lhs_vars) if len(lhs_vars) == 1 else None, lang=lang)
     if aggregated:
         labels["_aggregated_fact_labels"] = aggregated  # type: ignore[assignment]
     # Variables whose label came from the message AND that the formula
@@ -586,7 +587,7 @@ def _role_phrase(var, comparison, kind, by_var) -> str:
     return "Value checked by this rule"
 
 
-def _context_member_hint(var, by_var, index) -> str:
+def _context_member_hint(var, by_var, index, lang: str = "en") -> str:
     """A dimensional qualifier taken from the fact's own context id, resolved
     through the taxonomy — 'asof_20260630_InfrastructureSectorMember' ->
     'Infrastructure Sector'.
@@ -605,7 +606,7 @@ def _context_member_hint(var, by_var, index) -> str:
             if not token or token.isdigit() or token.lower() in ("asof", "fromto"):
                 continue
             try:
-                label = _strip_role_suffix((index.concept_label(token) or "").strip())
+                label = _strip_role_suffix((index.concept_label(token, lang=lang) or "").strip())
             except Exception:                      # a broken index must not break the card
                 label = ""
             if label and label not in seen:
@@ -613,7 +614,7 @@ def _context_member_hint(var, by_var, index) -> str:
     return ", ".join(seen[:2])
 
 
-def _apply_role_labels(labels, sources, comparison, by_var, index=None) -> None:
+def _apply_role_labels(labels, sources, comparison, by_var, index=None, lang: str = "en") -> None:
     """Give every still-unnamed variable a role phrase, numbered when several
     share one, in the order the formula references them.
 
@@ -641,7 +642,7 @@ def _apply_role_labels(labels, sources, comparison, by_var, index=None) -> None:
         if counts[phrase] > 1:
             used[phrase] = used.get(phrase, 0) + 1
             phrase = f"{phrase} {used[phrase]}"
-        hint = _context_member_hint(var, by_var, index)
+        hint = _context_member_hint(var, by_var, index, lang=lang)
         if hint and hint.lower() not in phrase.lower():
             phrase = f"{phrase} ({hint})"
         labels[var] = phrase
@@ -875,6 +876,7 @@ def _prefer_message_when_labels_collide(
 def _disambiguate(
     labels: dict[str, str], sources: dict[str, str],
     by_var: dict[str, list[dict]], index=None, protect: set[str] | None = None,
+    lang: str = "en",
 ) -> None:
     """When several variables resolve to the SAME label, qualify each one from
     evidence that actually differs between them.
@@ -903,7 +905,7 @@ def _disambiguate(
     if not colliding:
         return
 
-    qualifiers = _context_qualifiers(colliding, by_var, index)
+    qualifiers = _context_qualifiers(colliding, by_var, index, lang=lang)
     unresolved: list[str] = []
     for var in [v for v in by_var if v in colliding] + sorted(colliding - set(by_var)):
         qualifier = qualifiers.get(var) or _backtracking_qualifier(by_var.get(var))
@@ -940,6 +942,7 @@ def _disambiguate(
 
 def _context_qualifiers(
     variables: set[str], by_var: dict[str, list[dict]], index,
+    lang: str = "en",
 ) -> dict[str, str]:
     """A short distinguishing phrase per variable, from the parts of its
     context id that no other colliding variable has.
@@ -971,7 +974,7 @@ def _context_qualifiers(
         for token in unique:
             label = ""
             if index is not None:
-                label = (index.concept_label(token) or "").strip()
+                label = (index.concept_label(token, lang=lang) or "").strip()
             phrases.append(_strip_role_suffix(label) or taxonomy_index.humanize_local_name(
                 token, ("Member", "Domain", "Axis")))
         phrase = ", ".join(p for p in phrases if p)
@@ -3405,7 +3408,7 @@ def explain_one_rule(rule: dict, taxonomy_json, index, settings, lang: str = "en
         instances = rule.get("instances") or []
         instance = instances[0] if instances else {"facts": []}
         comparison, result = evaluate_instance(rule, instance)
-        labels, sources = resolve_labels(rule, comparison, taxonomy_json, index)
+        labels, sources = resolve_labels(rule, comparison, taxonomy_json, index, lang=lang)
 
         # LLM phrasing is OPTIONAL enrichment and is isolated accordingly: it
         # runs after the deterministic explanation is already computable, and

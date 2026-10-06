@@ -187,7 +187,7 @@ export async function compareInstances(sessionId, instanceA, instanceB, opts = {
  * @returns {Promise<string>} the summary text, or '' if unavailable.
  */
 export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts = {}) {
-  const { signal, requestId, lang, loginId } = opts
+  const { signal, requestId, lang, loginId, tenantId, domain, jwt } = opts
   try {
     const res = await fetch(`${BASE_URL}/compare-summary`, {
       method: 'POST',
@@ -229,6 +229,15 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
         // exactly what showed up as "AI analysis is unavailable" with no
         // visible error.
         login_id:    loginId ?? null,
+        // APP_VERSION=6.0: without these, login_id above is checked against
+        // the default/unscoped repo root instead of the caller's own
+        // tenant, is never resolved, and the endpoint 403s every time --
+        // the same CHATBOT_AUTH-sourced values every other 6.0-aware call
+        // (sendMessage/compareInstances/explainErrorCategory) already sends.
+        // All null/no-op for 5.5.
+        tenant_id:   tenantId ?? null,
+        domain:      domain ?? null,
+        jwt:         jwt ?? null,
         // The AI narrative is model-authored, so it is translated at runtime by
         // the existing boundary. Omitted / 'en' leaves it in English.
         ...(lang && lang !== 'en' ? { lang } : {}),

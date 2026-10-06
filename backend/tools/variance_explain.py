@@ -62,6 +62,7 @@ import re
 import time
 
 from backend.services import llm_config
+from backend.tools.xbrl_importance import TIER_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +88,32 @@ SUMMARY_CONCEPT_LIMIT = int(os.getenv("VARIANCE_EXPLAIN_LIMIT", "20"))
 
 MAX_DIMS_PER_CONCEPT = int(os.getenv("VARIANCE_EXPLAIN_MAX_DIMS", "3"))
 
-# Tiers eligible for an explanation — the same set the chat table shows.
+# Tiers eligible for an explanation — dynamically the SAME tiers the chat
+# table highlights by default (frontend/src/components/MessageBubble.jsx's
+# selectHeadlineTiers), never hardcoded to Critical/High. If a comparison
+# has zero Critical or High changes the window slides to the next tier(s)
+# down (High+Medium, then Medium+Low, down to just Low) -- so the narrative
+# never says "nothing to analyse" merely because the top tiers are absent
+# when lower-tier concepts genuinely changed. See _select_eligible_tiers().
 
-ELIGIBLE_TIERS = ("Critical", "High")
+
+def _select_eligible_tiers(rows: list[dict]) -> tuple[str, ...]:
+    """Highest tier(s) actually present in *rows*, mirroring the frontend's
+    selectHeadlineTiers() exactly: find the highest-priority tier with at
+    least one classified, changed concept, then include the next tier down
+    for context. Returns () when nothing in *rows* is classified into any
+    tier at all -- the caller already treats an empty eligible set as
+    "nothing to explain," which is correct in that case.
+    """
+    counts = {tier: 0 for tier in TIER_ORDER}
+    for r in rows:
+        tier = r.get("importance_tier")
+        if r.get("importance_matched") and tier in counts:
+            counts[tier] += 1
+    for idx, tier in enumerate(TIER_ORDER):
+        if counts[tier] > 0:
+            return tuple(TIER_ORDER[idx:idx + 2])
+    return ()
 
 # One business section can hold hundreds of eligible facts. Capping per
 # section spreads the output across the return rather than letting a single
@@ -390,10 +414,11 @@ def select_facts(
     *limit* is a MAXIMUM. When fewer facts survive the filters, fewer are
     returned — padding the list with restatements would defeat the point.
     """
+    eligible_tiers = _select_eligible_tiers(rows)
     eligible = [
         r for r in rows
         if r.get("importance_matched")
-        and r.get("importance_tier") in ELIGIBLE_TIERS
+        and r.get("importance_tier") in eligible_tiers
         # Scaffolding is never the subject of a business sentence.
         and not _is_structural(r.get("concept_base") or r.get("concept", ""))
     ]
@@ -1217,7 +1242,7 @@ async def generate_explanations(
     source = all_rows or rows
     selected = select_facts(rows, limit=limit, label_a=label_a, label_b=label_b)
     if not selected:
-        logger.info("[EXPLAIN] no Critical/High facts to explain")
+        logger.info("[EXPLAIN] no eligible facts to explain in any tier")
         return ""
 
     facts = build_facts(selected, source, label_a, label_b)
