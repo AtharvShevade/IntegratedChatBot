@@ -377,3 +377,40 @@ class TestPeriodMasterReadsConfiguredPath:
         assert info is not None
         assert info["Frequency"] == "A"
 
+
+
+# ── Frequency resolution: one return, one frequency ─────────────────────────
+
+class TestResolveFrequency:
+    """6.0's real Period.xml has Id=101 "Daily" with Frequency="A". "A" is
+    ambiguous (it also means Yearly and As-An-When), and aliasing it to "Y"
+    turned every Daily return into a 31-Mar-only one: a daily date was
+    rejected and a yearly date accepted."""
+
+    def test_daily_period_with_ambiguous_A_resolves_to_daily(self):
+        from backend.tools.instance_generator import resolve_frequency
+        info = {"Id": "101", "PeriodName": "Daily", "Frequency": "A"}
+        assert resolve_frequency("101", "D", info) == "D"
+        assert resolve_frequency("101", "", info) == "D"
+
+    def test_return_repfreq_wins_over_default_daily_period(self):
+        from backend.tools.instance_generator import resolve_frequency
+        info = {"Id": "101", "PeriodName": "Daily", "Frequency": "A"}
+        assert resolve_frequency("101", "Q", info) == "Q"
+        assert resolve_frequency("101", "M", info) == "M"
+
+    def test_yearly_and_as_an_when_are_told_apart(self):
+        from backend.tools.instance_generator import resolve_frequency
+        assert resolve_frequency("107", "A", {"Frequency": "A"}) == "Y"
+        assert resolve_frequency("113", "A", {"Frequency": "A"}) == "G"
+
+    def test_unrecognised_repfreq_falls_back_to_period(self):
+        from backend.tools.instance_generator import resolve_frequency
+        assert resolve_frequency("108", "x", {"Frequency": "H"}) == "H"
+
+    def test_daily_return_accepts_a_daily_date_but_yearly_rule_does_not(self):
+        from backend.tools.instance_generator import resolve_frequency, validate_reporting_date
+        info = {"Id": "101", "PeriodName": "Daily", "Frequency": "A"}
+        freq = resolve_frequency("101", "D", info)
+        assert validate_reporting_date("30-Apr-2026", freq)["valid"]
+        assert not validate_reporting_date("30-Apr-2026", "Y")["valid"]

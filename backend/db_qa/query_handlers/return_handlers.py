@@ -701,11 +701,13 @@ def _resolve_return_frequency_code(store: XMLStore, ret: dict) -> tuple[str, str
     period_info = get_period_info(period_id) or {}
     period_name = (period_info.get("PeriodName") or "").strip()
 
-    frequency = (period_info.get("Frequency") or "").strip().upper()
+    from backend.tools.instance_generator import resolve_frequency
+
+    # Same resolver generation uses, so "next due date" and "is this date
+    # valid" can never disagree about a return's frequency.
+    frequency = resolve_frequency(period_id, ret.get("RepFreq", ""), period_info)
     if not frequency:
         frequency = _PERIOD_NAME_TO_FREQUENCY.get(period_name.lower(), "")
-    if not frequency:
-        frequency = (ret.get("RepFreq") or "").strip().upper()
     return frequency, period_name
 
 

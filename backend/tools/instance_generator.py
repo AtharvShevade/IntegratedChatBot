@@ -190,6 +190,43 @@ def _normalize_frequency(frequency: str) -> str:
     return _FREQUENCY_ALIASES.get(freq, freq)
 
 
+
+# Frequency codes that name exactly one reporting rule. "A" is deliberately
+# NOT in this set: 6.0 uses it for Yearly, As-An-When AND (wrongly, in the
+# real Period.xml) Daily, so it can never be trusted on its own.
+_UNAMBIGUOUS_FREQUENCIES = {"D", "W", "F", "M", "Q", "H", "C", "Y", "B", "G", "Z", "HM"}
+
+
+def resolve_frequency(period_id: str, rep_freq: str = "", period_info: dict | None = None) -> str:
+    """The frequency code that date validation must use for ONE return.
+
+    Order (first hit wins):
+      1. The return's own RepFreq, when it is an unambiguous code. It is
+         per-return, so it is the most specific: in 6.0 most returns carry
+         PeriodId 101 ("Daily") as a default while RepFreq says the real
+         frequency (Q, M, D ...).
+      2. Period.xml's Frequency for the PeriodId, when unambiguous.
+      3. The canonical PeriodId table. This is what stops the 6.0 Period.xml
+         row Id=101 "Daily" / Frequency="A" from turning a daily return into
+         a yearly (31-Mar-only) one.
+      4. Whatever Period.xml / RepFreq say, including the ambiguous "A"
+         (aliased later by _normalize_frequency).
+    """
+    if period_info is None:
+        period_info = get_period_info(period_id) or {}
+    rep  = (rep_freq or "").strip().upper()
+    perf = (period_info.get("Frequency") or "").strip().upper()
+    pid  = str(period_id or "").strip()
+
+    if rep in _UNAMBIGUOUS_FREQUENCIES:
+        return rep
+    if perf in _UNAMBIGUOUS_FREQUENCIES:
+        return perf
+    if pid in _PERIOD_ID_TO_FREQUENCY:
+        return _PERIOD_ID_TO_FREQUENCY[pid]
+    return perf or rep
+
+
 # -- Return resolver (exact match, used post-disambiguation) --------------------
 
 def resolve_return_exact(report_name: str) -> dict | None:
@@ -214,17 +251,7 @@ def resolve_return_exact(report_name: str) -> dict | None:
 
     period_id   = match.get("PeriodId", "").strip()
     period_info = get_period_info(period_id) or {}
-    # Frequency resolution, in priority order:
-    #   1. Period.xml's own Frequency attribute (canonical).
-    #   2. _PERIOD_ID_TO_FREQUENCY[period_id] — fallback when absent.
-    #   3. The Return's own RepFreq — last resort only, since it can be
-    #      inconsistent across returns sharing the same PeriodId (e.g. 'A'
-    #      vs 'Y' both appearing under PeriodId 107 "Yearly").
-    frequency = (
-        period_info.get("Frequency")
-        or _PERIOD_ID_TO_FREQUENCY.get(period_id)
-        or match.get("RepFreq", "")
-    ).strip().upper()
+    frequency = resolve_frequency(period_id, match.get("RepFreq", ""), period_info)
     period_name = period_info.get("PeriodName", "").strip()
 
     return {
