@@ -667,7 +667,7 @@ def parse_backtrack_html_errors(html_path: str) -> list[dict]:
     file hasn't changed on disk is pure wasted I/O and CPU.
     """
     from backend.tools.mtime_cache import cached_by_mtime
-    return cached_by_mtime(html_path, lambda: _parse_backtrack_html_errors_uncached(html_path))
+    return cached_by_mtime(html_path, lambda: _parse_backtrack_html_errors_uncached(html_path), "backtrack_html")
 
 
 def _parse_backtrack_html_errors_uncached(html_path: str) -> list[dict]:

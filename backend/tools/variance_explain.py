@@ -699,6 +699,7 @@ def build_facts(
             "business_name": business_name(
                 base, ck, r.get("concept_label", ""), r.get("member_labels"),
             ),
+            "concept_label": (r.get("concept_label") or "").strip(),
             "unit": unit,
             "val_a": va,
             "val_b": vb,
@@ -1035,6 +1036,17 @@ def validate_and_merge(raw: str, facts: list[dict]) -> tuple[list[str], int]:
     for f, tmpl in zip(facts, templates):
         cand = resolved.get(f["id"], "")
         if not cand or len(cand) < 15:
+            out.append(tmpl)
+            continue
+        # The taxonomy label is the concept's real name. A reworded line that
+        # drops it (e.g. "Exposures in DM000012 ...") no longer says WHICH
+        # figure moved, so the template, which always names it, is used.
+        lbl = f.get("concept_label") or ""
+        if lbl and lbl.lower() not in cand.lower():
+            logger.info(
+                "[EXPLAIN] fact %s: line omits concept label %r — using template",
+                f["id"], lbl,
+            )
             out.append(tmpl)
             continue
         mult = _MULTIPLIER_RE.search(cand)

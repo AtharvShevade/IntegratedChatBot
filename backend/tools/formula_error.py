@@ -80,7 +80,7 @@ def parse_formula_errors_v2(html_path: str) -> list[dict]:
     is pure wasted I/O/CPU, since parsing is deterministic for a given file.
     """
     from backend.tools.mtime_cache import cached_by_mtime
-    return cached_by_mtime(html_path, lambda: _parse_formula_errors_v2_uncached(html_path))
+    return cached_by_mtime(html_path, lambda: _parse_formula_errors_v2_uncached(html_path), "formula_error_v2")
 
 
 def _parse_formula_errors_v2_uncached(html_path: str) -> list[dict]:

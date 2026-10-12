@@ -122,7 +122,7 @@ def parse_generic_formula_errors(html_path: str) -> list[dict]:
     for the actual parsing logic and docs.
     """
     from backend.tools.mtime_cache import cached_by_mtime
-    return cached_by_mtime(html_path, lambda: _parse_generic_formula_errors_uncached(html_path))
+    return cached_by_mtime(html_path, lambda: _parse_generic_formula_errors_uncached(html_path), "formula_error_generic")
 
 
 def _parse_generic_formula_errors_uncached(html_path: str) -> list[dict]:

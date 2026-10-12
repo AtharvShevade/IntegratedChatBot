@@ -2438,7 +2438,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
     // Matching the concept string alone already covers dimension members: the
     // backend appends them as a "[OneMonth]" suffix, which is exactly what the
     // Concept column displays.
-    if (q) out = out.filter((r) => (r.concept ?? '').toLowerCase().includes(q))
+    if (q) out = out.filter((r) => `${r.concept ?? ''} ${r.concept_label ?? ''}`.toLowerCase().includes(q))
     return out
   }, [tableScope, sourceRows, filterMode, search])
 
@@ -2594,8 +2594,17 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
                 rowIdx % 2 === 0 ? '' : 'vt-row-alt',
               ].filter(Boolean).join(' ')
               const anomalyText  = row.anomaly_flags?.length ? `Anomalies: ${row.anomaly_flags.join(', ')}` : ''
+              // Taxonomy name for the concept when the return's JSON has one;
+              // the " [member]" suffix of row.concept still tells dimensional
+              // rows apart. Falls back to the raw code when there is no label.
+              const memberSuffix = (row.concept ?? '').includes(' [')
+                ? row.concept.slice(row.concept.indexOf(' ['))
+                : ''
+              const conceptText = row.concept_label
+                ? `${row.concept_label}${memberSuffix}`
+                : (row.concept ?? '')
               const conceptTitle = [
-                row.concept,
+                row.concept_label ? `${conceptText} (${row.concept})` : row.concept,
                 row.context_key && row.context_key !== 'BASE' ? `Context: ${row.context_key}` : '',
                 row.unit ? `Unit: ${row.unit}` : '',
                 anomalyText,
@@ -2621,7 +2630,7 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
                     {/* Concept keeps its embedded "[member]" suffix — that
                         suffix is what distinguishes dimensional rows from one
                         another in a single-column layout. */}
-                    <span className="vt-concept-text" title={conceptTitle}>{row.concept ?? ''}</span>
+                    <span className="vt-concept-text" title={conceptTitle}>{conceptText}</span>
                     {signNote}
                   </td>
                   <td className="vt-num" title={tipA}>{fmtFinancial(row.val_a)}</td>

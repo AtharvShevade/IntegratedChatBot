@@ -22,16 +22,23 @@ from typing import Callable, TypeVar
 T = TypeVar("T")
 
 _lock = threading.Lock()
-_cache: dict[str, tuple[float, object]] = {}
+_cache: dict[object, tuple[float, object]] = {}
 
 
-def cached_by_mtime(path: str, parse: Callable[[], T]) -> T:
+def cached_by_mtime(path: str, parse: Callable[[], T], namespace: str = "") -> T:
     """Return ``parse()``'s result, reusing a cached value for *path* when
     the file's mtime hasn't changed since it was last parsed.
 
     *parse* is only called on a genuine cache miss (first time this path is
     seen, or the file's mtime has changed) -- never on every call.
+
+    *namespace* identifies WHICH parser is asking. Different parsers are run
+    over the same error file, so a path-only key made the first parser's
+    result (e.g. an empty formula-rule list) come back for every other
+    parser too. An empty namespace keeps the plain-path key.
     """
+    key: object = (namespace, path) if namespace else path
+
     try:
         mtime = os.path.getmtime(path)
     except OSError:
@@ -41,13 +48,13 @@ def cached_by_mtime(path: str, parse: Callable[[], T]) -> T:
         return parse()
 
     with _lock:
-        cached = _cache.get(path)
+        cached = _cache.get(key)
         if cached is not None and cached[0] == mtime:
             return cached[1]  # type: ignore[return-value]
 
     result = parse()
 
     with _lock:
-        _cache[path] = (mtime, result)
+        _cache[key] = (mtime, result)
 
     return result
