@@ -155,6 +155,15 @@ class JsonImportance:
             reg = concept.get("regulatory_importance")
             if isinstance(reg, dict):
                 by_local[local] = reg
+        # Table-linkbase returns (6.0 QCB/CBJ) never list their dimension
+        # members in concepts[]; the generator publishes their labels in
+        # structure.member_labels instead. Concept labels win on a clash.
+        member_labels = (payload.get("structure") or {}).get("member_labels") or {}
+        for mid, mlbl in member_labels.items():
+            mlbl = re.sub(r"\s*\[(member|axis|domain|line items|table)\]\s*$",
+                          "", (mlbl or "").strip(), flags=re.I).strip()
+            if mlbl:
+                labels.setdefault(str(mid).split(":")[-1], mlbl)
         # Ambiguous names are dropped entirely rather than resolved by guess.
         for name in collisions:
             by_local.pop(name, None)

@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from backend.tools.instance_generator import validate_reporting_date, resolve_return_exact
+from backend.tools.instance_generator import (
+    validate_reporting_date, resolve_return_exact, parse_date_flexible, _hint_dates,
+)
 from backend.tools.report_lookup import find_matching_reports, fuzzy_report_suggestions
 from backend.agent.state import (
     _build, _session_context,
@@ -45,6 +47,37 @@ def _validate_future_schedule_date(
     return result["valid"], (result["error"] or "")
 
 
+def _reporting_date_after_schedule(
+    reporting_date: str, schedule_date: str, frequency: str,
+) -> tuple[bool, str, list[str]]:
+    """Is *reporting_date* NOT strictly before *schedule_date*?
+
+    A scheduled run reports on a period that ends before it runs, so the
+    reporting date may be in the past or the future but must fall before the
+    schedule date. Compared as calendar dates (the time of day does not
+    matter). Returns ``(is_rejected, error_message, suggestions)``;
+    suggestions are the frequency's valid period-ends before the schedule
+    date. Unparsable input returns ``(False, "", [])`` - the individual
+    validators already report that.
+    """
+    rpt = parse_date_flexible(reporting_date)
+    sch = parse_date_flexible(schedule_date)
+    if rpt is None or sch is None or rpt < sch:
+        return False, "", []
+    candidates: list = []
+    for yr in (sch.year, sch.year - 1):
+        for ds in _hint_dates(frequency, yr, filter_future=False):
+            d = parse_date_flexible(ds)
+            if d is not None and d < sch:
+                candidates.append(d)
+    suggestions = [d.strftime("%d-%b-%Y") for d in sorted(set(candidates), reverse=True)[:3]]
+    return True, (
+        f"The reporting date **{reporting_date}** must be before the schedule date "
+        f"**{schedule_date}**.\n"
+        f"Please enter a reporting date before {schedule_date}"
+    ), suggestions
+
+
 def _finalize_schedule(
     ret: dict[str, Any],
     reporting_date: str | None,
@@ -61,8 +94,10 @@ def _finalize_schedule(
       2. Reporting Date — the business/period end-date the instance is FOR
          (e.g. 31-Mar-2026 for a Yearly return). Validated against the report's
          frequency via the same ``validate_reporting_date`` logic used by
-         generate-instance, with ``require_future=False`` (past/current dates
-         only) since a reporting period can never be in the future.
+         generate-instance but with ``allow_future=True``: a report can be
+         scheduled ahead of its period end, so the reporting date may be past
+         or future as long as it is before the schedule date (checked by
+         ``_reporting_date_after_schedule`` once both are known).
       3. Schedule Date + Schedule Time — the future date/time the .NET job
          should actually run and generate the instance. This is unrelated to
          the report's reporting period, so Schedule Date is only required to
@@ -96,11 +131,11 @@ def _finalize_schedule(
     period_name = ret.get("period_name", "")
 
     # ── Reporting Date — mandatory, collected and validated before schedule
-    # date/time. Reuses generate-instance's validation (require_future=False:
-    # a reporting period can be the current period or any past period, never
-    # a future one).
+    # date/time. Reuses generate-instance's frequency validation, except that a
+    # future reporting date is allowed (it just may not be after the schedule
+    # date, which is enforced below once the schedule date is known).
     if reporting_date and frequency:
-        rpt_validation = validate_reporting_date(reporting_date, frequency)
+        rpt_validation = validate_reporting_date(reporting_date, frequency, allow_future=True)
         if not rpt_validation["valid"]:
             if session_id:
                 _session_context[session_id] = {
@@ -168,6 +203,31 @@ def _finalize_schedule(
                 report_name=ret["name"],
                 response_text=_sched_err,
                 result_type="sched_awaiting_dt",
+            )
+
+    # ── Reporting date must be before the schedule date ──────────────────────
+    if schedule_date and reporting_date:
+        _after, _after_err, _after_sugg = _reporting_date_after_schedule(
+            reporting_date, schedule_date, frequency,
+        )
+        if _after:
+            if session_id:
+                _session_context[session_id] = {
+                    "awaiting":              STAGE_SCHED_RPT_DATE,
+                    "sched_form_id":         ret["form_id"],
+                    "sched_return_name":     ret["name"],
+                    "sched_frequency":       frequency,
+                    "sched_period_name":     period_name,
+                    "sched_reporting_date":  None,  # reject the date
+                    "sched_schedule_date":   schedule_date,
+                    "sched_schedule_time":   schedule_time,
+                }
+            return _build(
+                intent="schedule_report",
+                report_name=ret["name"],
+                response_text=_after_err,
+                result_type="sched_awaiting_rpt_date",
+                options=_after_sugg if _after_sugg else None,
             )
 
     # ── Missing date or time — save what we have and ask for the rest ──────

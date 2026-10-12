@@ -1126,6 +1126,51 @@ function BubbleText({ text, errorDetails }) {
   )
 }
 
+// ── Schedule date + time picker ──────────────────────────────────────────────
+// Calendar and clock for the "schedule date and time" step, so a user can pick
+// a value instead of typing one. Only future date/times can be submitted; the
+// backend re-validates (and owns the final answer, including the server's
+// clock), so typing a date in the chat box still works exactly as before.
+const _MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function ScheduleDateTimePicker({ onSubmit }) {
+  const t = useT()
+  const pad = (n) => String(n).padStart(2, '0')
+  const now = new Date()
+  const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const [date, setDate] = useState('')
+  const [time, setTime] = useState('')
+
+  // A time input with step=1 reports "HH:MM" when the seconds are 00; keep one shape.
+  const timeHms = time && time.length === 5 ? `${time}:00` : time
+  const notInFuture = Boolean(date && time) && new Date(`${date}T${timeHms}`) <= new Date()
+  const canSubmit = Boolean(date && time) && !notInFuture
+
+  const submit = () => {
+    if (!canSubmit) return
+    const [y, m, d] = date.split('-')
+    // "15-Oct-2026 at 16:00:00" is a format the backend's schedule parser reads.
+    onSubmit?.(`${d}-${_MONTH_ABBR[Number(m) - 1]}-${y} at ${timeHms}`)
+  }
+
+  return (
+    <div className="sched-picker">
+      <label className="sched-picker-field">
+        <span>{t('schedule.pickDate')}</span>
+        <input type="date" value={date} min={todayIso} onChange={(e) => setDate(e.target.value)} />
+      </label>
+      <label className="sched-picker-field">
+        <span>{t('schedule.pickTime')}</span>
+        <input type="time" step="1" value={time} onChange={(e) => setTime(e.target.value)} />
+      </label>
+      <button type="button" className="suggestion-chip chip-confirm" disabled={!canSubmit} onClick={submit}>
+        {t('schedule.setSchedule')}
+      </button>
+      {notInFuture && <div className="sched-picker-error">{t('schedule.mustBeFuture')}</div>}
+    </div>
+  )
+}
+
 // ── MessageBubble (main export) ───────────────────────────────────────────────
 export default function MessageBubble({
   role, text, data, options, resultType, reportName, sqlData, dbQaData,
@@ -1382,6 +1427,23 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
               </button>
             ))}
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Schedule date/time step: the usual prompt plus a calendar and clock.
+  if (!isUser && resultType === 'sched_awaiting_dt') {
+    return (
+      <div className="bubble-row assistant">
+        <div className="avatar assistant-avatar">AI</div>
+        <div className="assistant-msg-block">
+          <div className="bubble assistant-bubble">
+            {displayText.split('\n').map((line, i, arr) => (
+              <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+            ))}
+          </div>
+          <ScheduleDateTimePicker onSubmit={onSuggestion} />
         </div>
       </div>
     )
@@ -2597,9 +2659,17 @@ function VarianceTableBlock({ rows, allRows, meta, labelA, labelB, llmSummary, s
               // Taxonomy name for the concept when the return's JSON has one;
               // the " [member]" suffix of row.concept still tells dimensional
               // rows apart. Falls back to the raw code when there is no label.
-              const memberSuffix = (row.concept ?? '').includes(' [')
+              let memberSuffix = (row.concept ?? '').includes(' [')
                 ? row.concept.slice(row.concept.indexOf(' ['))
                 : ''
+              // Swap member codes (DM000012) for their taxonomy names when the
+              // JSON carries them; an unlabelled member keeps its own text.
+              if (memberSuffix && row.member_labels?.length) {
+                const raw = memberSuffix.slice(2, -1).split(', ')
+                if (raw.length === row.member_labels.length) {
+                  memberSuffix = ` [${raw.map((m, i) => row.member_labels[i] || m).join(', ')}]`
+                }
+              }
               const conceptText = row.concept_label
                 ? `${row.concept_label}${memberSuffix}`
                 : (row.concept ?? '')

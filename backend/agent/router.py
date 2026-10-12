@@ -725,13 +725,10 @@ async def decide(
             reporting_date = session.get("sched_reporting_date")
             scheduled_dt: str | None = None
             if schedule_date and schedule_time:
-                try:
-                    from datetime import datetime as _sdt
-                    scheduled_dt = _sdt.strptime(
-                        f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M"
-                    ).strftime("%Y-%m-%dT%H:%M:00")
-                except ValueError:
-                    pass
+                from backend.llm_extractor import parse_schedule_datetime as _psd
+                _sdt_val = _psd(schedule_date, schedule_time)
+                if _sdt_val is not None:
+                    scheduled_dt = _sdt_val.strftime("%Y-%m-%dT%H:%M:%S")
             sched_ret = {
                 "form_id":     session["sched_form_id"],
                 "name":        session["sched_return_name"],

@@ -323,9 +323,21 @@ def _hint_dates(frequency: str, year: int, *, filter_future: bool = True, filter
     return valid
 
 
+def parse_date_flexible(date_str: str) -> date | None:
+    """Parse a date in any format validate_reporting_date() accepts
+    (dd-MMM-yyyy, dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd, dd.mm.yyyy), or None."""
+    ds = (date_str or "").strip()
+    for fmt in (_DATE_FMT, *_EXTRA_FMTS):
+        try:
+            return datetime.strptime(ds, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def validate_reporting_date(
     date_str: str, frequency: str, *, require_future: bool = False, time_str: str | None = None,
-    skip_frequency_check: bool = False,
+    skip_frequency_check: bool = False, allow_future: bool = False,
 ) -> dict[str, Any]:
     """Validate a reporting date against frequency rules.
 
@@ -350,6 +362,13 @@ def validate_reporting_date(
                         Multi-format date parsing (dd-MMM-yyyy, dd/mm/yyyy,
                         dd-mm-yyyy, yyyy-mm-dd, dd.mm.yyyy) and the future/past
                         date requirement above still apply either way.
+
+        allow_future:   Scheduling's REPORTING date only. A report can be scheduled
+                        ahead of its period end, so the reporting date may be
+                        in the future here (the caller checks it is not after
+                        the schedule date). Frequency rules still apply, and
+                        suggestions are no longer limited to past dates.
+                        Ignored when require_future is True.
 
     Returns: {"valid": bool, "error": str | None, "suggestions": list[str]}
     """
@@ -455,7 +474,10 @@ def validate_reporting_date(
         if parsed == today_date:
             if time_str:
                 try:
-                    sched_time = datetime.strptime(time_str.strip(), "%H:%M").time()
+                    try:
+                        sched_time = datetime.strptime(time_str.strip(), "%H:%M:%S").time()
+                    except ValueError:
+                        sched_time = datetime.strptime(time_str.strip(), "%H:%M").time()
                     is_today_and_not_later = sched_time <= datetime.now().time()
                     is_today_past_time = is_today_and_not_later
                 except ValueError:
@@ -491,8 +513,9 @@ def validate_reporting_date(
                 "suggestions": future_hints,
             }
     else:
-        # Generate-instance mode: reject future dates.
-        if parsed > today_date:
+        # Generate-instance mode: reject future dates (unless the caller is
+        # validating a scheduled report's reporting date - see allow_future).
+        if parsed > today_date and not allow_future:
             logger.debug("[FUTURE_DATE_REJECTED] date=%s today=%s", ds, today_date)
             past_suggestions = _hint_dates(frequency, today_date.year)
             return {
@@ -516,6 +539,8 @@ def validate_reporting_date(
         Generate mode (require_future=False): keep only past/current dates.
         Schedule mode  (require_future=True):  keep only strictly future dates.
         """
+        if allow_future and not require_future:
+            return list(suggestions)
         today_ = date.today()
         result = []
         for s in suggestions:

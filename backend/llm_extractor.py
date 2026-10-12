@@ -724,8 +724,25 @@ def resolve_entities(
     }
 
 
+def _hhmm_or_hhmmss(dt: datetime) -> str:
+    """"HH:MM", or "HH:MM:SS" only when the seconds are not zero, so every
+    existing time keeps its exact previous form."""
+    return dt.strftime('%H:%M:%S') if dt.second else dt.strftime('%H:%M')
+
+
+def parse_schedule_datetime(date_str: str, time_str: str) -> Optional[datetime]:
+    """DD-MMM-YYYY + "HH:MM" or "HH:MM:SS" -> datetime, or None."""
+    for fmt in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M"):
+        try:
+            return datetime.strptime(f"{date_str} {time_str}", fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def parse_schedule_time(text: str) -> Optional[str]:
-    """Parse the first time expression in *text* and return HH:MM (24-hour).
+    """Parse the first time expression in *text* and return HH:MM (24-hour),
+    or HH:MM:SS when non-zero seconds were given.
 
     Supports:
       "4 PM"    → "16:00"
@@ -751,11 +768,11 @@ def parse_schedule_time(text: str) -> Optional[str]:
 
     # Try HH:MM:SS AM/PM or 24-hour  (e.g. "17:30:00")
     try:
-        return datetime.strptime(upper, '%H:%M:%S').strftime('%H:%M')
+        return _hhmm_or_hhmmss(datetime.strptime(upper, '%H:%M:%S'))
     except ValueError:
         pass
     try:
-        return datetime.strptime(upper, '%I:%M:%S %p').strftime('%H:%M')
+        return _hhmm_or_hhmmss(datetime.strptime(upper, '%I:%M:%S %p'))
     except ValueError:
         pass
 
@@ -811,11 +828,9 @@ def extract_schedule_datetime(query: str) -> dict[str, Optional[str]]:
 
     scheduled_datetime: Optional[str] = None
     if schedule_date and schedule_time:
-        try:
-            dt = datetime.strptime(f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M")
-            scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
-        except ValueError:
-            pass
+        dt = parse_schedule_datetime(schedule_date, schedule_time)
+        if dt is not None:
+            scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     return {
         "schedule_date":      schedule_date,
@@ -948,11 +963,9 @@ def extract_reporting_and_schedule_datetime(query: str) -> dict[str, Optional[st
 
     scheduled_datetime: Optional[str] = None
     if schedule_date and schedule_time:
-        try:
-            dt = datetime.strptime(f"{schedule_date} {schedule_time}", "%d-%b-%Y %H:%M")
-            scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:00")
-        except ValueError:
-            pass
+        dt = parse_schedule_datetime(schedule_date, schedule_time)
+        if dt is not None:
+            scheduled_datetime = dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     logger.info(
         "[EXTRACT] two-date schedule message: reporting_date=%r schedule_date=%r "
