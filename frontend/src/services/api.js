@@ -18,7 +18,14 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
  * a real server message, not a generic fallback.
  */
 function _err(detail, i18nKey) {
-  const e = new Error(detail || '')
+  // FastAPI sends `detail` as a list/object for validation (422) errors;
+  // new Error(<object>) would render as "[object Object]".
+  const msg = typeof detail === 'string'
+    ? detail
+    : Array.isArray(detail)
+      ? detail.map((d) => d?.msg || '').filter(Boolean).join('; ')
+      : ''
+  const e = new Error(msg)
   e.i18nKey = i18nKey
   return e
 }

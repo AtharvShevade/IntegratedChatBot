@@ -136,7 +136,12 @@ function _getRecentHistory(messages, n = 7) {
     // textEn is the ENGLISH source echoed back by the backend in
     // data.i18n.english. Preferring it keeps decide()'s classifier and LLM
     // extractor on English context without translating history turn by turn.
-    .map((m) => ({ role: m.role, text: m.textEn || m.text || '' }))
+    .map((m) => ({
+      role: m.role,
+      // Backend HistoryItem caps text at 2000 chars; a long variance reply
+      // sent whole made every following /chat fail with a 422.
+      text: (m.textEn || m.text || '').slice(0, 2000),
+    }))
     .filter((m) => m.text)
     .slice(-n)
 }
