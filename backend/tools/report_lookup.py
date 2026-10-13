@@ -321,16 +321,21 @@ def _parse_instances() -> tuple[dict, ...]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _read_dimension_badge_from_html(html: str) -> int:
-    """Return the integer badge count from the DIMENSION panel, or 0."""
+    """Return the integer badge count from the DIMENSION panel, or 0.
+
+    The validator caps a panel's badge at "100+" once it has more than 100
+    errors, so a trailing "+" is part of the number, not a reason to read 0
+    (which used to hide every large dimension/schema panel).
+    """
     m = re.search(
-        r'id=["\']DIMENSIONErrorNum["\'][^>]*>\s*(\d+)\s*<',
+        r'id=["\']DIMENSIONErrorNum["\'][^>]*>\s*(\d+)\+?\s*<',
         html, re.IGNORECASE,
     )
     if m:
         return int(m.group(1))
     m = re.search(
         r'assertionLabel[^>]*>\s*DIMENSION\s*</div>'
-        r'.*?class=["\'][^"\']*badge[^"\']*["\'][^>]*>\s*(\d+)\s*<',
+        r'.*?class=["\'][^"\']*badge[^"\']*["\'][^>]*>\s*(\d+)\+?\s*<',
         html, re.DOTALL | re.IGNORECASE,
     )
     if m:
@@ -835,7 +840,7 @@ def _parse_backtrack_html_errors_uncached(html_path: str) -> list[dict]:
             _re_dm.DOTALL | _re_dm.IGNORECASE,
         )
         badge_re = _re_dm.compile(
-            r'class="[^"]*badge[^"]*"[^>]*>\s*(\d+)\s*<',
+            r'class="[^"]*badge[^"]*"[^>]*>\s*(\d+)\+?\s*<',
             _re_dm.IGNORECASE,
         )
         direct_msg_re = _re_dm.compile(
@@ -2827,7 +2832,7 @@ def _parse_formula_errors_regex_fallback(raw: str) -> list[dict]:
         if not rule_name: continue
         formula_m = re.search(r'class="formulaErrorTest"[^>]*>(.*?)</div>', panel_html, re.DOTALL | re.IGNORECASE)
         formula_expr = _strip(formula_m.group(1)) if formula_m else ""
-        badge_m = re.search(r'class="badge[^"]*"[^>]*>\s*(\d+)\s*<', panel_html, re.IGNORECASE)
+        badge_m = re.search(r'class="badge[^"]*"[^>]*>\s*(\d+)\+?\s*<', panel_html, re.IGNORECASE)
         error_count = int(badge_m.group(1)) if badge_m else 0
         instances: list[dict] = []
         cell_pattern = re.compile(r'<td[^>]*>(.*?)</td>', re.DOTALL | re.IGNORECASE)

@@ -282,7 +282,8 @@ def extract_body_rows(table_html: str) -> list[list[str]]:
 # decide, per file, what is worth parsing.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_BADGE_RE = re.compile(r"""id=["']([A-Za-z_]+)ErrorNum["'][^>]*>\s*(\d+)\s*<""", re.IGNORECASE)
+# "100+" is how the validator shows a capped badge; the "+" is not part of the count.
+_BADGE_RE = re.compile(r"""id=["']([A-Za-z_]+)ErrorNum["'][^>]*>\s*(\d+)\+?\s*<""", re.IGNORECASE)
 
 
 def describe_error_file(path: str) -> dict:
