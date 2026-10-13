@@ -102,11 +102,36 @@ def find_instance_document(error_file_path: str, form_id: str = "") -> str | Non
         return None
 
     if not path:
+        path = _same_run_sibling_instance(error_file_path)
+    if not path:
         return None
     if not _looks_like_instance(path):
         logger.info("[instance_context] %s is not an XBRL instance document", path)
         return None
     return path
+
+
+def _same_run_sibling_instance(error_file_path: str) -> str | None:
+    """6.0 only: the instance document written by the SAME run as this error file.
+
+    6.0's instance log leaves InstanceDoc blank for every failed run, yet the
+    run still leaves "<stem>_Instance.xml" beside "<stem>_Instance.html" (and
+    ".zip") in Instance/<id>/ - the files share one exact stem. That is the
+    same run, not a scan for a plausible neighbour, so it does not reintroduce
+    the cross-run mix-up described above. 5.5 is untouched: its log records
+    InstanceDocPath, and without one the answer stays None.
+    """
+    try:
+        from backend import version_config
+        if not version_config.IS_V6:
+            return None
+    except Exception:
+        return None
+    stem, ext = os.path.splitext(error_file_path or "")
+    if ext.lower() != ".html":
+        return None
+    candidate = stem + ".xml"
+    return candidate if os.path.isfile(candidate) else None
 
 
 def _looks_like_instance(path: str) -> bool:
