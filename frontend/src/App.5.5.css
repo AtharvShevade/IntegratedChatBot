@@ -3342,3 +3342,20 @@ html, body, #root {
 .sched-picker-field input { font: inherit; font-size: 0.85rem; padding: 6px 8px; border: 1px solid var(--decision-border); border-radius: 6px; color: var(--text-primary); background: #FFFFFF; }
 .sched-picker .suggestion-chip:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .sched-picker-error { flex-basis: 100%; font-size: 0.76rem; color: #c0392b; }
+.sched-picker-time { position: relative; display: block; }
+.sched-picker-time > input[type="text"] { width: 100%; box-sizing: border-box; padding-right: 32px; }
+.sched-picker-time > input[aria-invalid="true"] { border-color: #c0392b; }
+.sched-picker-clock { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; padding: 2px; border: 0; background: transparent; color: var(--text-primary); cursor: pointer; }
+.sched-picker-native { position: absolute; left: 0; bottom: 0; width: 0; height: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+
+/* -- Schedule time: number picker (hour / minute / second columns) -- */
+.sched-picker-time > input[type="text"] { cursor: pointer; caret-color: transparent; }
+.sched-time-pop { position: absolute; z-index: 30; bottom: calc(100% + 4px); left: 0; padding: 8px; background: #FFFFFF; border: 1.5px solid var(--decision-border); border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16); }
+.sched-time-cols { display: flex; gap: 6px; }
+.sched-time-col { display: flex; flex-direction: column; align-items: stretch; width: 52px; }
+.sched-time-col-h { text-align: center; font-size: 0.7rem; font-weight: 600; color: var(--text-muted); padding-bottom: 4px; }
+.sched-time-list { display: flex; flex-direction: column; gap: 2px; height: 168px; overflow-y: auto; position: relative; padding-right: 2px; }
+.sched-time-opt { font: inherit; font-size: 0.85rem; padding: 5px 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); cursor: pointer; text-align: center; }
+.sched-time-opt:hover { background: var(--ai-bubble, #EAF7F2); }
+.sched-time-opt.sel { background: var(--accent, #0B5CAD); color: #FFFFFF; font-weight: 600; }
+.sched-time-done { margin-top: 8px; width: 100%; font: inherit; font-size: 0.8rem; padding: 6px 0; border: 0; border-radius: 6px; background: var(--accent, #0B5CAD); color: #FFFFFF; cursor: pointer; }

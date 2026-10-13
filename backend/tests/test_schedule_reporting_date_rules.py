@@ -98,7 +98,8 @@ class TestHelpersAndGenerateUnchanged:
     def test_after_schedule_helper_suggests_period_ends_on_or_before_schedule(self):
         after, err, sugg = _reporting_date_after_schedule("30-Sep-2030", "31-Mar-2030", "Q")
         assert after and "must be before" in err
-        assert sugg and sugg[0] == "31-Dec-2029" and "31-Mar-2030" not in sugg
+        # the three latest quarter-ends before 31-Mar-2030, oldest first
+        assert sugg == ["30-Jun-2029", "30-Sep-2029", "31-Dec-2029"]
 
     def test_helper_accepts_only_a_strictly_earlier_reporting_date(self):
         assert _reporting_date_after_schedule("30-Mar-2030", "31-Mar-2030", "D")[0] is False
@@ -174,7 +175,7 @@ class TestReenteredReportingDateIsValidatedAgain:
         out, _ = self._first_attempt(pe.strftime(FMT), sched.strftime(FMT))
         assert out["response_text"] == (
             f"The reporting date **{pe.strftime(FMT)}** must be before the schedule date "
-            f"**{sched.strftime(FMT)}**.\nPlease enter a reporting date before {sched.strftime(FMT)}")
+            f"**{sched.strftime(FMT)}**.\nPlease enter or choose a reporting date before {sched.strftime(FMT)}")
 
     def test_retry_is_checked_against_the_frequency(self):
         sched = date.today() + timedelta(days=40)
@@ -199,3 +200,151 @@ class TestReenteredReportingDateIsValidatedAgain:
         self._first_attempt(pe.strftime(FMT), sched.strftime(FMT))
         ok = _month_end(sched - timedelta(days=40))
         assert self._retry(ok.strftime(FMT))["result_type"] == "sched_confirm"
+
+
+class TestSuggestedReportingDates:
+    """Three frequency-valid reporting dates, strictly before the schedule date."""
+
+    SCHEDULE = date(2026, 12, 15)
+    ALL_FREQS = ["D", "W", "F", "M", "Q", "H", "C", "Y", "A", "B", "G", "HM", "Z", ""]
+
+    def _suggest(self, freq, schedule=None):
+        from backend.agent.scheduling import _suggest_reporting_dates_before
+        return _suggest_reporting_dates_before(schedule or self.SCHEDULE, freq)
+
+    def test_daily_example_from_the_requirements(self):
+        assert self._suggest("D") == ["12-Dec-2026", "13-Dec-2026", "14-Dec-2026"]
+
+    def test_weekly_gives_the_last_three_fridays(self):
+        assert self._suggest("W") == ["27-Nov-2026", "04-Dec-2026", "11-Dec-2026"]
+
+    def test_monthly_gives_the_last_three_month_ends(self):
+        assert self._suggest("M") == ["30-Sep-2026", "31-Oct-2026", "30-Nov-2026"]
+
+    def test_fortnightly_gives_15th_and_month_end_dates(self):
+        assert self._suggest("F") == ["31-Oct-2026", "15-Nov-2026", "30-Nov-2026"]
+
+    def test_quarterly_half_yearly_and_yearly_use_their_period_ends(self):
+        assert self._suggest("Q") == ["31-Mar-2026", "30-Jun-2026", "30-Sep-2026"]
+        assert self._suggest("H") == ["30-Sep-2025", "31-Mar-2026", "30-Sep-2026"]
+        assert self._suggest("C") == ["30-Jun-2025", "31-Dec-2025", "30-Jun-2026"]
+        assert self._suggest("Y") == ["31-Mar-2024", "31-Mar-2025", "31-Mar-2026"]
+        assert self._suggest("B") == ["31-Dec-2023", "31-Dec-2024", "31-Dec-2025"]
+
+    def test_every_frequency_gives_three_unique_valid_dates_before_the_schedule(self):
+        from backend.tools.instance_generator import parse_date_flexible
+        for freq in self.ALL_FREQS:
+            sugg = self._suggest(freq)
+            assert len(sugg) == 3, freq
+            assert len(set(sugg)) == 3, freq
+            assert sugg == sorted(sugg, key=parse_date_flexible), freq
+            for ds in sugg:
+                assert parse_date_flexible(ds) < self.SCHEDULE, (freq, ds)
+                assert validate_reporting_date(ds, freq, allow_future=True)["valid"], (freq, ds)
+
+    def test_a_date_equal_to_the_schedule_date_is_never_suggested(self):
+        # Yearly return scheduled on its own period end: that date is excluded.
+        assert "31-Mar-2026" not in self._suggest("Y", date(2026, 3, 31))
+        assert self._suggest("Y", date(2026, 3, 31)) == ["31-Mar-2023", "31-Mar-2024", "31-Mar-2025"]
+
+    def test_boundaries_across_month_and_year_ends_and_leap_days(self):
+        assert self._suggest("D", date(2027, 1, 1)) == ["29-Dec-2026", "30-Dec-2026", "31-Dec-2026"]
+        assert self._suggest("D", date(2028, 3, 1)) == ["27-Feb-2028", "28-Feb-2028", "29-Feb-2028"]
+
+    def test_suggestions_follow_the_schedule_date(self):
+        assert self._suggest("D", date(2027, 6, 10)) == ["07-Jun-2027", "08-Jun-2027", "09-Jun-2027"]
+
+    def test_the_validation_message_is_unchanged_and_options_carry_the_suggestions(self):
+        sched = date.today() + timedelta(days=30)
+        out = _finalize_schedule(
+            _ret("D"), (sched + timedelta(days=5)).strftime(FMT), sched.strftime(FMT), "16:00", None,
+            session_id=None, login_id=None,
+        )
+        rpt = (sched + timedelta(days=5)).strftime(FMT)
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+        assert out["response_text"] == (
+            f"The reporting date **{rpt}** must be before the schedule date "
+            f"**{sched.strftime(FMT)}**.\nPlease enter or choose a reporting date before {sched.strftime(FMT)}")
+        assert out["options"] == [(sched - timedelta(days=n)).strftime(FMT) for n in (3, 2, 1)]
+
+    def test_a_reporting_date_equal_to_the_schedule_date_also_gets_suggestions(self):
+        sched = date.today() + timedelta(days=30)
+        out = _finalize_schedule(
+            _ret("D"), sched.strftime(FMT), sched.strftime(FMT), "16:00", None,
+            session_id=None, login_id=None,
+        )
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+        assert len(out["options"]) == 3
+
+
+class TestSelectingASuggestedDate:
+    """Clicking a suggestion sends its text as the next reporting-date input;
+    the flow validates it like any typed date and then moves on."""
+
+    SID = "sched-suggest-session"
+
+    def _flow(self, freq, schedule_offset=40):
+        from backend.agent.state import _session_context
+        _session_context.pop(self.SID, None)
+        sched = date.today() + timedelta(days=schedule_offset)
+        first = _finalize_schedule(
+            _ret(freq), (sched + timedelta(days=60)).strftime(FMT), sched.strftime(FMT), "16:00",
+            None, session_id=self.SID, login_id=None,
+        )
+        return sched, first, _session_context.pop(self.SID)
+
+    def _pick(self, ctx, text):
+        return _finalize_schedule(
+            {"form_id": ctx["sched_form_id"], "name": ctx["sched_return_name"],
+             "frequency": ctx["sched_frequency"], "period_name": ctx["sched_period_name"]},
+            text, ctx["sched_schedule_date"], ctx["sched_schedule_time"], None,
+            session_id=None, login_id=None,
+        )
+
+    def test_every_suggestion_for_every_frequency_is_accepted_when_picked(self):
+        for freq in ["D", "W", "F", "M", "Q", "H", "C", "Y", "B", "G"]:
+            _, first, ctx = self._flow(freq)
+            assert len(first["options"]) == 3, freq
+            for choice in first["options"]:
+                assert self._pick(ctx, choice)["result_type"] == "sched_confirm", (freq, choice)
+
+    def test_manual_entry_of_another_valid_date_still_works(self):
+        sched, _, ctx = self._flow("D")
+        manual = (sched - timedelta(days=20)).strftime(FMT)
+        assert self._pick(ctx, manual)["result_type"] == "sched_confirm"
+
+    def test_manual_entry_of_an_invalid_date_is_still_rejected_with_suggestions(self):
+        sched, _, ctx = self._flow("M")
+        not_month_end = (sched - timedelta(days=45)).replace(day=15).strftime(FMT)
+        out = self._pick(ctx, not_month_end)
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+
+    def test_the_schedule_date_and_time_are_kept_while_choosing(self):
+        sched, _, ctx = self._flow("D")
+        assert ctx["sched_schedule_date"] == sched.strftime(FMT)
+        assert ctx["sched_schedule_time"] == "16:00"
+
+
+class TestFrequencyInvalidDateGetsSuggestionsToo:
+    def test_weekly_non_friday_with_a_known_schedule_date_gets_three_fridays(self):
+        sched = date.today() + timedelta(days=30)
+        d = sched - timedelta(days=10)
+        while d.weekday() == 4:                       # make sure it is NOT a Friday
+            d -= timedelta(days=1)
+        out = _finalize_schedule(_ret("W"), d.strftime(FMT), sched.strftime(FMT), "16:00", None,
+                                 session_id=None, login_id=None)
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+        assert "Friday" in out["response_text"]          # the frequency message is unchanged
+        assert len(out["options"]) == 3
+        from backend.tools.instance_generator import parse_date_flexible
+        for ds in out["options"]:
+            assert parse_date_flexible(ds).weekday() == 4 and parse_date_flexible(ds) < sched
+
+    def test_without_a_schedule_date_the_frequency_suggestions_are_untouched(self):
+        pe = _next_month_end()
+        bad = (pe - timedelta(days=2)).strftime(FMT)
+        out = _finalize_schedule(_ret("M"), bad, None, None, None, session_id=None, login_id=None)
+        expected = [s for s in validate_reporting_date(bad, "M", allow_future=True)["suggestions"]
+                    if s.lower() != bad.lower()]
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+        assert (out.get("options") or []) == expected

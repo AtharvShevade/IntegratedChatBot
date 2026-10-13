@@ -1140,11 +1140,42 @@ function ScheduleDateTimePicker({ onSubmit }) {
   const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   const [date, setDate] = useState('')
   const [time, setTime] = useState('')
+  const [clockOpen, setClockOpen] = useState(false)
+  const timeWrapRef = useRef(null)
 
-  // A time input with step=1 reports "HH:MM" when the seconds are 00; keep one shape.
-  const timeHms = time && time.length === 5 ? `${time}:00` : time
-  const notInFuture = Boolean(date && time) && new Date(`${date}T${timeHms}`) <= new Date()
-  const canSubmit = Boolean(date && time) && !notInFuture
+  // The time is PICKED, not typed: the box shows a real HH:MM:SS placeholder (which a
+  // native time input cannot) and the clock opens columns of numbers for hour, minute
+  // and second. Whatever is picked is always a complete, valid HH:MM:SS.
+  const timeValid = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(time)
+  const timeHms = timeValid && time.length === 5 ? `${time}:00` : time
+  const notInFuture = Boolean(date) && timeValid && new Date(`${date}T${timeHms}`) <= new Date()
+  const canSubmit = Boolean(date) && timeValid && !notInFuture
+
+  const timeParts = timeValid ? timeHms.split(':') : ['', '', '']
+  const pickPart = (idx, value) => {
+    const parts = [timeParts[0] || '00', timeParts[1] || '00', timeParts[2] || '00']
+    parts[idx] = value
+    setTime(parts.join(':'))
+  }
+
+  // Close on an outside click or Escape; scroll each column to its selected number.
+  useEffect(() => {
+    if (!clockOpen) return undefined
+    const onDown = (e) => {
+      if (timeWrapRef.current && !timeWrapRef.current.contains(e.target)) setClockOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setClockOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    timeWrapRef.current?.querySelectorAll('.sched-time-opt.sel').forEach((el) => {
+      const list = el.parentElement
+      list.scrollTop = el.offsetTop - list.clientHeight / 2 + el.clientHeight / 2
+    })
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [clockOpen])
 
   const submit = () => {
     if (!canSubmit) return
@@ -1161,7 +1192,44 @@ function ScheduleDateTimePicker({ onSubmit }) {
       </label>
       <label className="sched-picker-field">
         <span>{t('schedule.pickTime')}</span>
-        <input type="time" step="1" value={time} onChange={(e) => setTime(e.target.value)} />
+        <span className="sched-picker-time" ref={timeWrapRef}>
+          <input
+            type="text" readOnly autoComplete="off" maxLength={8}
+            placeholder="HH:MM:SS" value={time}
+            onClick={() => setClockOpen((o) => !o)}
+            aria-label={t('schedule.pickTime')} aria-haspopup="dialog" aria-expanded={clockOpen}
+          />
+          <button type="button" className="sched-picker-clock" onClick={() => setClockOpen((o) => !o)} aria-label={t('schedule.pickTime')}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" />
+            </svg>
+          </button>
+          {clockOpen && (
+            <div className="sched-time-pop" role="dialog" aria-label={t('schedule.pickTime')}>
+              <div className="sched-time-cols">
+                {[['HH', 24], ['MM', 60], ['SS', 60]].map(([label, count], idx) => (
+                  <div className="sched-time-col" key={label}>
+                    <div className="sched-time-col-h">{label}</div>
+                    <div className="sched-time-list">
+                      {Array.from({ length: count }, (_, i) => pad(i)).map((v) => (
+                        <button
+                          type="button" key={v}
+                          className={`sched-time-opt${timeParts[idx] === v ? ' sel' : ''}`}
+                          onClick={() => pickPart(idx, v)}
+                        >
+                          {v}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="sched-time-done" onClick={() => setClockOpen(false)}>
+                {t('schedule.done')}
+              </button>
+            </div>
+          )}
+        </span>
       </label>
       <button type="button" className="suggestion-chip chip-confirm" disabled={!canSubmit} onClick={submit}>
         {t('schedule.setSchedule')}

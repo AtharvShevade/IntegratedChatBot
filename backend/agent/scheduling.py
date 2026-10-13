@@ -7,10 +7,11 @@ Moved out of backend/agent/__init__.py verbatim — no logic changes.
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from typing import Any
 
 from backend.tools.instance_generator import (
-    validate_reporting_date, resolve_return_exact, parse_date_flexible, _hint_dates,
+    validate_reporting_date, resolve_return_exact, parse_date_flexible,
 )
 from backend.tools.report_lookup import find_matching_reports, fuzzy_report_suggestions
 from backend.agent.state import (
@@ -47,6 +48,40 @@ def _validate_future_schedule_date(
     return result["valid"], (result["error"] or "")
 
 
+# How far back to look for valid reporting dates: three year-ends of the
+# sparsest frequency (Yearly / Calendar-year) is about 3 x 366 days.
+_SUGGESTION_LOOKBACK_DAYS = 1500
+
+
+def _suggest_reporting_dates_before(
+    schedule: date, frequency: str, count: int = 3,
+) -> list[str]:
+    """The *count* most recent reporting dates strictly before *schedule* that
+    are valid for *frequency*, oldest first (so a Daily report scheduled for
+    15-Dec-2026 gets 12-Dec, 13-Dec, 14-Dec).
+
+    Nothing is hardcoded per frequency: each candidate day, walking back from
+    the day before the schedule date, is run through the SAME
+    validate_reporting_date() the user's own input goes through, so a
+    suggestion is by construction something that input would accept. Daily /
+    as-and-when returns get consecutive days, Weekly the last Fridays,
+    Fortnightly the 15th / month-end, Monthly the month-ends, and
+    Quarterly / Half-Yearly / Yearly their period-ends. Dates are unique and
+    all strictly earlier than the schedule date.
+    """
+    found: list[date] = []
+    day = schedule - timedelta(days=1)
+    for _ in range(_SUGGESTION_LOOKBACK_DAYS):
+        if len(found) >= count or day.year < 1900:
+            break
+        if validate_reporting_date(
+            day.strftime("%d-%b-%Y"), frequency, allow_future=True,
+        )["valid"]:
+            found.append(day)
+        day -= timedelta(days=1)
+    return [d.strftime("%d-%b-%Y") for d in sorted(found)]
+
+
 def _reporting_date_after_schedule(
     reporting_date: str, schedule_date: str, frequency: str,
 ) -> tuple[bool, str, list[str]]:
@@ -56,25 +91,20 @@ def _reporting_date_after_schedule(
     reporting date may be in the past or the future but must fall before the
     schedule date. Compared as calendar dates (the time of day does not
     matter). Returns ``(is_rejected, error_message, suggestions)``;
-    suggestions are the frequency's valid period-ends before the schedule
-    date. Unparsable input returns ``(False, "", [])`` - the individual
-    validators already report that.
+    suggestions are the three most recent dates valid for the frequency before
+    the schedule date (see _suggest_reporting_dates_before). Unparsable input
+    returns ``(False, "", [])`` - the individual validators already report
+    that.
     """
     rpt = parse_date_flexible(reporting_date)
     sch = parse_date_flexible(schedule_date)
     if rpt is None or sch is None or rpt < sch:
         return False, "", []
-    candidates: list = []
-    for yr in (sch.year, sch.year - 1):
-        for ds in _hint_dates(frequency, yr, filter_future=False):
-            d = parse_date_flexible(ds)
-            if d is not None and d < sch:
-                candidates.append(d)
-    suggestions = [d.strftime("%d-%b-%Y") for d in sorted(set(candidates), reverse=True)[:3]]
+    suggestions = _suggest_reporting_dates_before(sch, frequency)
     return True, (
         f"The reporting date **{reporting_date}** must be before the schedule date "
         f"**{schedule_date}**.\n"
-        f"Please enter a reporting date before {schedule_date}"
+        f"Please enter or choose a reporting date before {schedule_date}"
     ), suggestions
 
 
@@ -153,6 +183,13 @@ def _finalize_schedule(
                 s for s in (rpt_validation.get("suggestions") or [])
                 if s.lower() != reporting_date.lower()
             ]
+            # When the schedule date is already known, offer three dates that are
+            # valid for this frequency AND strictly before it, instead of whatever
+            # the frequency check lists (which can include dates on or after it,
+            # and is empty for Weekly). The message above is unchanged.
+            _sch_known = parse_date_flexible(schedule_date) if schedule_date else None
+            if _sch_known is not None:
+                suggestions = _suggest_reporting_dates_before(_sch_known, frequency)
             if len(suggestions) == 1:
                 error_msg = f"Did you mean **{suggestions[0]}**?\n\n{error_msg}"
             return _build(
