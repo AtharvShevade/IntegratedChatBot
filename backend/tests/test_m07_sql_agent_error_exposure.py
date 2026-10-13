@@ -167,7 +167,10 @@ class TestHandleDbQueryErrorPathsNeverLeak:
         monkeypatch.setattr(sql_generator_shim, "validate_sql", lambda sql, tables, columns: (True, "Valid"))
         monkeypatch.setattr(executor_shim, "execute_query", lambda sql: (["CODE"], [("X",)], None))
 
-        result = asyncio.run(qh.handle_db_query("show me the total please", login_id="any"))
+        # The question names a date, so the "no date -> latest period" default
+        # does not rewrite the SQL; that default has its own tests in
+        # test_sql_agent_latest_date_default.py.
+        result = asyncio.run(qh.handle_db_query("show me the total for 31 March 2026 please", login_id="any"))
         assert result["db_sql"] == "SELECT code FROM cims_ale_q_anx_1_a"
         assert result["db_rows"] == [["X"]]
         assert result["db_error"] is None

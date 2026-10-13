@@ -504,6 +504,28 @@ async def handle_db_query(
                 db_error=None,
             )
 
+    # ── Step 2.5: no period named -> default to the latest one ────────────────
+    # The prompt asks for this already; this is the mechanical backstop for a
+    # model that ignored it (see latest_date.py for exactly when it applies).
+    # The rewritten SQL must itself pass validation, otherwise the model's own
+    # SQL is kept unchanged.
+    try:
+        from backend.sql_agent.latest_date import apply_latest_date_default, query_implies_period
+        _names_period = _has_time_context(q) or query_implies_period(q)
+        _latest_sql, _latest_changed = apply_latest_date_default(sql, tables, _names_period)
+        if _latest_changed:
+            _latest_ok, _latest_why = validate_sql(_latest_sql, tables, columns)
+            if _latest_ok:
+                sql = _latest_sql
+                logger.info("[SQL_AGENT] sql (latest-period default applied)=\n%s", sql)
+            else:
+                logger.warning(
+                    "[SQL_AGENT] latest-period default rejected by validation (%s); keeping model SQL",
+                    _latest_why,
+                )
+    except Exception as exc:
+        logger.warning("[SQL_AGENT] latest-period default skipped: %s", exc)
+
     # ── Step 3: validation ────────────────────────────────────────────────────
     # generate_sql already validated (and tried to correct) this; re-checking is
     # cheap and is what decides whether we are allowed to execute at all — it
