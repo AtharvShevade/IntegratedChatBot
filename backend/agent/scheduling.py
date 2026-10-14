@@ -104,7 +104,7 @@ def _reporting_date_after_schedule(
     return True, (
         f"The reporting date **{reporting_date}** must be before the schedule date "
         f"**{schedule_date}**.\n"
-        f"Please enter or choose a reporting date before {schedule_date}"
+        f"Please enter or choose a reporting date before **{schedule_date}**"
     ), suggestions
 
 

@@ -146,10 +146,15 @@ _STATUS_LABELS_5_5: dict[int, str] = {
     # real data, but is kept as Failed so a future status-13 row still gets its
     # error file (see the sets below).
     13: "Failed",
-    # Code 4 is deliberately NOT mapped. It is absent from the application's
-    # dictionary and has never been observed; labelling it "In Progress" was a
-    # local invention, so it now resolves to "Unknown" — the honest answer —
-    # rather than asserting a state the application does not recognise.
+    # 1: picked by the queue / extraction finished (the service writes it at
+    # both moments, so it can only be called "In Process"). 2: extraction
+    # started, queries about to run. Neither offers a file.
+    1:  "In Process",
+    2:  "Extraction Started",
+    # 4: instance generation in progress (written at the start of
+    # GenerateInstance and flipped to 6 moments later). The application's own
+    # frontend labels it "Extracted"; the chatbot follows that wording.
+    4:  "Extracted",
     6:  "In Process",
     9:  "Approved",
     12: "Rejected",
@@ -159,6 +164,11 @@ _STATUS_LABELS_5_5: dict[int, str] = {
     # both screens. Display-only — routing uses the int sets below, never this
     # string. Frontend mirror: getStatusMeta in MessageBubble.jsx.
     0:  "In Queue",
+    # 20: soft-deleted (the row stays in the store). 30: orphan written for the
+    # XML-staging upload path, never picked up or advanced by the service.
+    # Neither offers a file; they are only named instead of showing "Unknown".
+    20: "Deleted",
+    30: "Not Processed",
 }
 # These two sets drive BEHAVIOUR, not wording, and are deliberately not a
 # mirror of the label map:

@@ -177,7 +177,7 @@ class TestReenteredReportingDateIsValidatedAgain:
         out, _ = self._first_attempt(pe.strftime(FMT), sched.strftime(FMT))
         assert out["response_text"] == (
             f"The reporting date **{pe.strftime(FMT)}** must be before the schedule date "
-            f"**{sched.strftime(FMT)}**.\nPlease enter or choose a reporting date before {sched.strftime(FMT)}")
+            f"**{sched.strftime(FMT)}**.\nPlease enter or choose a reporting date before **{sched.strftime(FMT)}**")
 
     def test_retry_is_checked_against_the_frequency(self):
         sched = date.today() + timedelta(days=40)
@@ -266,7 +266,7 @@ class TestSuggestedReportingDates:
         assert out["result_type"] == "sched_awaiting_rpt_date"
         assert out["response_text"] == (
             f"The reporting date **{rpt}** must be before the schedule date "
-            f"**{sched.strftime(FMT)}**.\nPlease enter or choose a reporting date before {sched.strftime(FMT)}")
+            f"**{sched.strftime(FMT)}**.\nPlease enter or choose a reporting date before **{sched.strftime(FMT)}**")
         assert out["options"] == [(sched - timedelta(days=n)).strftime(FMT) for n in (3, 2, 1)]
 
     def test_a_reporting_date_equal_to_the_schedule_date_also_gets_suggestions(self):

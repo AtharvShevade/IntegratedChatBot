@@ -51,13 +51,25 @@ class TestReportLookupStatusMapping:
         for code, label in expected.items():
             assert report_lookup.map_status(code) == label
 
-    def test_code_4_is_not_mapped(self):
-        """4 is absent from the iDEAL application's status dictionary and has
-        never been observed in real InstanceLog data. Labelling it
-        "In Progress" was a local invention, so it must resolve to Unknown
-        rather than assert a state the application does not recognise."""
-        assert 4 not in report_lookup._STATUS_LABELS
-        assert report_lookup.map_status(4) == "Unknown"
+    def test_codes_1_and_2_use_the_application_wording(self):
+        """1 = picked by the queue / extraction finished, 2 = extraction started.
+        Neither is a failed or success state."""
+        assert report_lookup.map_status(1) == "In Process"
+        assert report_lookup.map_status(2) == "Extraction Started"
+        for code in (1, 2):
+            assert code not in report_lookup._FAILED_STATUSES
+            assert code not in report_lookup._SUCCESS_STATUSES
+
+    def test_codes_4_20_30_use_the_application_wording(self):
+        """4 = instance generation in progress ("Extracted" in the application's
+        own frontend), 20 = soft-deleted, 30 = orphan from the XML-staging path.
+        None of them is a failed or success state, so no file is offered."""
+        assert report_lookup.map_status(4) == "Extracted"
+        assert report_lookup.map_status(20) == "Deleted"
+        assert report_lookup.map_status(30) == "Not Processed"
+        for code in (4, 20, 30):
+            assert code not in report_lookup._FAILED_STATUSES
+            assert code not in report_lookup._SUCCESS_STATUSES
 
     def test_labels_match_the_ideal_application_dictionary(self):
         """The application's own dictionary is the source of truth:
@@ -78,7 +90,7 @@ class TestReportLookupStatusMapping:
         scheme — they must NOT resolve to any label (no silent, wrong
         "Success"/"Failed" guess); "Unknown" is the correct, honest answer
         now that this service is not the source of truth."""
-        for stale_code in (60, 25, 45, 55, 70, 20, 30, 40, 50):
+        for stale_code in (60, 25, 45, 55, 70, 40, 50):
             assert report_lookup.map_status(stale_code) == "Unknown"
 
     def test_failed_and_success_sets_match_5_5(self):
@@ -125,11 +137,15 @@ class TestXmlStoreSubmissionStatusLabels:
         assert "Audited" not in xml_store.SUBMISSION_STATUS_LABELS.values()
         assert "New / Pending" not in xml_store.SUBMISSION_STATUS_LABELS.values()
         assert xml_store.SUBMISSION_STATUS_LABELS.get("3") != "Validated"
-        assert "4" not in xml_store.SUBMISSION_STATUS_LABELS
+        # 4 / 20 / 30 now carry the application's own wording (see
+        # test_codes_4_20_30_use_the_application_wording), not the old guesses.
+        assert xml_store.SUBMISSION_STATUS_LABELS.get("4") == "Extracted"
 
     def test_old_xbrlgeneration_service_codes_are_unmapped(self):
-        for stale_code in ("60", "25", "45", "55", "70", "20", "30", "40", "50"):
+        for stale_code in ("60", "25", "45", "55", "70", "40", "50"):
             assert stale_code not in xml_store.SUBMISSION_STATUS_LABELS
+        assert xml_store.SUBMISSION_STATUS_LABELS.get("20") == "Deleted"
+        assert xml_store.SUBMISSION_STATUS_LABELS.get("30") == "Not Processed"
 
     def test_no_separate_6_0_status_table_exists(self):
         assert not hasattr(xml_store, "_SUBMISSION_STATUS_LABELS_6_0")

@@ -1,0 +1,41 @@
+{
+  "_comment": "Sample return names / ReturnIds shown in the guided prompts, per chatbot version (APP_VERSION). Edit this file to change the examples - no code or frontend change is needed; it is re-read automatically when it changes. Actions: check_report_status, generate_instance, schedule_report, comparative_analysis (the last prompt reads '... short name to compare (e.g. ...):'). Each action maps to an ordered list of samples; the prompt reads 'Enter the report name, ReturnId, or short name (e.g. <samples joined by comma>):'.",
+  "5.5": {
+    "check_report_status": [
+      "CIMS_ROR",
+      "R149",
+      "RAQ"
+    ],
+    "generate_instance": [
+      "CIMS_FormGPB",
+      "R009"
+    ],
+    "schedule_report": [
+      "CIMS_RAQ",
+      "R162"
+    ],
+    "comparative_analysis": [
+      "CIMS_RAQ",
+      "R009",
+      "RAQ"
+    ]
+  },
+  "6.0": {
+    "check_report_status": [
+      "QCB_F013_Breakdown of exposures by geography",
+      "F013"
+    ],
+    "generate_instance": [
+      "QCB_F013_Breakdown of exposures by geography",
+      "F013"
+    ],
+    "schedule_report": [
+      "QCB_F013_Breakdown of exposures by geography",
+      "F013"
+    ],
+    "comparative_analysis": [
+      "QCB_F013_Breakdown of exposures by geography",
+      "F013"
+    ]
+  }
+}

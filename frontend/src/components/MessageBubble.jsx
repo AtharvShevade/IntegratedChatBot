@@ -1039,7 +1039,33 @@ function ErrorDetailsPanel({ details, errorMessages, downloadUrl, downloadLabel 
 }
 
 // ── BubbleText ────────────────────────────────────────────────────────────────
-function BubbleText({ text, errorDetails }) {
+// The backend wraps values the user typed or chose (dates, times, names) in
+// **...** when it echoes them back. Render those as bold instead of showing the
+// asterisks.
+function renderInlineBold(line, keyPrefix) {
+  return String(line ?? '').split(/\*\*(.+?)\*\*/g).map((part, i) =>
+    i % 2 === 1 ? <strong key={`${keyPrefix}-${i}`}>{part}</strong> : part
+  )
+}
+
+// "Reporting Date : 31-Dec-2026" -> label as is, the value in bold. Lines that
+// are not "label : value" (a heading ending in a colon, plain text) render as
+// normal text, with any **bold** segments honoured.
+function renderValueLines(text) {
+  const lines = String(text ?? '').split('\n')
+  return lines.map((line, i) => {
+    // A line that already carries **bold** markers is rendered as written.
+    const m = line.includes('**') ? null : line.match(/^(.*?\S\s*:\s+)(\S.*)$/)
+    return (
+      <span key={i}>
+        {m ? <>{m[1]}<strong>{m[2]}</strong></> : renderInlineBold(line, i)}
+        {i < lines.length - 1 && <br />}
+      </span>
+    )
+  })
+}
+
+function BubbleText({ text, errorDetails, boldValues = false }) {
   const t = useT()
   // Matches the backend's English heading (agent/__init__.py:3230) to split
   // the message -- a parsing key, so it stays English. The heading shown to
@@ -1053,7 +1079,7 @@ function BubbleText({ text, errorDetails }) {
     return (
       <>
         {beforePending.split('\n').map((line, i, arr) => (
-          <span key={`b${i}`}>{line}{i < arr.length - 1 && <br />}</span>
+          <span key={`b${i}`}>{renderInlineBold(line, `b${i}`)}{i < arr.length - 1 && <br />}</span>
         ))}
         <br />
         <span className="explanation-pending">⏳ Generating error explanations…</span>
@@ -1062,8 +1088,9 @@ function BubbleText({ text, errorDetails }) {
   }
 
   if (idx === -1) {
+    if (boldValues) return renderValueLines(text)
     return (text ?? '').split('\n').map((line, i, arr) => (
-      <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+      <span key={i}>{renderInlineBold(line, i)}{i < arr.length - 1 && <br />}</span>
     ))
   }
 
@@ -1508,7 +1535,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
         <div className="assistant-msg-block">
           <div className="bubble assistant-bubble">
             {displayText.split('\n').map((line, i, arr) => (
-              <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+              <span key={i}>{renderInlineBold(line, i)}{i < arr.length - 1 && <br />}</span>
             ))}
           </div>
           <ScheduleDateTimePicker onSubmit={onSuggestion} />
@@ -1524,9 +1551,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
         <div className="avatar assistant-avatar">AI</div>
         <div className="assistant-msg-block">
           <div className="bubble assistant-bubble sched-confirm-bubble">
-            {displayText.split('\n').map((line, i, arr) => (
-              <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
-            ))}
+            {renderValueLines(displayText)}
           </div>
           <div className="welcome-suggestions option-chips sched-confirm-actions">
             {chips.map((opt) => (
@@ -1561,6 +1586,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
           <BubbleText
             text={isUser ? t.echo(displayText) : displayText}
             errorDetails={resolvedErrorDetails}
+            boldValues={!isUser && resultType === 'schedule_parsed'}
           />
         </div>
 
@@ -1569,13 +1595,25 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
           chips.length >= 5 ? (
             <ReportSearchDropdown options={chips} onSelect={onSuggestion} />
           ) : (
-            <div className="welcome-suggestions option-chips">
-              {chips.map((opt) => (
-                <button key={opt} className="suggestion-chip" onClick={() => onSuggestion?.(opt)}>
-                  {t.option(opt)}
-                </button>
-              ))}
-            </div>
+            resultType === 'sched_awaiting_rpt_date' ? (
+              // Suggested reporting dates: one row of equal tabs spanning the
+              // same width as the message above.
+              <div className="option-chips option-chips-row" style={{ gridTemplateColumns: `repeat(${chips.length}, 1fr)` }}>
+                {chips.map((opt) => (
+                  <button key={opt} className="suggestion-chip" onClick={() => onSuggestion?.(opt)}>
+                    {t.option(opt)}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="welcome-suggestions option-chips">
+                {chips.map((opt) => (
+                  <button key={opt} className="suggestion-chip" onClick={() => onSuggestion?.(opt)}>
+                    {t.option(opt)}
+                  </button>
+                ))}
+              </div>
+            )
           )
         )}
 
@@ -1606,25 +1644,30 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
 // ── Status metadata helper ────────────────────────────────────────────────────
 function getStatusMeta(code) {
   const n = parseInt(code, 10)
-  // Labels mirror report_lookup._STATUS_LABELS, which is aligned with the
-  // iDEAL application's own status dictionary. Colours are unchanged: bright
-  // green = generated, awaiting approval; dark green = approved.
+  // Labels mirror report_lookup._STATUS_LABELS, which follows the iDEAL
+  // application's own status list. Colours: bright green = generated, awaiting
+  // approval; dark green = approved; red = failed / rejected; blue = extracted;
+  // orange = in process; yellow = queued; grey = deleted / not processed / unknown.
   if (n === 11)                       return { label: 'Approval Pending', color: '#00C853' }
   if (n === 9)                        return { label: 'Approved',    color: '#006400' }
   if ([3, 5, 8, 10, 13].includes(n)) return { label: 'Failed',      color: '#FF4D4F' }
-  // 6 only — code 4 is not in the application's status dictionary and falls
-  // through to Unknown, matching report_lookup._STATUS_LABELS.
-  if (n === 6)                        return { label: 'In Process',  color: '#FF9800' }
+  if (n === 12)                       return { label: 'Rejected',    color: '#C62828' }
+  // 4: instance generation in progress -> "Extracted" (the application's own word).
+  if (n === 4)                        return { label: 'Extracted',   color: '#29B6F6' }
+  if (n === 6 || n === 1)             return { label: 'In Process',  color: '#FF9800' }
+  if (n === 2)                        return { label: 'Extraction Started', color: '#FFA726' }
   // "In Queue" mirrors report_lookup._STATUS_LABELS[0] and the wording the
   // iDEAL application page uses for the same row.
   if (n === 0)                        return { label: 'In Queue',    color: '#FFD600' }
+  if (n === 20)                       return { label: 'Deleted',       color: '#9E9E9E' }
+  if (n === 30)                       return { label: 'Not Processed', color: '#B0BEC5' }
   return { label: 'Unknown', color: '#9E9E9E' }
 }
 
 // Canonical legend, built from getStatusMeta itself so the swatches can never
 // drift from the dots they explain. One representative code per distinct
 // status; order runs healthy -> in-flight -> failed.
-const STATUS_LEGEND = [11, 9, 4, 0, 3].map((code) => getStatusMeta(code))
+const STATUS_LEGEND = [11, 9, 12, 6, 4, 0, 3].map((code) => getStatusMeta(code))
 
 // ── Instance Dropdown ─────────────────────────────────────────────────────────
 function InstanceDropdown({ headerText, options, instancesData, onSelect }) {

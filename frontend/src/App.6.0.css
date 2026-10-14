@@ -3678,7 +3678,7 @@ html, body, #root {
 }
 
 /* -- Schedule date/time picker -- */
-.sched-picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 8px; padding: 10px 12px; background: #FFFFFF; border: 1.5px solid var(--decision-border); border-radius: 8px; box-shadow: var(--shadow-sm); }
+.sched-picker { display: grid; grid-template-columns: auto minmax(104px, 1fr) auto; align-items: end; gap: 10px; box-sizing: border-box; width: min(500px, 80vw); margin-top: 8px; padding: 10px 12px; background: #FFFFFF; border: 1.5px solid var(--decision-border); border-radius: 8px; box-shadow: var(--shadow-sm); }
 .sched-picker-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.76rem; color: var(--text-muted); }
 .sched-picker-field input { font: inherit; font-size: 0.85rem; padding: 6px 8px; border: 1px solid var(--decision-border); border-radius: 6px; color: var(--text-primary); background: #FFFFFF; }
 .sched-picker .suggestion-chip:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
@@ -3700,3 +3700,20 @@ html, body, #root {
 .sched-time-opt:hover { background: var(--ai-bubble, #EAF7F2); }
 .sched-time-opt.sel { background: var(--accent, #0B5CAD); color: #FFFFFF; font-weight: 600; }
 .sched-time-done { margin-top: 8px; width: 100%; font: inherit; font-size: 0.8rem; padding: 6px 0; border: 0; border-radius: 6px; background: var(--accent, #0B5CAD); color: #FFFFFF; cursor: pointer; }
+
+/* -- Schedule picker: same width as the message above; the time box takes what is left -- */
+.sched-picker .sched-picker-field { min-width: 0; }
+.sched-picker .sched-picker-time > input[type="text"] { min-width: 0; }
+.sched-picker .suggestion-chip { white-space: nowrap; padding: 7px 10px; font-size: 0.8rem; }
+.sched-picker .sched-picker-error { grid-column: 1 / -1; }
+@media (max-width: 520px) {
+  .sched-picker { grid-template-columns: 1fr 1fr; }
+  .sched-picker .suggestion-chip { grid-column: 1 / -1; }
+}
+
+/* -- Suggested reporting dates: one row of tabs, full width of the message -- */
+.option-chips-row { display: grid; gap: 8px; width: 100%; box-sizing: border-box; }
+.option-chips-row .suggestion-chip { text-align: center; padding: 8px 6px; white-space: nowrap; min-width: 0; }
+
+/* -- Bold echoed values (dates, times) never split across lines -- */
+.bubble strong { white-space: nowrap; }

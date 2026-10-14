@@ -167,6 +167,12 @@ def _menu(login_id: str | None = None) -> dict[str, Any]:
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
+def _sample_prompt(action: str, compare: bool = False) -> str:
+    """Report-name prompt with the examples configured for the running version."""
+    from backend.guided_samples import get_samples, report_name_prompt
+    return report_name_prompt(get_samples(action), compare=compare)
+
+
 async def guided_step(
     message:     str,
     session_id:  str | None,
@@ -405,8 +411,10 @@ def _handle_action_selected(
     if action == "Check report status":
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_STATUS_REPORT}
+        # Examples come from backend/guided_samples.json for the running version
+        # (5.5 or 6.0); the frontend just displays this text.
         return _build(
-            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_ROR, R149, RAQ):",
+            response_text=_sample_prompt("check_report_status"),
             result_type="guided_input",
             options=[],
         )
@@ -415,7 +423,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_GEN_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_FormGPB, R009):",
+            response_text=_sample_prompt("generate_instance"),
             result_type="guided_input",
             options=[],
         )
@@ -424,7 +432,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_SCHED_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name (e.g. CIMS_RAQ, R162):",
+            response_text=_sample_prompt("schedule_report"),
             result_type="guided_input",
             options=[],
         )
@@ -433,7 +441,7 @@ def _handle_action_selected(
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_CMP_REPORT}
         return _build(
-            response_text="Enter the report name, ReturnId, or short name to compare (e.g. CIMS_RAQ, R009, RAQ):",
+            response_text=_sample_prompt("comparative_analysis", compare=True),
             result_type="guided_input",
             options=[],
         )
