@@ -68,7 +68,10 @@ logger = logging.getLogger(__name__)
 
 # ── Selection ────────────────────────────────────────────────────────────────
 
-# How many facts get an explanation. Deliberately NOT xbrl_comparator's
+# How many facts get an explanation: a TARGET, default 8 (VARIANCE_EXPLAIN_LIMIT
+# overrides it, e.g. 20). Every eligible Critical fact is explained even when
+# that exceeds the target - the target only caps the lower tiers (see
+# select_facts_ex). Deliberately NOT xbrl_comparator's
 
 # SUMMARY_ROWS (10): that one is tied to the chart's default Top-N view, and
 
@@ -76,7 +79,7 @@ logger = logging.getLogger(__name__)
 
 # explains 20 facts.
 
-SUMMARY_CONCEPT_LIMIT = int(os.getenv("VARIANCE_EXPLAIN_LIMIT", "20"))
+SUMMARY_CONCEPT_LIMIT = int(os.getenv("VARIANCE_EXPLAIN_LIMIT", "8"))
 
 # A single concept can hold hundreds of dimensional rows (AmountOutstanding
 
@@ -390,29 +393,39 @@ def _adds_information(cand: dict, already: list[dict], label_a: str, label_b: st
         return True
     return False
 
-def select_facts(
+def select_facts_ex(
     rows: list[dict],
     limit: int = SUMMARY_CONCEPT_LIMIT,
     max_per_concept: int = MAX_DIMS_PER_CONCEPT,
     max_per_section: int = MAX_PER_SECTION,
     label_a: str = "",
     label_b: str = "",
-) -> list[dict]:
-    """The facts that get explained, in priority order.
+) -> tuple[list[dict], int]:
+    """(facts that get explained, number of ELIGIBLE facts left out by *limit*).
 
-    *rows* must already be compute_variance's output — ranked by priority over
+    *rows* must already be compute_variance's output - ranked by priority over
     EVERY comparable fact. This only re-orders and filters that ranking; it
     never re-scores, so there is one definition of "important" in the system.
 
-    Diversity is applied in ROUNDS rather than by walking the list top-down.
-    Round 1 takes the single highest-priority fact of each distinct concept,
-    round 2 takes each concept's second, round 3 its third. That is what stops
-    one concept (AmountOutstanding has hundreds of dimensional rows) from
-    filling the output before any other concept is reached, while still giving
-    every slot to the highest-priority fact available for it.
+    What is eligible (unchanged): rows classified by the return's JSON into one
+    of the eligible tiers (the highest tier present plus the next one down),
+    minus structural scaffolding. Diversity (max per concept / per section and
+    the "adds information" test for 2nd+ variants) is applied in ROUNDS rather
+    than top-down: round 1 takes the best fact of every concept, round 2 each
+    concept's second, and so on, so one concept with hundreds of dimensional
+    rows cannot fill the output.
 
-    *limit* is a MAXIMUM. When fewer facts survive the filters, fewer are
-    returned — padding the list with restatements would defeat the point.
+    The total *limit* is a target for everything below Critical:
+      * every Critical fact that survives the filters and diversity rules is
+        explained, however many there are - Critical is never cut by *limit*;
+      * the remaining capacity (limit - Critical facts, never negative) goes to
+        the other eligible facts in the same round order. Within the Medium tier
+        facts already flagged `significant` by compute_variance come first; the
+        rest follow and are only used if capacity remains, so a comparison with
+        no significant rows still gets its explanations.
+    The count returned is exactly the facts that passed every filter but did not
+    fit in the remaining capacity - never unchanged, structural, other-tier or
+    diversity-rejected facts.
     """
     eligible_tiers = _select_eligible_tiers(rows)
     eligible = [
@@ -422,49 +435,89 @@ def select_facts(
         # Scaffolding is never the subject of a business sentence.
         and not _is_structural(r.get("concept_base") or r.get("concept", ""))
     ]
+    # The window is the highest tier present plus the next one down, which lets
+    # Low ride along when Medium is the top tier. Low is only ever a fallback: it
+    # is explained when nothing above it qualifies, never mixed in beside
+    # Critical, High or Medium facts.
+    if any(r.get("importance_tier") != "Low" for r in eligible):
+        eligible = [r for r in eligible if r.get("importance_tier") != "Low"]
     if not eligible:
-        return []
+        return [], 0
 
-    # Group by base concept, preserving the incoming priority order.
-    groups: dict[str, list[dict]] = {}
-    for r in eligible:
-        groups.setdefault(r.get("concept_base") or r.get("concept", ""), []).append(r)
+    critical = [r for r in eligible if r.get("importance_tier") == "Critical"]
+    rest = [r for r in eligible if r.get("importance_tier") != "Critical"]
+    # Medium facts without the significance flag go last (stable: priority order
+    # is kept inside each group).
+    def _deferred(r: dict) -> bool:
+        return r.get("importance_tier") == "Medium" and not r.get("significant")
+    preferred = [r for r in rest if not _deferred(r)]
+    tail = [r for r in rest if _deferred(r)]
 
-    # Concepts are visited in order of their own best fact, so a higher-priority
-    # concept is always reached first.
-    order = sorted(groups, key=lambda k: -(groups[k][0].get("priority") or 0.0))
-
-    picked: list[dict] = []
-    taken: dict[str, list[dict]] = {k: [] for k in order}
+    taken: dict[str, list[dict]] = {}
     per_section: dict[str, int] = {}
 
-    for rnd in range(max_per_concept):
-        for key in order:
-            if len(picked) >= limit:
-                break
-            bucket = groups[key]
-            if rnd >= len(bucket):
-                continue
-            cand = bucket[rnd]
-            # A single section flooding the list is the same repetition
-            # problem one concept causes, one level up.
-            sec = cand.get("section_code") or ""
-            if sec and per_section.get(sec, 0) >= max_per_section:
-                continue
-            # Rounds 2+ must justify themselves.
-            if rnd > 0 and not _adds_information(cand, taken[key], label_a, label_b):
-                continue
-            picked.append(cand)
-            taken[key].append(cand)
-            if sec:
-                per_section[sec] = per_section.get(sec, 0) + 1
-        if len(picked) >= limit:
-            break
+    def _run(pool: list[dict], capacity: int | None) -> list[dict]:
+        """The rounds algorithm over *pool*; counters carry across calls."""
+        groups: dict[str, list[dict]] = {}
+        for r in pool:
+            groups.setdefault(r.get("concept_base") or r.get("concept", ""), []).append(r)
+        # Concepts are visited in order of their own best fact, so a
+        # higher-priority concept is always reached first.
+        order = sorted(groups, key=lambda k: -(groups[k][0].get("priority") or 0.0))
+        out: list[dict] = []
+        for rnd in range(max_per_concept):
+            for key in order:
+                if capacity is not None and len(out) >= capacity:
+                    return out
+                bucket = groups[key]
+                if rnd >= len(bucket):
+                    continue
+                cand = bucket[rnd]
+                # A single section flooding the list is the same repetition
+                # problem one concept causes, one level up.
+                sec = cand.get("section_code") or ""
+                if sec and per_section.get(sec, 0) >= max_per_section:
+                    continue
+                already = taken.setdefault(key, [])
+                # Rounds 2+ must justify themselves.
+                if rnd > 0 and not _adds_information(cand, already, label_a, label_b):
+                    continue
+                out.append(cand)
+                already.append(cand)
+                if sec:
+                    per_section[sec] = per_section.get(sec, 0) + 1
+        return out
 
-    # Restore priority order for presentation — round-robin was a selection
+    picked = _run(critical, None)                       # never limited
+    remaining = max(0, limit - len(picked))
+
+    # Pick the others with NO cap to learn what qualifies, then keep the first
+    # `remaining` of that sequence. The rounds are deterministic, so the capped
+    # selection is exactly a prefix of the uncapped one - which is what makes
+    # the omitted count exact.
+    others = _run(preferred, None) + _run(tail, None)
+    picked += others[:remaining]
+    omitted = max(0, len(others) - remaining)
+
+    # Restore priority order for presentation - round-robin was a selection
     # device, not the order a reader should see.
     picked.sort(key=lambda r: -(r.get("priority") or 0.0))
-    return picked[:limit]
+    return picked, omitted
+
+
+def select_facts(
+    rows: list[dict],
+    limit: int = SUMMARY_CONCEPT_LIMIT,
+    max_per_concept: int = MAX_DIMS_PER_CONCEPT,
+    max_per_section: int = MAX_PER_SECTION,
+    label_a: str = "",
+    label_b: str = "",
+) -> list[dict]:
+    """The facts that get explained, in priority order (see select_facts_ex)."""
+    return select_facts_ex(
+        rows, limit=limit, max_per_concept=max_per_concept,
+        max_per_section=max_per_section, label_a=label_a, label_b=label_b,
+    )[0]
 
 # ── Share of total ───────────────────────────────────────────────────────────
 
@@ -1252,7 +1305,10 @@ async def generate_explanations(
         return ""
 
     source = all_rows or rows
-    selected = select_facts(rows, limit=limit, label_a=label_a, label_b=label_b)
+    selected, omitted = select_facts_ex(rows, limit=limit, label_a=label_a, label_b=label_b)
+    if omitted:
+        # Not shown to the user; kept in the log so the cut is traceable.
+        logger.info("[EXPLAIN] %d eligible fact(s) beyond the explanation limit were not explained", omitted)
     if not selected:
         logger.info("[EXPLAIN] no eligible facts to explain in any tier")
         return ""

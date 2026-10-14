@@ -72,3 +72,61 @@
 {"ts": "2026-09-28T12:23:45.343750+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-10-05T07:18:17.912583+00:00", "query": "What is the credit equivalent current credit exposure for domestic derivatives from ale?", "tier": "llm_disambiguation", "intent": null, "found": false}
 {"ts": "2026-10-05T07:18:17.925447+00:00", "query": "What is the credit equivalent current credit exposure for domestic derivatives from ale?", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:49:32.723508+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:49:32.758930+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:49:39.415230+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:49:39.426686+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:49:53.097512+00:00", "query": "31-Mar-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:49:53.104883+00:00", "query": "31-Mar-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:52:06.576008+00:00", "query": "31-Mar-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:52:06.579049+00:00", "query": "31-Mar-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:52:28.501413+00:00", "query": "15-Oct-2026 at 04:04:04", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:52:28.510464+00:00", "query": "15-Oct-2026 at 04:04:04", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:53:00.794553+00:00", "query": "31-Mar-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:53:00.797300+00:00", "query": "31-Mar-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:53:32.063559+00:00", "query": "31 dec 2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:53:32.066492+00:00", "query": "31 dec 2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:54:00.634734+00:00", "query": "13-Nov-2026 at 04:00:00", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:54:00.639100+00:00", "query": "13-Nov-2026 at 04:00:00", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:54:24.838156+00:00", "query": "30-Sep-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:54:24.843000+00:00", "query": "30-Sep-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:58:00.283318+00:00", "query": "What is the credit equivalent current credit exposure for domestic derivatives from ale?", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T13:58:00.289447+00:00", "query": "What is the credit equivalent current credit exposure for domestic derivatives from ale?", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T15:19:02.863171+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T15:19:02.876178+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T15:42:19.824356+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T15:42:19.827688+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:12:55.831494+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:12:55.848190+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:21.809086+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:21.812809+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:21.869290+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:21.872963+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:47.402766+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:47.431086+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:47.459913+00:00", "query": "CIMS_FORMX_M_NEW", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:47.476203+00:00", "query": "CIMS_FORMX_M_NEW", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:47.588142+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:13:47.600577+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:13.435566+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:13.440146+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:13.450150+00:00", "query": "1", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:13.454967+00:00", "query": "1", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:13.482731+00:00", "query": "ror", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:13.488137+00:00", "query": "ror", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:38.946591+00:00", "query": "ror", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:38.950204+00:00", "query": "ror", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:38.998310+00:00", "query": "CIMS_ROR", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:14:39.001605+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:15:04.744343+00:00", "query": "CIMS_ROR", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-14T16:15:04.747568+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:15:04.760483+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:15:04.762710+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T16:15:30.107222+00:00", "query": "CIMS_CRILC_RFA", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-14T16:15:30.111265+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T18:00:10.650638+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T18:00:10.663320+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T18:10:28.040828+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T18:10:28.051938+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T18:18:53.009445+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T18:18:53.017809+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
