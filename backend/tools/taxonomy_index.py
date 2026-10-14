@@ -814,6 +814,15 @@ def _candidate_roots(form_id: str, extra_roots: tuple[str, ...] = ()) -> tuple[s
         if os.path.isdir(own):
             roots.append(own)
 
+    # In 6.0 every form folder carries a copy of the same taxonomy bundle, so the
+    # schemaRef matches dozens of folders (copies, backups, other forms). When the
+    # form's OWN folder is one of the matches it already holds the entry point -
+    # indexing the other copies only repeats ~400 MB of identical work.
+    if fid and roots and len(roots) > 1:
+        own_norm = os.path.normcase(os.path.abspath(os.path.join(active_root, "DataBase", fid, _TAXONOMY_DIR_NAME)))
+        if any(os.path.normcase(os.path.abspath(r)) == own_norm for r in roots[:-1]):
+            roots = [roots[-1]]
+
     unique: list[str] = []
     for root in roots:
         norm = os.path.normcase(os.path.abspath(root))

@@ -1462,7 +1462,10 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
         />
       )
     }
-    if (isFailed && errorCategoryCounts) {
+    // No error file found -> no counts and no download link: the panel would be
+    // an empty red block, so skip it (the "Error file not found." note stays in the text).
+    const hasErrorCounts = errorCategoryCounts && _CAT_ORDER.some((cat) => errorCategoryCounts[cat] > 0)
+    if (isFailed && errorCategoryCounts && (hasErrorCounts || downloadUrl)) {
       // 4000-series reports can explain formula_error, xbrl_schema, and
       // dimensional. Non-4000-series returns use a separate non-backtracking
       // explain flow for formula errors (backend/tools/formula_error_generic.py)

@@ -475,6 +475,25 @@ const _pushResult = (result, extra = {}) => {
     // regardless of this result's own result_type (explain-category results
     // report result_type "final", which would otherwise re-trigger the
     // isTerminal branch below and append a duplicate menu).
+    //
+    // But when the status card had NOT shown a menu yet (it ends with the
+    // "check another reporting date?" Yes/No question, whose menu only appears
+    // after the user answers), there is no trailing block and the explanation
+    // would be the last thing on screen with no way forward. Add the menu only
+    // in that case: if the list still ends with a menu, nothing is appended.
+    setTimeout(() => {
+      setMessages((prev) => {
+        const tail = prev[prev.length - 1]
+        if (!tail || tail.role === 'action_menu' || tail.role === 'feedback_prompt') return prev
+        if (tail.resultType === 'ask_previous') return prev
+        const lastUser = [...prev].reverse().find((m) => m.role === 'user')
+        return [
+          ...prev,
+          { role: 'feedback_prompt', query: lastUser?.text || null, intent: resultMsg.feedbackIntent || null, resultType: resultMsg.resultType || null },
+          { role: 'action_menu' },
+        ]
+      })
+    }, 800)
   } else if (awaitingSummary) {
     // The originating user message is resolved at FLUSH time, from the live
     // list — not captured here — so the follow-up carries the same query it

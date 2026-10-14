@@ -242,3 +242,19 @@
 {"ts": "2026-10-14T08:22:45.904667+00:00", "query": "15-Oct-2026 at 04:04:04", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-10-14T08:23:04.742403+00:00", "query": "12-Oct-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-10-14T08:23:04.746417+00:00", "query": "12-Oct-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:10:55.320673+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:10:55.329157+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:10:57.484606+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:10:57.494922+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:30:43.045982+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:30:43.053580+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:30:44.659978+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:30:44.667226+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:38:52.424323+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:38:52.437864+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:38:54.033719+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:38:54.052066+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:41:05.794699+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:41:05.801969+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:41:15.041960+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-14T10:41:15.066306+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
