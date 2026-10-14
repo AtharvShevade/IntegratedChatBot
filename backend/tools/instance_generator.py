@@ -389,7 +389,7 @@ def validate_reporting_date(
                 f"Please enter a 4-digit year between 1900 and 2099 "
                 f"(e.g. 31-Mar-2024)."
             ),
-            "suggestions": _hint_dates(frequency, date.today().year),
+            "suggestions": _hint_dates(frequency, date.today().year, filter_future=not allow_future),
         }
     # -------------------------------------------------------------------------
 
@@ -447,7 +447,7 @@ def validate_reporting_date(
         return {
             "valid":       False,
             "error":       error_msg,
-            "suggestions": _hint_dates(frequency, date.today().year),
+            "suggestions": _hint_dates(frequency, date.today().year, filter_future=not allow_future),
         }
 
     # Reject implausible years (must be 4-digit year between 1900 and 2099)
@@ -459,7 +459,7 @@ def validate_reporting_date(
                 f"Please enter a 4-digit year between 1900 and 2099 "
                 f"(e.g. 31-Mar-2024)."
             ),
-            "suggestions": _hint_dates(frequency, date.today().year),
+            "suggestions": _hint_dates(frequency, date.today().year, filter_future=not allow_future),
         }
 
     today_date = date.today()

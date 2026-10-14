@@ -10,6 +10,8 @@ from __future__ import annotations
 import calendar
 from datetime import date, timedelta
 
+import pytest
+
 from backend.agent.scheduling import _finalize_schedule, _reporting_date_after_schedule
 from backend.tools.instance_generator import validate_reporting_date
 
@@ -348,3 +350,56 @@ class TestFrequencyInvalidDateGetsSuggestionsToo:
                     if s.lower() != bad.lower()]
         assert out["result_type"] == "sched_awaiting_rpt_date"
         assert (out.get("options") or []) == expected
+
+
+class TestReportingDatePrompt:
+    """Scheduling accepts past AND future reporting dates (only before the schedule
+    date), so its prompt must not say Daily reports accept "past" dates only.
+    Generate-instance keeps its wording."""
+
+    def test_scheduling_prompt_for_daily_has_no_past_only_sentence(self):
+        out = _finalize_schedule(_ret("D"), None, None, None, None, session_id=None, login_id=None)
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+        assert "past" not in out["response_text"].lower()
+        assert out["response_text"].startswith("Please enter the reporting date for **Test Return**.")
+        assert "Example:" in out["response_text"]
+
+    def test_generate_prompt_for_daily_is_unchanged(self):
+        from backend.agent.generation import _date_ask_prompt
+        assert "Daily reports accept any valid past date." in _date_ask_prompt("X", "D", "Daily")
+
+    def test_every_other_frequency_prompt_is_identical_for_scheduling_and_generation(self):
+        from backend.agent.generation import _date_ask_prompt
+        # Daily and Weekly are the only prompts with a past-only line; the rest are shared as is.
+        for f in ["Q", "M", "H", "C", "Y", "B", "F", "HM", "E", ""]:
+            assert _date_ask_prompt("X", f, "P") == _date_ask_prompt("X", f, "P", allow_future=True), f
+
+
+class TestSchedulingNeverSteersTowardPastDatesOnly:
+    def test_weekly_scheduling_example_does_not_say_past_but_generation_still_does(self):
+        from backend.agent.generation import _date_ask_prompt
+        assert "past" not in _date_ask_prompt("X", "W", "Weekly", allow_future=True).lower()
+        assert "Example: the nearest past Friday." in _date_ask_prompt("X", "W", "Weekly")
+        assert "Example: the nearest Friday." in _date_ask_prompt("X", "W", "Weekly", allow_future=True)
+
+    def test_no_scheduling_prompt_for_any_frequency_mentions_past_dates(self):
+        from backend.agent.generation import _date_ask_prompt
+        for f in ["D", "W", "F", "M", "Q", "H", "C", "Y", "B", "HM", "E", ""]:
+            assert "past" not in _date_ask_prompt("X", f, "P", allow_future=True).lower(), f
+
+    def test_suggestions_after_a_mistyped_date_include_future_dates_when_scheduling(self):
+        cur_end = _month_end(date.today())
+        if cur_end <= date.today():
+            pytest.skip("this month's end is not in the future today")
+        sched = validate_reporting_date("not a date", "M", allow_future=True)["suggestions"]
+        gen = validate_reporting_date("not a date", "M")["suggestions"]
+        assert cur_end.strftime(FMT) in sched          # scheduling may use this month's end
+        assert cur_end.strftime(FMT) not in gen        # generate-instance still may not
+
+    def test_a_mistyped_reporting_date_in_scheduling_is_offered_future_valid_dates(self):
+        cur_end = _month_end(date.today())
+        if cur_end <= date.today():
+            pytest.skip("this month's end is not in the future today")
+        out = _finalize_schedule(_ret("M"), "31-13-2026", None, None, None, session_id=None, login_id=None)
+        assert out["result_type"] == "sched_awaiting_rpt_date"
+        assert cur_end.strftime(FMT) in (out.get("options") or [])

@@ -143,6 +143,13 @@ class CompareSummaryRow(BaseModel):
     importance:         Optional[float] = None
     priority:           Optional[float] = None
     importance_matched: bool            = False
+    # Human-readable names the comparison table already shows (taxonomy label of
+    # the concept, and of each dimension member in context_key order). Echoed
+    # back so the AI narrative names the same things instead of falling back to
+    # the technical codes ("PE001504 - DM000012"). Optional: an older client, or
+    # a return with no labels, simply omits them.
+    concept_label:      str       = Field("", max_length=512)
+    member_labels:      list[str] = Field(default_factory=list, max_length=16)
 
 
 class CompareSummaryRequest(BaseModel):

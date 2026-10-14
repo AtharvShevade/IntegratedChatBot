@@ -21,6 +21,7 @@ import os
 import threading
 
 from backend import config, version_config
+from backend.tools.return_json_path import flat_return_json_path
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +41,27 @@ def _cache_key(form_id: str) -> tuple[str | None, str]:
 
 
 def _find_taxonomy_json_path(form_id: str) -> str | None:
-    """Json/<form_id>/ may contain any single .json file — pick whichever is there."""
+    """The JSON file for one return.
+
+    1. Json/<form_id>/<any>.json  - the original per-return folder layout
+       (unchanged, tried first for every version).
+    2. Json/<form_id>.json        - the flat layout the JSON generator writes.
+       6.0 only: 5.5 keeps resolving exactly as before.
+
+    Always the file for THIS form id; never another return's as a fallback.
+    """
     folder = os.path.join(config.json_metadata_base_dir(), os.path.basename(str(form_id).strip()))
-    if not os.path.isdir(folder):
-        return None
-    try:
-        names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".json"))
-    except OSError as exc:
-        logger.warning("[taxonomy_lookup] cannot list %s: %s", folder, exc)
-        return None
-    return os.path.join(folder, names[0]) if names else None
+    if os.path.isdir(folder):
+        try:
+            names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".json"))
+        except OSError as exc:
+            logger.warning("[taxonomy_lookup] cannot list %s: %s", folder, exc)
+            names = []
+        if names:
+            return os.path.join(folder, names[0])
+    if version_config.IS_V6:
+        return flat_return_json_path(form_id)
+    return None
 
 
 def get_return_json(form_id: str) -> dict | None:
@@ -88,6 +100,15 @@ def get_return_json(form_id: str) -> dict | None:
             logger.warning("[taxonomy_lookup] failed to load %s: %s", path, exc)
             return None
 
+        if version_config.IS_V6:
+            file_code = str((data.get("return_metadata") or {}).get("return_code") or "").strip()
+            if file_code and file_code != str(form_id).strip():
+                logger.warning(
+                    "[taxonomy_lookup] %s declares return_code=%s but was requested for form_id=%s "
+                    "- refusing to use another return's metadata", path, file_code, form_id,
+                )
+                return None
+
         by_assertion_id = {
             r.get("assertion_id"): r
             for r in data.get("validation_rules", []) or []
@@ -98,12 +119,25 @@ def get_return_json(form_id: str) -> dict | None:
             for c in data.get("concepts", []) or []
             if c.get("concept_id")
         }
+        # Top-level concept_labels (6.0 files): local name -> label for every
+        # concept in the taxonomy package. Only real labels are kept; the
+        # generator stores the qualified name where the taxonomy has none.
+        from backend.tools.importance_json import usable_label
+        labels_by_local = {}
+        raw_labels = data.get("concept_labels")
+        if isinstance(raw_labels, dict):
+            for name, lbl in raw_labels.items():
+                local = str(name).split(":")[-1]
+                lbl = usable_label(lbl if isinstance(lbl, str) else "", local)
+                if lbl:
+                    labels_by_local[local] = lbl
         entry = {
             "path": path,
             "mtime": mtime,
             "return_code": (data.get("return_metadata") or {}).get("return_code", ""),
             "by_assertion_id": by_assertion_id,
             "by_concept_id": by_concept_id,
+            "labels_by_local": labels_by_local,
         }
         _TAXONOMY_CACHE[key] = entry
         logger.info(
@@ -114,10 +148,73 @@ def get_return_json(form_id: str) -> dict | None:
 
 
 def resolve_concept_label(taxonomy: dict | None, concept_id: str | None) -> str:
+    """Readable label for a concept id: the concept's own label when it is a real
+    name, else the file's top-level concept_labels, else "" (callers then fall
+    back to the taxonomy label linkbase / humanised name). An empty label or one
+    that just echoes the technical id is never returned."""
     if not taxonomy or not concept_id:
         return ""
+    from backend.tools.importance_json import usable_label
+    local = str(concept_id).split(":")[-1]
     concept = taxonomy.get("by_concept_id", {}).get(concept_id)
-    return (concept or {}).get("label", "") or ""
+    label = usable_label((concept or {}).get("label"), local)
+    if label:
+        return label
+    return (taxonomy.get("labels_by_local") or {}).get(local, "")
+
+
+def rule_variables(rule: dict | None, taxonomy: dict | None = None) -> list[dict]:
+    """The variables of one validation rule in the shape the explainers read:
+    [{name, concept_id, dimensional_qualification, db_mapping}].
+
+    Two JSON generations exist:
+      * older files carry rule["variables"] - returned as is;
+      * 6.0 files carry rule["concepts_involved"] = [{concept_id, variable_name,
+        role, dimensional_qualification}] - adapted here.
+
+    Adapter notes (6.0):
+      - dimensional_qualification holds bare AXIS ids ("qcb:DE000004"), with no
+        member, so there is nothing to say about "which member"; entries are kept
+        only when they carry axis=member, otherwise the label would gain a
+        meaningless "(DE000004)" suffix.
+      - the DB mapping lives on the concept (db_mapping: table_name,
+        value_column/column_name, filter_value) and is translated to the
+        table/column/code_filter keys format_db_location() reads; unmapped
+        concepts get none.
+    """
+    if not rule:
+        return []
+    variables = rule.get("variables")
+    if variables:
+        return list(variables)
+
+    by_concept = (taxonomy or {}).get("by_concept_id", {})
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in rule.get("concepts_involved") or []:
+        name = str(item.get("variable_name") or "").strip()
+        if not name or name.upper() in seen:
+            continue
+        seen.add(name.upper())
+        concept_id = item.get("concept_id")
+        qualification = [q for q in (item.get("dimensional_qualification") or []) if "=" in str(q)]
+        mapping = (by_concept.get(concept_id) or {}).get("db_mapping") or {}
+        db_mapping: dict = {}
+        if mapping.get("status") == "confirmed":
+            db_mapping = {
+                "status": mapping.get("status"),
+                "table": mapping.get("table_name"),
+                "column": mapping.get("value_column") or mapping.get("column_name"),
+                "code_filter": mapping.get("filter_value"),
+                "multiplier": mapping.get("unit_multiplier"),
+            }
+        out.append({
+            "name": name,
+            "concept_id": concept_id,
+            "dimensional_qualification": qualification,
+            "db_mapping": db_mapping,
+        })
+    return out
 
 
 def build_variable_metadata_map(taxonomy: dict | None, assertion_id: str) -> dict[str, dict]:
@@ -137,7 +234,7 @@ def build_variable_metadata_map(taxonomy: dict | None, assertion_id: str) -> dic
         return {}
 
     out: dict[str, dict] = {}
-    for var in rule.get("variables", []) or []:
+    for var in rule_variables(rule, taxonomy):
         name = var.get("name")
         if not name:
             continue

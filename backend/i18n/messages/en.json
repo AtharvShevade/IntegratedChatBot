@@ -37,6 +37,7 @@
   "date.example_one": "Example: {0}",
   "date.example_two": "Example: {0} or {1}",
   "date.example_last_friday": "Example: the nearest past Friday.",
+  "date.example_nearest_friday": "Example: the nearest Friday.",
   "date.enter_valid": "Enter a valid reporting date for this {0} report.",
   "date.future_not_allowed": "'{0}' is a future date. Future reporting dates are not allowed.",
   "date.confirmed": "Reporting date confirmed: {0}.",

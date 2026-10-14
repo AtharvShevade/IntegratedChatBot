@@ -214,7 +214,7 @@ def _finalize_schedule(
         return _build(
             intent="schedule_report",
             report_name=ret["name"],
-            response_text=_date_ask_prompt(ret["name"], frequency, period_name),
+            response_text=_date_ask_prompt(ret["name"], frequency, period_name, allow_future=True),
             result_type="sched_awaiting_rpt_date",
         )
 

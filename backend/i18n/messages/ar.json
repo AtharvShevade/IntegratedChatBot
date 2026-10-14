@@ -37,6 +37,7 @@
   "date.example_one": "مثال: {0}",
   "date.example_two": "مثال: {0} أو {1}",
   "date.example_last_friday": "مثال: أقرب جمعة ماضية.",
+  "date.example_nearest_friday": "مثال: أقرب يوم جمعة.",
   "date.enter_valid": "أدخل تاريخ تقرير صالحًا لهذا التقرير من نوع {0}.",
   "date.future_not_allowed": "«{0}» تاريخ مستقبلي. لا يُسمح بتواريخ تقارير مستقبلية.",
   "date.confirmed": "تم تأكيد تاريخ التقرير: {0}.",

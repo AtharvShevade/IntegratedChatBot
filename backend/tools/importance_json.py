@@ -47,6 +47,7 @@ import re
 import threading
 
 from backend import config, version_config
+from backend.tools.return_json_path import flat_return_json_path
 
 logger = logging.getLogger(__name__)
 
@@ -95,18 +96,34 @@ def _cache_key(form_id: str) -> tuple[str | None, str]:
 def json_path_for(form_id: str) -> str | None:
     """<repo>/JSON/<form_id>.json, or None when it does not exist.
 
-    config.json_metadata_base_dir() resolves to '<root>/Json'; Windows paths
-    are case-insensitive so a folder named 'JSON' matches. basename() strips
-    any directory component from form_id so a malformed id cannot escape the
-    folder.
+    Resolved by the shared flat-layout resolver (return_json_path), which is
+    also what error explanation uses, so both features always read the same
+    file for a return.
     """
-    if not form_id:
-        return None
-    fid = os.path.basename(str(form_id).strip())
-    if not fid:
-        return None
-    path = os.path.join(config.json_metadata_base_dir(), f"{fid}.json")
-    return path if os.path.isfile(path) else None
+    return flat_return_json_path(form_id)
+
+
+_ECHO_NAME = re.compile(r"^[\w\-]+:[\w\-]+$")
+_TECHNICAL_CODE = re.compile(r"^[A-Za-z]{1,6}\d+$")
+
+
+def usable_label(label: str | None, local: str = "") -> str:
+    """The label cleaned of taxonomy bookkeeping, or "" when it is not a real
+    human-readable name: empty, the technical id echoed back ("qcb:PE001504" or
+    "PE001504"), or a bare "prefix:Name" qualified name (what the generator
+    stores when the taxonomy has no label for a concept)."""
+    text = re.sub(r"\s*\[(member|axis|domain|line items|table)\]\s*$", "",
+                  (label or "").strip(), flags=re.I).strip()
+    if not text:
+        return ""
+    if _ECHO_NAME.match(text):
+        return ""
+    # The code echoed back ("PE001248", "DM000012"). A word-like concept name
+    # ("Loans", "AccumulatedLosses") equal to its own label is a genuine name -
+    # in 5.5 taxonomies it is the only readable label there is.
+    if local and text.lower() == local.lower() and _TECHNICAL_CODE.match(local):
+        return ""
+    return text
 
 
 class JsonImportance:
@@ -142,12 +159,11 @@ class JsonImportance:
             if not cid:
                 continue
             local = cid.split(":")[-1]
-            lbl = (concept.get("label") or "").strip()
+            # Members carry a trailing "[member]" marker that is taxonomy
+            # bookkeeping, not part of the business name; an empty label or one
+            # that merely echoes the technical id is not a name at all.
+            lbl = usable_label(concept.get("label"), local)
             if lbl:
-                # Members carry a trailing "[member]" marker that is taxonomy
-                # bookkeeping, not part of the business name.
-                lbl = re.sub(r"\s*\[(member|axis|domain|line items|table)\]\s*$",
-                             "", lbl, flags=re.I).strip()
                 labels.setdefault(local, lbl)
             if local in by_local:
                 collisions.add(local)
@@ -160,10 +176,22 @@ class JsonImportance:
         # structure.member_labels instead. Concept labels win on a clash.
         member_labels = (payload.get("structure") or {}).get("member_labels") or {}
         for mid, mlbl in member_labels.items():
-            mlbl = re.sub(r"\s*\[(member|axis|domain|line items|table)\]\s*$",
-                          "", (mlbl or "").strip(), flags=re.I).strip()
+            local_m = str(mid).split(":")[-1]
+            mlbl = usable_label(mlbl, local_m)
             if mlbl:
-                labels.setdefault(str(mid).split(":")[-1], mlbl)
+                labels.setdefault(local_m, mlbl)
+        # 6.0 files also publish top-level concept_labels: local name -> label for
+        # every concept in the taxonomy package, including ones not in concepts[].
+        # It is the last resort, so a concept-level or member label always wins,
+        # and entries without a real label (the generator stores the qualified
+        # name there) are ignored.
+        concept_labels = payload.get("concept_labels")
+        if isinstance(concept_labels, dict):
+            for name, clbl in concept_labels.items():
+                local_c = str(name).split(":")[-1]
+                clbl = usable_label(clbl if isinstance(clbl, str) else "", local_c)
+                if clbl:
+                    labels.setdefault(local_c, clbl)
         # Ambiguous names are dropped entirely rather than resolved by guess.
         for name in collisions:
             by_local.pop(name, None)
@@ -200,6 +228,10 @@ class JsonImportance:
         reg = self._by_local.get(local)
         if not reg or not reg.get("matched"):
             result = dict(_UNMATCHED)
+            # No importance block, but a readable name may still exist (member
+            # labels, concept_labels). Importance stays "unknown"; only the name
+            # is filled in, so the table never shows a code when a label exists.
+            result["label"] = self._labels.get(local, "")
         else:
             code = reg.get("section_code") or ""
             title = self.sections.get(code, "") if code else ""
@@ -269,6 +301,15 @@ def get_importance_from_json(form_id: str | None) -> JsonImportance | None:
     except Exception as exc:
         logger.warning("[IMPORTANCE_JSON] cannot read %s: %s", path, exc)
         return None
+
+    if version_config.IS_V6:
+        file_code = str((payload.get("return_metadata") or {}).get("return_code") or "").strip()
+        if file_code and file_code != str(form_id).strip():
+            logger.warning(
+                "[IMPORTANCE_JSON] %s declares return_code=%s but was requested for form_id=%s "
+                "- refusing to use another return's metadata", path, file_code, form_id,
+            )
+            return None
 
     index = JsonImportance(str(form_id), path, payload)
     if not index.available:

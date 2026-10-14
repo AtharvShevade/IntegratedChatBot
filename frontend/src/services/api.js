@@ -225,6 +225,10 @@ export async function fetchCompareSummary(rows, labelA, labelB, reportName, opts
           importance:         r.importance ?? null,
           priority:           r.priority ?? null,
           importance_matched: Boolean(r.importance_matched),
+          // The names the table shows, so the AI narrative uses them too instead
+          // of the technical codes.
+          concept_label:      r.concept_label ?? '',
+          member_labels:      Array.isArray(r.member_labels) ? r.member_labels.slice(0, 16).map((m) => m ?? '') : [],
         })),
         label_a:     labelA ?? '',
         label_b:     labelB ?? '',

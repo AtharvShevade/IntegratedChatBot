@@ -288,8 +288,17 @@ def _example_date(day: int, mon_abbr: str, year: int) -> str:
     return f"{day:02d}-{mon_abbr}-{year}/{day:02d}-{_MONTH_NUM[mon_abbr]:02d}-{year}"
 
 
-def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
-    """Build a dynamic date-entry prompt based on the report's frequency."""
+def _date_ask_prompt(
+    report_name: str, frequency: str, period_name: str, allow_future: bool = False,
+) -> str:
+    """Build a dynamic date-entry prompt based on the report's frequency.
+
+    allow_future=True is for SCHEDULING, where the reporting date may be in the
+    past or the future (it only has to be before the schedule date), so the
+    Daily line "accept any valid past date" - true for generate-instance - is
+    left out and the Weekly example no longer says "past". Every other line is
+    unchanged.
+    """
     import calendar as _cal
     from datetime import date as _date
     freq  = (frequency or "").upper()
@@ -339,7 +348,7 @@ def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
     elif freq == "W":
         lines += [
             "Weekly reports must use a Friday.",
-            "", f"Example: the nearest past Friday.",
+            "", ("Example: the nearest Friday." if allow_future else "Example: the nearest past Friday."),
         ]
     elif freq in ("F", "HM"):
         today = _date.today()
@@ -357,10 +366,13 @@ def _date_ask_prompt(report_name: str, frequency: str, period_name: str) -> str:
             "This report must use the last Friday of the month.",
         ]
     elif freq == "D":
-        lines += [
-            "Daily reports accept any valid past date.",
-            "", f"Example: {_example_date(26, 'May', year)}",
-        ]
+        if allow_future:
+            lines += [f"Example: {_example_date(26, 'May', year)}"]
+        else:
+            lines += [
+                "Daily reports accept any valid past date.",
+                "", f"Example: {_example_date(26, 'May', year)}",
+            ]
     else:
         lines += [
             f"Enter a valid reporting date for this {label} report.",

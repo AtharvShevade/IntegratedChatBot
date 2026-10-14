@@ -794,6 +794,10 @@ async def compare_summary(request: CompareSummaryRequest) -> dict:
                 "importance":         row.importance,
                 "priority":           row.priority,
                 "importance_matched": row.importance_matched,
+                # Names for the sentence subject (variance_explain.business_name
+                # reads exactly these two keys).
+                "concept_label":      row.concept_label,
+                "member_labels":      [(m or "")[:256] for m in row.member_labels],
             }
             for row in request.rows
         ]

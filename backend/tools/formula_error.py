@@ -230,7 +230,9 @@ def _json_variable_map(taxonomy_json: dict | None, rule_name: str) -> dict[str, 
         return {}
 
     out: dict[str, dict] = {}
-    for var in rule.get("variables") or []:
+    # rule["variables"] (older files) or rule["concepts_involved"] (6.0 files),
+    # normalised to one shape by taxonomy_lookup.rule_variables.
+    for var in taxonomy_lookup.rule_variables(rule, taxonomy_json):
         name = (var.get("name") or "").strip().upper()
         if not name:
             continue

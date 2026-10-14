@@ -37,6 +37,7 @@
   "date.example_one": "Exemple : {0}",
   "date.example_two": "Exemple : {0} ou {1}",
   "date.example_last_friday": "Exemple : le vendredi passé le plus proche.",
+  "date.example_nearest_friday": "Exemple : le vendredi le plus proche.",
   "date.enter_valid": "Saisissez une date de déclaration valide pour ce rapport {0}.",
   "date.future_not_allowed": "« {0} » est une date future. Les dates de déclaration futures ne sont pas autorisées.",
   "date.confirmed": "Date de déclaration confirmée : {0}.",
