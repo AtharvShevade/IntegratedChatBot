@@ -449,15 +449,11 @@ def _handle_action_selected(
     if action == "Retrieve data from database":
         if session_id:
             _guided_sessions[session_id] = {"stage": STAGE_DB_QUERY}
+        from backend.guided_samples import get_samples, sql_agent_prompt
         return _build(
-            response_text=(
-                "What data would you like to query? Please describe in detail "
-                "(include report name, section, and time period).\n"
-                "Examples:\n"
-                "\u2022 What is the credit equivalent current credit exposure for domestic derivatives from ale?\n"
-                "\u2022 Total loan assets from RAQ section 1 domestic latest\n"
-                "\u2022 What is the loss provision held on an industry basis from ale?"
-            ),
+            # Example questions come from backend/guided_samples.json for the
+            # running version (5.5 or 6.0), like the other guided prompts.
+            response_text=sql_agent_prompt(get_samples("sql_agent")),
             result_type="guided_input",
             options=[],
         )

@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import sys
 import uvicorn
-from dotenv import load_dotenv
 
 # -------------------------------------------------------------------
 # Add project root to Python path
@@ -27,11 +26,10 @@ from port_guard import assert_port_matches_web_config  # noqa: E402  (needs ROOT
 # script and the app it launches always agree on which .env is authoritative.
 # -------------------------------------------------------------------
 
-_env_file = os.environ.get("ENV_FILE", "").strip()
-if _env_file:
-    load_dotenv(_env_file, override=True)
-else:
-    load_dotenv()
+# The loading itself (ENV_FILE, .env and the per-version overlay) lives in
+# backend/env_loader.py.
+from backend.env_loader import load_env  # noqa: E402
+load_env()
 
 from backend.config import BACKEND_PORT
 

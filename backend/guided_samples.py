@@ -21,7 +21,7 @@ from backend import version_config
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["get_samples", "report_name_prompt", "active_version_key"]
+__all__ = ["get_samples", "report_name_prompt", "sql_agent_prompt", "active_version_key"]
 
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guided_samples.json")
 
@@ -31,6 +31,12 @@ _DEFAULTS: dict[str, list[str]] = {
     "generate_instance": ["CIMS_FormGPB", "R009"],
     "schedule_report": ["CIMS_RAQ", "R162"],
     "comparative_analysis": ["CIMS_RAQ", "R009", "RAQ"],
+    # "Retrieve data from database": example questions, one per bullet.
+    "sql_agent": [
+        "What is the credit equivalent current credit exposure for domestic derivatives from ale?",
+        "Total loan assets from RAQ section 1 domestic latest",
+        "What is the loss provision held on an industry basis from ale?",
+    ],
 }
 
 _MAX_SAMPLES = 6
@@ -95,3 +101,13 @@ def report_name_prompt(samples: list[str], compare: bool = False) -> str:
     if not samples:
         return head + ":"
     return f"{head} (e.g. {', '.join(samples)}):"
+
+
+def sql_agent_prompt(samples: list[str]) -> str:
+    """The "Retrieve data from database" guided prompt: the fixed question plus
+    one bullet per example. No examples configured -> just the question."""
+    head = ("What data would you like to query? Please describe in detail "
+            "(include report name, section, and time period).")
+    if not samples:
+        return head
+    return head + "\nExamples:\n" + "\n".join(f"\u2022 {s}" for s in samples)

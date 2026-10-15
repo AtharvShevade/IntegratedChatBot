@@ -23,9 +23,11 @@ entire suite before any skip logic could even run.
 """
 import os
 
-from dotenv import load_dotenv
+# Same loader as the app: .env plus the .env.<APP_VERSION> overlay (an unset
+# or missing .env is fine - nothing is loaded and the setdefault()s below apply).
+from backend.env_loader import load_env
 
-load_dotenv()
+load_env()
 
 os.environ.setdefault("BACKEND_PORT", "8001")
 os.environ.setdefault(

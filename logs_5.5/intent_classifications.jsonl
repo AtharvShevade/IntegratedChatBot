@@ -130,3 +130,10 @@
 {"ts": "2026-10-14T18:10:28.051938+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-10-14T18:18:53.009445+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-10-14T18:18:53.017809+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-15T06:56:56.583228+00:00", "query": "CIMS_ROR", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-15T06:56:56.586076+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-15T06:57:05.595502+00:00", "query": "CIMS_ROR", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-10-15T06:57:05.600105+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-15T06:57:05.690752+00:00", "query": "show all users", "tier": "regex_legacy", "intent": "db_list_users", "found": true, "raw_intent": "USER_LIST"}
+{"ts": "2026-10-15T06:57:13.491557+00:00", "query": "hi there", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-15T06:57:13.494761+00:00", "query": "hi there", "tier": "regex_legacy", "intent": null, "found": false}

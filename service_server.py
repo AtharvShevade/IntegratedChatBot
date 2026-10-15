@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sys
 import uvicorn
-from dotenv import load_dotenv
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -15,11 +14,9 @@ from port_guard import assert_port_matches_web_config  # noqa: E402  (needs ROOT
 # Same ENV_FILE convention as backend/main.py / dev_server.py -- read here,
 # before uvicorn.run(), since the port must be chosen before the app itself
 # is imported.
-_env_file = os.environ.get("ENV_FILE", "").strip()
-if _env_file:
-    load_dotenv(_env_file, override=True)
-else:
-    load_dotenv()
+# ENV_FILE / .env / per-version overlay: see backend/env_loader.py.
+from backend.env_loader import load_env  # noqa: E402
+load_env()
 
 from backend.config import BACKEND_PORT
 

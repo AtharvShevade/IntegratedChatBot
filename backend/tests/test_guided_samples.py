@@ -91,6 +91,61 @@ class TestGuidedFlow:
         assert guided._guided_sessions.get("s-True", {}).get("stage") == guided.STAGE_STATUS_REPORT
 
 
+class TestSqlAgentExamples:
+    """"Retrieve data from database": the example questions follow the active version."""
+
+    HEAD = ("What data would you like to query? Please describe in detail "
+            "(include report name, section, and time period).")
+    Q55 = [
+        "What is the credit equivalent current credit exposure for domestic derivatives from ale?",
+        "Total loan assets from RAQ section 1 domestic latest",
+        "What is the loss provision held on an industry basis from ale?",
+    ]
+    Q60 = [
+        "From the F013 exposure table, show country, total and retail for 30-Apr-2026 only, sorted by total from highest to lowest.",
+        "From the F013 breakdown of exposures table, show each country with its sovereigns, banks and retail exposure columns, sorted by total, for the latest reporting date.",
+        "How many countries in the F014 funding table have a total funding value above 1 million at the latest reporting date?",
+    ]
+
+    def _expected(self, questions):
+        return self.HEAD + "\nExamples:\n" + "\n".join("\u2022 " + q for q in questions)
+
+    def test_configured_questions_per_version(self):
+        assert guided_samples.get_samples("sql_agent", "5.5") == self.Q55
+        assert guided_samples.get_samples("sql_agent", "6.0") == self.Q60
+
+    def test_5_5_prompt_is_exactly_what_it_was_before(self, monkeypatch):
+        monkeypatch.setattr(version_config, "IS_V6", False)
+        r = asyncio.run(guided.guided_step("Retrieve data from database", "sql55", None))
+        assert r["response_text"] == self._expected(self.Q55)
+        assert r["result_type"] == "guided_input" and r["options"] == []
+
+    def test_6_0_prompt_shows_the_6_0_questions(self, monkeypatch):
+        monkeypatch.setattr(version_config, "IS_V6", True)
+        r = asyncio.run(guided.guided_step("Retrieve data from database", "sql60", None))
+        assert r["response_text"] == self._expected(self.Q60)
+        assert "ale?" not in r["response_text"] and "RAQ section 1" not in r["response_text"]
+        assert r["result_type"] == "guided_input" and r["options"] == []
+
+    def test_the_session_still_waits_for_the_query(self, monkeypatch):
+        monkeypatch.setattr(version_config, "IS_V6", True)
+        asyncio.run(guided.guided_step("Retrieve data from database", "sqlstage", None))
+        assert guided._guided_sessions.get("sqlstage", {}).get("stage") == guided.STAGE_DB_QUERY
+
+    def test_missing_entry_falls_back_to_the_built_in_5_5_questions(self, monkeypatch, tmp_path):
+        f = tmp_path / "guided_samples.json"
+        f.write_text(json.dumps({"6.0": {"check_report_status": ["F013"]}}), encoding="utf-8")
+        monkeypatch.setattr(guided_samples, "_PATH", str(f))
+        guided_samples._cache = None
+        assert guided_samples.get_samples("sql_agent", "6.0") == self.Q55
+
+    def test_no_examples_gives_just_the_question(self):
+        assert guided_samples.sql_agent_prompt([]) == self.HEAD
+
+    def test_a_long_question_survives_the_cleaning(self):
+        assert all(len(q) <= guided_samples._MAX_LEN for q in self.Q60)
+
+
 class TestFallbacks:
     def _use(self, monkeypatch, tmp_path, content):
         f = tmp_path / "guided_samples.json"

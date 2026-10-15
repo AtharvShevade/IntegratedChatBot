@@ -53,12 +53,16 @@ def assert_port_matches_web_config(backend_port: int, root_dir: str) -> None:
     if os.environ.get("SKIP_PORT_CHECK", "").strip() in ("1", "true", "True"):
         return
 
+    # The Vite build writes dist/web.config with the port of the APP_VERSION it
+    # was built for (frontend/profiles/<version>.env), so dist/ is what IIS
+    # serves and the only file that must agree. public/web.config is just the
+    # source default the build starts from - it is checked only when there is no
+    # dist/ yet.
+    present = [rel for rel in _WEB_CONFIG_PATHS if os.path.exists(os.path.join(root_dir, rel))]
+
     mismatches = []
-    for rel in _WEB_CONFIG_PATHS:
-        path = os.path.join(root_dir, rel)
-        if not os.path.exists(path):
-            continue
-        port = _rewrite_port(path)
+    for rel in present[:1]:
+        port = _rewrite_port(os.path.join(root_dir, rel))
         if port is not None and port != backend_port:
             mismatches.append((rel, port))
 
@@ -74,9 +78,8 @@ def assert_port_matches_web_config(backend_port: int, root_dir: str) -> None:
     print(
         "\nEvery request through IIS would 502. Fix ONE of:\n"
         f"  - set BACKEND_PORT={mismatches[0][1]} in your .env, or\n"
-        f"  - point the web.config rewrite url at port {backend_port}\n"
-        "     (edit frontend/public/web.config, then rebuild the frontend so\n"
-        "      frontend/dist/web.config picks the change up)\n"
+        "  - rebuild the frontend for this APP_VERSION (npm run build), which writes\n"
+        f"    frontend/dist/web.config with port {backend_port} from frontend/profiles/<version>.env\n"
         "\nSet SKIP_PORT_CHECK=1 to start anyway.\n",
         file=sys.stderr,
     )

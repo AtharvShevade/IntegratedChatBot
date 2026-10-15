@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 
 import httpx
-from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,16 +22,17 @@ from fastapi.responses import JSONResponse
 # CORS_ORIGINS, LOG_DIR, ...) -- e.g. ENV_FILE=.env.6.0. Unset (the default)
 # is byte-for-byte the previous behavior: load_dotenv() searches upward from
 # the working directory for the plain ".env".
-_env_file = os.environ.get("ENV_FILE", "").strip()
-if _env_file:
-    load_dotenv(_env_file, override=True)
-else:
-    load_dotenv()
+#
+# backend/env_loader.py does the loading: ENV_FILE exactly as before, otherwise
+# .env followed by the optional per-version overlay .env.<APP_VERSION>.
+from backend.env_loader import load_env, describe as _describe_env  # noqa: E402
+load_env()
 
 # Initialise centralised logging before any other backend import so that
 # module-level loggers in agent, guided, tools, etc. are already wired up.
 from backend.utils.logger import log_exception, setup_logging  # noqa: E402
 setup_logging(console_level=logging.INFO)
+logging.getLogger(__name__).info(_describe_env())
 
 from backend.utils import request_context  # noqa: E402
 from backend import version_config  # noqa: E402

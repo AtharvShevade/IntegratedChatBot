@@ -122,8 +122,10 @@ def ensure() -> None:
     #    test that runs afterward in the same process, regardless of module.
     chatbot_env: dict = {}
     try:
-        from dotenv import dotenv_values
-        chatbot_env = {k: v for k, v in dotenv_values(os.path.join(PROJECT_ROOT, ".env")).items() if v is not None}
+        # .env plus its per-version overlay (.env.<APP_VERSION>), as a dict only -
+        # the same files backend/env_loader.py loads into the real environment.
+        from backend.env_loader import merged_values
+        chatbot_env = merged_values(os.path.join(PROJECT_ROOT, ".env"))
     except Exception as exc:                      # pragma: no cover - optional
         logger.debug("[SQL_AGENT] .env load skipped: %s", exc)
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Sample return names / ReturnIds shown in the guided prompts, per chatbot version (APP_VERSION). Edit this file to change the examples - no code or frontend change is needed; it is re-read automatically when it changes. Actions: check_report_status, generate_instance, schedule_report, comparative_analysis (the last prompt reads '... short name to compare (e.g. ...):'). Each action maps to an ordered list of samples; the prompt reads 'Enter the report name, ReturnId, or short name (e.g. <samples joined by comma>):'.",
+  "_comment": "Sample names / example questions shown in the guided prompts, per chatbot version (APP_VERSION). Edit this file to change them - no code or frontend change is needed; it is re-read automatically when it changes. Each action maps to an ordered list. check_report_status, generate_instance, schedule_report and comparative_analysis hold return names / ReturnIds and read 'Enter the report name, ReturnId, or short name (e.g. <samples joined by comma>):' (comparative_analysis: '... short name to compare (e.g. ...):'). sql_agent holds the example questions listed under 'Retrieve data from database', one bullet each.",
   "5.5": {
     "check_report_status": [
       "CIMS_ROR",
@@ -18,6 +18,11 @@
       "CIMS_RAQ",
       "R009",
       "RAQ"
+    ],
+    "sql_agent": [
+      "What is the credit equivalent current credit exposure for domestic derivatives from ale?",
+      "Total loan assets from RAQ section 1 domestic latest",
+      "What is the loss provision held on an industry basis from ale?"
     ]
   },
   "6.0": {
@@ -36,6 +41,11 @@
     "comparative_analysis": [
       "QCB_F013_Breakdown of exposures by geography",
       "F013"
+    ],
+    "sql_agent": [
+      "From the F013 exposure table, show country, total and retail for 30-Apr-2026 only, sorted by total from highest to lowest.",
+      "From the F013 breakdown of exposures table, show each country with its sovereigns, banks and retail exposure columns, sorted by total, for the latest reporting date.",
+      "How many countries in the F014 funding table have a total funding value above 1 million at the latest reporting date?"
     ]
   }
 }
