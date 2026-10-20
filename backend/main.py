@@ -365,9 +365,17 @@ async def _request_id_middleware(request: Request, call_next):
     incoming = request.headers.get("x-request-id", "").strip()
     request_id = incoming or request_context.new_request_id()
     token = request_context.set_request_id(request_id)
+    # 6.0 only: remember the host's accessToken cookie (if the browser sent one)
+    # so a request without a body jwt can still be authenticated - see
+    # request_context.JWT_COOKIE_NAME. JWT_COOKIE_FALLBACK=false turns it off.
+    cookie_jwt = None
+    if version_config.IS_V6 and os.getenv("JWT_COOKIE_FALLBACK", "true").strip().lower() != "false":
+        cookie_jwt = request.cookies.get(request_context.JWT_COOKIE_NAME)
+    cookie_token = request_context.set_cookie_jwt(cookie_jwt)
     try:
         response = await call_next(request)
     finally:
+        request_context.reset_cookie_jwt(cookie_token)
         request_context.reset_request_id(token)
     response.headers["X-Request-ID"] = request_id
     return response
@@ -480,6 +488,14 @@ def _make_repo_scope(
     """
     if not version_config.IS_V6:
         return version_config.repo_scope(None, login_id=login_id)
+
+    if not jwt:
+        # No token from the host page's CHATBOT_AUTH message (e.g. the chatbot was
+        # opened on its own): use the host's accessToken cookie, if the browser sent
+        # one. The 6.0 API still validates it exactly as it would from the host.
+        jwt = request_context.get_cookie_jwt()
+        if jwt:
+            logger.info("[JWT] no token in the request - using the host's accessToken cookie")
 
     resolved_tenant_id = version_config.resolve_tenant_id(tenant_id, domain)
     if not resolved_tenant_id:

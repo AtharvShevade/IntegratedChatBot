@@ -46,3 +46,30 @@ class RequestIdFilter(logging.Filter):
         if not hasattr(record, "request_id"):
             record.request_id = get_request_id()
         return True
+
+
+# ── 6.0: the host's login token, when the browser sends it as a cookie ────────
+# The 6.0 host sets its JWT as the "accessToken" cookie (Domain=<host>, Path=/,
+# Secure, HttpOnly). When the chatbot is served from that same domain the
+# browser sends the cookie along with every chatbot request, so a chatbot opened
+# on its own (no CHATBOT_AUTH message from a host page) can still act as the
+# logged-in user. Set by main.py's request middleware, read by _make_repo_scope
+# only when the request body carries no jwt. Never logged.
+JWT_COOKIE_NAME = "accessToken"
+
+_cookie_jwt_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "cookie_jwt", default=None
+)
+
+
+def set_cookie_jwt(value: str | None) -> contextvars.Token:
+    return _cookie_jwt_var.set(value or None)
+
+
+def reset_cookie_jwt(token: contextvars.Token) -> None:
+    _cookie_jwt_var.reset(token)
+
+
+def get_cookie_jwt() -> str | None:
+    """The accessToken cookie of the current request, or None."""
+    return _cookie_jwt_var.get()
