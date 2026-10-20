@@ -137,3 +137,7 @@
 {"ts": "2026-10-15T06:57:05.690752+00:00", "query": "show all users", "tier": "regex_legacy", "intent": "db_list_users", "found": true, "raw_intent": "USER_LIST"}
 {"ts": "2026-10-15T06:57:13.491557+00:00", "query": "hi there", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-10-15T06:57:13.494761+00:00", "query": "hi there", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-15T07:42:26.756110+00:00", "query": "31-Mar-2026", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-15T07:42:26.766910+00:00", "query": "31-Mar-2026", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-15T07:42:41.075047+00:00", "query": "23-Oct-2026 at 04:04:04", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-15T07:42:41.081217+00:00", "query": "23-Oct-2026 at 04:04:04", "tier": "regex_legacy", "intent": null, "found": false}
