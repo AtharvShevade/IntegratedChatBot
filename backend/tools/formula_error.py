@@ -2909,6 +2909,36 @@ def _validator_disagreement_note(result, comparison=None, labels=None,
         "data before changing the reported figures.")
 
 
+def _card_source_location_formula(rule, by_var) -> dict | None:
+    """DB TableName / Table Header / Cell Code of the value the rule is checked on.
+
+    Only from the error file's own backtracking columns (rule["has_backtracking"]),
+    and only for the rule's first variable (V1 - the figure that is tested, e.g. the
+    "total" in total = sum of parts). Lines the file leaves empty are left out, and
+    a rule whose file carries no backtracking columns (or whose first variable has no
+    row) gets no section - nothing is invented or taken from another variable.
+    """
+    if not rule.get("has_backtracking"):
+        return None
+
+    def _order(var: str) -> tuple[int, str]:
+        digits = "".join(ch for ch in str(var) if ch.isdigit())
+        return (int(digits) if digits else 10 ** 6, str(var))
+
+    variables = sorted(by_var, key=_order)
+    facts = by_var.get(variables[0]) if variables else None
+    if not facts:
+        return None
+    fact = facts[0]
+    items = []
+    for label, key in (("DB TableName", "db_table"), ("Table Header", "table_header"),
+                       ("Cell Code", "cell_code")):
+        value = (fact.get(key) or "").strip()
+        if value:
+            items.append({"label": label, "value": value, "mono": key != "table_header"})
+    return error_card.locator(items, heading="") if items else None
+
+
 def _card_locator_items_formula(rule, by_var, labels) -> list[dict]:
     """The rule's identity plus any source location the evidence carries.
 
@@ -3044,8 +3074,10 @@ def build_card_sections(
     ]
 
     # -- Validation Rule / Satisfactory condition / i.e. -----------------------
-    # The WHERE/locator strip (DB TableName/Cell Code/Table Header) is no
-    # longer shown for formula-error cards — removed per explicit request.
+    # The source location (DB TableName / Table Header / Cell Code) is shown right
+    # after the Validation Rule, but only for rules whose error file carries it
+    # (backtracking) - see _card_source_location_formula. (It was removed once;
+    # it is back, and now limited to the first variable and to real evidence.)
     #
     # Both lines below reuse the SAME existing tools already used elsewhere
     # in this module for human-readable rendering: formula_kind's own
@@ -3072,6 +3104,9 @@ def build_card_sections(
             {"kind": "labeled_text", "heading": "Validation Rule", "text": validation_rule_text},
             terms, ops,
         ))
+    source_location = _card_source_location_formula(rule, by_var)
+    if source_location:
+        sections.append(source_location)
 
     condition_text = _satisfactory_condition_text(comparison) if show_equation else ""
     if condition_text:

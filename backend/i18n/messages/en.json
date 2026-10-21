@@ -163,6 +163,8 @@
   "errcard.item.rowLabel": "Row label",
   "errcard.item.cellCode": "Cell code",
   "errcard.item.formula": "Formula",
+  "errcard.loc.tableHeader": "Table Header",
+  "errcard.loc.cellCode": "Cell Code",
   "variance.header": "Variance Analysis — {0}",
   "variance.comparing": "Comparing: {0}  vs  {1}",
   "errcard.technicalDetails": "Technical details",

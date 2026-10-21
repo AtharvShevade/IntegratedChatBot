@@ -335,9 +335,16 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
         return [f"{indent}[X] {section.get('text', '')}", ""]
 
     if kind == "locator":
-        lines = [f"{indent}{section.get('heading', 'Where')}"]
+        heading = section.get("heading", "Where")
+        # A locator with an empty heading (the formula card's source-location block)
+        # is just its label: value lines, no heading line and no bullet dash.
+        lines = [f"{indent}{heading}"] if heading else []
         for item in section.get("items") or []:
             label = item.get("label", "")
+            if not heading:
+                lines.append(f"{indent}{label} : {item.get('value', '')}" if label
+                             else f"{indent}{item.get('value', '')}")
+                continue
             lines.append(f"{indent}  - {label}: {item.get('value', '')}" if label
                          else f"{indent}  - {item.get('value', '')}")
         lines.append("")

@@ -163,6 +163,8 @@
   "errcard.item.rowLabel": "पंक्ति लेबल",
   "errcard.item.cellCode": "सेल कोड",
   "errcard.item.formula": "सूत्र",
+  "errcard.loc.tableHeader": "तालिका शीर्षक",
+  "errcard.loc.cellCode": "सेल कोड",
   "variance.header": "भिन्नता विश्लेषण — {0}",
   "variance.comparing": "तुलना: {0}  बनाम  {1}",
   "errcard.technicalDetails": "तकनीकी विवरण",

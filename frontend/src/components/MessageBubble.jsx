@@ -444,7 +444,7 @@ export function FormulaErrorSections({ sections }) {
           case 'locator':
             return (
               <div key={i} className="formula-error-section error-card-locator">
-                <div className="formula-error-section-heading">{s.heading}</div>
+                {s.heading && <div className="formula-error-section-heading">{s.heading}</div>}
                 <div className="formula-error-kv-grid">
                   {(s.items || []).map((it, j) => (
                     <div key={j} className="formula-error-kv-row">

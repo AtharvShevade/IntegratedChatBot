@@ -163,6 +163,8 @@
   "errcard.item.rowLabel": "Libellé de ligne",
   "errcard.item.cellCode": "Code de cellule",
   "errcard.item.formula": "Formule",
+  "errcard.loc.tableHeader": "En-tête du tableau",
+  "errcard.loc.cellCode": "Code de cellule",
   "variance.header": "Analyse de variance — {0}",
   "variance.comparing": "Comparaison : {0}  vs  {1}",
   "errcard.technicalDetails": "Détails techniques",
