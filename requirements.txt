@@ -106,3 +106,6 @@ portalocker>=2.10.0
 # depended on directly by backend/tools/xml_loader.py and friends) ──────────────
 
 defusedxml>=0.7.1
+
+# ── Old binary .xls workbooks (read by backend/error_improvement to locate the cell an error points at) ──
+xlrd==2.0.2

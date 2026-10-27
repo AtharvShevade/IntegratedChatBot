@@ -141,3 +141,27 @@
 {"ts": "2026-10-15T07:42:26.766910+00:00", "query": "31-Mar-2026", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-10-15T07:42:41.075047+00:00", "query": "23-Oct-2026 at 04:04:04", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-10-15T07:42:41.081217+00:00", "query": "23-Oct-2026 at 04:04:04", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-24T18:54:27.403040+00:00", "query": "CIMS_LR (Monthly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-24T18:54:27.407652+00:00", "query": "CIMS_LR (Monthly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-24T18:54:48.284586+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-24T18:54:48.292632+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T05:36:18.606767+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T05:36:18.614931+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T05:48:28.137645+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T05:48:28.145647+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:09:16.257757+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:09:16.265745+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:11:20.608308+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:11:20.616055+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:38:41.316472+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:38:41.323240+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:55:19.137050+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T10:55:19.146239+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T11:02:40.815699+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T11:02:40.821317+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T11:11:25.973540+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T11:11:25.977843+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T11:13:13.735430+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T11:13:13.738759+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-10-26T12:05:15.363161+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-10-26T12:05:15.399330+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}

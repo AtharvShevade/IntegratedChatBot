@@ -3573,10 +3573,39 @@ def explain_formula_error_file(
     html_path: str, form_id: str = "", max_rules: int = 3, offset: int = 0,
     lang: str = "en",
 ) -> list[dict]:
-    """Top-level entry point: parse, then explain one batch starting at *offset*."""
+    """Top-level entry point: parse, then explain one batch starting at *offset*.
+
+    The error-improvement engine (backend/error_improvement) is asked first. It returns a card — cause, fix, exact cells —
+    for each rule it can explain from the error file and the user's workbook; every other rule in the batch goes through the
+    existing explanation unchanged. ERROR_IMPROVEMENT=0 restores the previous behaviour exactly.
+    """
     rules = parse_formula_errors_v2(html_path)
     offset = max(0, int(offset or 0))
-    return explain_formula_rules(
-        rules[offset:offset + max_rules], form_id=form_id, error_file_path=html_path,
-        lang=lang,
-    )
+    batch = rules[offset:offset + max_rules]
+    improved = _explain_with_error_improvement(batch, rules, html_path, form_id, lang)
+    if not improved:
+        return explain_formula_rules(batch, form_id=form_id, error_file_path=html_path, lang=lang)
+    pending = [i for i, r in enumerate(batch) if r.get("rule_name") not in improved]
+    old = explain_formula_rules(
+        [batch[i] for i in pending], form_id=form_id, error_file_path=html_path, lang=lang,
+    ) if pending else []
+    old_by_index = dict(zip(pending, old))
+    return [old_by_index[i] if i in old_by_index else improved[r.get("rule_name")] for i, r in enumerate(batch)]
+
+
+def _explain_with_error_improvement(batch: list[dict], all_rules: list[dict], html_path: str,
+                                    form_id: str, lang: str) -> dict[str, dict]:
+    """{rule_name: explained rule dict} from the error-improvement engine; {} when it is off or has nothing to add. Never raises."""
+    if not batch:
+        return {}
+    try:
+        from backend.error_improvement import adapter
+        if not adapter.enabled():
+            return {}
+        numbering: dict[str, int] = {}
+        for position, rule in enumerate(all_rules, 1):
+            numbering.setdefault(rule.get("rule_name", ""), position)
+        return adapter.explain_batch(batch, html_path, form_id=form_id, numbering=numbering, lang=lang)
+    except Exception as exc:  # noqa: BLE001 — the improvement must never cost the user the existing explanation
+        logger.warning("[formula_error] error-improvement skipped: %s: %s", type(exc).__name__, exc)
+        return {}
