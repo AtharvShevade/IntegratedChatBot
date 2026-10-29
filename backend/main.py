@@ -14,6 +14,8 @@ from pathlib import PurePosixPath
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -396,6 +398,33 @@ async def _rate_limit_middleware(request: Request, call_next):
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
     return await call_next(request)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Same 422 body FastAPI sends by default, but logged first.
+
+    A rejected body never reaches the endpoint, so without this a 422 leaves
+    nothing in the log -- e.g. /compare-summary silently showing "AI analysis
+    is unavailable". Only the field path, error type and message are logged
+    (never the submitted value), de-duplicated across rows and capped.
+    """
+    seen: dict[str, int] = {}
+    for err in exc.errors():
+        loc = ".".join(
+            "*" if isinstance(p, int) else str(p) for p in err.get("loc", ())
+        )
+        key = f"{loc} [{err.get('type')}] {err.get('msg')}"
+        seen[key] = seen.get(key, 0) + 1
+    summary = "; ".join(f"{k} x{n}" for k, n in list(seen.items())[:5])
+    logger.warning(
+        "[VALIDATION_422] path=%s errors=%d: %s",
+        request.url.path, len(exc.errors()), summary or "(none)",
+    )
+    return JSONResponse(
+        status_code=422,  # the constant's name differs across starlette versions
+        content={"detail": jsonable_encoder(exc.errors(), exclude={"input", "ctx"})},
+    )
 
 
 @app.exception_handler(Exception)
