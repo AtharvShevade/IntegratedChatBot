@@ -42,16 +42,29 @@ class ValueLocator:
         self._header_cache: dict = {}
 
     # -- evidence -------------------------------------------------------------------------------------------------
-    def hits(self, value: str) -> list[tuple[str, int, int, int]]:
+    def hits(self, value: str, decimals=None) -> list[tuple[str, int, int, int]]:
+        """(sheet, row, col, scaling) of the cells holding the value. The index is keyed on values rounded to 4 places, which at a large
+        scaling turns a small number (a rate of 0.06 at 10^7) into 0.0 and "finds" every empty cell. So each hit is checked against the
+        cell's own value: it must equal the fact within the fact's own precision. A fact filed to d places is also looked for at the
+        cells within half a unit of its last place."""
         t = _dec(value)
         if t is None or t == 0:
             return []
+        tol = fa.tolerance(t, decimals)
         out = []
         for sh in self.wb.sheets:
             idx = self.wb.index(sh)
             for m in MULT:
-                for r, c in idx.get(round(float(t / m), 4), []):
-                    out.append((sh, r, c, m))
+                base = float(t / m)
+                keys = [round(base, 4)]
+                reach = int(tol / m / Decimal("0.0001"))
+                if 0 < reach <= 200:
+                    keys = [round(base + j * 0.0001, 4) for j in range(-reach, reach + 1)]
+                for key in dict.fromkeys(keys):
+                    for r, c in idx.get(key, []):
+                        v = self.wb.value(sh, r, c)
+                        if isinstance(v, (int, float)) and not isinstance(v, bool) and abs(Decimal(str(v)) * m - t) <= tol:
+                            out.append((sh, r, c, m))
         return out
 
     def row_label(self, sheet: str, row: int) -> str:
@@ -82,9 +95,9 @@ class ValueLocator:
         self._prior_mult = max(votes, key=votes.get) if votes else None
 
     # -- decision -------------------------------------------------------------------------------------------------
-    def locate(self, concept: str, members, value: str, hint_words: set[str], rule_name: str = ""):
+    def locate(self, concept: str, members, value: str, hint_words: set[str], rule_name: str = "", decimals=None):
         """-> (best hit | None, [candidate hits], why, strength) ; a hit is (sheet, row, col, multiplier)."""
-        hs = self.hits(value)
+        hs = self.hits(value, decimals)
         if not hs:
             return None, [], "value not found in the workbook", ""
         if self._prior_mult is not None:
@@ -115,7 +128,7 @@ class ValueLocator:
     def resolve(self, fact, hint_words: set[str], rule_name: str = ""):
         """Same shape as fact_address.resolve_fact: Resolved(status, addresses, note)."""
         members = fa.context_members(fact.context)
-        best, cands, why, strength = self.locate(fact.concept, members, fact.value, hint_words, rule_name)
+        best, cands, why, strength = self.locate(fact.concept, members, fact.value, hint_words, rule_name, fact.decimal)
         if not cands:
             return None
 

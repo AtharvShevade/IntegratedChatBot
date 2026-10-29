@@ -153,6 +153,151 @@ def render_formula(comp, names: dict[str, str], limit: int = 240) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
+_A1 = re.compile(r"^([A-Z]+)(\d+)$")
+
+
+def _col_n(col: str) -> int:
+    n = 0
+    for ch in col:
+        n = n * 26 + ord(ch) - 64
+    return n
+
+
+def cell_ref(cells: list[tuple[str, str]], limit: int = 6) -> tuple[str, str]:
+    """([(sheet, a1)]) -> (sheet text, cell text): 'B3:B12' when the cells are consecutive in one column or row, else a short list."""
+    sheets = list(dict.fromkeys(s for s, _a in cells))
+    one = len(sheets) == 1
+    a1s = [a for _s, a in cells]
+    m = [_A1.match(a) for a in a1s]
+    if len(a1s) > 1 and all(m) and one:
+        cols, rows = [x.group(1) for x in m], [int(x.group(2)) for x in m]
+        if len(set(cols)) == 1 and sorted(rows) == list(range(min(rows), min(rows) + len(rows))):
+            return sheets[0], f"{cols[0]}{min(rows)}:{cols[0]}{max(rows)}"
+        if len(set(rows)) == 1:
+            ns = sorted(_col_n(c) for c in cols)
+            if ns == list(range(ns[0], ns[0] + len(ns))):
+                lo = min(cols, key=_col_n)
+                hi = max(cols, key=_col_n)
+                return sheets[0], f"{lo}{rows[0]}:{hi}{rows[0]}"
+    shown = a1s[:limit] if one else [f"{s}!{a}" for s, a in cells[:limit]]
+    text = ", ".join(shown) + (f" +{len(cells) - limit} more" if len(cells) > limit else "")
+    return (sheets[0] if one else "Several sheets"), text
+
+
+def _linear(node) -> bool:
+    """Only variables, + / -, sign flips, sum() and rounding wrappers: the side is a plain total of cells."""
+    if node is None:
+        return False
+    if node.kind == "var":
+        return True
+    if node.kind == "func" and node.name in _WRAP | {"sum"} and len(node.args) == 1:
+        return _linear(node.args[0])
+    if node.kind == "unary" and node.args:
+        return _linear(node.args[0])
+    if node.kind == "binop" and node.op in ("+", "-") and len(node.args) == 2:
+        return _linear(node.args[0]) and _linear(node.args[1])
+    return False
+
+
+def _dec(v):
+    try:
+        return Decimal(str(v))
+    except Exception:                                              # noqa: BLE001
+        return None
+
+
+def _side(node, located: dict, counts: dict) -> dict:
+    """What one side of the rule stands for: its located cells, how many cells the filing has for it, and how to name it."""
+    core = _strip(node)                                            # look through round(... * 10000) div 10000 and abs()
+    linear = _linear(core)
+    signed = []
+    if linear:
+        try:
+            signed = [(v.upper(), sg) for v, sg in core.signed_variables()]
+        except Exception:                                          # noqa: BLE001
+            linear = False
+    variables = [v.upper() for v in node.variables()] if not signed else [v for v, _ in signed]
+    variables = list(dict.fromkeys(variables))
+    cells, expected, partial = [], 0, Decimal(0)
+    signs = dict(signed)
+    for v in variables:
+        lcs = located.get(v) or located.get(v.lower()) or []
+        expected += int(counts.get(v, len(lcs)) or 0)
+        for lc in lcs:
+            if lc.addr is None:
+                continue
+            cells.append((lc.addr.sheet, lc.addr.a1))
+            val = _dec(lc.fact.value)
+            if val is not None:
+                partial += val * (signs.get(v, 1) if linear else 1)
+    single = bool(core is not None and core.kind == "var" and expected == 1 and len(cells) == 1)
+    return {"cells": cells, "expected": expected, "found": len(cells), "linear": linear, "single": single,
+            "all_plus": linear and all(sg > 0 for _v, sg in signed), "partial": partial,
+            "missing": max(0, expected - len(cells))}
+
+
+def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Calculated")) -> dict | None:
+    """The one table every calculation card shows: Sheet Name | Cell | Value for each side of the rule, then the difference.
+
+    Values are the rule's own (from the error file), so the table, the difference and the explanation always agree. A side that
+    is one cell shows that cell; a total shows 'Sum of B3:B12'; anything else shows 'Calculated from N cells'. When some cells of
+    a side could not be located, the rule's own value is still shown, the located cells are shown separately with their own sum,
+    and a warning says how many are missing. Returns None when the rule has no numbers to compare.
+    """
+    if comp is None or not ev or comp.rhs is None:
+        return None
+    lv, rv = _dec(ev.get("lhs_value", ev.get("lhs"))), _dec(ev.get("rhs_value", ev.get("rhs")))
+    if lv is None or rv is None:
+        return None
+    counts = {str(k).upper(): v for k, v in (ev.get("fact_counts") or {}).items()} if isinstance(ev.get("fact_counts"), dict) else {}
+    sides = [_side(comp.lhs, located, counts), _side(comp.rhs, located, counts)]
+    if not sides[0]["cells"]:
+        return None
+    rows, notes = [], []
+    for i, (side, val) in enumerate(zip(sides, (lv, rv))):
+        role = names[i]
+        if not side["cells"]:
+            if side["expected"] == 0 and not side["linear"]:
+                continue
+            rows.append({"label": f"{role} value", "sheet": "", "cell": "", "value": fmt(val), "tone": "", "code": False})
+            if side["expected"]:
+                notes.append(f"None of the {side['expected']} cell(s) behind the {role.lower()} value could be located; "
+                             "the value shown is the rule's own.")
+            continue
+        sheet, ref = cell_ref(side["cells"])
+        side["ref"] = ref
+        if side["single"]:
+            cell = ref
+        elif side["linear"] and side["all_plus"]:
+            cell = f"Sum of {ref}"
+        elif side["linear"]:
+            cell = f"Calculated from {ref}"
+        else:
+            cell = f"Calculated from {len(side['cells'])} cells"
+        side["label"] = cell
+        rows.append({"label": f"{sheet}!{cell}", "sheet": sheet, "cell": cell, "value": fmt(val), "tone": "", "code": True})
+        if side["missing"]:
+            rows[-1]["partial"] = True
+            n, m = side["missing"], side["expected"]
+            notes.append(f"{n} of {m} components of the {role.lower()} value could not be located, so the cells listed are incomplete.")
+            if side["linear"] and not side["single"]:
+                rows.append({"label": f"{sheet}!located:{cell}", "sheet": sheet, "cell": f"Located cells only ({side['found']} of {m})",
+                             "value": fmt(side["partial"]), "tone": "", "code": False})
+                notes.append(f"The value above is the rule's own. The {side['found']} located cell(s) alone add up to {fmt(side['partial'])}, "
+                             "so that is not the full total.")
+        elif side["linear"] and not side["single"] and abs(side["partial"] - val) > max(
+                Decimal("0.0005") * abs(val), Decimal("0.005") * len(side["cells"])):          # filed figures are rounded (to thousands, lakhs...)
+            notes.append(f"The listed cells add up to {fmt(side['partial'])}, but the rule calculated {fmt(val)} for the {role.lower()} "
+                         "value. The workbook and the error file may disagree on some of these cells.")
+    absent = [v for v in (ev.get("missing_vars") or [])]
+    if absent:
+        notes.append(f"{len(absent)} operand(s) of the rule are not in the filing; the rule counts them as 0.")
+    diff = abs(lv - rv)
+    rows.append({"label": "Difference", "sheet": "", "cell": "", "value": fmt(diff), "tone": "bad", "code": False})
+    return {"rows": rows, "diff": diff, "left": lv, "right": rv, "notes": notes, "sides": sides,
+            "complete": not any(s["missing"] for s in sides)}
+
+
 def _differs(lc) -> bool:
     """The workbook cell holds a different number than the filing, beyond the rounding the filing's own decimals allow."""
     a = lc.addr
@@ -179,22 +324,34 @@ def contributing(comp, kind, located, wb, label_fn, value_fn, limit: int = 60) -
     concepts = {v.upper(): lcs[0].fact.concept for v, lcs in located.items() if lcs}
     names, shape = roles(comp, kind, concepts)
     order = [v.upper() for v in comp.variables()]
-    first = {}
+    every = {}
     for v in order:
         lcs = located.get(v) or located.get(v.lower()) or []
         if lcs:
-            first[v] = lcs[0]
-    if not first:
+            every[v] = list(lcs)
+    if not every:
         return None
-    # reported (left side) first, then the operands in the rule's own order
+    # reported (left side) first, then the operands in the rule's own order; an operand that stands for many cells
+    # (sum($V2) over a whole column) contributes every one of them
     lhs_vars = [v.upper() for v in comp.lhs.variables()]
     seq = lhs_vars + [v for v in order if v not in lhs_vars]
+    pairs_ = []
+    comp_n = 0
+    for v in dict.fromkeys(seq):
+        for k, lc in enumerate(every.get(v, []), 1):
+            role = names.get(v, v)
+            if len(every[v]) > 1:
+                if role.startswith("Component"):
+                    comp_n += 1
+                    role = f"Component {comp_n}" + (" (subtracted)" if role.endswith("(subtracted)") else "")
+                else:
+                    role = f"{role} ({k})"
+            elif role.startswith("Component"):
+                comp_n += 1
+                role = f"Component {comp_n}" + (" (subtracted)" if role.endswith("(subtracted)") else "")
+            pairs_.append((role, lc))
     items, unlocated, differing, blank = [], [], 0, 0
-    for v in seq:
-        lc = first.get(v)
-        if lc is None:
-            continue
-        role = names.get(v, v)
+    for role, lc in pairs_:
         if lc.addr is None:
             unlocated.append(role)
             items.append({"cell": role, "label": "not located in the workbook", "value": value_fn(lc, None), "state": "unknown",

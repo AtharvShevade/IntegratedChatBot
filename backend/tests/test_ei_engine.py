@@ -572,3 +572,432 @@ def test_ab47_style_calculated_cell_block_is_kept_not_replaced():
                "V2": [_flc("V2", "A", "0", addr=_addr("Ind", "AB47", 0))]}
     v = rc._compact_view(_card("equality"), [N(facts={"culprit_info": [ci]})], located, rc.cell_money, _parse("$V1 = $V2"), [], None, None)
     assert v["breakdown"] is bd and v["wrong"] == "These two values must be equal, but they do not match."
+
+
+# ── one comparison table for every calculation card (Sheet Name | Cell | Value) ─────────────────────────────────
+_SUM = "$V1 = sum($V2)"
+
+
+def _sum_located(found=10, expected=10):
+    cells = [("B3", 4172), ("B4", 4491), ("B5", 8498), ("B6", 8852), ("B7", 5791), ("B8", 7984), ("B9", 3051), ("B10", 8429),
+             ("B11", 2228), ("B12", 7923)]
+    v2 = [_flc("V2", "Exposure", str(v), "INR", "0", _addr("S", a1, v) if i < found else None) for i, (a1, v) in enumerate(cells[:expected])]
+    return {"V1": [_flc("V1", "Exposure", "70000000", "INR", "0", _addr("S", "B13", 70000000))], "V2": v2}
+
+
+def _sum_card(calc_l="₹70,000,000", calc_r="₹61,419"):
+    return _card("aggregate", calc=[("Left side", calc_l), ("Right side", calc_r), ("Difference", "₹69,938,581")])
+
+
+def _sum_ev(n=10):
+    from decimal import Decimal
+    return {"lhs_value": Decimal(70000000), "rhs_value": Decimal(61419), "fact_counts": {"V1": 1, "V2": n}, "missing_vars": []}
+
+
+def _sum_view(located, ev, comp=None):
+    from backend.error_improvement import rule_cards as rc
+    return rc._compact_view(_sum_card(), [], located, rc.cell_money, comp or _parse(_SUM), [], None, ev)
+
+
+def test_total_card_shows_the_reported_cell_and_the_sum_with_a_difference_that_matches():
+    v = _sum_view(_sum_located(), _sum_ev())
+    rows = {k[0]: k[1] for k in v["kv"]}
+    assert list(v["kv_cells"].values()) == [("S", "B13"), ("S", "Sum of B3:B12")]        # sheet and cell columns, never the first cell alone
+    assert [k[1] for k in v["kv"]] == ["₹70,000,000", "₹61,419", "₹69,938,581"]
+    assert v["warnings"] == []
+    assert "₹70,000,000" in v["wrong"] and "₹61,419" in v["wrong"]
+    assert "₹61,419" in v["why"]                                                         # explanation uses the same numbers as the table
+    b = v["breakdown"]
+    assert [i["cell"] for i in b["groups"][0]["items"]] == ["B13"] + [f"B{n}" for n in range(3, 13)]   # all 10 components, not B3 only
+    assert b["unlocated"] == 0 and rows["Difference"] == "₹69,938,581"
+
+
+def test_total_card_with_missing_components_never_presents_a_partial_sum_as_the_total():
+    v = _sum_view(_sum_located(found=7), _sum_ev())
+    kv = {k[0]: k[1] for k in v["kv"]}
+    calc_row = next(k for k in v["kv"] if k[0].endswith("Sum of B3:B9"))
+    assert calc_row[1] == "₹61,419"                                                      # the rule's own value, not the located sum
+    part = next(k for k in v["kv"] if k[0].endswith("located:Sum of B3:B9"))
+    assert v["kv_cells"][part[0]][1] == "Located cells only (7 of 10)" and part[1] == "₹42,839"   # 4172+4491+8498+8852+5791+7984+3051
+    assert any("3 of 10 components of the calculated value could not be located" in w for w in v["warnings"])
+    assert any("not the full total" in w for w in v["warnings"])
+    assert next(k for k in v["kv"] if k[0] == "Difference")[1] == "₹69,938,581"          # difference stays the rule's own
+    assert v["breakdown"]["unlocated"] == 3 and "3 could not be located" in v["breakdown"]["status_sub"]
+    assert not any(k[2] == "bad" and "Sum" in k[0] for k in v["kv"])
+
+
+def test_single_cell_comparison_shows_both_cells_and_the_rules_difference():
+    from decimal import Decimal
+    located = {"V1": [_flc("V1", "A", "100", "INR", "0", _addr("S", "B13", 100))], "V2": [_flc("V2", "A", "60", "INR", "0", _addr("S", "B3", 60))]}
+    ev = {"lhs_value": Decimal(100), "rhs_value": Decimal(60), "fact_counts": {"V1": 1, "V2": 1}, "missing_vars": []}
+    from backend.error_improvement import rule_cards as rc
+    v = rc._compact_view(_card("equality", calc=[("Left side", "₹100"), ("Right side", "₹60"), ("Difference", "₹40")]), [], located,
+                         rc.cell_money, _parse("$V1 = $V2"), [], None, ev)
+    assert list(v["kv_cells"].values()) == [("S", "B13"), ("S", "B3")]
+    assert [k[1] for k in v["kv"]] == ["₹100", "₹60", "₹40"]
+
+
+def test_cell_ranges_are_compressed_only_when_consecutive():
+    from backend.error_improvement import calc_view as cv
+    assert cv.cell_ref([("S", f"K{n}") for n in range(3, 13)]) == ("S", "K3:K12")
+    assert cv.cell_ref([("S", c) for c in ("B13", "C13", "D13")]) == ("S", "B13:D13")
+    assert cv.cell_ref([("S", "B3"), ("S", "B5")]) == ("S", "B3, B5")                    # a gap is listed, not hidden by a range
+    assert cv.cell_ref([("S", "B3"), ("T", "B4")])[0] == "Several sheets"
+
+
+def test_calculated_cell_formula_is_used_only_when_it_is_built_from_the_cells_the_rule_adds():
+    from backend.error_improvement import rule_cards as rc
+    bd = {"groups": [{"items": [{"cell": "K3"}, {"cell": "K4"}]}], "formula": "K13 = SUM(K3:K4)"}
+    same = {"V1": [_flc("V1", "A", "1", addr=_addr("S", "K13", 1))], "V2": [_flc("V2", "A", "1", addr=_addr("S", "K3", 1))],
+            "V3": [_flc("V3", "A", "1", addr=_addr("S", "K4", 1))]}
+    other = {"V1": [_flc("V1", "A", "1", addr=_addr("S", "K13", 1))], "V2": [_flc("V2", "A", "1", addr=_addr("S", "B13", 1))]}
+    assert rc._bd_matches(bd, "K13", same) and not rc._bd_matches(bd, "K13", other)
+
+
+# ── what the filer's workbook really holds, proven fixes, shared root causes, currency ─────────────────────────────
+def _books(tmp_path):
+    """A template whose row 6 holds formulas, and an upload where B6 and D6 were typed over (B6 wrongly: 100, not 60)."""
+    import openpyxl
+    tpl, up = openpyxl.Workbook(), openpyxl.Workbook()
+    for wb_, typed in ((tpl, False), (up, True)):
+        ws = wb_.active
+        ws.title = "S"
+        for r, (b, c) in enumerate(((10, 1), (20, 2), (30, 3)), start=3):
+            ws[f"B{r}"], ws[f"C{r}"] = b, c
+        ws["B6"] = 100 if typed else "=SUM(B3:B5)"
+        ws["C6"] = 6 if typed else "=SUM(C3:C5)"
+        ws["D6"] = 66 if typed else "=B6+C6"
+        ws["F3"] = "=B3*2"                                                    # a formula that really is still a formula in the upload
+    pt, pu = str(tmp_path / "template.xlsx"), str(tmp_path / "upload.xlsx")
+    tpl.save(pt)
+    up.save(pu)
+    return pt, pu
+
+
+def _wb(tmp_path):
+    from backend.error_improvement.workbook import Workbook
+    from backend.error_improvement.formula_graph import FormulaGraph
+    from backend.error_improvement import cell_state as cs
+    pt, pu = _books(tmp_path)
+    wb = Workbook(pu)
+    wb.formulas, wb.upload_formulas = FormulaGraph(path=pt), cs.upload_graph(pu)
+    return wb
+
+
+def test_cell_state_separates_formula_input_and_overwritten_template_formula(tmp_path):
+    from backend.error_improvement import cell_state as cs
+    wb = _wb(tmp_path)
+    assert cs.state(wb, "S", 6, 1)["state"] == "overwritten"                 # B6: template formula, typed number uploaded
+    assert cs.state(wb, "S", 6, 1)["template_formula"] == "=SUM(B3:B5)" and cs.state(wb, "S", 6, 1)["inspected"]
+    assert cs.state(wb, "S", 3, 5)["state"] == "formula"                     # F3: still a formula in the upload
+    assert cs.state(wb, "S", 3, 1)["state"] == "input"                       # B3: a plain input
+
+
+def test_a_legacy_xls_is_never_said_to_hold_a_formula(tmp_path):
+    from backend.error_improvement import cell_state as cs
+    from types import SimpleNamespace as N
+    old = tmp_path / "old.xls"
+    old.write_bytes(b"\xd0\xcf\x11\xe0 not a zip")                           # a binary workbook: its formulas cannot be read
+    assert cs.upload_graph(str(old)) is None
+    from backend.error_improvement.formula_graph import FormulaGraph
+    pt, _pu = _books(tmp_path)
+    wb = N(formulas=FormulaGraph(path=pt), upload_formulas=None, is_template=False, value=lambda *a: 100)
+    s = cs.state(wb, "S", 6, 1)
+    assert s["state"] == "template_formula" and not s["inspected"]           # "the template says so", not "your workbook has it"
+
+
+def test_replacement_is_the_template_formula_evaluated_on_the_filers_values(tmp_path):
+    from backend.error_improvement import fix_check as fc
+    from decimal import Decimal
+    wb = _wb(tmp_path)
+    f, v, why = fc.replacement(wb, "S", 6, 1)
+    assert f == "=SUM(B3:B5)" and v == Decimal(60) and not why
+    f, v, why = fc.replacement(wb, "S", 3, 1)                                # an input has no formula: nothing to restore
+    assert v is None and why == "no formula"
+
+
+def _rule(name, text, located):
+    """An analysed item: (rule, expression, comparison, kind, [(instance, located, evaluation)])."""
+    from types import SimpleNamespace as N
+    from backend.error_improvement import explain_workbook as ew
+    comp = ew.fx.parse_formula(text)
+    by_var = {v: [str(lc.fact.value) for lc in lcs] for v, lcs in located.items()}
+    ev = ew.fx.evaluate(comp, by_var)
+    return (N(name=name), text, comp, "aggregate", [(None, located, ev)])
+
+
+def _cell(var, a1, row, col, value, unit="QAR"):
+    from types import SimpleNamespace as N
+    addr = N(sheet="S", a1=a1, row=row, col=col, workbook_value=value, multiplier=1)
+    return N(fact=N(var=var, concept="Amount", value=str(value), unit=unit, decimal="INF"), addr=addr, res=N(status="CONFIRMED"), where="S!" + a1)
+
+
+def _scenario(tmp_path):
+    wb = _wb(tmp_path)
+    r1 = _rule("R1", "$V1 = sum($V2)", {"V1": [_cell("V1", "B6", 6, 1, 100)],
+                                          "V2": [_cell("V2", f"B{r}", r, 1, v) for r, v in ((3, 10), (4, 20), (5, 30))]})
+    r2 = _rule("R2", "$V1 = $V2 + $V3", {"V1": [_cell("V1", "D6", 6, 3, 66)], "V2": [_cell("V2", "B6", 6, 1, 100)],
+                                          "V3": [_cell("V3", "C6", 6, 2, 6)]})
+    return wb, [r1, r2]
+
+
+def test_fix_is_verified_by_evaluating_the_whole_rule_again(tmp_path):
+    from backend.error_improvement import fix_check as fc
+    from decimal import Decimal
+    wb, (r1, _r2) = _scenario(tmp_path)
+    _r, _e, comp, _k, [(_i, located, ev)] = r1
+    ok = fc.verify(comp, located, ev, located["V1"][0], wb, Decimal(60))
+    assert ok["passes"] and ok["verified"] and not ok["problems"]
+    bad = fc.verify(comp, located, ev, located["V1"][0], wb, Decimal(61))   # a number that does not make the rule pass
+    assert not bad["passes"] and not bad["verified"]
+
+
+def test_fix_stays_unverified_when_an_operand_is_unplaced_or_the_evidence_conflicts(tmp_path):
+    from backend.error_improvement import fix_check as fc
+    from decimal import Decimal
+    wb, (r1, _r2) = _scenario(tmp_path)
+    _r, _e, comp, _k, [(_i, located, ev)] = r1
+    located["V2"][1].addr = None                                              # an operand that could not be placed
+    v = fc.verify(comp, located, ev, located["V1"][0], wb, Decimal(60))
+    assert v["passes"] and not v["verified"] and any("could not be located" in p for p in v["problems"])
+    wb, (r1, _r2) = _scenario(tmp_path)
+    _r, _e, comp, _k, [(_i, located, ev)] = r1
+    located["V2"][0].addr.workbook_value = 11                                 # the workbook disagrees with the error file
+    v = fc.verify(comp, located, ev, located["V1"][0], wb, Decimal(60))
+    assert not v["verified"] and v["conflicts"] == ["B3"] and any("disagree" in p for p in v["problems"])
+
+
+def test_shared_root_cause_is_found_proven_and_linked_without_naming_any_rule(tmp_path):
+    from backend.error_improvement import root_cause as rcs
+    wb, analysed = _scenario(tmp_path)
+    out = rcs.analyse(analysed, wb)
+    assert set(out) == {"R1", "R2"}
+    assert out["R1"]["role"] == "primary" and out["R2"]["role"] == "secondary" and out["R2"]["primary"] == "R1"
+    assert out["R1"]["fix"]["a1"] == out["R2"]["fix"]["a1"] == "B6" and str(out["R1"]["fix"]["replacement"]) == "60.000000"
+    assert out["R1"]["others"] == ["R2"] and out["R1"]["verified"] and out["R2"]["verified"]
+    assert {c["a1"] for c in out["R2"]["consistent"]} == {"D6", "C6"}
+    assert [c["after_fix"] for c in out["R2"]["consistent"] if c["a1"] == "D6"] == [True]    # D6 only looks wrong because of B6
+    assert all(r["fix"]["a1"] != "B3" for r in out.values())                  # a plain input is never the one to change
+
+
+def test_a_shared_cell_that_does_not_clear_a_rule_is_not_claimed_to_clear_it(tmp_path):
+    from backend.error_improvement import root_cause as rcs
+    wb, analysed = _scenario(tmp_path)
+    r3 = _rule("R3", "$V1 = $V2", {"V1": [_cell("V1", "B6", 6, 1, 100)], "V2": [_cell("V2", "C3", 3, 2, 1)]})   # 60 would still not be 1
+    out = rcs.analyse(analysed + [r3], wb)
+    assert "R3" not in out and out["R1"]["not_cleared"] == ["R3"]
+
+
+def test_no_root_cause_is_asserted_without_the_filers_own_formulas(tmp_path):
+    from backend.error_improvement import root_cause as rcs
+    wb, analysed = _scenario(tmp_path)
+    wb.upload_formulas = None                                                 # a legacy .xls upload: only the template is known
+    assert rcs.analyse(analysed, wb) == {}                                     # previous behaviour is kept, nothing is asserted
+
+
+def _rc_text(tmp_path, name):
+    from backend.error_improvement import root_cause as rcs
+    from backend.error_improvement import rule_cards as rc
+    from backend.error_improvement import calc_view as cv
+    wb, analysed = _scenario(tmp_path)
+    out = rcs.analyse(analysed, wb)
+    _r, _e, comp, _k, [(_i, located, ev)] = next(a for a in analysed if a[0].name == name)
+    rc._CURRENCY.set("QAR ")
+    cmpd = cv.comparison(comp, located, ev, rc.money)
+    return rc._rc_view(out[name], cmpd, rc.money, {"rule_name": name})
+
+
+def test_primary_card_says_to_restore_the_formula_not_to_type_the_number(tmp_path):
+    v = _rc_text(tmp_path, "R1")
+    assert v["steps"][0] == "Restore the formula =SUM(B3:B5) in B6 instead of typing a number (it gives QAR 60)."
+    assert "typed number (QAR 100)" in v["why"] and "Verified: with B6 set to QAR 60" in v["why"]
+    assert v["safety"].startswith("Do not type a number into B6")
+    assert v["related"] == ["Fixing B6 also clears R2 (each rule was evaluated again with B6 = QAR 60)."]
+
+
+def test_secondary_card_points_at_the_shared_cause_and_leaves_the_consistent_cell_alone(tmp_path):
+    v = _rc_text(tmp_path, "R2")
+    assert "Fix B6 first" in v["steps"][0] and "R1" in v["steps"][0]
+    assert "D6 (QAR 66) matches what its own formula =B6+C6 gives once B6 is corrected, so it does not look like the cause" in v["why"]
+    assert v["safety"] == "Do not change D6 to match the sum; it is consistent with its own components."
+    assert v["related"] == ["Same root cause as R1: B6."]
+
+
+def test_currency_comes_from_the_facts_unit_and_unknown_is_said_not_guessed():
+    from backend.error_improvement import currency as cu
+    from backend.error_improvement import rule_cards as rc
+    from decimal import Decimal
+    assert cu.of_facts([_flc("V", "A", "1", "QAR").fact, _flc("V", "A", "2", "QAR").fact]) == "QAR"
+    assert cu.of_facts([_flc("V", "A", "1", "QAR").fact, _flc("V", "A", "2", "INR").fact]) is None     # mixed: not guessed
+    assert cu.of_facts([_flc("V", "A", "1", "pure").fact]) is None and cu.normalise("iso4217:qar") == "QAR"
+    rc._set_currency({"V1": [_flc("V1", "A", "1", "QAR")]})
+    assert rc.money(Decimal(70000000)) == "QAR 70,000,000"
+    rc._set_currency({"V1": [_flc("V1", "A", "1", "INR")]})
+    assert rc.money(Decimal(70000000)) == "₹70,000,000"
+    assert rc._set_currency({"V1": [_flc("V1", "A", "1", "")]}) is False and rc.money(Decimal(5)) == "5"   # unknown: no symbol
+    rc._set_currency({"V1": [_flc("V1", "A", "1", "INR")]})
+
+
+def test_a_card_with_an_unknown_currency_says_so():
+    from backend.error_improvement import rule_cards as rc
+    located = _sum_located()
+    for lcs in located.values():
+        for lc in lcs:
+            lc.fact.unit = ""
+    v = rc._compact_view(_sum_card("70,000,000", "61,419"), [], located, rc.cell_money, _parse(_SUM), [], None, _sum_ev())
+    assert any("currency could not be established" in w for w in v["warnings"]) and "₹" not in " ".join(k[1] for k in v["kv"])
+    rc._set_currency({"V1": [_flc("V1", "A", "1", "INR")]})
+
+
+# ── cell-location accuracy: precision-aware matching, verified value hits, ranked ambiguous hits, numbered sheet copies ──────────
+def test_tolerance_follows_the_precision_the_fact_was_filed_to():
+    from backend.error_improvement import fact_address as fa
+    from decimal import Decimal
+    assert fa.tolerance(Decimal("0.06"), "2") == Decimal("0.005")             # a rate filed to 2 places: half a unit of the last place
+    assert fa.tolerance(Decimal("17775625211000"), "-3") == Decimal("17775.625211000")   # large amounts keep a wide, relative allowance
+    assert fa.tolerance(Decimal("4172"), "INF") == Decimal("0.5")             # rupee amounts keep the old +-0.5
+    assert fa.tolerance(Decimal("0.06"), None) == Decimal("0.005")            # a small number without decimals is no longer matched at +-0.5
+
+
+def test_a_rate_no_longer_matches_every_cell_within_half():
+    from backend.error_improvement import fact_address as fa
+    near = fa.Address("L", "", "S", 1, 1, "c", 1, 0.0645)                     # filed 0.06 to 2 places: 0.0645 is that value
+    far = fa.Address("L", "", "S", 1, 1, "c", 1, 0.4)                         # the old +-0.5 accepted this
+    assert fa.value_matches(near, "0.06", "2") and not fa.value_matches(far, "0.06", "2")
+    assert not fa.value_matches(far, "0.06")
+    amount = fa.Address("L", "", "S", 1, 1, "c", 100000, 125.0)               # amounts: unchanged
+    assert fa.value_matches(amount, "12500000", "-3") and not fa.value_matches(amount, "12500500", "2")
+
+
+def test_value_hits_are_checked_against_the_cells_own_value(tmp_path):
+    import openpyxl
+    from backend.error_improvement import value_locator as vl
+    from backend.error_improvement.workbook import Workbook
+    book = openpyxl.Workbook()
+    ws = book.active
+    ws.title = "S"
+    for r in range(1, 40):
+        ws[f"A{r}"] = 0                                                       # a column of zeros
+    ws["C3"], ws["C4"], ws["C5"] = 0.06, 0.0645, 0.4
+    p = str(tmp_path / "w.xlsx")
+    book.save(p)
+    hits = vl.ValueLocator(Workbook(p)).hits("0.06", "2")
+    assert {(h[1], h[2]) for h in hits if h[3] == 1} == {(3, 2), (4, 2)}       # the rate's own cells only
+    assert not [h for h in hits if h[3] != 1]                                  # never the zeros reached by a 10^7 scaling
+
+
+def test_several_cells_holding_the_value_are_ranked_by_the_mapping_row_label():
+    from backend.error_improvement import fact_address as fa
+    from types import SimpleNamespace as N
+    meta = N(staging={("L", "C1"): "Total Advances_Amt"}, columns={"L": [("_Amt", "", "S")]})
+    cands = [N(layout_id="L", cell_code="C1", sheet="S", col=3)]
+    rows = {2: "Other", 5: "Total Advances", 9: "Other"}
+    wb = N(value=lambda sh, r, c: rows.get(r) if c == 0 else None)
+    hit = lambda r, c: N(sheet="S", row=r, col=c)                             # noqa: E731
+    assert fa.rank_hits(meta, wb, cands, [hit(2, 3), hit(5, 3), hit(9, 3)]) == [hit(5, 3)] or \
+        [(h.row, h.col) for h in fa.rank_hits(meta, wb, cands, [hit(2, 3), hit(5, 3), hit(9, 3)])] == [(5, 3)]
+    rows[9] = "Total Advances"                                                # two rows carry the label: nothing is named
+    assert fa.rank_hits(meta, wb, cands, [hit(2, 3), hit(5, 3), hit(9, 3)]) == []
+    assert fa.rank_hits(meta, wb, cands, [hit(2, 3), hit(9, 3)])[0].row == 9   # one labelled hit among others is a clear winner
+    assert fa.rank_hits(N(staging={}, columns={}), wb, cands, [hit(5, 3)]) == []   # no label from the mapping: no claim
+
+
+def test_a_numbered_copy_of_a_sheet_uses_the_formulas_of_its_template_sheet(tmp_path):
+    import openpyxl
+    from backend.error_improvement.formula_graph import FormulaGraph
+    book = openpyxl.Workbook()
+    ws = book.active
+    ws.title = "CR-QCCP"
+    ws["D15"], ws["D16"], ws["D17"] = "=D16+D17", 1, 2
+    p = str(tmp_path / "t.xlsx")
+    book.save(p)
+    g = FormulaGraph(path=p)
+    assert g.formula("CR-QCCP (1)", 15, 3) == "=D16+D17" and g.formula("CR-QCCP (10)", 15, 3) == "=D16+D17"
+    assert g.precedents("CR-QCCP (1)", 15, 3) == {(16, 3), (17, 3)}
+    assert g.formula("Other (1)", 15, 3) is None                              # an unrelated sheet is not borrowed from
+
+
+def test_a_mapped_cell_that_disagrees_with_the_filing_is_named_as_such():
+    from backend.error_improvement import explain_workbook as ew
+    from backend.error_improvement import fact_address as fa
+    from types import SimpleNamespace as N
+    a = fa.Address("L", "", "Term Deposit", 8, 4, "c", 1, 0.07)
+    lc = N(addr=None, dynamic=False, fact=N(concept="Rate", value="0.06"), res=fa.Resolved("UNCONFIRMED", [a], "x"))
+    why = ew.why_unlocated(lc, None)
+    assert "mapped cell Term Deposit!E8 holds 0.07, but the filing reports 0.06" in why
+
+
+# ── an unreported total over many sheets; which upload an error file came from ─────────────────────────────────────────────────
+def _entry_books(tmp_path, extra_reader=True):
+    """Template and upload with entry sheets 'S (1)' 'S (2)'; a totals sheet sums D15 of each; a decoy reads only the first."""
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.active.title = "Totals"
+    for n, v in ((1, 10), (2, 20)):
+        ws = book.create_sheet(f"S ({n})")
+        ws["D15"] = v
+    book["Totals"]["D15"] = "=SUM('S (1)'!D15+'S (2)'!D15)"
+    if extra_reader:
+        book.create_sheet("Decoy")["D15"] = "='S (1)'!D15*2"
+    p = str(tmp_path / "w.xlsx")
+    book.save(p)
+    return p
+
+
+def _total_case(tmp_path, extra_reader=True, unlocated=False):
+    from types import SimpleNamespace as N
+    from backend.error_improvement import explain_workbook as ew
+    from backend.error_improvement import fact_address as fa
+    from backend.error_improvement.formula_graph import FormulaGraph
+    from backend.error_improvement.workbook import Workbook
+    p = _entry_books(tmp_path, extra_reader)
+    wb = Workbook(p)
+    graph = FormulaGraph(path=p)
+    comp = ew.fx.parse_formula("$V1 = sum($V2)")
+    v2 = []
+    for n, v in ((1, 10), (2, 20)):
+        a = None if (unlocated and n == 2) else fa.Address("L", "", f"S ({n})", 15, 3, "c", 1, v)
+        v2.append(N(fact=N(concept="Exposure", value=str(v), unit="INR", decimal="INF"), addr=a, res=N(status="CONFIRMED")))
+    v1 = N(fact=N(concept="", value="0", unit="", decimal=""), addr=None, res=N(status="UNRESOLVED"))
+    return wb, graph, comp, {"V1": [v1], "V2": v2}
+
+
+def test_an_unreported_total_over_many_sheets_is_placed_at_the_cell_that_reads_them_all(tmp_path):
+    from backend.error_improvement import absent_operands as ao
+    wb, graph, comp, located = _total_case(tmp_path)
+    assert ao.resolve(located, comp, "", wb, graph) == 1
+    a = located["V1"][0].addr
+    assert (a.sheet, a.a1) == ("Totals", "D15")                                # the decoy reads only one of the two cells
+    assert located["V1"][0].res.status == "INFERRED" and "sums all 2 cells" in located["V1"][0].res.note
+
+
+def test_the_total_is_not_placed_when_it_is_not_unique_or_an_operand_is_unplaced(tmp_path):
+    from backend.error_improvement import absent_operands as ao
+    from types import SimpleNamespace as N
+    wb, graph, comp, located = _total_case(tmp_path, unlocated=True)
+    assert ao.resolve(located, comp, "", wb, graph) == 0 and located["V1"][0].addr is None      # an operand has no cell: no claim
+    wb, graph, comp, located = _total_case(tmp_path)
+    from backend.error_improvement import formula_graph
+    wb.formulas = N(readable=lambda: True, cross_dependents=lambda *a: {("Totals", 15, 3), ("Decoy", 15, 3)},
+                    signed_refs=lambda *a: None, precedents=lambda *a: set(), dependents=lambda *a: set())
+    assert ao.resolve(located, comp, "", wb, wb.formulas) == 0                  # two cells read both: not named
+    assert formula_graph.FormulaGraph.cross_dependents is not None
+
+
+def _fact_item(value, status, addr=True, concept="Exposure"):
+    from types import SimpleNamespace as N
+    return N(fact=N(concept=concept, value=value), addr=object() if addr else None, res=N(status=status))
+
+
+def test_upload_evidence_counts_confirmed_and_contradicted_facts_but_not_zeros_or_unreported_operands():
+    from backend.error_improvement import explain
+    items = [_fact_item("100", "CONFIRMED"), _fact_item("200", "CONFIRMED"), _fact_item("0", "CONFIRMED"),
+             _fact_item("300", "UNCONFIRMED", addr=False), _fact_item("5", "UNCONFIRMED", addr=False, concept=""),
+             _fact_item("0", "UNCONFIRMED", addr=False), _fact_item("7", "INFERRED")]
+    analysed = [(None, None, None, None, [(None, {"V1": items[:4], "V2": items[4:]}, None)])]
+    assert explain._evidence(analysed) == (2, 1)
+
+
+def test_the_upload_is_named_by_its_date_and_time():
+    from backend.error_improvement import explain
+    assert explain._upload_stamp(r"R\DataBase\2036\UploadedFiles\21-11-25-15-15-12\LRBase.xlsx", r"R\DataBase\2036") == "21 Nov 2025 15:15"

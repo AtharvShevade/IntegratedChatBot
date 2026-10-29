@@ -11,6 +11,7 @@ import re
 
 from .workbook import col_to_index
 
+_NUM_COPY = re.compile(r"\s*\(?(\d+)\)?\s*$")
 _REF = re.compile(r"(?:(?:'([^']+)'|([A-Za-z_][\w\.\-]*))!)?\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?")
 
 
@@ -23,6 +24,7 @@ class FormulaGraph:
         self._pre: dict[str, dict] = {}
         self._post: dict[str, dict] = {}
         self._fcache: dict[str, dict] = {}
+        self._xpost: dict | None = None
 
     @property
     def _wb(self):
@@ -38,12 +40,23 @@ class FormulaGraph:
                 self._book = None
         return self._book
 
+    def _template_sheet(self, sheet: str) -> str | None:
+        """The template sheet that holds this sheet's formulas. A filed workbook repeats a sheet per entry ('CR-QCCP (1)', '(2)' ...)
+        while the template keeps one: a numbered copy has the formulas of its un-numbered original."""
+        names = self._wb.sheetnames if self._wb is not None else []
+        if sheet in names:
+            return sheet
+        base = _NUM_COPY.sub("", sheet).strip()
+        family = [n for n in names if _NUM_COPY.sub("", n).strip() == base]
+        return next((n for n in family if n == base), family[0] if family else None)
+
     def _formulas(self, sheet: str) -> dict:
         """{(row, col0): formula text} for one sheet, read in a single pass and cached."""
         if sheet not in self._fcache:
             out = {}
-            if self._wb is not None and sheet in self._wb.sheetnames:
-                for row in self._wb[sheet].iter_rows():
+            real = self._template_sheet(sheet) if self._wb is not None else None
+            if real is not None:
+                for row in self._wb[real].iter_rows():
                     for cell in row:
                         v = getattr(cell, "value", None)
                         if isinstance(v, str) and v.startswith("="):
@@ -53,7 +66,7 @@ class FormulaGraph:
 
     def _build(self, sheet: str) -> None:
         pre, post = {}, {}
-        if self._wb is not None and sheet in self._wb.sheetnames:
+        if self._wb is not None and self._template_sheet(sheet) is not None:
             for (crow, ccol), v in self._formulas(sheet).items():
                 if True:
                     refs = set()
@@ -100,6 +113,35 @@ class FormulaGraph:
             m2 = re.match(r"\$?([A-Z]{1,3})\$?(\d+)", ref)
             out.append((int(m2.group(2)), col_to_index(m2.group(1)), -1 if sign == "-" else 1))
         return out
+
+    def _cross_index(self) -> dict:
+        """{(sheet, row, col0): {formula cells that read it}} over EVERY sheet, cross-sheet references included. Built once, on demand:
+        a total that sums one cell per entry sheet ('=SUM(S (1)!D15 + S (2)!D15 + ...)') is only visible this way."""
+        if self._xpost is None:
+            post: dict = {}
+            if self._wb is not None:
+                for sh in self._wb.sheetnames:
+                    for (crow, ccol), v in self._formulas(sh).items():
+                        for m in _REF.finditer(v):
+                            target = m.group(1) or m.group(2) or sh
+                            if target not in self._wb.sheetnames:
+                                continue
+                            c1, r1 = col_to_index(m.group(3)), int(m.group(4))
+                            c2, r2 = (col_to_index(m.group(5)), int(m.group(6))) if m.group(5) else (c1, r1)
+                            if (r2 - r1 + 1) * (abs(c2 - c1) + 1) > 400:
+                                continue
+                            for r in range(min(r1, r2), max(r1, r2) + 1):
+                                for c in range(min(c1, c2), max(c1, c2) + 1):
+                                    if (target, r, c) != (sh, crow, ccol):
+                                        post.setdefault((target, r, c), set()).add((sh, crow, ccol))
+            self._xpost = post
+        return self._xpost
+
+    def cross_dependents(self, sheet: str, row: int, col: int) -> set:
+        """Formula cells (sheet, row, col0), on any sheet, whose formula reads this cell. A numbered copy of a sheet is looked up
+        under its template sheet's name."""
+        real = self._template_sheet(sheet) if self._wb is not None else None
+        return self._cross_index().get((real or sheet, row, col), set())
 
     def precedents(self, sheet: str, row: int, col: int) -> set:
         if sheet not in self._pre:

@@ -30,6 +30,7 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from backend.tools import error_file_shape as shape
+from backend.tools import error_severity as _esv
 from backend.tools import (
     error_card, error_llm, formula_expression, formula_kind, message_cleaner,
     taxonomy_index,
@@ -116,6 +117,9 @@ def _parse_formula_errors_v2_uncached(html_path: str) -> list[dict]:
             continue
         expression = _first_text(panel, "formulaErrorTest")
         badge = _first_text(panel, "badge")
+        # Red (badge-danger) is an error, yellow/orange (badge-warning) a warning: read from the badge's class, not its number.
+        badge_cls = _esv._BADGE_CLASS.search(panel)
+        severity = _esv.severity_from_class(badge_cls.group(1)) if badge_cls else _esv.UNKNOWN
 
         instances: list[dict] = []
         has_backtracking = False
@@ -156,13 +160,14 @@ def _parse_formula_errors_v2_uncached(html_path: str) -> list[dict]:
                 "rule_name": rule_name,
                 "formula_expression": expression,
                 "error_count": _safe_int(badge, len(instances)),
+                "severity": severity,
                 "has_backtracking": has_backtracking,
                 "instances": instances,
             })
 
     logger.info("[formula_error] %d rule(s) parsed from %s (backtracking=%s)",
                 len(rules), html_path, any(r["has_backtracking"] for r in rules))
-    return rules
+    return _esv.errors_first(rules)                 # red errors first, warnings after: paging reaches the errors first
 
 
 def _first_text(panel_html: str, css_class: str) -> str:

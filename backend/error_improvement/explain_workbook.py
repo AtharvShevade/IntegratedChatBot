@@ -121,6 +121,11 @@ def why_unlocated(lc, wb, has_def=None, rep=None) -> str:
         return "several facts land on one template cell: the sheet adds rows per entry"
     if wb is not None and not getattr(wb, "is_template", False) and not _value_known(wb, f.value):
         return "reported value is not in the uploaded workbook (edited after the upload, or a different upload)"
+    cands = [a for a in (lc.res.addresses or []) if a.workbook_value not in (None, "")]
+    if lc.res.status == "UNCONFIRMED" and len(lc.res.addresses or []) == 1 and len(cands) == 1 and not isinstance(cands[0].workbook_value, str):
+        a = cands[0]
+        return (f"the mapped cell {a.sheet}!{a.a1} holds {a.workbook_value}, but the filing reports {f.value}: the workbook was changed "
+                "after the filing, or this is a different upload")
     return "value is in the workbook but could not be tied to one cell"
 
 
@@ -226,7 +231,7 @@ def analyse(meta, wb, rules):
         locator = vl.ValueLocator(wb)                       # evidence from the workbook alone, for items the mapping cannot place
         locator.learn_scaling(list(dict.fromkeys(f.value for r in rules for i in r.instances for f in i.facts if f.concept)))
     if not getattr(wb, "is_template", False):
-        fa.calibrate(meta, wb, [(f.concept, f.context, f.value) for r in rules for i in r.instances for f in i.facts])
+        fa.calibrate(meta, wb, [(f.concept, f.context, f.value, f.decimal) for r in rules for i in r.instances for f in i.facts])
     for rule in rules:
         expr = _unescape(rule.expression)
         comp = fx.parse_formula(expr)
@@ -238,7 +243,7 @@ def analyse(meta, wb, rules):
             located: dict[str, list[Located]] = collections.defaultdict(list)
             for f in inst.facts:
                 by_var[f.var.upper()].append(f.value)
-                res = fa.resolve_fact(meta, wb, f.concept, f.context, f.value)
+                res = fa.resolve_fact(meta, wb, f.concept, f.context, f.value, f.decimal)
                 if locator is not None and f.concept and res.status in ("UNRESOLVED", "UNCONFIRMED"):
                     alt = locator.resolve(f, seg_words.get(f.var.upper(), set()), rule.name)
                     if alt is not None and (alt.status in ("INFERRED", "LIKELY") or res.status == "UNRESOLVED"):

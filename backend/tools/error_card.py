@@ -403,6 +403,8 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
         else:
             lines += [f"{indent}  {k.get('label', '')}: {k.get('value', '')}" + (f" ({k['caption']})" if k.get("caption") else "")
                       for k in section.get("kv") or []]
+        lines += [f"{indent}  Warning: {w}" for w in section.get("warnings") or []]
+        lines += [f"{indent}  Related: {r}" for r in section.get("related") or []]
         if g("why").get("text"):
             lines += ["", f"{indent}{g('why').get('heading', '')}", f"{indent}  {g('why').get('text', '')}"]
         fx = g("fix")
@@ -413,10 +415,9 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
             lines.append(f"{indent}  {fx['note']}")
         bd = section.get("breakdown") or {}
         if bd:
-            lines += ["", f"{indent}{bd.get('heading', '')}", f"{indent}  {bd.get('status_title', '')}"]
-            if bd.get("status_sub"):
-                lines.append(f"{indent}  {bd['status_sub']}")
-            lines += [f"{indent}  {bd.get('summary', '')}"]
+            lines += ["", f"{indent}{bd.get('heading', '')}"]
+            if bd.get("summary"):
+                lines.append(f"{indent}  {bd['summary']}")
             if bd.get("formula"):
                 lines.append(f"{indent}  {bd['formula']}")
             for grp in bd.get("groups") or []:

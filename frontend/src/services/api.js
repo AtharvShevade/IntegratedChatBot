@@ -132,6 +132,94 @@ export async function sendFeedback(rating, context = {}) {
   }
 }
 
+// Codes the backend defines (backend/tools/support_request.py). Only the first two mean "accepted".
+const _SUPPORT_CODES = new Set([
+  'ok', 'duplicate', 'invalid_input', 'session_required', 'session_expired', 'otp_required', 'not_available',
+  'rate_limited', 'queue_failed', 'unreachable', 'upstream_error', 'outcome_unknown', 'internal_error',
+])
+// The backend waits up to 20s for the web application; stay above that so a slow answer is not mistaken for none.
+const SUPPORT_TIMEOUT_MS = 30000
+
+/**
+ * Submit a "Report an issue" request to POST /support-request.
+ *
+ * Never throws and never retries: one call is one request. The caller owns the
+ * reference id and passes the SAME one when the user retries, so the backend
+ * can recognise a repeat. Success is reported only when the backend says
+ * ok:true with code 'ok' or 'duplicate'; anything unclear (network failure,
+ * timeout, non-JSON, 5xx, an unknown code) comes back as 'outcome_unknown'
+ * because the report may or may not have been queued.
+ *
+ * Identity: only `asp_session` is forwarded (exactly as /chat does). No login
+ * id, user id, recipient or other client identity is ever sent.
+ *
+ * @param {object} r
+ * @param {string} r.description
+ * @param {string} r.category
+ * @param {string} r.referenceId
+ * @param {string} [r.lang]
+ * @param {string|null} [r.aspSession]
+ * @param {string} [r.lastQuery]      only when the user opted in
+ * @param {string} [r.chatbotAnswer]  only when the user opted in
+ * @param {AbortSignal} [r.signal]
+ * @returns {Promise<{ok:boolean, code:string, referenceId:string, duplicate:boolean, retryable:boolean, field:string}>}
+ */
+export async function submitSupportRequest({
+  description, category, referenceId, lang, aspSession, lastQuery, chatbotAnswer, signal,
+} = {}) {
+  const body = { description, category, reference_id: referenceId }
+  if (lang)           body.lang = lang
+  if (aspSession)     body.asp_session = aspSession
+  if (lastQuery)      body.last_query = lastQuery
+  if (chatbotAnswer)  body.chatbot_answer = chatbotAnswer
+
+  const result = (code, extra = {}) => ({
+    ok: code === 'ok' || code === 'duplicate',
+    code,
+    referenceId: referenceId || '',
+    duplicate: code === 'duplicate',
+    retryable: ['queue_failed', 'unreachable', 'outcome_unknown', 'rate_limited', 'internal_error'].includes(code),
+    field: '',
+    ...extra,
+  })
+
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), SUPPORT_TIMEOUT_MS)
+  const onCallerAbort = () => ctrl.abort()
+  if (signal) {
+    if (signal.aborted) ctrl.abort()
+    else signal.addEventListener('abort', onCallerAbort, { once: true })
+  }
+  try {
+    const res = await fetch(`${BASE_URL}/support-request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    })
+    // 422 = the backend rejected the shape/fields (nothing queued); 429 = its rate limiter.
+    if (res.status === 422) return result('invalid_input')
+    if (res.status === 429) return result('rate_limited')
+    let data
+    try { data = await res.json() } catch { return result('outcome_unknown') }
+    if (!res.ok || !data || typeof data !== 'object' || typeof data.code !== 'string') return result('outcome_unknown')
+    if (!_SUPPORT_CODES.has(data.code)) return result('outcome_unknown')
+    const accepted = data.code === 'ok' || data.code === 'duplicate'
+    // A success code must come with ok:true, and ok:true must not come with any other code.
+    if (accepted !== (data.ok === true)) return result('outcome_unknown')
+    return result(data.code, {
+      referenceId: typeof data.reference_id === 'string' && data.reference_id ? data.reference_id : (referenceId || ''),
+      field: typeof data.field === 'string' ? data.field : '',
+    })
+  } catch {
+    // Network failure, timeout or caller abort: the request may or may not have arrived.
+    return result('outcome_unknown')
+  } finally {
+    clearTimeout(timer)
+    if (signal) signal.removeEventListener('abort', onCallerAbort)
+  }
+}
+
 /**
  * Directly execute a pre-staged instance comparison.
  *

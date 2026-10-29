@@ -21,6 +21,7 @@ import sys
 from decimal import Decimal
 
 from . import cell_locator as cl          # noqa: E402
+from . import cell_state as cs            # noqa: E402
 from . import error_html as eh            # noqa: E402
 from . import excel_eval as xe            # noqa: E402
 from . import explain_llm as el           # noqa: E402
@@ -161,6 +162,11 @@ def calculated_cell_parts(wb, sheet: str, row: int, col: int, need_units: Decima
     if not f:
         return None
     a1 = f"{index_to_col(col)}{row}"
+    if cs.state(wb, sheet, row, col)["state"] in ("overwritten", "blank_formula"):
+        # the template calculates this cell, but the filer's workbook holds a typed number (or nothing): not a calculated cell now
+        shown = f.lstrip("=").replace("$", "")
+        return (f"{a1} is a typed value in your workbook, but the template calculates it ({shown}).",
+                f"Check whether the typed value in {a1} is intended; restoring the template formula would make it follow its inputs.")
     info = xe.explain_cell(f, sheet, wb.value)
     if not info:
         return (f"{a1} is a calculated cell (formula in the template).",
@@ -246,8 +252,14 @@ def calculated_cell_breakdown(wb, sheet: str, row: int, col: int, limit: int = 6
     verified = not getattr(wb, "is_template", False)
     text = f.lstrip("=").replace("$", "")
     shown = text if len(text) <= 700 else text[:697] + "..."
-    out = {"a1": a1, "formula": f"{a1} = {shown}", "groups": [],
+    st = cs.state(wb, sheet, row, col)["state"]
+    out = {"a1": a1, "formula": f"{a1} = {shown}", "groups": [], "state": st,
            "note": "" if verified else "The user's workbook is not available, so the values could not be verified."}
+    if verified and st == "template_formula":
+        out["note"] = ("This is the template's formula; the uploaded file's own formulas could not be inspected "
+                       "(a legacy .xls), so it is not confirmed that your workbook still holds it.")
+    elif verified and st in ("overwritten", "blank_formula"):
+        out["note"] = f"The template calculates {a1} with this formula, but your workbook holds a typed value there."
 
     def group(label_, refs):
         items = [_component(wb, sheet, rf, verified) for rf in refs]

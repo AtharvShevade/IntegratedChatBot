@@ -60,7 +60,7 @@ def refine(analysed, wb, max_col: int = 80) -> int:
                 cols = []
                 for c in range(0, max_col):
                     a = fa.Address(src.layout_id, src.layout_name, sh, r, c, src.cell_code, src.multiplier or 1, wb.value(sh, r, c))
-                    if a.workbook_value is not None and fa.value_matches(a, lc.fact.value):
+                    if a.workbook_value is not None and fa.value_matches(a, lc.fact.value, lc.fact.decimal):
                         cols.append(a)
                 if cols:
                     per_fact[id(lc)] = cols

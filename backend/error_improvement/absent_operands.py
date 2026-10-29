@@ -176,12 +176,54 @@ def resolve_by_formulas(located: dict, comp, title: str, wb, graph) -> int:
     return placed
 
 
+def resolve_total_over_cells(located: dict, comp, wb, graph) -> int:
+    """An unreported total that the template builds as a sum over many cells, possibly one per entry sheet:
+    '$V1 = sum($V2)' with V2 reported at ten cells on ten sheets and V1 missing. V1 is the one cell whose formula reads EVERY one
+    of those cells. Placed only when that cell is unique and sits on a sheet of the filed workbook: otherwise nothing is claimed."""
+    lhs = [(v.upper(), sg) for v, sg in comp.lhs.signed_variables()]
+    rhs = [(v.upper(), sg) for v, sg in (comp.rhs.signed_variables() if comp.rhs is not None else [])]
+    sides = [lhs, rhs]
+    absent = [v for v, _ in lhs + rhs if located.get(v) and all(not lc.fact.concept and not lc.addr for lc in located[v])]
+    if len(absent) != 1:
+        return 0
+    v = absent[0]
+    mine = next((s for s in sides if any(x == v for x, _ in s)), None)
+    other = next((s for s in sides if s is not mine), None)
+    if mine is None or other is None or [x for x, _ in mine] != [v] or any(sg <= 0 for _x, sg in other):
+        return 0
+    lcs = [lc for x, _ in other for lc in located.get(x, [])]
+    if len(lcs) < 2 or any(lc.addr is None for lc in lcs):
+        return 0
+    cells = [(lc.addr.sheet, lc.addr.row, lc.addr.col) for lc in lcs]
+    cand = None
+    for cell in cells:
+        deps = set(graph.cross_dependents(*cell))
+        cand = deps if cand is None else cand & deps
+        if not cand:
+            return 0
+    cand = {c for c in cand if c not in {(a, b, d) for a, b, d in cells}}
+    if len(cand) != 1:
+        return 0
+    sheet, row, col = next(iter(cand))
+    if not wb.has_sheet(sheet):
+        return 0
+    _place(located[v][0], lcs[0].addr, sheet, row, col, wb,
+           f"operand not reported; the template's formula for this cell sums all {len(cells)} cells the rule adds")
+    return 1
+
+
 def resolve(located: dict, comp, title: str, wb, graph=None):
     """Fill lc.addr for absent operands (in place). Returns how many were placed."""
     if wb is None or getattr(wb, "is_template", False) or comp is None:
         return 0
     if graph is not None:
         n = resolve_by_formulas(located, comp, title, wb, graph)
+        if n:
+            return n
+        try:
+            n = resolve_total_over_cells(located, comp, wb, graph)
+        except Exception:                                          # noqa: BLE001 - an extra source of evidence; never break the rest
+            n = 0
         if n:
             return n
     order = [v.upper() for v, _ in comp.lhs.signed_variables()] + \

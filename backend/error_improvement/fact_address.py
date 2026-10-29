@@ -117,16 +117,20 @@ def _norm_label(t) -> str:
     return re.sub(r"\s+", " ", str(t or "")).strip().lower()
 
 
+def _mapping_label(meta: cl.FormMeta, layout_id: str, code: str, sheet: str) -> str:
+    """The row label the mapping gives a cell code (Staging CodeDescription minus its '_SUFFIX'), or ''."""
+    desc = meta.staging.get((layout_id, code), "")
+    suffixes = [c[0] for c in meta.columns.get(layout_id, []) if c[2] == sheet]
+    for sfx in sorted(suffixes, key=len, reverse=True):
+        if sfx and desc.endswith(sfx):
+            return desc[: -len(sfx)]
+    return ""
+
+
 def _row_by_label(meta: cl.FormMeta, wb: Workbook, layout_id: str, code: str, sheet: str, rng: str, col: int, guess: int):
     """The sheet row whose first-column text is this mapping row's label (Staging CodeDescription minus its
     '_SUFFIX'). Mapping 'r~c' indexes can skip rows, so arithmetic alone may land on a neighbour row."""
-    desc = meta.staging.get((layout_id, code), "")
-    suffixes = [c[0] for c in meta.columns.get(layout_id, []) if c[2] == sheet]
-    label = ""
-    for sfx in sorted(suffixes, key=len, reverse=True):
-        if sfx and desc.endswith(sfx):
-            label = desc[: -len(sfx)]
-            break
+    label = _mapping_label(meta, layout_id, code, sheet)
     if not label.strip():
         return None
     first_row, first_col = split_range(rng)
@@ -178,14 +182,32 @@ def candidates(meta: cl.FormMeta, wb: Workbook, concept: str, ctx_id: str, membe
     return [a for _, a in out]
 
 
-def value_matches(a: "Address", value: str) -> bool:
+def tolerance(target: Decimal, decimals=None) -> Decimal:
+    """How far a workbook value may sit from a filed value and still be that value.
+
+    A fact filed to d decimal places (XBRL `decimals`) was rounded, so its cell can differ by up to half a unit of the last place:
+    0.06 filed to 2 places may be 0.0645 in the sheet, but never 0.4. Rupee amounts and counts keep the ±0.5 they always had.
+    Without it (no decimals, INF) a number below 10 is held to ±0.005, because ±0.5 around a rate or ratio matches every cell."""
+    try:
+        d = int(str(decimals).strip())
+    except (TypeError, ValueError):
+        d = None
+    floor = abs(target) * Decimal("1e-9")
+    if d is not None and d >= 1:
+        return max(Decimal("0.5") * (Decimal(10) ** (-d)), floor)
+    if abs(target) < 10:
+        return max(Decimal("0.005"), floor)
+    return max(Decimal("0.5"), floor)
+
+
+def value_matches(a: "Address", value: str, decimals=None) -> bool:
     """Does the workbook cell hold this fact's value? Numbers compare after the template multiplier, text as text."""
     target = _dec(value)
     cell = a.workbook_value
     if target is None:
         return isinstance(cell, str) and cell.strip().lower() == str(value).strip().lower() and bool(str(value).strip())
     scaled = a.scaled
-    if scaled is not None and abs(scaled - target) <= max(Decimal("0.5"), abs(target) * Decimal("1e-9")):
+    if scaled is not None and abs(scaled - target) <= tolerance(target, decimals):
         return True
     return target == 0 and cell in (None, "", 0, 0.0)
 
@@ -198,7 +220,9 @@ def calibrate(meta: cl.FormMeta, wb: Workbook, facts) -> dict:
     score: dict[str, dict[tuple, int]] = {}
     saved = {}
     shifts = [(dr, dc) for dc in range(-3, 4) for dr in range(-2, 3)]
-    for concept, ctx, value in facts:
+    for fact in facts:
+        concept, ctx, value = fact[0], fact[1], fact[2]
+        decimals = fact[3] if len(fact) > 3 else None
         if _dec(value) is not None and _dec(value) == 0:
             continue                                         # zeros match any empty cell: no evidence
         members = context_members(ctx)
@@ -218,7 +242,7 @@ def calibrate(meta: cl.FormMeta, wb: Workbook, facts) -> dict:
                     if a.row < 1 or a.col < 0:
                         continue
                     a.workbook_value = wb.value(sheet, a.row, a.col)
-                    if a.workbook_value is not None and value_matches(a, value):
+                    if a.workbook_value is not None and value_matches(a, value, decimals):
                         score.setdefault(r.layout_id, {}).setdefault((dr, dc), 0)
                         score[r.layout_id][(dr, dc)] += 1
     for lid, sc in score.items():
@@ -228,7 +252,7 @@ def calibrate(meta: cl.FormMeta, wb: Workbook, facts) -> dict:
     return meta.offsets
 
 
-def scan_for(wb: Workbook, cands: list, value: str):
+def scan_for(wb: Workbook, cands: list, value: str, decimals=None):
     """Fallback when the mapped cells do not hold the value: sheets built per entry (extra rows, numbered copies of a
     sheet) put the fact somewhere the template row does not point to. Search the candidate sheets and their copies
     for the value; the column the mapping predicts breaks ties. Zero / empty facts carry no evidence and are skipped."""
@@ -250,14 +274,42 @@ def scan_for(wb: Workbook, cands: list, value: str):
             keys, mults_ = [], mults
         for m in mults_:
             k = str(value).strip().lower() if target is None else round(float(target / m), 4)
-            for (r, c) in idx.get(k, []):
+            keys_ = [k]
+            if target is not None:                       # a rounded fact: the sheet holds a value within half a unit of the last place
+                reach = int(tolerance(target, decimals) / m / Decimal("0.0001"))
+                if 0 < reach <= 500:
+                    keys_ = [round(float(target / m) + j * 0.0001, 4) for j in range(-reach, reach + 1)]
+            for (r, c) in [rc for key in dict.fromkeys(keys_) for rc in idx.get(key, [])]:
+                cell = wb.value(sh, r, c)
+                if target is not None and not (isinstance(cell, (int, float)) and not isinstance(cell, bool)
+                                               and abs(Decimal(str(cell)) * m - target) <= tolerance(target, decimals)):
+                    continue                              # the index key is rounded; the cell's own value must still be the fact's
                 src = next((a for a in cands if (a.multiplier or 1) == m), cands[0])
-                hits.append(Address(src.layout_id, src.layout_name, sh, r, c, src.cell_code, m, wb.value(sh, r, c)))
+                hits.append(Address(src.layout_id, src.layout_name, sh, r, c, src.cell_code, m, cell))
     on_col = [h for h in hits if h.col in cols]
     return on_col or hits
 
 
-def resolve_fact(meta: cl.FormMeta, wb: Workbook, concept: str, ctx_id: str, value: str) -> Resolved:
+def rank_hits(meta: cl.FormMeta, wb: Workbook, cands: list, hits: list) -> list:
+    """Choose among several cells that all hold the fact's value, using what the mapping says about the cell: the row label it names
+    (the sheet's row must carry that label) and the column it predicts. Returns the one clear winner as a list, else []: a cell is
+    named only when the row label singles it out, never on the column alone."""
+    labels = {_norm_label(_mapping_label(meta, a.layout_id, a.cell_code, a.sheet)) for a in cands} - {""}
+    if not labels:
+        return []
+    cols = {a.col for a in cands}
+    scored = []
+    for h in hits:
+        row_text = {_norm_label(wb.value(h.sheet, h.row, c)) for c in range(0, 4)}
+        score = (3 if labels & row_text else 0) + (1 if h.col in cols else 0)
+        scored.append((score, h))
+    scored.sort(key=lambda t: -t[0])
+    if scored and scored[0][0] >= 3 and (len(scored) == 1 or scored[1][0] < scored[0][0]):
+        return [scored[0][1]]
+    return []
+
+
+def resolve_fact(meta: cl.FormMeta, wb: Workbook, concept: str, ctx_id: str, value: str, decimals=None) -> Resolved:
     cands = candidates(meta, wb, concept, ctx_id)
     if not cands:
         return Resolved("UNRESOLVED", [], "no mapping row carries this concept with these members")
@@ -271,11 +323,16 @@ def resolve_fact(meta: cl.FormMeta, wb: Workbook, concept: str, ctx_id: str, val
             if target is not None and a.multiplier:
                 a.workbook_value = float(target / a.multiplier)
         return Resolved("MAPPED", pick[:6], "" if len(pick) == 1 else f"{len(pick)} candidate cells; best by mapping rank first")
-    confirmed = [a for a in cands if value_matches(a, value)]
+    confirmed = [a for a in cands if value_matches(a, value, decimals)]
     if not confirmed:
-        found = scan_for(wb, cands, value)
+        found = scan_for(wb, cands, value, decimals)
         if found and len({(h.sheet, h.row, h.col) for h in found}) <= 3:
             return Resolved("CONFIRMED", found, "located by value search (the sheet has rows the template does not)")
+        if found:
+            ranked = rank_hits(meta, wb, cands, found)
+            if ranked:
+                return Resolved("CONFIRMED", ranked, "located by value search; the row label the mapping names singles out one of "
+                                f"{len(found)} cells holding this value")
     if confirmed:
         # an exact-zero fact can match many empty candidates; prefer those whose layout explains every member
         return Resolved("CONFIRMED", confirmed, "" if len(confirmed) == 1 else f"{len(confirmed)} cells hold this value")

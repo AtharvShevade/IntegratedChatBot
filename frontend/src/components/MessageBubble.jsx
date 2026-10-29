@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { useT, LANGUAGES, OPTION_LABELS } from '../i18n.js'
 import VarianceChartModal from './VarianceChartModal.jsx'
 import { fetchCompareSummary, stopRequest } from '../services/api.js'
+import { SupportReportOffer } from './SupportReport.jsx'
 
 // ── Download helper ───────────────────────────────────────────────────────────
 function triggerBlobDownload(url, label) {
@@ -118,11 +119,15 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
   // filename, round-tripped with formId into /explain-category, which
   // rebuilds the real path server-side.
   const errorFilePath = counts?.filename ?? ''
+  // The numbers are ERROR counts: red items only. Yellow/orange items are warnings, shown as their own chip and never added in.
   const activeCategories = _CAT_ORDER.filter(
     (cat) => counts && counts[cat] && counts[cat] > 0
   )
-  const explainableActiveCategories = activeCategories.filter(
-    (cat) => explainableCategories.includes(cat)
+  const warningCount = counts?.formula_warning > 0 ? counts.formula_warning : 0
+  // A category stays explainable while anything is listed for it, so a file whose formula items are all warnings can still be opened.
+  const explainableActiveCategories = _CAT_ORDER.filter(
+    (cat) => explainableCategories.includes(cat) &&
+      ((counts && counts[cat] > 0) || (cat === 'formula_error' && counts?.formula_total > 0))
   )
 
   const handleExplain = async (cat) => {
@@ -139,7 +144,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
     <div className="error-summary-panel">
       <div className="error-summary-heading">⚠ {t('errors.summaryHeading')}</div>
       <div className="error-summary-body">
-        {activeCategories.length > 0 && (
+        {(activeCategories.length > 0 || warningCount > 0) && (
           <div className="error-summary-counts">
             {activeCategories.map((cat) => {
               const meta = summaryCatMeta(t)[cat]
@@ -151,6 +156,13 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
                 </div>
               )
             })}
+            {warningCount > 0 && (
+              <div className="error-count-chip formula is-warning">
+                <span>⚠</span>
+                <span>{t('errors.category.formulaWarnings')}:</span>
+                <span className="error-count-num">{warningCount}</span>
+              </div>
+            )}
           </div>
         )}
         <div className="error-summary-actions">
@@ -474,7 +486,7 @@ function IssueCard({ section }) {
           <div className="issue-card-title">{section.title}</div>
           {section.subtitle && <div className="issue-card-subtitle">{section.subtitle}</div>}
         </div>
-        {section.badge && <span className="issue-card-badge">{section.badge}</span>}
+        {section.badge && <span className={'issue-card-badge' + (section.tone === 'warning' ? ' is-warning' : '')}>{section.badge}</span>}
       </div>
       <div className="issue-card-block">
         <div className="issue-card-heading">{wrong.heading}</div>
@@ -509,6 +521,24 @@ function IssueCard({ section }) {
             ))}
           </div>
         )}
+        {Array.isArray(section.warnings) && section.warnings.map((w, i) => (
+          <div key={i} className="issue-card-warning" role="note">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M12 3 2 21h20L12 3z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M12 10v5M12 18v.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span>{w}</span>
+          </div>
+        ))}
+        {Array.isArray(section.related) && section.related.map((r, i) => (
+          <div key={'rel' + i} className="issue-card-related" role="note">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"
+                fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span>{r}</span>
+          </div>
+        ))}
       </div>
       {why.text && (
         <div className="issue-card-block">
@@ -519,18 +549,6 @@ function IssueCard({ section }) {
       {bd && (
         <div className="issue-card-block">
           <div className="issue-card-heading">{bd.heading}</div>
-          {bd.status_title && (
-            <div className="issue-card-status">
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                <path d="m8 12.5 2.8 2.8L16 9.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <div>
-                <div className="issue-card-status-title">{bd.status_title}</div>
-                {bd.status_sub && <div className="issue-card-status-sub">{bd.status_sub}</div>}
-              </div>
-            </div>
-          )}
           <details className="issue-card-details">
             <summary>
               <span className="issue-card-details-title">{bd.toggle}</span>
@@ -1495,7 +1513,7 @@ export default function MessageBubble({
       </div>
     )
   }
-  if (role === 'feedback_negative') return <SupportContact />
+  if (role === 'feedback_negative') return <SupportReportOffer />
 
   if (!isUser && resultType === 'guided_menu') {
     return (
@@ -1652,7 +1670,8 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
     }
     // No error file found -> no counts and no download link: the panel would be
     // an empty red block, so skip it (the "Error file not found." note stays in the text).
-    const hasErrorCounts = errorCategoryCounts && _CAT_ORDER.some((cat) => errorCategoryCounts[cat] > 0)
+    // formula_total also covers a file whose formula items are all warnings: they stay reachable, they are just not counted as errors.
+    const hasErrorCounts = errorCategoryCounts && (_CAT_ORDER.some((cat) => errorCategoryCounts[cat] > 0) || errorCategoryCounts.formula_total > 0)
     if (isFailed && errorCategoryCounts && (hasErrorCounts || downloadUrl)) {
       // 4000-series reports can explain formula_error, xbrl_schema, and
       // dimensional. Non-4000-series returns use a separate non-backtracking
@@ -2038,24 +2057,6 @@ function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
             </div>
           </>
         )}
-      </div>
-    </div>
-  )
-}
-
-// ── Support Contact ───────────────────────────────────────────────────────────
-function SupportContact() {
-  const t = useT()
-  return (
-    <div className="bubble-row assistant">
-      <div className="avatar assistant-avatar">AI</div>
-      <div className="bubble assistant-bubble support-contact-bubble">
-        <p className="support-sorry">{t('support.sorry')}</p>
-        <p className="support-desc">{t('support.contact')}</p>
-        <div className="support-emails">
-          <a href="mailto:support@company.com" className="support-email-link">📧 support@company.com</a>
-          <a href="mailto:chatbot-support@company.com" className="support-email-link">📧 chatbot-support@company.com</a>
-        </div>
       </div>
     </div>
   )

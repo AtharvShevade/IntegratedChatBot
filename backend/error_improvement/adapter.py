@@ -7,7 +7,7 @@ explains those the old way. Nothing here raises: any problem is logged and means
 
 Switches (environment):
     ERROR_IMPROVEMENT=0             turn the whole thing off (default: on)
-    ERROR_IMPROVEMENT_REPO=<path>   repo root to read (default: the chatbot's current repo root, 5.5 layout)
+    ERROR_IMPROVEMENT_REPO=<path>   repo root to read (default: the chatbot's current repo root: 5.5, or the 6.0 tenant root)
 The engine only reads files; it never writes into the repo (its template-conversion cache is kept inside its own folder).
 """
 from __future__ import annotations
@@ -33,10 +33,8 @@ def _repo_root() -> str | None:
     if override:
         return override
     try:
-        from backend import config, version_config
-        if getattr(version_config, "IS_V6", False):
-            return None                            # the engine reads the 5.5 repo layout (DataBase/<id>, Instance/<id>)
-        return config._active_root()
+        from backend import config
+        return config._active_root() or None       # 5.5 root, or the 6.0 tenant root: both hold DataBase/<id> and Instance/<id>
     except Exception:                              # noqa: BLE001
         return None
 
@@ -81,8 +79,14 @@ def explain_batch(rules: list[dict], error_file: str, form_id: str = "", numberi
             if not card:
                 continue
             item = dict(rule)
-            item["explanation_sections"] = rc.card_to_sections(card)
-            item["explanation"] = rc.card_to_text(card)
+            sections, text = rc.card_to_sections(card), rc.card_to_text(card)
+            if rule.get("severity") == "warning":              # a yellow/orange rule is a warning, not an error to be corrected
+                for s in sections:
+                    if s.get("kind") == "issue_card":
+                        s["badge"], s["tone"] = "Warning", "warning"
+                text = text.replace("[Failed]", "[Warning]", 1)
+            item["explanation_sections"] = sections
+            item["explanation"] = text
             item["_error_category"] = "formula_error"
             item["_improved"] = True
             item["_evidence"] = card.get("evidence_key", "")

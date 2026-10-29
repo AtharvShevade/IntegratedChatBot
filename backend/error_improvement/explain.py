@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 from . import cell_locator as cl            # noqa: E402
+from . import cell_state as cs              # noqa: E402
 from . import direct_errors as de           # noqa: E402
 from . import error_html as eh              # noqa: E402
 from . import explain_table as et           # noqa: E402
@@ -40,12 +41,13 @@ def form_of(error_file: str, repo: str | None) -> str | None:
         i = parts.index("Instance")
         if i + 1 < len(parts) - 1 and parts[i + 1].isdigit():
             return parts[i + 1]
-    log = os.path.join(repo, "XML_InstanceLog.xml") if repo else ""
-    if log and os.path.isfile(log):
-        name = os.path.basename(error_file)
-        for row in ET.parse(log).getroot().iter("Row"):
-            if os.path.basename(row.get("ErrorDocPath", "")) == name:
-                return row.get("FormId")
+    name = os.path.basename(error_file)
+    for fn in ("XML_InstanceLog.xml", "InstanceLog.xml"):                  # 5.5 / 6.0
+        log = os.path.join(repo, fn) if repo else ""
+        if log and os.path.isfile(log):
+            for row in ET.parse(log).getroot().iter("Row"):
+                if os.path.basename(row.get("ErrorDocPath", "")) == name:
+                    return row.get("FormId")
     return None
 
 
@@ -60,6 +62,33 @@ def metadata_folder(repo: str | None, form: str | None) -> str | None:
 
 def _located(analysed):
     return [lc for it in analysed for _i, lo, _e in it[4] for v in lo.values() for lc in v if lc.addr]
+
+
+def _evidence(analysed) -> tuple[int, int]:
+    """(locations confirmed by the filed value, facts whose mapped cell the workbook contradicts). Zero-valued facts are left out:
+    an empty cell "matches" a zero, so a zero proves nothing about which upload the error file came from."""
+    ok = bad = 0
+    for it in analysed:
+        for _i, lo, _e in it[4]:
+            for lcs in lo.values():
+                for lc in lcs:
+                    t = fa._dec(lc.fact.value)
+                    if not lc.fact.concept or t is None or t == 0:
+                        continue
+                    if lc.addr and lc.res.status == "CONFIRMED":
+                        ok += 1
+                    elif not lc.addr and lc.res.status == "UNCONFIRMED":
+                        bad += 1
+    return ok, bad
+
+
+def _upload_stamp(path: str, folder: str) -> str:
+    """'21 Nov 2025 15:15' from the upload's folder name (dd-mm-yy-HH-MM-SS)."""
+    name = os.path.relpath(path, folder).split(os.sep)[1]
+    try:
+        return time.strftime("%d %b %Y %H:%M", time.strptime(name, "%d-%m-%y-%H-%M-%S"))
+    except ValueError:
+        return name
 
 
 def _reasons(analysed) -> dict:
@@ -109,6 +138,7 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
         # formulas: the return's template when there is one, otherwise the user's own file (converted if it is binary)
         wb.formulas = FormulaGraph(resolve=lambda: (readable_template(pick_template_path(meta, folder)) if folder else None)
                                    or readable_template(own))
+        wb.upload_formulas = cs.upload_graph(own)               # the filer's own formulas (None for a legacy .xls)
 
     kind = oe.detect(error_file)
     if kind:
@@ -133,19 +163,33 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
         rules = eh.parse_rules(html)
         analysed = ew.analyse(meta, wb, rules)
         reasons = _reasons(analysed)
-        # values missing from the workbook point at the wrong upload: try the other uploads made just before
-        miss = sum(n for k, n in reasons.items() if k.startswith("reported value is not in the uploaded"))
-        if miss and miss >= 0.1 * max(1, sum(reasons.values())) and not basis.startswith(("template", "workbook given")):
-            best = (sum(1 for _c in _located(analysed)), wb, analysed, basis)
-            for alt in mu.ranked_uploads(folder, error_file)[1:]:
+        # A value the workbook does not hold, or a mapped cell that holds another number, points at the wrong upload: the user may have
+        # uploaded several times before the validator ran. Try the other uploads made before the error file and keep the one whose
+        # values agree with the error file best. A tie keeps the nearest upload (the previous behaviour).
+        weak = sum(n for k, n in reasons.items() if k.startswith(("reported value is not in the uploaded", "the mapped cell")))
+        if weak and weak >= 0.1 * max(1, sum(reasons.values())) and not basis.startswith(("template", "workbook given")):
+            cur_ok, cur_bad = _evidence(analysed)
+            best = (cur_ok - cur_bad, wb, analysed, basis, (cur_ok, cur_bad), None)
+            tried = [{"upload": os.path.relpath(wb.path, folder).split(os.sep)[1], "confirmed": cur_ok, "contradicted": cur_bad}]
+            for alt in [u for u in mu.ranked_uploads(folder, error_file, window_min=24 * 60, limit=6) if u != wb.path]:
                 wb2 = Workbook(alt)
                 wb2.formulas = getattr(wb, "formulas", None)
+                wb2.upload_formulas = cs.upload_graph(alt)
                 an2 = ew.analyse(meta, wb2, rules)
-                n2 = sum(1 for _c in _located(an2))
-                if n2 > best[0]:
-                    best = (n2, wb2, an2, f"user upload {os.path.relpath(alt, folder).split(os.sep)[1]} (best of the uploads before the error file)")
-            _n, wb, analysed, basis = best
+                ok2, bad2 = _evidence(an2)
+                tried.append({"upload": os.path.relpath(alt, folder).split(os.sep)[1], "confirmed": ok2, "contradicted": bad2})
+                if ok2 - bad2 > best[0]:
+                    best = (ok2 - bad2, wb2, an2, f"user upload {os.path.relpath(alt, folder).split(os.sep)[1]} (best of the uploads before the error file)",
+                            (ok2, bad2), alt)
+            _n, wb, analysed, basis, (b_ok, b_bad), switched = best
             info["basis"] = basis
+            info["upload_check"] = {"tried": tried, "switched": bool(switched)}
+            if switched:
+                msg = (f"Cell locations use the upload made {_upload_stamp(switched, folder)}: its values agree with this error file "
+                       f"({b_ok} confirmed, {b_bad} contradicted); the upload made just before the error file did not "
+                       f"({cur_ok} confirmed, {cur_bad} contradicted).")
+                info["notes"].append(msg)
+                info["upload_note"] = msg
             reasons = _reasons(analysed)
         info["reasons"] = reasons
         data = et.data_rows(analysed, wb)
@@ -171,6 +215,9 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
     if analysed:
         try:
             cards = rc.build_cards(analysed, wb, rows, numbering)           # one card per failing rule (the user-facing format)
+            if info.get("upload_note"):                                    # tell the user which upload the error file really came from
+                for c in cards.values():
+                    c["view"].setdefault("warnings", []).append(info["upload_note"])
         except Exception as exc:                                  # noqa: BLE001 - cards are an extra view; never lose the table
             info["notes"].append(f"rule cards could not be built: {type(exc).__name__}: {exc}")
     return {"rows": rows, "analysed": analysed, "info": info, "wb": wb, "cards": cards}
