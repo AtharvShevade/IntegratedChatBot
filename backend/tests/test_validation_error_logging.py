@@ -19,7 +19,7 @@ from backend import main
 
 def test_422_is_logged_with_field_path_and_no_values(caplog):
     client = TestClient(main.app, raise_server_exceptions=False)
-    rows = [{"concept": "c", "section_code": "X" * 40} for _ in range(3)]
+    rows = [{"concept": "c", "importance_tier": "X" * 40} for _ in range(3)]
     with caplog.at_level(logging.WARNING, logger="backend.main"):
         resp = client.post("/compare-summary", json={"rows": rows})
     assert resp.status_code == 422
@@ -28,6 +28,6 @@ def test_422_is_logged_with_field_path_and_no_values(caplog):
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "[VALIDATION_422]" in logged
     assert "/compare-summary" in logged
-    assert "rows.*.section_code" in logged
+    assert "rows.*.importance_tier" in logged
     assert "x3" in logged          # de-duplicated across the 3 rows
     assert "X" * 40 not in logged  # submitted values are never logged

@@ -28,6 +28,13 @@ def test_accepts_full_eligible_set():
     assert len(req.rows) == 14268
 
 
+def test_accepts_long_section_code():
+    # Real importance JSON section codes exceed the old 16-character limit.
+    row = {"concept": "c", "section_code": "http://example.com/role/BLS0100-Assets", "importance_matched": True}
+    req = CompareSummaryRequest(rows=[row] * 3, label_a="A", label_b="B")
+    assert req.rows[0].section_code == row["section_code"]
+
+
 def test_still_bounded():
     with pytest.raises(ValidationError):
         CompareSummaryRequest(rows=_rows(20001))

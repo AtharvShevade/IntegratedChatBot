@@ -139,7 +139,10 @@ class CompareSummaryRow(BaseModel):
     concept_base:       str            = Field("", max_length=512)
     context_key:        str            = Field("", max_length=512)
     unit:               str            = Field("", max_length=64)
-    section_code:       str            = Field("", max_length=16)
+    # Whatever identifier the return's importance JSON uses for a section; a real
+    # BLS0100 file carries values well past 16 characters, which got every
+    # classified row rejected (422) and the AI analysis dropped.
+    section_code:       str            = Field("", max_length=256)
     importance:         Optional[float] = None
     priority:           Optional[float] = None
     importance_matched: bool            = False
