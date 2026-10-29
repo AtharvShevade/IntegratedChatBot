@@ -160,7 +160,12 @@ class CompareSummaryRequest(BaseModel):
     immediately: the summary takes ~140s against llama3.1 on CPU, which is
     far too long to hold the comparison response open for (see
     generate_llm_summary's own docstring)."""
-    rows:        list[CompareSummaryRow] = Field(default_factory=list, max_length=2000)
+    # The frontend posts the FULL eligible set (every Medium/Low row once the
+    # return's importance JSON is loaded -- ~14k rows for a large return), because
+    # selection and share-of-total run server-side. A cap below that gets the
+    # request rejected with 422 before the endpoint runs, which surfaces as
+    # "AI analysis is unavailable" with nothing in the app log.
+    rows:        list[CompareSummaryRow] = Field(default_factory=list, max_length=20000)
     label_a:     str = Field("", max_length=256)
     label_b:     str = Field("", max_length=256)
     report_name: str = Field("", max_length=256)
