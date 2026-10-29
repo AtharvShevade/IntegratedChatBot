@@ -53,6 +53,12 @@ def _resolve_existing_doc_path(form_id: str, filename: str) -> tuple[str, str] |
     naming relationship (e.g. "RUN123.csv" logged, "RUN123_Instance.xml" is
     the real file) -- and only THAT is checked for existence.
 
+    A logged name ending in .zip (5.5 logs "<stem>_Instance.zip", which holds
+    exactly "<stem>_Instance.xml" and is written beside it) is likewise never
+    returned as-is -- the zip cannot be parsed as XBRL. The sibling .xml with
+    the same stem is used instead. A zip with no sibling .xml is kept, since
+    load_xbrl_facts() can read the inner instance out of the archive.
+
     Any other extension (chiefly .xml) is checked literally. If nothing
     resolves, the row is genuinely skipped rather than guessed further.
     """
@@ -62,6 +68,12 @@ def _resolve_existing_doc_path(form_id: str, filename: str) -> tuple[str, str] |
         if os.path.isfile(candidate_path):
             return candidate, candidate_path
         return None
+
+    if filename.lower().endswith(".zip"):
+        candidate = filename[: -len(".zip")] + ".xml"
+        candidate_path = build_instance_doc_path(form_id, candidate)
+        if os.path.isfile(candidate_path):
+            return candidate, candidate_path
 
     literal_path = build_instance_doc_path(form_id, filename)
     if os.path.isfile(literal_path):

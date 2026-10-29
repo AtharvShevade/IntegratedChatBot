@@ -457,7 +457,45 @@ def load_xbrl_facts(file_path: str) -> list[dict]:
     )
 
 
+def _pick_zip_instance(names: list[str]) -> str | None:
+    """The instance document inside an archive: .xbrl first, then .xml,
+    preferring a name ending in _Instance. None if there is no candidate."""
+    for ext in (".xbrl", ".xml"):
+        matches = [n for n in names if n.lower().endswith(ext) and not n.endswith("/")]
+        preferred = [n for n in matches if n.lower().endswith("_instance" + ext)]
+        if preferred or matches:
+            return (preferred or matches)[0]
+    return None
+
+
 def _load_xbrl_facts_uncached(file_path: str) -> list[dict]:
+    """Load facts from file_path; a .zip is unpacked first and its inner
+    instance document is parsed (the zip itself is not XML)."""
+    if not file_path.lower().endswith(".zip"):
+        return _load_xbrl_facts_from_file(file_path)
+
+    import shutil
+    import tempfile
+    import zipfile
+
+    tmp_dir = tempfile.mkdtemp(prefix="xbrl_zip_")
+    try:
+        with zipfile.ZipFile(file_path) as zf:
+            inner = _pick_zip_instance(zf.namelist())
+            if inner is None:
+                raise ValueError(f"no .xbrl/.xml instance inside {os.path.basename(file_path)}")
+            # Written under a fixed basename so an archive entry path can
+            # never place the file outside tmp_dir.
+            extracted = os.path.join(tmp_dir, os.path.basename(inner) or "instance.xml")
+            with zf.open(inner) as src, open(extracted, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        logger.info("[XBRL_LOAD] unzipped %s -> %s", os.path.basename(file_path), inner)
+        return _load_xbrl_facts_from_file(extracted)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _load_xbrl_facts_from_file(file_path: str) -> list[dict]:
     """The actual Arelle/XML-fallback parse — unchanged body of what used
     to be load_xbrl_facts itself, now wrapped by the cache above."""
     fname = os.path.basename(file_path)
