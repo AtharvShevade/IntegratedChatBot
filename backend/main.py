@@ -50,6 +50,7 @@ from backend.models import (  # noqa: E402
     ExplainCategoryRequest, FeedbackRequest,
 )
 from backend.utils.intent_log import log_feedback  # noqa: E402
+from backend.tools.support_request import SupportRequest, SupportResponse, submit as submit_support_request  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,7 @@ _RATE_LIMITED_PATHS = {
     "/explain-category", "/speech-to-text", "/guided",
     "/feedback",  # L-16: /feedback has no auth check (see submit_feedback's
                   # docstring) -- rate limiting is its abuse-control mechanism.
+    "/support-request",  # each call can queue an email to the support team (WebiDEAL also limits per user)
 }
 
 
@@ -1231,6 +1233,18 @@ async def submit_feedback(request: FeedbackRequest) -> dict:
         session_id=request.session_id,
     )
     return {"ok": True}
+
+
+@app.post("/support-request", response_model=SupportResponse, status_code=status.HTTP_200_OK)
+async def support_request(request: SupportRequest) -> SupportResponse:
+    """Report a chatbot issue to the support team (backend/tools/support_request.py explains the whole flow and every code).
+
+    The user is whoever owns `asp_session`, as established by the iDEAL application itself; the body has no user fields and
+    unknown fields are rejected (422). Always answers HTTP 200 with a `code` the caller acts on; `ok: true` means the request
+    is in the notification queue, never that the mail was sent or delivered. Only a malformed body (422) or the rate limiter
+    (429, when enabled) use another status.
+    """
+    return await submit_support_request(request)
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)

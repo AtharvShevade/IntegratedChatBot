@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
+import { SupportReportContext, SupportReportForm } from './components/SupportReport.jsx'
 import { LanguageContext, makeT, isRtl } from './i18n.js'
 import { sendMessage, sendGuidedMessage, compareInstances, explainErrorCategory, stopRequest, getAllowedActions, sendFeedback, fetchStatusErrors } from './services/api.js'
 import { loadHistory as _idbLoadHistory, saveHistory as _idbSaveHistory, deleteHistory as _idbDeleteHistory } from './services/historyStorage.js'
@@ -167,6 +168,19 @@ export default function App() {
   // real stored history with this placeholder before it's even read.
   const [messages, setMessages]       = useState([{ role: 'welcome' }])
   const historyReadyRef = useRef(false)
+  // "Report an issue": the form lives outside `messages` (so a draft or the opt-in
+  // question/answer can never reach the persisted history). The ref lets the form
+  // read the CURRENT messages at submit time, and only when the user opted in.
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+  const [supportOpen, setSupportOpen] = useState(false)
+  // True while the next-action menu is hidden because the report offer/form is on screen.
+  const menuHeldRef = useRef(false)
+  const restoreMenu = () => {
+    if (!menuHeldRef.current) return
+    menuHeldRef.current = false
+    setMessages((prev) => (prev[prev.length - 1]?.role === 'action_menu' ? prev : [...prev, { role: 'action_menu' }]))
+  }
 
   useEffect(() => {
     if (!_historyId) { historyReadyRef.current = true; return }
@@ -176,7 +190,9 @@ export default function App() {
         const loaded = await _idbLoadHistory(_historyId)
         if (cancelled) return
         if (Array.isArray(loaded) && loaded.length > 0) {
-          setMessages(_markRestoredVarianceMessages(loaded))
+          const restored = _markRestoredVarianceMessages(loaded)
+          // A reload while the report offer was open leaves it last, with its menu hidden: show the menu again.
+          setMessages(restored[restored.length - 1]?.role === 'feedback_negative' ? [...restored, { role: 'action_menu' }] : restored)
         }
       } catch (e) {
         console.error('[CHAT_HISTORY] initial load from IndexedDB failed —', e)
@@ -861,7 +877,12 @@ const pollForErrors = (jobId) => {
     if (response === 'yes') {
       setMessages((prev) => [...prev, { role: 'feedback_positive' }])
     } else {
-      setMessages((prev) => [...prev, { role: 'feedback_negative' }])
+      // The report offer takes the place of the next-action menu; the menu returns when it is declined or closed.
+      menuHeldRef.current = messagesRef.current[messagesRef.current.length - 1]?.role === 'action_menu'
+      setMessages((prev) => {
+        const base = prev[prev.length - 1]?.role === 'action_menu' ? prev.slice(0, -1) : prev
+        return [...base, { role: 'feedback_negative' }]
+      })
     }
   }
 
@@ -913,6 +934,7 @@ const pollForErrors = (jobId) => {
     // lang is read by every card below via useT(). dir drives RTL layout for
     // Arabic — a pure CSS/markup concern, so no model is involved in it.
     <LanguageContext.Provider value={lang}>
+    <SupportReportContext.Provider value={{ getMessages: () => messagesRef.current, aspSession: _aspSession, restoreMenu }}>
     <div className="app-shell" dir={isRtl(lang) ? 'rtl' : 'ltr'}>
       <main className="chat-area">
         <ChatWindow
@@ -935,6 +957,11 @@ const pollForErrors = (jobId) => {
       </main>
 
       <footer className="input-bar">
+        {supportOpen && (
+          <div className="support-report-panel">
+            <SupportReportForm onClose={() => setSupportOpen(false)} />
+          </div>
+        )}
         {isGuidedFlow && (
           <div className="guided-mode-indicator">{t('guidedModeIndicator')}</div>
         )}
@@ -995,8 +1022,14 @@ const pollForErrors = (jobId) => {
           AI-generated responses may be inaccurate — please verify important
           details against the application before acting on them.
         </p>
+        {!supportOpen && (
+          <button type="button" className="support-report-link" onClick={() => setSupportOpen(true)}>
+            {t('support.report.open')}
+          </button>
+        )}
       </footer>
     </div>
+    </SupportReportContext.Provider>
     </LanguageContext.Provider>
   )
 }

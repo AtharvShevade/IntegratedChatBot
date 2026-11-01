@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { useT, LANGUAGES, OPTION_LABELS } from '../i18n.js'
 import VarianceChartModal from './VarianceChartModal.jsx'
 import { fetchCompareSummary, stopRequest } from '../services/api.js'
+import { SupportReportOffer } from './SupportReport.jsx'
 
 // ── Download helper ───────────────────────────────────────────────────────────
 function triggerBlobDownload(url, label) {
@@ -1307,7 +1308,7 @@ export default function MessageBubble({
       </div>
     )
   }
-  if (role === 'feedback_negative') return <SupportContact />
+  if (role === 'feedback_negative') return <SupportReportOffer />
 
   if (!isUser && resultType === 'guided_menu') {
     return (
@@ -1850,24 +1851,6 @@ function FeedbackPrompt({ onFeedback, query, intent, resultType }) {
             </div>
           </>
         )}
-      </div>
-    </div>
-  )
-}
-
-// ── Support Contact ───────────────────────────────────────────────────────────
-function SupportContact() {
-  const t = useT()
-  return (
-    <div className="bubble-row assistant">
-      <div className="avatar assistant-avatar">AI</div>
-      <div className="bubble assistant-bubble support-contact-bubble">
-        <p className="support-sorry">{t('support.sorry')}</p>
-        <p className="support-desc">{t('support.contact')}</p>
-        <div className="support-emails">
-          <a href="mailto:support@company.com" className="support-email-link">📧 support@company.com</a>
-          <a href="mailto:chatbot-support@company.com" className="support-email-link">📧 chatbot-support@company.com</a>
-        </div>
       </div>
     </div>
   )

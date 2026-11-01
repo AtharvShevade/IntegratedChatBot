@@ -3376,3 +3376,87 @@ html, body, #root {
 
 /* -- Bold echoed values (dates, times) never split across lines -- */
 .bubble strong { white-space: nowrap; }
+
+/* -- Report an issue (support request) ------------------------------------
+   Inline form shown after a negative rating and from the footer link. Logical
+   properties (inline-start/end) keep it correct in RTL Arabic without a
+   separate rule set; the form stacks fully and never overflows on narrow
+   screens. */
+.support-report-link {
+  display: block;
+  margin: 2px auto 0;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--primary, #0a6b56);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.support-report-panel { margin: 0 0 8px; max-height: 60vh; overflow-y: auto; }
+.support-report {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 520px;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid var(--border, #D6E2F0);
+  border-radius: 12px;
+  background: #FFFFFF;
+  color: var(--text, #1F2937);
+}
+.support-report-title { margin: 0; font-weight: 700; }
+.support-report-label { font-size: 0.82rem; font-weight: 600; }
+.support-report-field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1.5px solid var(--border, #D6E2F0);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.88rem;
+  background: #FFFFFF;
+  color: inherit;
+}
+.support-report-field:focus { outline: none; border-color: var(--primary, #0a6b56); }
+.support-report-field[aria-invalid="true"] { border-color: #dc2626; }
+.support-report-text { resize: vertical; min-height: 84px; }
+.support-report-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 0.75rem; min-height: 1.1em; }
+.support-report-problem { color: #dc2626; }
+.support-report-count { opacity: 0.7; white-space: nowrap; }
+.support-report-count.over { color: #dc2626; opacity: 1; font-weight: 600; }
+.support-report-check { display: flex; align-items: flex-start; gap: 8px; font-size: 0.85rem; cursor: pointer; }
+.support-report-check input { margin-top: 3px; }
+.support-report-hint { margin: 0; font-size: 0.74rem; opacity: 0.7; }
+.support-report-msg { margin: 4px 0 0; font-size: 0.85rem; line-height: 1.45; overflow-wrap: anywhere; }
+.support-report-success { color: #0f7a4f; font-weight: 600; }
+.support-report-final,
+.support-report-retry { color: #b42318; }
+.support-report-auth { color: #9a6700; }
+.support-report-ref { margin: 0; font-size: 0.78rem; opacity: 0.75; }
+.support-report-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.support-report-offer { justify-content: flex-start; }
+.support-report-btn {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #D6E2F0);
+  background: #FFFFFF;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.support-report-primary { background: var(--primary, #0a6b56); border-color: var(--primary, #0a6b56); color: #FFFFFF; }
+.support-report-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+@media (max-width: 480px) {
+  .support-report { padding: 10px; max-width: none; }
+  .support-report-actions { justify-content: stretch; }
+  .support-report-actions .support-report-btn { flex: 1 1 0; }
+}
+[dir="rtl"] .support-report-actions { justify-content: flex-start; }
+[dir="rtl"] .support-report-offer { justify-content: flex-start; }
