@@ -141,3 +141,5 @@
 {"ts": "2026-10-15T07:42:26.766910+00:00", "query": "31-Mar-2026", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-10-15T07:42:41.075047+00:00", "query": "23-Oct-2026 at 04:04:04", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-10-15T07:42:41.081217+00:00", "query": "23-Oct-2026 at 04:04:04", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-01T10:17:48.383988+00:00", "query": "RAQ(Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-01T10:17:48.388072+00:00", "query": "RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
