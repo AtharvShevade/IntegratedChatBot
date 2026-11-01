@@ -588,6 +588,48 @@ def _pct_rows(card, comp, ev, located):
     return [("Reported value", f(l), ""), ("Calculated value", f(r), ""), ("Difference", f(l - r), "bad")]
 
 
+def rounding_note(comp, located, ev, dp) -> str:
+    """Why a ratio fails by a rounding amount, and what to change. Two proofs, both computed:
+      1. the reported value equals the recalculated one rounded to the places it was filed at (0.06 against 0.0599 at 2 places): the
+         figure is right but too coarse for a check made at `dp` places;
+      2. the rule passes when computed from the unrounded values the workbook itself holds: the filing rounded those operands.
+    Returns '' when neither is proven."""
+    try:
+        R, C = ew._dec(ev.get("lhs_value", ev.get("lhs"))), ew._dec(ev.get("rhs_value", ev.get("rhs")))
+        lv = [v.upper() for v in comp.lhs.variables()]
+        first = (located.get(lv[0]) or [None])[0] if lv else None
+        filed = int(str(first.fact.decimal)) if first is not None else None
+    except Exception:                                                                     # noqa: BLE001
+        return ""
+    if R is None or C is None or filed is None or dp is None or not 0 <= filed < dp or abs(R - C) > Decimal(2) / (Decimal(10) ** dp):
+        return ""
+    out = ""
+    if C.quantize(Decimal(1).scaleb(-filed)) == R.quantize(Decimal(1).scaleb(-filed)):
+        out += (f" The reported {et.fmt_exact(R)} is the recalculated {et.fmt_exact(C)} rounded to {filed} decimal places: the figure is right "
+                f"but too coarse for a check made at {dp}. Report it with at least {dp} decimal places ({et.fmt_exact(C.quantize(Decimal(1).scaleb(-dp)))}).")
+    try:
+        sub, changed = {}, []
+        for var, lcs in located.items():
+            vals = []
+            for lc in lcs:
+                v = ew._dec(lc.fact.value)
+                cell = lc.addr.scaled if lc.addr is not None else None
+                if v is not None and cell is not None and cell != v and abs(cell - v) <= fa.tolerance(v, lc.fact.decimal):
+                    changed.append((lc, v, cell))
+                    v = cell
+                vals.append(v)
+            sub[var] = vals
+        if changed:
+            ev2 = ew.fx.evaluate(comp, sub)
+            if ev2 and ev2.get("passes"):
+                shown = "; ".join(f"{lc.addr.a1} holds {et.fmt_exact(c)} but was filed as {et.fmt_exact(v)}" for lc, v, c in changed[:3])
+                out += (f" Computed from the unrounded values in your workbook the rule passes, so the filing rounded {len(changed)} "
+                        f"operand(s) ({shown}). Report those with more decimal places.")
+    except Exception:                                                                     # noqa: BLE001
+        pass
+    return out
+
+
 def _calc_why(card, comp, located, ev, cv, vals) -> str | None:
     """Plain-language 'why' from the rule's actual formula, for the calculation kinds."""
     kind = card["kind"]
@@ -615,6 +657,7 @@ def _calc_why(card, comp, located, ev, cv, vals) -> str | None:
         if filed is not None and 0 <= filed < dp:
             text += (f" The reported value is filed to {filed} decimal places, so rounding in the filed values can contribute "
                      "to the difference.")
+            text += rounding_note(comp, located, ev, dp)
     if cv and cv.get("unlocated"):
         text += (f" {cv['unlocated']} operand(s) could not be located in the workbook; the calculation uses their values "
                  "from the error file.")

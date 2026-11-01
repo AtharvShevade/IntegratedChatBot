@@ -354,7 +354,7 @@ def contributing(comp, kind, located, wb, label_fn, value_fn, limit: int = 60) -
     for role, lc in pairs_:
         if lc.addr is None:
             unlocated.append(role)
-            items.append({"cell": role, "label": "not located in the workbook", "value": value_fn(lc, None), "state": "unknown",
+            items.append({"cell": role, "label": (getattr(lc, "reason", "") or "not located in the workbook")[:160], "value": value_fn(lc, None), "state": "unknown",
                           "status": "Not located", "role": role})
             continue
         label = label_fn(wb, lc.addr)

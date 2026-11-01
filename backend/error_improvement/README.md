@@ -27,6 +27,7 @@ cause, it explains why the formula shows its value instead of telling the user t
 |---|---|---|
 | `ERROR_IMPROVEMENT` | `1` | `0` turns the engine off; the chatbot behaves as before |
 | `ERROR_IMPROVEMENT_REPO` | the chatbot's repo root (`BASE_REPO_PATH`) | repo root the engine reads (5.5 layout: `DataBase/<id>`, `Instance/<id>`) |
+| `ERROR_IMPROVEMENT_LABELS` | `1` | `0` turns off only the label-based cell locator (cells found from the column header / row / section labels the context names); the rest of the engine is unchanged |
 | `TEMPLATE_CACHE_DIR` | `backend/error_improvement/.template_cache` | where converted binary templates are cached |
 
 ## Limits

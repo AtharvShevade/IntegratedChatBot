@@ -30,6 +30,7 @@ from . import absent_operands as ao        # noqa: E402
 from . import entry_rows as er            # noqa: E402
 from . import rule_operands as ro         # noqa: E402
 from . import value_locator as vl         # noqa: E402
+from . import label_locator as ll         # noqa: E402
 from . import fact_address as fa          # noqa: E402
 from .workbook import Workbook      # noqa: E402
 
@@ -120,12 +121,16 @@ def why_unlocated(lc, wb, has_def=None, rep=None) -> str:
     if lc.dynamic:
         return "several facts land on one template cell: the sheet adds rows per entry"
     if wb is not None and not getattr(wb, "is_template", False) and not _value_known(wb, f.value):
-        return "reported value is not in the uploaded workbook (edited after the upload, or a different upload)"
+        return "reported value is not in the uploaded workbook: the workbook does not match what was filed (edited after the filing, or a different upload)"
     cands = [a for a in (lc.res.addresses or []) if a.workbook_value not in (None, "")]
     if lc.res.status == "UNCONFIRMED" and len(lc.res.addresses or []) == 1 and len(cands) == 1 and not isinstance(cands[0].workbook_value, str):
         a = cands[0]
-        return (f"the mapped cell {a.sheet}!{a.a1} holds {a.workbook_value}, but the filing reports {f.value}: the workbook was changed "
-                "after the filing, or this is a different upload")
+        return (f"the mapped cell {a.sheet}!{a.a1} holds {a.workbook_value}, but the filing reports {f.value}: the workbook does not match what was "
+                "filed (changed after the filing, or a different upload)")
+    if lc.res.status == "UNCONFIRMED" and cands:
+        a = cands[0]
+        return (f"value is in the workbook but could not be tied to one cell; the cell the mapping points to, {a.sheet}!{a.a1}, holds "
+                f"{a.workbook_value} while the filing reports {f.value}")
     return "value is in the workbook but could not be tied to one cell"
 
 
@@ -215,6 +220,51 @@ def _drop_colliding(located) -> None:
                 lc.dynamic = True
 
 
+def _audit_mapped(located, labeler) -> None:
+    """A mapped cell that holds the filed value can still be another entry's cell: a rate of 0.05 sits in two columns. When the labels around
+    the mapped cell contradict the fact's context, and the labels name a different cell that holds the same value and explains every
+    member of the context, that cell is the answer. Anything less certain leaves the mapping's cell alone."""
+    if labeler is None:
+        return
+    for v in located.values():
+        for lc in v:
+            if not lc.addr or lc.res.status != "CONFIRMED" or not lc.fact.concept:
+                continue
+            a = lc.addr
+            if not labeler.contradicts(lc.fact, a.sheet, a.row, a.col):
+                continue
+            taken = {(o.addr.sheet, o.addr.row, o.addr.col) for w in located.values() for o in w if o.addr and o is not lc}
+            res = labeler.resolve(lc.fact, taken=taken)
+            if res is not None and res.status == "INFERRED":
+                b = res.addresses[0]
+                if (b.sheet, b.row, b.col) != (a.sheet, a.row, a.col):
+                    lc.res, lc.addr, lc.inferred = res, b, True
+                    labeler.audited = getattr(labeler, "audited", 0) + 1
+
+
+def toggle_members(contexts) -> list[str]:
+    """Members a rule's contexts switch on and off: 'RupeeTermDeposits' is one when the rule has both a context with it and the same
+    context without it (the aggregate). Only these can tell two cells apart; a member such as 'Domestic' that is in every context is not."""
+    sets = {frozenset(fa.context_members(c)) for c in contexts}
+    return sorted({m for c in sets for m in c if (c - {m}) in sets})
+
+
+def _label_pass(located, labeler, wanted, full_only: bool = False) -> None:
+    """Facts whose mapped cell does not hold the filed value (or that were dropped because the sheet adds rows per entry): ask the labels the
+    fact's context names, all of this instance's facts together so that distinct entries do not share a cell."""
+    if labeler is None:
+        return
+    todo = [lc for v in located.values() for lc in v if not lc.addr and lc.fact.concept and wanted(lc)]
+    if not todo:
+        return
+    taken = {(lc.addr.sheet, lc.addr.row, lc.addr.col) for v in located.values() for lc in v if lc.addr}
+    found = labeler.resolve_group([lc.fact for lc in todo], taken)
+    for lc in todo:
+        res = found.get(id(lc.fact))
+        if res is not None and (res.status == "INFERRED" or not full_only):
+            lc.res, lc.addr, lc.dynamic, lc.inferred = res, res.addresses[0], False, True
+
+
 def _segment_words(comp, title: str) -> dict:
     """Words of the rule title's segment for each operand (when the title lines up with the formula's operands)."""
     if comp is None:
@@ -226,14 +276,18 @@ def _segment_words(comp, title: str) -> dict:
 
 def analyse(meta, wb, rules):
     out = []
-    locator = None
+    locator = labeler = None
     if wb is not None and getattr(wb, "sheets", None) and not getattr(wb, "is_template", False):
         locator = vl.ValueLocator(wb)                       # evidence from the workbook alone, for items the mapping cannot place
         locator.learn_scaling(list(dict.fromkeys(f.value for r in rules for i in r.instances for f in i.facts if f.concept)))
+        if os.environ.get("ERROR_IMPROVEMENT_LABELS", "1").strip().lower() not in ("0", "false", "no", "off"):
+            labeler = ll.LabelLocator(wb, locator)         # evidence from the labels a context names (column header, row, section)
     if not getattr(wb, "is_template", False):
         fa.calibrate(meta, wb, [(f.concept, f.context, f.value, f.decimal) for r in rules for i in r.instances for f in i.facts])
     for rule in rules:
         expr = _unescape(rule.expression)
+        if labeler is not None:
+            labeler.set_vocabulary(toggle_members(f.context for i in rule.instances for f in i.facts))
         comp = fx.parse_formula(expr)
         kind = fk.classify(comp) if comp else "unknown"
         findings = []
@@ -243,16 +297,24 @@ def analyse(meta, wb, rules):
             located: dict[str, list[Located]] = collections.defaultdict(list)
             for f in inst.facts:
                 by_var[f.var.upper()].append(f.value)
-                res = fa.resolve_fact(meta, wb, f.concept, f.context, f.value, f.decimal)
-                if locator is not None and f.concept and res.status in ("UNRESOLVED", "UNCONFIRMED"):
-                    alt = locator.resolve(f, seg_words.get(f.var.upper(), set()), rule.name)
-                    if alt is not None and (alt.status in ("INFERRED", "LIKELY") or res.status == "UNRESOLVED"):
-                        res = alt
-                located[f.var.upper()].append(Located(f, res))
+                located[f.var.upper()].append(Located(f, fa.resolve_fact(meta, wb, f.concept, f.context, f.value, f.decimal)))
+            _label_pass(located, labeler, lambda lc: lc.res.status in ("UNRESOLVED", "UNCONFIRMED"), full_only=True)
+            if locator is not None:                      # still nothing: the workbook alone (value, row label, column header)
+                for var, lcs in located.items():
+                    for lc in lcs:
+                        if lc.addr or not lc.fact.concept or lc.res.status not in ("UNRESOLVED", "UNCONFIRMED"):
+                            continue
+                        alt = locator.resolve(lc.fact, seg_words.get(var, set()), rule.name)
+                        if alt is not None and (alt.status in ("INFERRED", "LIKELY") or lc.res.status == "UNRESOLVED"):
+                            fresh = Located(lc.fact, alt)
+                            lc.res, lc.addr, lc.uncertain = fresh.res, fresh.addr, fresh.uncertain
+            _label_pass(located, labeler, lambda lc: lc.res.status in ("UNRESOLVED", "UNCONFIRMED"))      # a weaker label match, last
+            _audit_mapped(located, labeler)
             _prefer_sibling_layout(located)
             _prefer_rule_context(located, comp, _title_of(inst), rule.name, wb, meta.layouts)
             _flag_uncertain(located, comp, _title_of(inst), wb, rule.name, meta.layouts)
             _drop_colliding(located)
+            _label_pass(located, labeler, lambda lc: lc.dynamic)
             ao.resolve(located, comp, _title_of(inst), wb, getattr(wb, "formulas", None))
             ro.place(located, rule.name, meta, wb)
             ev = fx.evaluate(comp, dict(by_var)) if comp else None
