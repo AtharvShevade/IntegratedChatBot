@@ -2,6 +2,7 @@
 REM ---------------------------------------------------------------------------
 REM run_backend.bat  -  start ONE ChatBot backend instance (service_server.py).
 REM
+REM   run_backend.bat        ->  same as 55
 REM   run_backend.bat 55   ->  ChatBot 5.5  (BACKEND_PORT 8001 by default)
 REM   run_backend.bat 60   ->  ChatBot 6.0  (BACKEND_PORT 8002 by default)
 REM
@@ -25,6 +26,7 @@ REM ---------------------------------------------------------------------------
 setlocal
 
 set "VER=%~1"
+if "%VER%"=="" set "VER=55"
 if /I not "%VER%"=="55" if /I not "%VER%"=="60" (
     echo Usage: %~nx0 55^|60
     exit /b 2
