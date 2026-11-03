@@ -17,10 +17,12 @@ REM   So the root .env can stay as it is and both instances can run side by side
 REM   The overlay is created from .env.<ver>.example on first run when it is missing.
 REM
 REM Logs
-REM   This script's own console log:  logs\55\service-console.log  (logs\60\ for 6.0).
-REM   The application's own logs still go where LOG_DIR says (logs_5.5 / logs_6.0).
+REM   One shared folder: <root>\logs, date-wise.
+REM   This script's own console log:  logs\service-console-YYYY-MM-DD-<55|60>.log
+REM   (files older than CONSOLE_KEEP_DAYS are deleted). Set LOG_DIR=logs in the
+REM   .env.<ver> overlay so the application's daily logs land in the same folder.
 REM
-REM Stop on purpose: create logs\55\STOP (or logs\60\STOP), then End the task.
+REM Stop on purpose: create logs\STOP-55 (or logs\STOP-60), then End the task.
 REM Delete the file again to allow starts.
 REM ---------------------------------------------------------------------------
 setlocal
@@ -47,7 +49,8 @@ for %%F in ("%ROOT%\.env" "%OVERLAY%") do if exist "%%~F" (
     for /f "tokens=2 delims==# " %%P in ('findstr /r /b /c:"BACKEND_PORT *=" "%%~F"') do set "PORT=%%P"
 )
 
-set "CONSOLE_DIR=%ROOT%\logs\%VER%"
+set "CONSOLE_DIR=%ROOT%\logs"
+set "CONSOLE_KEEP_DAYS=30"
 if not exist "%CONSOLE_DIR%" mkdir "%CONSOLE_DIR%"
 
 REM service_server.py never autoreloads (reload=False). Keep it that way under Task Scheduler:
@@ -61,12 +64,15 @@ if exist "%ROOT%\backend\.venv\Scripts\python.exe" if not exist "%ROOT%\.venv\Sc
 REM Restart loop. It never gives up on its own: a slow boot (database, network or disk not
 REM ready yet) must not leave the backend down until the next reboot. The pause grows
 REM 10 s -> 60 s so a long outage does not spin.
-set "LOG=%CONSOLE_DIR%\service-console.log"
-set "STOPFILE=%CONSOLE_DIR%\STOP"
+set "STOPFILE=%CONSOLE_DIR%\STOP-%VER%"
 set /a ATTEMPT=0
 set /a PAUSE=10
 
 :run
+REM Date-wise console log: the name is picked at each (re)start; a server that stays up keeps appending to the file of the day it started.
+for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "TODAY=%%D"
+set "LOG=%CONSOLE_DIR%\service-console-%TODAY%-%VER%.log"
+powershell -NoProfile -Command "Get-ChildItem -Path '%CONSOLE_DIR%' -Filter 'service-console-*-%VER%.log*' -EA SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%CONSOLE_KEEP_DAYS%) } | Remove-Item -Force -EA SilentlyContinue"
 if exist "%STOPFILE%" (
     echo [%DATE% %TIME%] STOP file present - not starting >> "%LOG%"
     exit /b 0
