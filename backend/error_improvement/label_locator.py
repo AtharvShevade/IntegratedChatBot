@@ -126,6 +126,15 @@ class LabelLocator:
             self._tok_cache[text] = tokens(text)
         return self._tok_cache[text]
 
+    def set_alternates(self, alt_text: dict) -> None:
+        """{member: [other names the workbook shows for it]} (AlternateText.xml). A member counts as named when its own name or any of
+        these is."""
+        self.alt = {m: [a for a in alts if any(self._tok(a))] for m, alts in (alt_text or {}).items()}
+
+    def _names(self, member):
+        """The member's own tokens, then those of each alternate text."""
+        return [self._tok(member)] + [self._tok(a) for a in getattr(self, "alt", {}).get(member, [])]
+
     # -- labels around a cell ---------------------------------------------------------------------------------------
     def _is_text(self, sheet, row, col) -> str:
         v = self.wb.value(sheet, row, col)
@@ -206,13 +215,14 @@ class LabelLocator:
             mt = self._tok(m)
             if not (mt[0] or mt[1]):
                 continue
-            if any(_explains(mt, lt) for lt in row_side):
+            names = self._names(m)
+            if any(_explains(n, lt) for n in names for lt in row_side):
                 weighted += 2
-            elif any(_explains(mt, lt) for lt in col_side):
+            elif any(_explains(n, lt) for n in names for lt in col_side):
                 weighted += 1
             else:
                 left.append(m)
-        conflicts = sum(1 for m in getattr(self, "vocab", []) if m not in own and any(_explains(self._tok(m), lt) for lt in row_side))
+        conflicts = sum(1 for m in getattr(self, "vocab", []) if m not in own and any(_explains(n, lt) for n in self._names(m) for lt in row_side))
         mtoks = [self._tok(m) for m in members]
         for t in self.row_labels(sheet, row):            # a size band / period the row names and the context does not: another entry's row
             nt = self._tok(t)

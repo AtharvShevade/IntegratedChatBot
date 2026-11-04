@@ -11,6 +11,7 @@ Zero values carry no evidence (every empty cell is a zero) and are never located
 """
 from __future__ import annotations
 
+import bisect
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -26,10 +27,7 @@ def words(text) -> set[str]:
 
 
 def _dec(v):
-    try:
-        return Decimal(str(v).replace(",", "").strip())
-    except (InvalidOperation, ValueError):
-        return None
+    return fa._dec(v)
 
 
 class ValueLocator:
@@ -40,31 +38,64 @@ class ValueLocator:
         self.margin = 1                     # by how much the best hit must beat the second
         self._label_cache: dict = {}
         self._header_cache: dict = {}
+        self._sheet_cache: dict = {}
+        self._hits_cache: dict = {}         # (value, decimals) -> hits: the same value is asked for by every pass of one analysis
 
     # -- evidence -------------------------------------------------------------------------------------------------
     def hits(self, value: str, decimals=None) -> list[tuple[str, int, int, int]]:
+        key = (str(value), str(decimals))
+        found = self._hits_cache.get(key)
+        if found is None:
+            found = self._hits_cache[key] = self._find(value, decimals)
+        return list(found)                  # a copy: callers may sort or trim what they get
+
+    def _sheet_index(self, sh):
+        """One sheet's numeric cells bucketed by key (the value rounded to 4 places): (sorted keys, {key: (cells, values, same)}).
+        Built once per analysis. `same` is the one value when every cell of the bucket holds it (the 0.0 bucket is thousands of empty
+        cells), so the tolerance test runs once for the bucket instead of once per cell."""
+        built = self._sheet_cache.get(sh)
+        if built is None:
+            buckets = {}
+            for key, cells in self.wb.index(sh).items():
+                rcs, dvs = [], []
+                for r, c in cells:
+                    v = self.wb.value(sh, r, c)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        rcs.append((r, c))
+                        dvs.append(Decimal(str(v)))
+                if rcs:
+                    buckets[key] = (rcs, dvs, dvs[0] if all(d == dvs[0] for d in dvs) else None)
+            built = self._sheet_cache[sh] = (sorted(buckets), buckets)
+        return built
+
+    def _find(self, value: str, decimals=None) -> list[tuple[str, int, int, int]]:
         """(sheet, row, col, scaling) of the cells holding the value. The index is keyed on values rounded to 4 places, which at a large
         scaling turns a small number (a rate of 0.06 at 10^7) into 0.0 and "finds" every empty cell. So each hit is checked against the
         cell's own value: it must equal the fact within the fact's own precision. A fact filed to d places is also looked for at the
-        cells within half a unit of its last place."""
+        cells within half a unit of its last place (a range of keys, found by bisection)."""
         t = _dec(value)
         if t is None or t == 0:
             return []
         tol = fa.tolerance(t, decimals)
         out = []
         for sh in self.wb.sheets:
-            idx = self.wb.index(sh)
+            keys, buckets = self._sheet_index(sh)
             for m in MULT:
                 base = float(t / m)
-                keys = [round(base, 4)]
                 reach = int(tol / m / Decimal("0.0001"))
                 if 0 < reach <= 200:
-                    keys = [round(base + j * 0.0001, 4) for j in range(-reach, reach + 1)]
-                for key in dict.fromkeys(keys):
-                    for r, c in idx.get(key, []):
-                        v = self.wb.value(sh, r, c)
-                        if isinstance(v, (int, float)) and not isinstance(v, bool) and abs(Decimal(str(v)) * m - t) <= tol:
-                            out.append((sh, r, c, m))
+                    centre, span = round(base, 4), reach * 0.0001 + 0.00005
+                    cand = keys[bisect.bisect_left(keys, centre - span):bisect.bisect_right(keys, centre + span)]
+                else:
+                    k = round(base, 4)
+                    cand = [k] if k in buckets else []
+                for key in cand:
+                    rcs, dvs, same = buckets[key]
+                    if same is not None:
+                        if abs(same * m - t) <= tol:
+                            out.extend((sh, r, c, m) for r, c in rcs)
+                    else:
+                        out.extend((sh, r, c, m) for (r, c), dv in zip(rcs, dvs) if abs(dv * m - t) <= tol)
         return out
 
     def row_label(self, sheet: str, row: int) -> str:

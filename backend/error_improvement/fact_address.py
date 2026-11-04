@@ -40,9 +40,21 @@ def _alnum(x) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", str(x or ""))
 
 
+def plain_number(v):
+    """A reported value as the instance holds it. The validator's report prints a fraction as a percentage ('12.54%' for 0.1254);
+    anything else is returned unchanged."""
+    t = str(v).strip()
+    if t.endswith("%"):
+        try:
+            return format(Decimal(t[:-1].replace(",", "").strip()) / 100, "f")
+        except (InvalidOperation, ValueError):
+            return v
+    return v
+
+
 def _dec(v) -> Decimal | None:
     try:
-        return Decimal(str(v).replace(",", "").strip())
+        return Decimal(str(plain_number(v)).replace(",", "").strip())
     except (InvalidOperation, ValueError):
         return None
 

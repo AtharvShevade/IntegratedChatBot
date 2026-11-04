@@ -3458,8 +3458,12 @@ html, body, #root {
 .issue-card-tile.is-bad .issue-card-tile-value { color: #c0392b; }
 .issue-card-tile-caption { color: var(--text-muted, #6b7280); font-size: 0.82em; }
 .issue-card-details { margin-top: 8px; border: 1px solid var(--border, #e2e5ea); border-radius: 8px; padding: 8px 12px; }
-.issue-card-details > summary { cursor: pointer; display: flex; flex-direction: column; gap: 1px; list-style: none; }
+.issue-card-details > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; list-style: none; }
 .issue-card-details > summary::-webkit-details-marker { display: none; }
+.issue-card-details > summary:hover .issue-card-details-title { text-decoration: underline; }
+.issue-card-details-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.issue-card-details-chevron { flex: none; width: 7px; height: 7px; margin-right: 4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform 0.15s ease; }
+.issue-card-details[open] > summary .issue-card-details-chevron { transform: rotate(-135deg); }
 .issue-card-details-title { font-weight: 700; }
 .issue-card-details-sub { color: var(--text-muted, #6b7280); font-size: 0.82em; }
 .issue-card-details[open] > summary { margin-bottom: 8px; }
@@ -3487,11 +3491,14 @@ html, body, #root {
 .issue-card-safety svg { flex: none; margin-top: 2px; }
 
 /* -- Compact error card: sheet / cell / value table ---------------------------------------- */
-.issue-card-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.95em; }
+.issue-card-table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 10px; font-size: 0.95em; }
 .issue-card-table th { text-align: left; color: var(--text-muted, #6b7280); font-weight: 600; font-size: 0.85em; padding: 0 10px 6px 0; border-bottom: 1px solid var(--border, #e2e5ea); }
 .issue-card-table th:last-child, .issue-card-table-value { text-align: right; }
 .issue-card-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border, #e2e5ea); vertical-align: top; overflow-wrap: anywhere; }
 .issue-card-table tr:last-child td { border-bottom: none; }
+.issue-card-table td.kv-col-column { font-weight: 700; color: #111; }
+.issue-card-table .kv-col-cell { width: 13%; }
+.issue-card-table .kv-col-value { width: 14%; }
 .issue-card-table-value { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .issue-card-table tr.is-bad .issue-card-table-value { color: #c0392b; }
 

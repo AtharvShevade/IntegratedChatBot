@@ -466,6 +466,12 @@ function _safety(text) {
   return i < 0 ? <strong>{text}</strong> : <><strong>{text.slice(0, i + 1)}</strong>{text.slice(i + 1)}</>
 }
 
+// The cell table's column titles (sent by the backend) and the field each one shows.
+const _KV_KEY = { 'Sheet Name': 'sheet', Table: 'table', Column: 'column', Cell: 'cell' }
+
+// Cell and Value stay narrow; Sheet Name, Table and Column share the rest evenly.
+const _KV_CLASS = { Column: 'kv-col-column', Cell: 'kv-col-cell', Value: 'kv-col-value' }
+
 function IssueCard({ section }) {
   const wrong = section.wrong || {}
   const why = section.why || {}
@@ -491,24 +497,26 @@ function IssueCard({ section }) {
       <div className="issue-card-block">
         <div className="issue-card-heading">{wrong.heading}</div>
         <p>{_richText(wrong.text, wrong.terms, wrong.codes)}</p>
-        {kv.length > 0 && Array.isArray(section.kv_columns) && section.kv_columns.length === 3 && (
+        {kv.length > 0 && Array.isArray(section.kv_columns) && section.kv_columns.length >= 3 && (
           <table className="issue-card-table">
             <thead>
-              <tr>{section.kv_columns.map((c, i) => <th key={i}>{c}</th>)}</tr>
+              <tr>{section.kv_columns.map((c, i) => <th key={i} className={_KV_CLASS[c] || ''}>{c}</th>)}</tr>
             </thead>
             <tbody>
               {kv.map((k, i) => (
                 <tr key={i} className={k.tone === 'bad' ? 'is-bad' : ''}>
                   {k.cell
-                    ? <><td>{k.sheet}</td><td><code className="issue-card-code">{k.cell}</code></td></>
-                    : <td colSpan={2}>{k.label}</td>}
-                  <td className="issue-card-table-value">{k.value}</td>
+                    ? section.kv_columns.slice(0, -1).map(c => (
+                        <td key={c} className={_KV_CLASS[c] || ''}>{c === 'Cell' ? <code className="issue-card-code">{k.cell}</code> : k[_KV_KEY[c]]}</td>
+                      ))
+                    : <td colSpan={section.kv_columns.length - 1}>{k.label}</td>}
+                  <td className="issue-card-table-value kv-col-value">{k.value}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-        {kv.length > 0 && !(Array.isArray(section.kv_columns) && section.kv_columns.length === 3) && (
+        {kv.length > 0 && !(Array.isArray(section.kv_columns) && section.kv_columns.length >= 3) && (
           <div className="issue-card-rows">
             {kv.map((k, i) => (
               <div key={i} className={'issue-card-row' + (k.tone === 'bad' ? ' is-bad' : '')}>
@@ -551,8 +559,11 @@ function IssueCard({ section }) {
           <div className="issue-card-heading">{bd.heading}</div>
           <details className="issue-card-details">
             <summary>
-              <span className="issue-card-details-title">{bd.toggle}</span>
-              <span className="issue-card-details-sub">{bd.toggle_sub}</span>
+              <span className="issue-card-details-text">
+                <span className="issue-card-details-title">{bd.toggle}</span>
+                <span className="issue-card-details-sub">{bd.toggle_sub}</span>
+              </span>
+              <span className="issue-card-details-chevron" aria-hidden="true" />
             </summary>
             {bd.summary && <p>{bd.summary}</p>}
             {bd.formula && <code className="issue-card-formula">{bd.formula}</code>}

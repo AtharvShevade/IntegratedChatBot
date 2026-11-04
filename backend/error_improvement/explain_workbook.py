@@ -19,6 +19,7 @@ import argparse
 import collections
 import importlib.util
 import os
+import re
 import sys
 from decimal import Decimal
 
@@ -28,6 +29,7 @@ from . import cell_locator as cl          # noqa: E402
 from . import error_html as eh            # noqa: E402
 from . import absent_operands as ao        # noqa: E402
 from . import entry_rows as er            # noqa: E402
+from . import presence_rules as pr        # noqa: E402
 from . import rule_operands as ro         # noqa: E402
 from . import value_locator as vl         # noqa: E402
 from . import label_locator as ll         # noqa: E402
@@ -274,6 +276,47 @@ def _segment_words(comp, title: str) -> dict:
     return {v: vl.words(t) for v, t in zip(order, terms)} if order and len(terms) == len(order) else {}
 
 
+def _presence(rule, expr: str, located: dict, meta, wb):
+    """For a rule that says a value must be reported: which value is missing, the condition cells behind it, and where the missing
+    value belongs in the workbook (see presence_rules). None when the rule is not of that kind or nothing is provable."""
+    if "empty(" not in expr and "exists(" not in expr:
+        return None
+    defs = (getattr(meta, "formula_defs", None) or {}).get(rule.name)
+    if not defs or wb is None or getattr(wb, "is_template", False):
+        return None
+    def name(v):                                    # the error file's spelling can carry stray quotes or spaces (`"V3`)
+        return re.sub(r"[^A-Za-z0-9_]", "", str(v)).upper()
+    by_name = {name(v): lcs for v, lcs in located.items()}
+    present = {v: lcs[0].fact.value for v, lcs in by_name.items() if lcs and lcs[0].fact.concept}
+    res = pr.analyse(expr, present, list(defs["vars"]))
+    if res is None:
+        return None
+    rep = getattr(meta, "reported", None)
+    base: dict = {}
+    sib = next((lcs[0] for lcs in by_name.values() if lcs and lcs[0].fact.concept), None)
+    if sib is not None and rep is not None:
+        sdims = rep.ctx_dims(sib.fact.context) or {}
+        pinned = set(defs["vars"].get(name(sib.fact.var), {}).get("dims", {}))
+        base = {a: m for a, m in sdims.items() if a not in pinned}
+    out: dict = {"required": [], "alternatives": [], "conditions": []}
+    for v in res["required"]:
+        vd = defs["vars"].get(v)
+        placed = pr.place(meta, wb, vd, set(base.values())) if vd else None
+        item = {"var": v, "concept": ((vd or {}).get("concepts") or [""])[0],
+                "dims": {a: ms[0] for a, ms in ((vd or {}).get("dims") or {}).items() if ms}, "cell": None}
+        if placed:
+            item.update({k: (str(val) if k == "workbook_value" and val is not None else val) for k, val in placed.items()})
+        out["required"].append(item)
+
+    def cond(v):
+        lc = by_name[v][0]
+        return {"var": v, "concept": lc.fact.concept, "value": str(lc.fact.value),
+                "sheet": lc.addr.sheet if lc.addr else None, "cell": lc.addr.a1 if lc.addr else None}
+    out["conditions"] = [cond(v) for v in res["conditions"] if by_name.get(v)]
+    out["alternatives"] = [{**cond(v), "literal": lit} for v, lit in res["alternatives"] if by_name.get(v)]
+    return out
+
+
 def analyse(meta, wb, rules):
     out = []
     locator = labeler = None
@@ -282,6 +325,7 @@ def analyse(meta, wb, rules):
         locator.learn_scaling(list(dict.fromkeys(f.value for r in rules for i in r.instances for f in i.facts if f.concept)))
         if os.environ.get("ERROR_IMPROVEMENT_LABELS", "1").strip().lower() not in ("0", "false", "no", "off"):
             labeler = ll.LabelLocator(wb, locator)         # evidence from the labels a context names (column header, row, section)
+            labeler.set_alternates(getattr(meta, "alt_text", None))
     if not getattr(wb, "is_template", False):
         fa.calibrate(meta, wb, [(f.concept, f.context, f.value, f.decimal) for r in rules for i in r.instances for f in i.facts])
     for rule in rules:
@@ -296,7 +340,7 @@ def analyse(meta, wb, rules):
             seg_words = _segment_words(comp, _title_of(inst))
             located: dict[str, list[Located]] = collections.defaultdict(list)
             for f in inst.facts:
-                by_var[f.var.upper()].append(f.value)
+                by_var[f.var.upper()].append(fa.plain_number(f.value))        # the evaluator needs 0.1254, not "12.54%"
                 located[f.var.upper()].append(Located(f, fa.resolve_fact(meta, wb, f.concept, f.context, f.value, f.decimal)))
             _label_pass(located, labeler, lambda lc: lc.res.status in ("UNRESOLVED", "UNCONFIRMED"), full_only=True)
             if locator is not None:                      # still nothing: the workbook alone (value, row label, column header)
@@ -318,6 +362,10 @@ def analyse(meta, wb, rules):
             ao.resolve(located, comp, _title_of(inst), wb, getattr(wb, "formulas", None))
             ro.place(located, rule.name, meta, wb)
             ev = fx.evaluate(comp, dict(by_var)) if comp else None
+            if isinstance(ev, dict):
+                presence = _presence(rule, expr, located, meta, wb)
+                if presence:
+                    ev["presence"] = presence
             findings.append((inst, located, ev))
         out.append((rule, expr, comp, kind, findings))
     er.refine(out, wb)

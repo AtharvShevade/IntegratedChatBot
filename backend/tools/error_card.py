@@ -398,7 +398,8 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
                  f"{indent}{g('wrong').get('heading', '')}", f"{indent}  {g('wrong').get('text', '')}"]
         if section.get("kv_columns"):
             lines += [f"{indent}  " + " | ".join(section["kv_columns"])]
-            lines += [f"{indent}  " + (f"{k.get('sheet', '')} | {k.get('cell', '')} | {k.get('value', '')}" if k.get("cell")
+            keys = {"Sheet Name": "sheet", "Table": "table", "Column": "column", "Cell": "cell", "Value": "value"}
+            lines += [f"{indent}  " + (" | ".join(str(k.get(keys.get(c, ""), "")) for c in section["kv_columns"]) if k.get("cell")
                                       else f"{k.get('label', '')} | | {k.get('value', '')}") for k in section.get("kv") or []]
         else:
             lines += [f"{indent}  {k.get('label', '')}: {k.get('value', '')}" + (f" ({k['caption']})" if k.get("caption") else "")

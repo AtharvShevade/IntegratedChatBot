@@ -121,3 +121,23 @@ def test_rounding_note_names_the_filed_precision():
     assert "rounded to 2 decimal places" in note and "0.0599" in note
     assert rc.rounding_note(Comp, {"V1": [Loc()]}, {"lhs_value": Decimal("0.06"), "rhs_value": Decimal("0.0699")}, 4) == ""
     assert fa.tolerance(Decimal("0.06"), "2") == Decimal("0.005")
+
+
+def test_a_member_is_also_named_by_the_alternate_text_the_return_gives_it(tmp_path):
+    from backend.error_improvement import cell_locator as cl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "S"
+    ws["A1"], ws["B1"] = "Counterparty", "Amount"
+    ws["A2"], ws["B2"] = "Group", 5
+    p = tmp_path / "s.xlsx"
+    wb.save(p)
+    lab = ll.LabelLocator(Workbook(str(p)), vl.ValueLocator(Workbook(str(p))))
+    assert lab.score("S", 2, 1, ["GroupMember"])[0] == 2
+    assert lab.score("S", 2, 1, ["SomeOtherMember"]) == (0, ["SomeOtherMember"], 0)        # no name of its own in the sheet
+    lab.set_alternates({"SomeOtherMember": ["Group"]})
+    assert lab.score("S", 2, 1, ["SomeOtherMember"]) == (2, [], 0)
+    (tmp_path / "AlternateText.xml").write_text('<Document><AlternateText ReturnId="1" TliD="4" Dim="D" Domain="ns:SingleMember" AltText="Single"/>'
+                                                '<AlternateText Domain="SingleMember" AltText="Single"/><AlternateText Domain="" AltText="x"/></Document>', encoding="utf-8")
+    assert cl._load_alt_text(str(tmp_path / "AlternateText.xml")) == {"SingleMember": ["Single"]}
+    assert cl._load_alt_text(str(tmp_path / "nope.xml")) == {}

@@ -30,12 +30,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 from backend.tools import error_file_shape as shape
 from backend.tools import error_card, error_llm, instance_context, taxonomy_index
 
 logger = logging.getLogger(__name__)
+
+# After this many LLM phrasings in a row that fail or are rejected, the rest of the batch uses the deterministic card only.
+_LLM_MAX_FAILURES_PER_BATCH = 2
 
 __all__ = [
     "parse_dimension_errors", "build_evidence", "render_explanation",
@@ -1379,6 +1383,10 @@ def explain_dimension_errors(
         return []
 
     settings = error_llm.llm_settings()
+    # The deterministic card is complete on its own; the LLM only rephrases it. When the LLM keeps being rejected (or is slow) in
+    # one batch, stop asking for the rest of that batch instead of waiting ~30 s per error. DIMENSION_ERROR_LLM=0 turns it off.
+    llm_allowed = os.getenv("DIMENSION_ERROR_LLM", "1").strip().lower() not in ("0", "false", "no", "off")
+    llm_failures = 0
     results: list[dict] = []
     for err in errors:
         merged = dict(err)
@@ -1398,7 +1406,7 @@ def explain_dimension_errors(
         llm_text = None
         try:
             built = build_llm_payload(evidence)
-            if built and settings.get("enabled"):
+            if built and settings.get("enabled") and llm_allowed and llm_failures < _LLM_MAX_FAILURES_PER_BATCH:
                 payload, required = built
                 llm_text = error_llm.phrase(
                     payload, required,
@@ -1419,7 +1427,9 @@ def explain_dimension_errors(
                     },
                     settings,
                 )
+                llm_failures = 0 if llm_text else llm_failures + 1
         except Exception as exc:
+            llm_failures += 1
             logger.warning("[dimension_error] phrasing failed: %s", exc)
 
         # v2 = the unified error card shared with formula errors; v1 = the

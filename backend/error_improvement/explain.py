@@ -30,6 +30,7 @@ from . import formula_defs as fdefs         # noqa: E402
 from . import other_errors as oe            # noqa: E402
 from . import match_upload as mu            # noqa: E402
 from . import reported_facts as rf          # noqa: E402
+from . import table_titles as tt            # noqa: E402
 from . import rule_cards as rc              # noqa: E402
 from .template_converter import readable_template   # noqa: E402
 from .workbook import EmptyWorkbook, Workbook, pick_template, pick_template_path   # noqa: E402
@@ -115,6 +116,8 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
     if folder:
         meta.reported = rf.load(error_file)
         meta.formula_defs = fdefs.load(os.path.join(folder, "Taxonomy"))
+        meta.table_titles = tt.load(os.path.join(folder, "Taxonomy"))
+        meta.layout_ranges = tt.layout_ranges(meta)
         info["sources"] = {"instance": meta.reported is not None, "rule_definitions": len(meta.formula_defs)}
 
     wb, basis = None, "none"
@@ -132,6 +135,11 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
     elif folder is None:
         basis = "workbook and error file only (no return metadata)"
     info["basis"] = basis
+    try:
+        wb.table_titles = getattr(meta, "table_titles", {})      # the cards name each cell's table from the taxonomy when it says
+        wb.layout_ranges = getattr(meta, "layout_ranges", [])
+    except AttributeError:                                       # an object that takes no attributes just has none
+        pass
     if getattr(wb, "path", "") and not getattr(wb, "is_template", False):
         from .formula_graph import FormulaGraph
         own = wb.path

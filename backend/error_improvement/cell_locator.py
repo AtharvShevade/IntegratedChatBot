@@ -131,6 +131,7 @@ class FormMeta:
     sheets: dict[str, list[tuple[str, str]]] = field(default_factory=dict)   # layout id -> [(sheet, range)]
     staging: dict[tuple[str, str], str] = field(default_factory=dict)        # (layout id, code) -> "row label" + "_SUFFIX"
     columns: dict[str, list[tuple[str, int, str, str]]] = field(default_factory=dict)  # layout id -> [(suffix, F<n>, sheet, range)]
+    alt_text: dict[str, list[str]] = field(default_factory=dict)      # member local name -> the other names the workbook shows for it
 
 
 def _parse_dimdom(text: str) -> tuple[frozenset, frozenset]:
@@ -188,10 +189,19 @@ def load_form_folder(folder: str, form_id: str = "") -> FormMeta:
             row = MapRow(lid.group(1), el.get("Cell", ""), code, local(pri), explicit, typed, mult)
             meta.rows_by_concept.setdefault(row.concept, []).append(row)
 
-    path = os.path.join(folder, "XML_Query.xml")
-    if os.path.isfile(path):
+    # XML_Query.xml holds the sheet ranges. Returns that also run against a database keep the database SQL there and the Excel
+    # ranges in XML_Query_Excel.xml: that file only fills in the layouts XML_Query.xml gave no range for, so a return whose
+    # XML_Query.xml already names its ranges reads exactly as before.
+    had_sheets: set[str] = set()
+    for name in ("XML_Query.xml", "XML_Query_Excel.xml"):
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        fallback = name != "XML_Query.xml"
         for el in ET.parse(path).getroot().iter("Row"):
             tid = el.get("TemplateId", "")
+            if fallback and tid in had_sheets:
+                continue
             sql = (el.findtext("SelectQuery") or "")
             for sheet, rng in _RANGE.findall(sql):
                 meta.sheets.setdefault(tid, [])
@@ -203,12 +213,30 @@ def load_form_folder(folder: str, form_id: str = "") -> FormMeta:
                 meta.columns.setdefault(tid, [])
                 if entry not in meta.columns[tid]:
                     meta.columns[tid].append(entry)
+        if not fallback:
+            had_sheets = set(meta.sheets)
 
     path = os.path.join(folder, "Staging.xml")
     if os.path.isfile(path):
         for el in ET.parse(path).getroot().iter("Row"):
             meta.staging[(el.get("PreLnkBaseId", ""), el.get("Code", ""))] = el.get("CodeDescription", "")
+    meta.alt_text = _load_alt_text(os.path.join(folder, "AlternateText.xml"))
     return meta
+
+
+def _load_alt_text(path: str) -> dict[str, list[str]]:
+    """AlternateText.xml: the text a workbook shows for a dimension member (member 'SingleMember' is 'Single' in the sheet)."""
+    out: dict[str, list[str]] = {}
+    if not os.path.isfile(path):
+        return out
+    try:
+        for el in ET.parse(path).getroot().iter("AlternateText"):
+            member, alt = local(el.get("Domain", "")), (el.get("AltText") or "").strip()
+            if member and alt and alt not in out.setdefault(member, []):
+                out[member].append(alt)
+    except ET.ParseError:
+        return {}
+    return out
 
 
 # ── resolution ───────────────────────────────────────────────────────────────
