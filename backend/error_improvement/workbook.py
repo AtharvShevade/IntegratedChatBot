@@ -104,6 +104,27 @@ class Workbook:
         self._cache[key] = idx
         return idx
 
+    def merged(self, sheet: str) -> list[tuple[int, int, int, int]]:
+        """The merged ranges of a sheet as (first row, first col, last row, last col): rows 1-based, columns 0-based. A merged heading
+        holds its text in the first cell only; this says which other cells it covers. Empty when they cannot be read."""
+        key = ("merged", sheet)
+        if key in self._cache:
+            return self._cache[key]
+        out: list = []
+        try:
+            if self._xlsx is not None:
+                out = [(r.min_row, r.min_col - 1, r.max_row, r.max_col - 1) for r in self._xlsx[sheet].merged_cells.ranges]
+            else:
+                if "xls_fmt" not in self._cache:                   # merged ranges of an .xls need the formatting pass: read it once, lazily
+                    import xlrd                                    # noqa: PLC0415
+                    self._cache["xls_fmt"] = xlrd.open_workbook(self.path, formatting_info=True)
+                sh = self._cache["xls_fmt"].sheet_by_name(sheet)
+                out = [(rlo + 1, clo, rhi, chi - 1) for rlo, rhi, clo, chi in sh.merged_cells]
+        except Exception:                                          # noqa: BLE001  unreadable merges just mean no merged headings
+            out = []
+        self._cache[key] = out
+        return out
+
     def text_row(self, sheet: str, row: int, first_col: int = 0, last_col: int = 6) -> str:
         """The label text of a row (first few columns), for human-readable reports."""
         parts = []
@@ -172,6 +193,9 @@ class EmptyWorkbook:
 
     def index(self, sheet):
         return {}
+
+    def merged(self, sheet):
+        return []
 
     def text_row(self, *a, **k):
         return ""

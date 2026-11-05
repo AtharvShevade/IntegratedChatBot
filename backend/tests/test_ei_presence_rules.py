@@ -152,3 +152,55 @@ def test_the_error_files_spelling_of_a_variable_name_does_not_matter(monkeypatch
     assert ew._presence(NS(name="other"), CONDITIONAL, located, meta, NS(is_template=False)) is None
     assert ew._presence(NS(name="R"), CONDITIONAL, located, meta, NS(is_template=True)) is None
     assert ew._presence(NS(name="R"), "$V1 >= 0.1", located, meta, NS(is_template=False)) is None
+
+
+# ── rules that only say a value is mandatory ──────────────────────────────────────────────────────────────────────
+EXISTENCE = '''<root xmlns:xlink="http://www.w3.org/1999/xlink">
+ <existenceAssertion xlink:type="resource" xlink:label="R1" id="R1" test="."/>
+ <variableArc xlink:from="R1" xlink:to="Var1" name="V1"/>
+ <factVariable xlink:label="Var1" fallbackValue="()"/>
+ <variableFilterArc xlink:from="Var1" xlink:to="F1"/>
+ <conceptName xlink:label="F1"><qname>ns:RemarksAndDescription</qname></conceptName>
+</root>'''
+
+
+def test_an_existence_assertion_is_read_as_a_rule_definition(tmp_path):
+    from backend.error_improvement import formula_defs as fd
+    p = tmp_path / "x-formula1.xml"
+    p.write_text(EXISTENCE, encoding="utf-8")
+    d = fd.parse_file(str(p))["R1"]
+    assert d["kind"] == "existence" and d["vars"]["V1"]["concepts"] == ["RemarksAndDescription"]
+
+
+def _meta():
+    return NS(formula_defs={"R1": {"kind": "existence", "test": ".", "set_dims": {},
+                                   "vars": {"V1": {"concepts": ["RemarksAndDescription"], "dims": {"AssetAxis": ["OtherAssetsMember"]}}}}},
+              reported=None)
+
+
+def test_a_message_only_mandatory_rule_gets_the_cell_its_value_belongs_in(monkeypatch):
+    placed = {"sheet": "S", "row": 5, "col": 3, "cell": "D5", "code": "Y1_X1", "how": "the sheet's own row and column codes",
+              "workbook_value": None, "concept": "RemarksAndDescription"}
+    monkeypatch.setattr(pr, "place", lambda *a, **k: dict(placed))
+    rule = NS(name="R1")
+    inst, located, ev = ew._message_only(rule, ".", _meta(), NS(sheets=["S"], is_template=False))
+    req = ev["presence"]["required"][0]
+    assert located == {} and ev["message_only"] and req["cell"] == "D5" and req["checked"] is True and req["dims"] == {"AssetAxis": "OtherAssetsMember"}
+    # with the template alone only the place is known, never what the user's workbook holds
+    _i, _l, ev_t = ew._message_only(rule, ".", _meta(), NS(sheets=["S"], is_template=True))
+    assert ev_t["presence"]["required"][0]["checked"] is False and ev_t["presence"]["required"][0]["workbook_value"] is None
+    # nothing is made up: no definition, a value rule, no workbook, or no place
+    assert ew._message_only(NS(name="other"), ".", _meta(), NS(sheets=["S"], is_template=False)) is None
+    assert ew._message_only(rule, ".", _meta(), NS(sheets=[], is_template=False)) is None
+    monkeypatch.setattr(pr, "place", lambda *a, **k: None)
+    assert ew._message_only(rule, ".", _meta(), NS(sheets=["S"], is_template=False)) is None
+
+
+def test_the_card_says_where_the_value_belongs_and_does_not_claim_what_it_cannot_check():
+    req = {"var": "V1", "concept": "RemarksAndDescription", "dims": {"A": "OtherAssetsMember"}, "sheet": "S", "row": 5, "col": 3, "cell": "D5",
+           "code": "c", "how": "the sheet's own row and column codes", "workbook_value": None, "checked": False}
+    v = rc._presence_view({"rule_name": "PART2_RemarkForOtherAssets", "cells": []}, {"required": [req], "alternatives": [], "conditions": []})
+    assert v["wrong"] == "Remarks And Description (Other Assets) must be reported, but the filing has no value for it."
+    assert "belongs at S!D5" in v["why"] and "no uploaded workbook" in v["footer"] and not any("Uploaded workbook holds" in k for k, _v, _t in v["kv"])
+    v2 = rc._presence_view({"rule_name": "R", "cells": []}, {"required": [{**req, "checked": True}], "alternatives": [], "conditions": []})
+    assert any("Uploaded workbook holds" in k for k, _v, _t in v2["kv"]) and "is empty in the uploaded workbook" in v2["why"]

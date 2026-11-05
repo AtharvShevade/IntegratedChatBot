@@ -19,6 +19,7 @@ import time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+from . import bt_cells                       # noqa: E402
 from . import cell_locator as cl            # noqa: E402
 from . import cell_state as cs              # noqa: E402
 from . import direct_errors as de           # noqa: E402
@@ -169,6 +170,7 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
         info["format"] = "validator report (rules and facts)"
         html = open(error_file, encoding="utf-8", errors="ignore").read()
         rules = eh.parse_rules(html)
+        bt_cells.attach(rules, error_file)             # the same run's backtracking record, when it sits beside this file
         analysed = ew.analyse(meta, wb, rules)
         reasons = _reasons(analysed)
         # A value the workbook does not hold, or a mapped cell that holds another number, points at the wrong upload: the user may have

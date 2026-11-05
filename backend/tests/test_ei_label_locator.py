@@ -118,7 +118,7 @@ def test_rounding_note_names_the_filed_precision():
 
     ev = {"lhs_value": Decimal("0.06"), "rhs_value": Decimal("0.0599")}
     note = rc.rounding_note(Comp, {"V1": [Loc()]}, ev, 4)
-    assert "rounded to 2 decimal places" in note and "0.0599" in note
+    assert note == "The filing rounds 0.0599 to 0.06 (2 decimal places), but the rule checks at 4. Report at least 4 decimal places."
     assert rc.rounding_note(Comp, {"V1": [Loc()]}, {"lhs_value": Decimal("0.06"), "rhs_value": Decimal("0.0699")}, 4) == ""
     assert fa.tolerance(Decimal("0.06"), "2") == Decimal("0.005")
 

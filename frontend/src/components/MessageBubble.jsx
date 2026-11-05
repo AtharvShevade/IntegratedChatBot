@@ -124,6 +124,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
     (cat) => counts && counts[cat] && counts[cat] > 0
   )
   const warningCount = counts?.formula_warning > 0 ? counts.formula_warning : 0
+  const showHint = counts?.formula_error > 0 && warningCount > 0
   // A category stays explainable while anything is listed for it, so a file whose formula items are all warnings can still be opened.
   const explainableActiveCategories = _CAT_ORDER.filter(
     (cat) => explainableCategories.includes(cat) &&
@@ -145,7 +146,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
       <div className="error-summary-heading">⚠ {t('errors.summaryHeading')}</div>
       <div className="error-summary-body">
         {(activeCategories.length > 0 || warningCount > 0) && (
-          <div className="error-summary-counts">
+          <div className={'error-summary-counts' + (showHint ? ' has-hint' : '')}>
             {activeCategories.map((cat) => {
               const meta = summaryCatMeta(t)[cat]
               return (
@@ -165,6 +166,7 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
             )}
           </div>
         )}
+        {showHint && <div className="error-summary-hint">{t('errors.warningsFollowErrors')}</div>}
         <div className="error-summary-actions">
           {explainableActiveCategories.map((cat) => {
             const meta = summaryCatMeta(t)[cat]
@@ -505,12 +507,14 @@ function IssueCard({ section }) {
             <tbody>
               {kv.map((k, i) => (
                 <tr key={i} className={k.tone === 'bad' ? 'is-bad' : ''}>
-                  {k.cell
+                  {!k.cell && String(k.value).length > 16
+                    ? <td colSpan={section.kv_columns.length} className="issue-card-table-note">{k.label}: {k.value}</td>
+                    : k.cell
                     ? section.kv_columns.slice(0, -1).map(c => (
                         <td key={c} className={_KV_CLASS[c] || ''}>{c === 'Cell' ? <code className="issue-card-code">{k.cell}</code> : k[_KV_KEY[c]]}</td>
                       ))
                     : <td colSpan={section.kv_columns.length - 1}>{k.label}</td>}
-                  <td className="issue-card-table-value kv-col-value">{k.value}</td>
+                  {(k.cell || String(k.value).length <= 16) && <td className="issue-card-table-value kv-col-value">{k.value}</td>}
                 </tr>
               ))}
             </tbody>

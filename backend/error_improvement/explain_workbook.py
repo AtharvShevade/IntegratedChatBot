@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 from . import cell_locator as cl          # noqa: E402
 from . import error_html as eh            # noqa: E402
 from . import absent_operands as ao        # noqa: E402
+from . import bt_cells as bt              # noqa: E402
 from . import entry_rows as er            # noqa: E402
 from . import presence_rules as pr        # noqa: E402
 from . import rule_operands as ro         # noqa: E402
@@ -198,7 +199,7 @@ def _flag_uncertain(located, comp, title: str, wb, rule_name: str = "", layouts:
         return
     for var, seg in zip(order, terms):
         for lc in located.get(var, []):
-            if lc.addr and not lc.inferred and not ao._agree(ao._row_label(wb, lc.addr.sheet, lc.addr.row), seg):
+            if lc.addr and not lc.inferred and not getattr(lc, "bt", False) and not ao._agree(ao._row_label(wb, lc.addr.sheet, lc.addr.row), seg):
                 import re
                 names = re.sub(r"[^a-z0-9]", "", (lc.addr.sheet + (layouts or {}).get(lc.addr.layout_id, "")).lower())
                 if any(t in names for t in _name_tokens(rule_name)):
@@ -220,6 +221,7 @@ def _drop_colliding(located) -> None:
             if lc.addr and len(seen[(lc.addr.sheet, lc.addr.a1)]) > 1:
                 lc.addr = None
                 lc.dynamic = True
+                lc.bt, lc.bt_other = False, ""          # a backtracking record that lands several entries on one cell does not name one
 
 
 def _audit_mapped(located, labeler) -> None:
@@ -230,7 +232,7 @@ def _audit_mapped(located, labeler) -> None:
         return
     for v in located.values():
         for lc in v:
-            if not lc.addr or lc.res.status != "CONFIRMED" or not lc.fact.concept:
+            if not lc.addr or lc.res.status != "CONFIRMED" or not lc.fact.concept or getattr(lc, "bt", False):
                 continue
             a = lc.addr
             if not labeler.contradicts(lc.fact, a.sheet, a.row, a.col):
@@ -317,6 +319,32 @@ def _presence(rule, expr: str, located: dict, meta, wb):
     return out
 
 
+def _message_only(rule, expr: str, meta, wb):
+    """A rule that only says a value is mandatory (an existence assertion): the error panel lists no values, so the missing value is found
+    from the rule's own definition (concept and dimensions) and the return's mapping, which say where it belongs in the workbook. With an
+    uploaded workbook that cell can be read; with the template alone only its place is known. None when the definition or the place is
+    not there: nothing is guessed."""
+    defs = (getattr(meta, "formula_defs", None) or {}).get(rule.name)
+    if not defs or defs.get("kind") != "existence" or wb is None or not getattr(wb, "sheets", None):
+        return None
+    template = bool(getattr(wb, "is_template", False))
+    required = []
+    for v, vd in defs["vars"].items():
+        if len(vd.get("concepts") or []) != 1:
+            continue
+        item = {"var": v, "concept": vd["concepts"][0], "dims": {a: ms[0] for a, ms in (vd.get("dims") or {}).items() if ms},
+                "cell": None, "checked": not template}
+        placed = pr.place(meta, wb, vd, set())
+        if placed:
+            item.update(placed)
+            item["workbook_value"] = None if template else (str(placed["workbook_value"]) if placed["workbook_value"] is not None else None)
+        required.append(item)
+    if not any(r.get("cell") for r in required):
+        return None
+    ev = {"presence": {"required": required, "alternatives": [], "conditions": []}, "expression": expr, "message_only": True}
+    return eh.Instance("", []), {}, ev
+
+
 def analyse(meta, wb, rules):
     out = []
     locator = labeler = None
@@ -342,6 +370,7 @@ def analyse(meta, wb, rules):
             for f in inst.facts:
                 by_var[f.var.upper()].append(fa.plain_number(f.value))        # the evaluator needs 0.1254, not "12.54%"
                 located[f.var.upper()].append(Located(f, fa.resolve_fact(meta, wb, f.concept, f.context, f.value, f.decimal)))
+            bt.apply(located, meta, wb)                    # the validator's own backtracking record, where the error file carries one
             _label_pass(located, labeler, lambda lc: lc.res.status in ("UNRESOLVED", "UNCONFIRMED"), full_only=True)
             if locator is not None:                      # still nothing: the workbook alone (value, row label, column header)
                 for var, lcs in located.items():
@@ -367,6 +396,10 @@ def analyse(meta, wb, rules):
                 if presence:
                     ev["presence"] = presence
             findings.append((inst, located, ev))
+        if not findings:
+            only = _message_only(rule, expr, meta, wb)
+            if only is not None:
+                findings.append(only)
         out.append((rule, expr, comp, kind, findings))
     er.refine(out, wb)
     defs, rep = getattr(meta, "formula_defs", None), getattr(meta, "reported", None)

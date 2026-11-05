@@ -206,6 +206,14 @@ def _dec(v):
         return None
 
 
+def _workbook_figure(lc):
+    """What the workbook cell holds, in the filing's own unit (the cell's value times the sheet's scale), or None when it is not a number."""
+    a = getattr(lc, "addr", None)
+    if a is None or isinstance(a.workbook_value, bool) or not isinstance(a.workbook_value, (int, float)):
+        return None
+    return Decimal(str(a.workbook_value)) * Decimal(a.multiplier or 1)
+
+
 def _side(node, located: dict, counts: dict) -> dict:
     """What one side of the rule stands for: its located cells, how many cells the filing has for it, and how to name it."""
     core = _strip(node)                                            # look through round(... * 10000) div 10000 and abs()
@@ -218,7 +226,7 @@ def _side(node, located: dict, counts: dict) -> dict:
             linear = False
     variables = [v.upper() for v in node.variables()] if not signed else [v for v, _ in signed]
     variables = list(dict.fromkeys(variables))
-    cells, expected, partial = [], 0, Decimal(0)
+    cells, expected, partial, placed = [], 0, Decimal(0), []
     signs = dict(signed)
     for v in variables:
         lcs = located.get(v) or located.get(v.lower()) or []
@@ -227,22 +235,26 @@ def _side(node, located: dict, counts: dict) -> dict:
             if lc.addr is None:
                 continue
             cells.append((lc.addr.sheet, lc.addr.a1))
+            placed.append(lc)
             val = _dec(lc.fact.value)
             if val is not None:
                 partial += val * (signs.get(v, 1) if linear else 1)
     single = bool(core is not None and core.kind == "var" and expected == 1 and len(cells) == 1)
     return {"cells": cells, "expected": expected, "found": len(cells), "linear": linear, "single": single,
+            "lc": placed[0] if single and placed else None,
             "all_plus": linear and all(sg > 0 for _v, sg in signed), "partial": partial,
             "missing": max(0, expected - len(cells))}
 
 
-def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Calculated")) -> dict | None:
-    """The one table every calculation card shows: Sheet Name | Cell | Value for each side of the rule, then the difference.
+def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Calculated"), fmts=None) -> dict | None:
+    """The one table every calculation card shows. First what the sheet holds: Sheet Name | Table | Column | Cell | Value for each side
+    that is one cell, with the value the workbook cell holds (the filed value when there is no workbook figure to show). Then, below,
+    what the filing reports and the rule calculates: the filed figure where it differs from the cell, a total as 'Sum of B3:B12' or
+    'Calculated from N cells', the located cells of an incomplete total, and last the difference.
 
-    Values are the rule's own (from the error file), so the table, the difference and the explanation always agree. A side that
-    is one cell shows that cell; a total shows 'Sum of B3:B12'; anything else shows 'Calculated from N cells'. When some cells of
-    a side could not be located, the rule's own value is still shown, the located cells are shown separately with their own sum,
-    and a warning says how many are missing. Returns None when the rule has no numbers to compare.
+    The figures of the rule are its own (from the error file), so the difference and the explanation always agree. When some cells of
+    a side could not be located, the rule's own value is still shown, the located cells are shown separately with their own sum, and a
+    warning says how many are missing. Returns None when the rule has no numbers to compare.
     """
     if comp is None or not ev or comp.rhs is None:
         return None
@@ -253,13 +265,15 @@ def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Ca
     sides = [_side(comp.lhs, located, counts), _side(comp.rhs, located, counts)]
     if not sides[0]["cells"]:
         return None
-    rows, notes = [], []
+    cell_rows, info_rows, notes = [], [], []                    # what the sheet holds, then what the filing reports and the rule calculates
+    f_left, f_right, f_diff = fmts or (fmt, fmt, fmt)           # each side in its own unit; the difference in the unit both share
     for i, (side, val) in enumerate(zip(sides, (lv, rv))):
         role = names[i]
+        fmt = (f_left, f_right)[i]
         if not side["cells"]:
             if side["expected"] == 0 and not side["linear"]:
                 continue
-            rows.append({"label": f"{role} value", "sheet": "", "cell": "", "value": fmt(val), "tone": "", "code": False})
+            info_rows.append({"label": f"{role} value", "sheet": "", "cell": "", "value": fmt(val), "tone": "", "code": False})
             if side["expected"]:
                 notes.append(f"None of the {side['expected']} cell(s) behind the {role.lower()} value could be located; "
                              "the value shown is the rule's own.")
@@ -275,14 +289,27 @@ def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Ca
         else:
             cell = f"Calculated from {len(side['cells'])} cells"
         side["label"] = cell
-        rows.append({"label": f"{sheet}!{cell}", "sheet": sheet, "cell": cell, "value": fmt(val), "tone": "", "code": True})
+        held = _workbook_figure(side.get("lc"))
+        if held is not None and held < 0 <= val:
+            held = -held                                              # the rule compares the size (abs) of a negative cell: show it the same way
+        differs = held is not None and fmt(held) != fmt(val)          # the filed figure and the cell show different numbers
+        if side["single"]:
+            mine = {"label": f"{sheet}!{cell}", "sheet": sheet, "cell": cell, "value": fmt(held if held is not None else val),
+                    "tone": "", "code": True}                         # the sheet's own figure for this cell
+            cell_rows.append(mine)
+            if differs:
+                info_rows.append({"label": "Filed in the return", "sheet": "", "cell": "", "value": fmt(val), "tone": "", "code": False, "of": cell})
+        else:
+            sheet_tag = f" · {sheet}" if sheet and not any(r["sheet"] == sheet for r in cell_rows) else ""
+            mine = {"label": f"{cell}{sheet_tag}", "sheet": "", "cell": "", "value": fmt(val), "tone": "", "code": False, "total": True}
+            info_rows.append(mine)                                    # a total is not one cell of the sheet: it belongs with the figures below
         if side["missing"]:
-            rows[-1]["partial"] = True
+            mine["partial"] = True
             n, m = side["missing"], side["expected"]
             notes.append(f"{n} of {m} components of the {role.lower()} value could not be located, so the cells listed are incomplete.")
             if side["linear"] and not side["single"]:
-                rows.append({"label": f"{sheet}!located:{cell}", "sheet": sheet, "cell": f"Located cells only ({side['found']} of {m})",
-                             "value": fmt(side["partial"]), "tone": "", "code": False})
+                info_rows.append({"label": f"Located cells only ({side['found']} of {m})", "sheet": "", "cell": "",
+                                  "value": fmt(side["partial"]), "tone": "", "code": False})
                 notes.append(f"The value above is the rule's own. The {side['found']} located cell(s) alone add up to {fmt(side['partial'])}, "
                              "so that is not the full total.")
         elif side["linear"] and not side["single"] and abs(side["partial"] - val) > max(
@@ -292,8 +319,14 @@ def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Ca
     absent = [v for v in (ev.get("missing_vars") or [])]
     if absent:
         notes.append(f"{len(absent)} operand(s) of the rule are not in the filing; the rule counts them as 0.")
+    shown = {r["value"] for r in cell_rows}
+    info_rows = [r for r in info_rows if not (r.get("total") and not r.get("partial") and r["value"] in shown)]     # a total the table already shows says nothing new
+    filed = [r for r in info_rows if "of" in r]
+    if len(filed) > 1:                                                         # several cells differ from their filed figure: say which is which
+        for r in filed:
+            r["label"] = f"Filed in the return ({r['of']})"
     diff = abs(lv - rv)
-    rows.append({"label": "Difference", "sheet": "", "cell": "", "value": fmt(diff), "tone": "bad", "code": False})
+    rows = cell_rows + info_rows + [{"label": "Difference", "sheet": "", "cell": "", "value": f_diff(diff), "tone": "bad", "code": False}]
     return {"rows": rows, "diff": diff, "left": lv, "right": rv, "notes": notes, "sides": sides,
             "complete": not any(s["missing"] for s in sides)}
 

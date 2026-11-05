@@ -3501,6 +3501,8 @@ html, body, #root {
 .issue-card-table .kv-col-value { width: 14%; }
 .issue-card-table-value { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .issue-card-table tr.is-bad .issue-card-table-value { color: #c0392b; }
+.issue-card-table td.issue-card-table-note { font-weight: 700; text-align: left; }
+.issue-card-table tr.is-bad td.issue-card-table-note { color: #c0392b; }
 
 /* -- Compact error card: warnings about what could not be verified ---------------------------- */
 .issue-card-warning { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; font-size: 0.9em; color: #b7791f; }
@@ -3510,6 +3512,8 @@ html, body, #root {
 
 /* -- Warnings (yellow/orange) are shown but never counted as errors -------------------------------- */
 .issue-card-badge.is-warning { background: rgba(214, 158, 46, 0.16); color: #b7791f; border-color: rgba(214, 158, 46, 0.45); }
+.error-summary-counts.has-hint { margin-bottom: 4px; }
+.error-summary-hint { margin: 0 0 8px; font-size: 0.85em; line-height: 1.2; color: var(--text-muted, #6b7280); }
 .error-count-chip.is-warning { background: rgba(214, 158, 46, 0.14); color: #b7791f; border-color: rgba(214, 158, 46, 0.4); }
 
 /* -- Report an issue (support request) ------------------------------------

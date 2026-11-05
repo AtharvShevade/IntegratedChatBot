@@ -27,6 +27,7 @@ from decimal import Decimal
 
 from . import absent_operands as ao
 from . import calc_view as cvw
+from . import bt_cells
 from . import cell_context as cc
 from . import table_titles as _tt
 from . import conditional_rules as cond
@@ -71,7 +72,8 @@ def _set_currency(located) -> bool:
         return True
     if not units and all((getattr(f, "unit", "") or "").strip().upper() in ("PURE", "SHARES", "INF", "") for f in facts) and \
             any((getattr(f, "unit", "") or "").strip().upper() in ("PURE", "SHARES") for f in facts):
-        return True                                          # ratios and counts: no amount is shown
+        _CURRENCY.set("")                                    # ratios and counts: never a currency symbol (not the one a previous rule set)
+        return True
     _CURRENCY.set("")
     return False
 
@@ -79,6 +81,8 @@ def _set_currency(located) -> bool:
 def money(inr: Decimal) -> str:
     """An amount in the rule's currency: ₹28,062,200,000 / QAR 70,000,000 (no decimals when whole)."""
     d = Decimal(inr)
+    if not _CURRENCY.get():
+        return et.fmt_exact(d)                               # no currency: the number with the digits it has (a rate 0.1511 stays 0.1511)
     return _CURRENCY.get() + (f"{d:,.0f}" if d == d.to_integral() else f"{d:,.2f}")
 
 
@@ -86,12 +90,73 @@ def cell_money(value: Decimal, multiplier: int, unit: str) -> str:
     """A value in the sheet's own unit: ₹196,448.89 lakh. Non-monetary values (ratios, counts) stay plain."""
     d = Decimal(value)
     code = cur_.normalise(unit)
-    pf = cur_.prefix(code) if code else (_CURRENCY.get() if not (unit or "").strip() else None)
+    pf = cur_.prefix(code) if code else None                 # a symbol only for a unit that is a currency; no unit, no assumption
     if pf is not None and multiplier in _UNIT_WORD:
         return f"{pf}{d:,.2f} {_UNIT_WORD[multiplier]}"
     if code:
         return f"{pf}{d:,.2f}"
     return et.fmt_exact(d)
+
+
+def _fmt_code(code: str):
+    """A formatter for amounts in one currency (its symbol) or, for '', plain numbers."""
+    if code:
+        pf = cur_.prefix(code)
+        return lambda d: pf + (f"{Decimal(d):,.0f}" if Decimal(d) == Decimal(d).to_integral() else f"{Decimal(d):,.2f}")
+    return lambda d: _plain(d, 0 if Decimal(d) == Decimal(d).to_integral() else 2)
+
+
+def _side_code(node, located):
+    """The currency of one side of a rule, from the units of the facts it is made of: 'INR' when every fact of the side is in INR; ''
+    (plain numbers) when they show no monetary unit or mix units; None when the facts carry no unit information at all."""
+    facts = [lc.fact for v in node.variables() for lc in (located.get(v.upper()) or located.get(v) or [])]
+    if not facts or not all(hasattr(f, "unit") for f in facts):
+        return None
+    codes = {cur_.normalise(getattr(f, "unit", "")) for f in facts}
+    return next(iter(codes)) if len(codes) == 1 else ""
+
+
+def _side_scale(node, located):
+    """The sheet's unit of one side (cell value x scale = filed value) when every located cell of the side has the same one, else None."""
+    scales = {lc.addr.multiplier or 1 for v in node.variables() for lc in (located.get(v.upper()) or located.get(v) or []) if lc.addr}
+    return next(iter(scales)) if len(scales) == 1 else None
+
+
+def _compare_fmts(comp, located):
+    """(left, right, difference) formatters for a rule that compares two sides: each side in its own unit, the difference in the unit
+    both share and plain when they differ (a count compared with an amount has no currency of its difference). None when the facts say
+    nothing about units."""
+    if comp is None or comp.rhs is None:
+        return None
+    lc, rc = _side_code(comp.lhs, located), _side_code(comp.rhs, located)
+    if lc is None or rc is None:
+        return None
+    ml, mr = _side_scale(comp.lhs, located), _side_scale(comp.rhs, located)
+    if ml and ml == mr and ml != 1:                                    # both sides are kept in lakh / crore ...: show the figures as the sheet does
+        plain = _fmt_code("")
+        scaled = lambda d: plain(Decimal(d) / ml)                       # noqa: E731
+        return scaled, scaled, scaled
+    fl, fr = _fmt_code(lc), _fmt_code(rc)
+    return fl, fr, (fl if lc == rc else _fmt_code(""))
+
+
+def _side_name(node, located) -> str:
+    """What one side of the rule is called: the measure's own name when the side is one measure, else '' (the caller says 'total')."""
+    concepts = {lc.fact.concept for v in node.variables() for lc in (located.get(v.upper()) or located.get(v) or []) if lc.fact.concept}
+    return et.words(next(iter(concepts))).lower() if len(concepts) == 1 else ""
+
+
+def _cmp_sentence(op: str, lt: Decimal, rt: Decimal, ln: str, rn: str, fl, fr, fd) -> str:
+    """The failed comparison in words that agree with the numbers: 'The A (54) exceeds the B (34) by 20.' / 'is below ... by'."""
+    gap = abs(lt - rt)
+    a, b = f"The {ln} ({fl(lt)})", f"the {rn} ({fr(rt)})"
+    if op in ("<=", "<") and lt > rt:
+        return f"{a} exceeds {b} by {fd(gap)}."
+    if op in (">=", ">") and lt < rt:
+        return f"{a} is less than {rn} ({fr(rt)}) by {fd(gap)}."
+    if lt == rt and op in ("<", ">"):
+        return f"{a} equals {b}, but the rule needs it to be {'smaller' if op == '<' else 'greater'}."
+    return f"{a} and {b} differ by {fd(gap)}."
 
 
 def _raw(v) -> str:
@@ -241,9 +306,15 @@ def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev):
         cause = sol
         fix = "Add the missing entries (or correct the condition the rule depends on)."
     elif k == "coverage":
-        problem = "The left total is smaller than the right total."
-        cause = f"Left total {r.facts.get('left_total')} is below right total {r.facts.get('right_total')} (short by {r.facts.get('shortfall')})."
-        fix = "Correct the left cells (or the right ones if they are overstated); the rule alone does not say which category is short."
+        ln, rn = r.facts.get("left_name") or "left total", r.facts.get("right_name") or "right total"
+        over = r.facts.get("direction") == "exceeds"
+        problem = f"The {ln} is {'greater' if over else 'smaller'} than the {rn}."
+        lp, rp = r.facts.get("left_prefix", ""), r.facts.get("right_prefix", "")
+        cause = (f"The {ln} ({lp}{r.facts.get('left_total')}) {'exceeds' if over else 'is less than'} the {rn} ({rp}{r.facts.get('right_total')}) "
+                 f"by {lp if lp == rp else ''}{r.facts.get('shortfall')}.")
+        fix = ("Correct the left cells (or the right ones if they are understated); the rule alone does not say which category is off."
+               if over else
+               "Correct the left cells (or the right ones if they are overstated); the rule alone does not say which category is short.")
     elif k == "missing entries":
         problem = "An entry is empty although the other side has a value."
         cause = "Some cells are empty/0 while the cells they are compared with are filled."
@@ -256,7 +327,39 @@ def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev):
 
 
 # ── the card ────────────────────────────────────────────────────────────────────────────────────────────────────
+def _CASE_WORD(card: dict) -> str:
+    """Which failing case the cells belong to: the first, or the one whose cells could be placed when the first's could not."""
+    return "one of the failing cases (the first could not be placed in the workbook)" if card.get("case_moved") else "the first failing case"
+
+
+def _coverage(finding) -> float:
+    """How well one failing case's values are placed: a cell the evidence settles counts 1, a weak match from the workbook alone a quarter."""
+    lcs = [lc for v in finding[1].values() for lc in v]
+    firm = lambda lc: lc.res.status in ("CONFIRMED", "MAPPED", "INFERRED") and not lc.uncertain                  # noqa: E731
+    return sum((1.0 if firm(lc) else 0.25) for lc in lcs if lc.addr) / len(lcs) if lcs else 0.0
+
+
+def _best_first(findings: list) -> tuple[list, bool]:
+    """A rule that fails in many cases is explained through one of them. The first case is the one shown unless some other case has more of
+    its values placed in the workbook (a total whose cells repeat elsewhere cannot be pinned down, while a case in a particular column
+    can): then that case leads. -> (findings, whether another case now leads)."""
+    if len(findings) < 2:
+        return findings, False
+    best = max(range(len(findings)), key=lambda i: (_coverage(findings[i]), -i))
+    if best and _coverage(findings[best]) > _coverage(findings[0]):
+        return [findings[best]] + findings[:best] + findings[best + 1:], True
+    return findings, False
+
+
 def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, dict]:
+    reordered = set()
+    fixed = []
+    for rule, expr, comp, kind, findings in analysed:
+        findings, moved = _best_first(findings)
+        if moved:
+            reordered.add(rule.name)
+        fixed.append((rule, expr, comp, kind, findings))
+    analysed = fixed
     by_rule: dict[str, list] = collections.defaultdict(list)
     for r in rows:
         for rn in r.facts.get("rules", []):
@@ -281,10 +384,12 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
         terms = dict(zip(order, terms_list)) if order and len(terms_list) == len(order) else {}
         checks = et.identity(inst.title) or rule.name
         card = {"rule_name": rule.name, "number": number[rule.name], "checks": checks[:260], "kind": kind, "verdict": verdict,
+                "case_moved": rule.name in reordered,
                 "cells": [], "calc": _calc_rows(verdict, kind, comp, ev, None),
                 "instances": len(findings), "related": None, "other_cases": None}
         ev_key, ev_text = _evidence(located)
         card["evidence_key"], card["evidence"] = ev_key, ev_text
+        card["bt"], card["bt_differs"] = bt_cells.card_source(located)
         lhs_term = terms_list[0] if terms_list else (et.words(inst.facts[0].concept) if inst.facts else "The reported value")
         mine = by_rule.get(rule.name, [])
         data_groups = [r for r in mine if r.facts.get("kind") == "data error"]
@@ -351,9 +456,16 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
             card["cells"] = _case_cell_rows(wb, findings) or card["cells"]
         card["view"] = _compact_view(card, data_groups, located, cell_money, comp, mine, wb, ev, rc=card["root_cause"], findings=findings)
         card["view"]["kv_where"] = _kv_where(card["view"], wb, located)
+        if card["bt"] and card["bt_differs"]:
+            card["view"]["warnings"] = list(card["view"].get("warnings") or []) + [
+                "The validator's backtracking record and our own search place a value in different cells: " + "; ".join(card["bt_differs"][:3])
+                + ". The backtracking record is shown."]
         card["note"] = ("Explanation: generated by automated analysis of the error file and the workbook; "
                         f"location evidence: {ev_text}. The suggested correction should be verified against the underlying components.")
-        card["full"], card["why_not_full"] = rfd.decide(located, comp, culprit, conditional=cond.parse((ev or {}).get("expression")) is not None or _presence_named(pres))
+        if _presence_named(pres) and (ev or {}).get("message_only"):           # the rule lists no values: the missing one's cell is the whole answer
+            card["full"], card["why_not_full"] = True, ""
+        else:
+            card["full"], card["why_not_full"] = rfd.decide(located, comp, culprit, conditional=cond.parse((ev or {}).get("expression")) is not None or _presence_named(pres))
         card["findings"] = [] if card["full"] else rfd.findings(located, wb, comp, ev, et.decimals_of(comp) if comp is not None else None, terms)
         cards[rule.name] = card
     return cards
@@ -558,7 +670,7 @@ def _conditional_view(located, ev):
     limit = fmt(spec["threshold"])
 
     def label(name, lc):
-        return f"{name} · {lc.addr.a1}" if lc.addr else name
+        return name
 
     def where(name, lc):
         return f"{name.lower()} ({lc.addr.sheet}!{lc.addr.a1})" if lc.addr else name.lower()
@@ -578,7 +690,8 @@ def _conditional_view(located, ev):
         steps = [f"Verify {where(count_name, a)} and {where(amount_name, b)} against the source data.",
                  f"Check whether {amount_name.lower()} is reported in the unit the rule expects."]
     steps.append("Correct the figure that is wrong, then regenerate and revalidate the return.")
-    return kv, wrong, [], why, " ".join(steps), {"steps": steps}
+    cells = {kv[i][0]: (lc.addr.sheet, lc.addr.a1) for i, lc in ((0, a), (1, b)) if lc.addr}
+    return kv, wrong, [], why, " ".join(steps), {"steps": steps, "kv_cells": cells}
 
 
 _INEQ_WORD = {">=": "at least", ">": "more than", "<=": "at most", "<": "less than"}
@@ -648,7 +761,8 @@ def _presence_view(card: dict, pres: dict) -> dict:
             kv.append((cname, c["value"], ""))
     first = next((r for r in pres["required"] if r.get("cell")), None)
     held = None if first is None or first.get("workbook_value") in (None, "") else first["workbook_value"]
-    if first is not None:
+    unchecked = first is not None and first.get("checked") is False            # no uploaded workbook: the place is known, not what it holds
+    if first is not None and not unchecked:
         kv.append((f"Uploaded workbook holds at {first['sheet']}!{first['cell']}", str(held) if held is not None else "(blank)", ""))
     because = ""
     alt_vars = {a["var"] for a in pres.get("alternatives", [])}
@@ -657,7 +771,11 @@ def _presence_view(card: dict, pres: dict) -> dict:
         c = cond_now[0]
         because = f" because {_pretty(c['concept'])} is {c['value']}"
     wrong = f"{', '.join(req_names)} must be reported{because}, but the filing has no value for it."
-    if first is not None and held is not None:
+    if unchecked:
+        why = f"This value belongs at {first['sheet']}!{first['cell']} (from the return's mapping), and the filing has no value for it."
+        steps = [f"Check {first['sheet']}!{first['cell']} in your workbook and enter the value there if it applies.",
+                 "Regenerate the instance and validate again."]
+    elif first is not None and held is not None:
         why = (f"The uploaded workbook holds {held} at {first['sheet']}!{first['cell']}, where this value belongs, but the filing "
                "that was validated carries no value for it.")
         steps = [f"Confirm the filing was generated from this workbook: {first['sheet']}!{first['cell']} is filled, yet the filing has no value for it.",
@@ -673,6 +791,8 @@ def _presence_view(card: dict, pres: dict) -> dict:
         steps.append(f"If no value applies, the rule is also satisfied when {_pretty(a['concept'])} is {a['literal']}{where}.")
     how = first.get("how") if first else ""
     footer = f"Location of the missing value: from {how}." if how else ""
+    if unchecked:
+        footer = "Location of the missing value: from the return's mapping; no uploaded workbook to check it against."
     return _simple_view(card, kv, wrong, why, steps, kv_cells, footer=footer)
 
 
@@ -731,7 +851,8 @@ def _fact_text(lc) -> str:
     v = lc.fact.value
     if lc.fact.unit.upper() == "PURE" or not _num(v):
         return str(v)
-    return money(Decimal(str(v)))
+    code = cur_.normalise(lc.fact.unit)
+    return _fmt_code(code)(Decimal(str(v))) if (code or lc.fact.unit.strip()) else str(v)       # no monetary unit: the number as filed
 
 
 def _value_fmt(card, comp, located):
@@ -811,8 +932,8 @@ def rounding_note(comp, located, ev, dp) -> str:
         return ""
     out = ""
     if C.quantize(Decimal(1).scaleb(-filed)) == R.quantize(Decimal(1).scaleb(-filed)):
-        out += (f" The reported {et.fmt_exact(R)} is the recalculated {et.fmt_exact(C)} rounded to {filed} decimal places: the figure is right "
-                f"but too coarse for a check made at {dp}. Report it with at least {dp} decimal places ({et.fmt_exact(C.quantize(Decimal(1).scaleb(-dp)))}).")
+        out = (f"The filing rounds {et.fmt_exact(C)} to {et.fmt_exact(R)} ({filed} decimal places), but the rule checks at {dp}. "
+               f"Report at least {dp} decimal places.")
     try:
         sub, changed = {}, []
         for var, lcs in located.items():
@@ -829,8 +950,7 @@ def rounding_note(comp, located, ev, dp) -> str:
             ev2 = ew.fx.evaluate(comp, sub)
             if ev2 and ev2.get("passes"):
                 shown = "; ".join(f"{lc.addr.a1} holds {et.fmt_exact(c)} but was filed as {et.fmt_exact(v)}" for lc, v, c in changed[:3])
-                out += (f" Computed from the unrounded values in your workbook the rule passes, so the filing rounded {len(changed)} "
-                        f"operand(s) ({shown}). Report those with more decimal places.")
+                out = f"{shown}; the rule checks at {dp} decimal places. Report at least {dp} decimal places."
     except Exception:                                                                     # noqa: BLE001
         pass
     return out
@@ -851,9 +971,8 @@ def _calc_why(card, comp, located, ev, cv, vals) -> str | None:
            "percentage": "the numerator divided by the denominator, as a percentage, from the cells listed below",
            "ratio": "the numerator divided by the denominator listed below",
            "aggregate": "the sum of the components listed below"}[kind]
-    text = f"The reported value is {R}; {how} gives {C}."
+    text = ""                                                  # the headline already gives both figures; only the cause belongs here
     if dp is not None and kind in et._RATIO_KINDS:
-        text += f" The rule compares both at {dp} decimal places."
         lv = [v.upper() for v in comp.lhs.variables()]
         fact = (located.get(lv[0]) or [None])[0] if lv else None
         try:
@@ -861,12 +980,11 @@ def _calc_why(card, comp, located, ev, cv, vals) -> str | None:
         except Exception:                                                                 # noqa: BLE001
             filed = None
         if filed is not None and 0 <= filed < dp:
-            text += (f" The reported value is filed to {filed} decimal places, so rounding in the filed values can contribute "
-                     "to the difference.")
-            text += rounding_note(comp, located, ev, dp)
+            text = rounding_note(comp, located, ev, dp) or (
+                f"The rule checks at {dp} decimal places but the value was filed to {filed}, so rounding can cause the difference.")
     if cv and cv.get("unlocated"):
-        text += (f" {cv['unlocated']} operand(s) could not be located in the workbook; the calculation uses their values "
-                 "from the error file.")
+        text = (text + " " if text else "") + (f"{cv['unlocated']} operand(s) could not be located in the workbook; "
+                                               "their values come from the error file.")
     return text
 
 
@@ -969,10 +1087,11 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
     if card.get("verdict") == "COVER" and comp is not None and ev:
         lt, rt = ew._dec(ev.get("lhs_value", ev.get("lhs"))), ew._dec(ev.get("rhs_value", ev.get("rhs")))
         if lt is not None and rt is not None:
-            word = "at least" if comp.operator == ">=" else "at most"
-            kv = [("Left total", money(lt), ""), ("Right total", money(rt), ""), ("Difference", money(abs(lt - rt)), "bad")]
-            wrong = f"The left total {money(lt)} must be {word} the right total {money(rt)}, but it is off by {money(abs(lt - rt))}."
-            terms = [money(lt), money(rt)]
+            fl, fr, fd = _compare_fmts(comp, located) or (money, money, money)
+            ln, rn = _side_name(comp.lhs, located) or "left total", _side_name(comp.rhs, located) or "right total"
+            kv = [(ln.capitalize(), fl(lt), ""), (rn.capitalize(), fr(rt), ""), ("Difference", fd(abs(lt - rt)), "bad")]
+            wrong = _cmp_sentence(comp.operator, lt, rt, ln, rn, fl, fr, fd)
+            terms = [fl(lt), fr(rt)]
     why, fix = card["cause"], card["fix"]
     if data_groups:
         ci = data_groups[0].facts["culprit_info"][0]
@@ -1013,7 +1132,7 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
     cmpd = None
     if comp is not None and card["kind"] in cvw.CALC_KINDS:
         try:
-            cmpd = cvw.comparison(comp, located, ev, pct_fmt)
+            cmpd = cvw.comparison(comp, located, ev, pct_fmt, fmts=_compare_fmts(comp, located) if pct_fmt is money else None)
         except Exception:                                                                 # noqa: BLE001 - never lose the card over this
             cmpd = None
     # Only when the calculated cell is the one reported cell and the rule adds OTHER cells than its formula does is the formula
@@ -1030,10 +1149,9 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
                 r["tone"] = "bad" if r["cell"] == ci0["a1"] else ("" if r["label"] == "Difference" else r["tone"])
         kv = [(r["label"], r["value"], r["tone"]) for r in cmpd["rows"]]
         cells_map = {r["label"]: (r["sheet"], r["cell"]) for r in cmpd["rows"] if r["cell"]}
-        if comp.operator in (">", "<") and len(cmpd["rows"]) >= 3:
+        if comp.operator in (">", "<") and len(cmpd["rows"]) >= 3 and all(s.get("label") for s in cmpd["sides"]):
             word = {">": "greater than", "<": "smaller than"}[comp.operator]
-            a, b = cmpd["rows"][0], cmpd["rows"][1]
-            kv = kv[:-1] + [("Condition", f"{a['cell']} must be {word} {b['cell']}", "bad")]
+            kv = kv[:-1] + [("Condition", f"{cmpd['sides'][0]['label']} must be {word} {cmpd['sides'][1]['label']}", "bad")]
         extras = {**extras, "kv_cells": cells_map, "kv_code": list(cells_map)}
         warnings = list(cmpd["notes"])
     if cv is not None and cmpd is not None and card["kind"] in et._RATIO_KINDS and pct_fmt is not money:
@@ -1048,7 +1166,7 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
             why_calc = _calc_why(card, comp, located, ev, cv, vals3)
             if mismatch:
                 why_calc = _mismatch_why(ci0["a1"], cell_bd, cmpd, pct_fmt) or why_calc
-            if why_calc and (not data_groups or mismatch):
+            if why_calc is not None and (not data_groups or mismatch):
                 why = why_calc
             if not data_groups or mismatch:
                 blank = any(i["state"] in ("empty", "zero") for g in cv["groups"] for i in g["items"])
@@ -1089,17 +1207,24 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
         if not groups or groups[-1]["sheet"] != c["sheet"]:
             groups.append({"sheet": c["sheet"], "cells": []})
         groups[-1]["cells"].append({"cell": c["cell"], "label": _chip_label(c)})
+    chips_hidden = False
+    listed = set((extras.get("kv_cells") or {}).values())
+    if listed and all((c["sheet"], c["cell"]) in listed for c in chips):          # the table above already names every one of these cells
+        shown, groups, chips_hidden = [], [], True
     missing = sum(1 for lcs in located.values() for lc in lcs if not lc.addr)
     ev_short = _EVIDENCE_SHORT.get(card.get("evidence_key", ""), "")
+    if card.get("bt"):
+        ev_short = ("validator backtracking record, workbook verified" if card.get("evidence_key") == "CONFIRMED"
+                    else "validator backtracking record, workbook values not matched or not checked")
     footer = f"Location evidence: {ev_short}." if ev_short else ""
     notes = []
     if card.get("instances", 0) > 1 and card["verdict"] in ("RULE", "COVER", "DATA"):
-        notes.append(f"These cells are for the first failing case; the rule fails in {card['instances']} cases.")
+        notes.append(f"These cells are for {_CASE_WORD(card)}; the rule fails in {card['instances']} cases.")
     if missing and cv is None:
         notes.append(f"{missing} value(s) of this rule could not be located, so this list is incomplete.")
     if cv is not None and card.get("instances", 0) > 1:
-        cv["note"] = (cv["note"] + " " if cv["note"] else "") + f"These cells are for the first failing case; the rule fails in {card['instances']} cases."
-        notes = [n for n in notes if not n.startswith("These cells are for the first")]
+        cv["note"] = (cv["note"] + " " if cv["note"] else "") + f"These cells are for {_CASE_WORD(card)}; the rule fails in {card['instances']} cases."
+        notes = [n for n in notes if not n.startswith("These cells are for ")]
     if cv is not None and cv.get("differing"):
         footer = "Location evidence: some workbook values differ from the error file."
     steps = extras.get("steps") or [x.strip() for x in re.split(r"(?<=[.;])\s+(?=[A-Z])", fix) if x.strip()]
@@ -1110,12 +1235,13 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
                 captions[l] = _chip_label(c)
                 break
     title, area = title_parts(card["rule_name"])
+    why = _drop_repeats(why, wrong)
     return {"title": title, "why_heading": extras.get("why_heading") or "Why did it happen?", "kv_code": extras.get("kv_code", []),
             "kv_cells": extras.get("kv_cells", {}),
             "steps": steps, "safety": extras.get("safety", ""), "codes": extras.get("codes", []),
             "captions": captions, "subtitle": f"{area} · Formula validation" if area else "Formula validation",
             "wrong": wrong, "terms": [t for t in terms if t], "kv": kv, "why": why, "fix": fix, "groups": groups,
-            "more_cells": max(0, len(chips) - len(shown)), "footer": footer.strip(), "cells_note": " ".join(notes),
+            "more_cells": 0 if chips_hidden else max(0, len(chips) - len(shown)), "footer": footer.strip(), "cells_note": " ".join(notes),
             "warnings": warnings, "related": related,
             "breakdown": (None if mismatch else cell_bd) or cv}
 
@@ -1163,6 +1289,23 @@ def _kv_row(view: dict, label: str, value: str) -> list[str]:
     w = (view.get("kv_where") or {}).get(label, {})
     by_name = {"Sheet Name": sheet, "Table": w.get("table", ""), "Column": w.get("column", ""), "Cell": cell, "Value": value}
     return [by_name[c] for c in kv_columns(view)]
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+
+
+def _drop_repeats(why: str, wrong: str) -> str:
+    """The 'why' without the sentences the headline already says (the same words with other figures or units) and without repeats of its own:
+    one statement is made once."""
+    letters = lambda s: re.sub(r"[^a-z]+", " ", s.lower()).strip()           # noqa: E731  figures and symbols differ between units, the words do not
+    seen = {letters(s) for s in _SENTENCE.split(wrong or "")}
+    kept = []
+    for s in _SENTENCE.split(why or ""):
+        k = letters(s)
+        if k and k not in seen:
+            kept.append(s)
+            seen.add(k)
+    return " ".join(kept)
 
 
 def _breakdown_section(b: dict | None) -> dict | None:
@@ -1224,7 +1367,7 @@ def card_to_text(card: dict) -> str:
         L += [""] + [f"{l}: {val}" + (f" ({v['captions'][l]})" if v.get("captions", {}).get(l) else "") for l, val, _ in v["kv"]]
     L += [f"  Warning: {w}" for w in v.get("warnings", [])]
     L += [f"  Related: {r}" for r in v.get("related", [])]
-    L += ["", v.get("why_heading", "Why did it happen?"), v["why"], "", "What should you check?"]
+    L += (["", v.get("why_heading", "Why did it happen?"), v["why"]] if v["why"] else []) + ["", "What should you check?"]
     L += [f"  {i}. {t}" for i, t in enumerate(v.get("steps") or [v["fix"]], 1)]
     if v.get("safety"):
         L.append(f"  {v['safety']}")

@@ -545,7 +545,7 @@ def test_ratio_card_uses_the_shared_structure_with_percent_values_and_the_filing
     v = rc._compact_view(_card("weighted_average", calc=[("Reported value", "0.06"), ("Recalculated from its components", "0.0599")]),
                          [], _located(), rc.cell_money, _parse(_WAVG), [], None, ev)
     assert [k[1] for k in v["kv"]] == ["6.00%", "5.99%", "0.01%"]
-    assert "weighted average of the amounts and rates" in v["why"] and "filed to 2 decimal places" in v["why"]
+    assert v["why"] == "The filing rounds 0.0599 to 0.06 (2 decimal places), but the rule checks at 4. Report at least 4 decimal places."
     assert v["steps"][0] == "Verify each amount and rate pair against the source data." and v["breakdown"]["kind"] == "operands"
     assert "first failing case; the rule fails in 9 cases" in v["breakdown"]["note"]
 
@@ -602,11 +602,12 @@ def _sum_view(located, ev, comp=None):
 def test_total_card_shows_the_reported_cell_and_the_sum_with_a_difference_that_matches():
     v = _sum_view(_sum_located(), _sum_ev())
     rows = {k[0]: k[1] for k in v["kv"]}
-    assert list(v["kv_cells"].values()) == [("S", "B13"), ("S", "Sum of B3:B12")]        # sheet and cell columns, never the first cell alone
+    assert list(v["kv_cells"].values()) == [("S", "B13")]                               # the sheet table holds only cells of the sheet
+    assert [k[0] for k in v["kv"]][1].startswith("Sum of B3:B12")                        # the total is one of the figures listed below it
     assert [k[1] for k in v["kv"]] == ["₹70,000,000", "₹61,419", "₹69,938,581"]
     assert v["warnings"] == []
     assert "₹70,000,000" in v["wrong"] and "₹61,419" in v["wrong"]
-    assert "₹61,419" in v["why"]                                                         # explanation uses the same numbers as the table
+    assert v["why"] == ""                                                                # the headline already says it: said once, not twice
     b = v["breakdown"]
     assert [i["cell"] for i in b["groups"][0]["items"]] == ["B13"] + [f"B{n}" for n in range(3, 13)]   # all 10 components, not B3 only
     assert b["unlocated"] == 0 and rows["Difference"] == "₹69,938,581"
@@ -617,8 +618,8 @@ def test_total_card_with_missing_components_never_presents_a_partial_sum_as_the_
     kv = {k[0]: k[1] for k in v["kv"]}
     calc_row = next(k for k in v["kv"] if k[0].endswith("Sum of B3:B9"))
     assert calc_row[1] == "₹61,419"                                                      # the rule's own value, not the located sum
-    part = next(k for k in v["kv"] if k[0].endswith("located:Sum of B3:B9"))
-    assert v["kv_cells"][part[0]][1] == "Located cells only (7 of 10)" and part[1] == "₹42,839"   # 4172+4491+8498+8852+5791+7984+3051
+    part = next(k for k in v["kv"] if k[0] == "Located cells only (7 of 10)")
+    assert part[0] not in v["kv_cells"] and part[1] == "₹42,839"                       # 4172+4491+8498+8852+5791+7984+3051
     assert any("3 of 10 components of the calculated value could not be located" in w for w in v["warnings"])
     assert any("not the full total" in w for w in v["warnings"])
     assert next(k for k in v["kv"] if k[0] == "Difference")[1] == "₹69,938,581"          # difference stays the rule's own

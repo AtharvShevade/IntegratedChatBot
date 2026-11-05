@@ -22,6 +22,7 @@ from decimal import Decimal
 
 from . import cell_locator as cl          # noqa: E402
 from . import cell_state as cs            # noqa: E402
+from . import currency as cur_            # noqa: E402
 from . import error_html as eh            # noqa: E402
 from . import excel_eval as xe            # noqa: E402
 from . import explain_llm as el           # noqa: E402
@@ -637,17 +638,26 @@ def cover_rows(analysed):
             left = [lc for lc in located.get("V1", []) if lc.addr]
             right = [lc for lc in located.get("V2", []) if lc.addr]
             mult = left[0].addr.multiplier if left else 1
-            short = (r - l) if l is not None and r is not None else None
+            over = comp.operator in ("<=", "<")                    # the left side must NOT exceed the right: it is too large
+            short = abs(r - l) if l is not None and r is not None else None
+            names = [", ".join(dict.fromkeys(words(lc.fact.concept).lower() for lc in side if lc.fact.concept)) for side in (left, right)]
+            ln, rn = (n if n and "," not in n else t for n, t in zip(names, ("left total", "right total")))
+            codes = [{cur_.normalise(getattr(lc.fact, "unit", "")) for lc in side} for side in (left, right)]
+            lp, rp = (cur_.prefix(next(iter(c))) if len(c) == 1 else "" for c in codes)      # a symbol only for a side that is in one currency
+            if mult != 1:
+                lp = rp = ""                  # the figures below are in the sheet's own unit (lakh, crore ...), not in the currency itself
             where = "; ".join(f"{s} -> {', '.join(c.addr.a1 for c in cs)}" for s, cs in
                               collections.OrderedDict((s, [c for c in cells if c.addr.sheet == s])
                                                       for s in dict.fromkeys(c.addr.sheet for c in cells)).items())
-            sol = (f"Total on the left ({', '.join(c.addr.a1 for c in left)}) = {num(l / mult)} must be at least the total on the right "
-                   f"({', '.join(c.addr.a1 for c in right)}) = {num(r / mult)}: short by **{num(short / mult)}**. "
-                   "Correct the left cells (or the right ones if they are overstated); the code cannot tell which "
-                   "category inside the total is short from this rule alone.")
-            rows.append(Row("DATA", f"{identity(inst.title)} - left total smaller than right total", where, sol,
+            sol = (f"The {ln} ({', '.join(c.addr.a1 for c in left)}) = {lp}{num(l / mult)} must be "
+                   f"{'at most' if over else 'at least'} the {rn} ({', '.join(c.addr.a1 for c in right)}) = {rp}{num(r / mult)}: "
+                   f"{'over' if over else 'short'} by **{(lp if lp == rp else '')}{num(short / mult)}**. "
+                   f"Correct the left cells (or the right ones if they are {'understated' if over else 'overstated'}); the code cannot tell which "
+                   "category inside the total is off from this rule alone.")
+            rows.append(Row("DATA", f"{identity(inst.title)} - {ln} {'exceeds' if over else 'is smaller than'} {rn}", where, sol,
                             {"kind": "coverage", "rules": [rule.name], "rule_text": expr, "shortfall": num(short / mult) if short is not None else "",
-                             "left_total": num(l / mult), "right_total": num(r / mult)}))
+                             "left_total": num(l / mult), "right_total": num(r / mult), "direction": "exceeds" if over else "below",
+                             "left_name": ln, "right_name": rn, "left_prefix": lp, "right_prefix": rp}))
     return rows
 
 

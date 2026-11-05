@@ -33,8 +33,8 @@ def parse_file(path: str) -> dict:
     assertions, var_arcs, filter_arcs, set_filter_arcs, filters, fallback = {}, [], [], [], {}, {}
     for el in root.iter():
         t = _l(el.tag)
-        if t == "valueAssertion":
-            assertions[_attr(el, "label") or el.get("id", "")] = {"id": el.get("id", ""), "test": el.get("test", "")}
+        if t in ("valueAssertion", "existenceAssertion"):        # an existence assertion is a "this value must be reported" rule
+            assertions[_attr(el, "label") or el.get("id", "")] = {"id": el.get("id", ""), "test": el.get("test", ""), "kind": "existence" if t == "existenceAssertion" else "value"}
         elif t == "variableArc":
             var_arcs.append((_attr(el, "from"), _attr(el, "to"), el.get("name", "")))
         elif t == "variableFilterArc":
@@ -69,7 +69,7 @@ def parse_file(path: str) -> dict:
         for sfrm, sto, complement in set_filter_arcs:
             if sfrm == label and not complement and sto in filters and filters[sto][0] == "dim":
                 set_dims[filters[sto][1][0]] = filters[sto][1][1]
-        out[a["id"] or label] = {"test": a["test"], "vars": vars_, "set_dims": set_dims}
+        out[a["id"] or label] = {"test": a["test"], "vars": vars_, "set_dims": set_dims, "kind": a.get("kind", "value")}
     return out
 
 

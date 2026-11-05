@@ -265,6 +265,7 @@ export const UI = {
   'errors.category.dimensionalError':   { en: 'Dimensional Error', fr: 'Erreur dimensionnelle', ar: 'خطأ بُعدي', hi: 'आयामी त्रुटि' },
   'errors.category.validationError':    { en: 'Validation Error', fr: 'Erreur de validation', ar: 'خطأ في التحقق', hi: 'सत्यापन त्रुटि' },
   'errors.category.formulaErrors':      { en: 'Formula Errors', fr: 'Erreurs de formule', ar: 'أخطاء الصيغة', hi: 'सूत्र त्रुटियाँ' },
+  'errors.warningsFollowErrors':        { en: 'Fix the errors first; the warnings often clear after.' },
   'errors.category.formulaWarnings':    { en: 'Formula Warnings', fr: 'Avertissements de formule', ar: 'تحذيرات الصيغة', hi: 'सूत्र चेतावनियाँ' },
   'errors.category.schemaErrors':       { en: 'Schema Errors', fr: 'Erreurs de schéma', ar: 'أخطاء المخطط', hi: 'स्कीमा त्रुटियाँ' },
   'errors.category.dimensionErrors':    { en: 'Dimension Errors', fr: 'Erreurs de dimension', ar: 'أخطاء الأبعاد', hi: 'आयाम त्रुटियाँ' },
