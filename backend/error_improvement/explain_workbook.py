@@ -345,6 +345,71 @@ def _message_only(rule, expr: str, meta, wb):
     return eh.Instance("", []), {}, ev
 
 
+_COUNT_TERM = re.compile(r"count\(\s*\$(\w+)\s*\)\s*=\s*(\d+)", re.I)
+
+
+def _count_missing(rule, expr: str, located: dict, meta, wb):
+    """A rule that says every variable must carry N values ("count($V1) = 12 and count($V2) = 12 ..."). The error file lists the values
+    that were filed; the variable that has fewer than N lacks the contexts the other, complete variables carry. Each missing value is
+    rebuilt from the rule's definition (its concept) and that context, and placed by the return's mapping, so the blank cell is named.
+    All or nothing: None unless every missing value is identified and placed (nothing is guessed)."""
+    if "count(" not in expr.lower() or wb is None or not getattr(wb, "sheets", None):
+        return None
+    if re.sub(r"[\s()]|\band\b", "", _COUNT_TERM.sub("", expr), flags=re.I):
+        return None                                       # something other than a plain "and" of counts: not this shape
+    defs = (getattr(meta, "formula_defs", None) or {}).get(rule.name)
+    rep = getattr(meta, "reported", None)
+    if not defs:
+        return None
+    need = {v.upper(): int(n) for v, n in _COUNT_TERM.findall(expr)}
+
+    def name(v):
+        return re.sub(r"[^A-Za-z0-9_]", "", str(v)).upper()
+    by_name = {name(v): lcs for v, lcs in located.items()}
+    have = {v: list(dict.fromkeys(lc.fact.context for lc in by_name.get(v, []) if lc.fact.concept)) for v in need}
+    short = {v: need[v] - len(have[v]) for v in need if len(have[v]) < need[v]}
+    done = [v for v in need if v not in short]
+    if not short or not done:
+        return None
+    common = set.intersection(*(set(have[v]) for v in done))
+    ordered = list(dict.fromkeys(c for v in done for c in have[v]))
+    members = {c: _ctx_members(c, rep) for c in common}
+    shared = set.intersection(*members.values()) if members else set()
+    template = bool(getattr(wb, "is_template", False))
+    required = []
+    for v, deficit in short.items():
+        vd = defs["vars"].get(v)
+        if not vd or len(vd.get("concepts") or []) != 1:
+            return None
+        gone = [c for c in ordered if c in common and c not in have[v]]
+        if len(gone) != deficit:
+            return None                                   # not exactly the values the count is short by: ambiguous
+        pinned = {ms[0] for ms in (vd.get("dims") or {}).values() if len(ms) == 1}
+        for ctx in gone:
+            base = members[ctx] - pinned
+            placed = pr.place(meta, wb, vd, base)
+            if not placed:
+                return None
+            item = {"var": v, "concept": vd["concepts"][0], "dims": {m: m for m in sorted(base - shared)}, "cell": None,
+                    "checked": not template}
+            item.update(placed)
+            item["workbook_value"] = None if template else (str(placed["workbook_value"]) if placed["workbook_value"] is not None else None)
+            required.append(item)
+    if not required:
+        return None
+    return {"presence": {"required": required, "alternatives": [], "conditions": []}, "expression": expr, "count_missing": True}
+
+
+def _ctx_members(ctx: str, rep) -> set:
+    """The dimension members a context names: from the reported facts' context table when there is one, else from the context id
+    itself (`asof_20260930_<Member>_<Member>`: the period part dropped, the rest split on `_`)."""
+    dims = rep.ctx_dims(ctx) if rep is not None else None
+    if dims:
+        return set(dims.values())
+    parts = [p for p in re.split(r"_", ctx or "") if p]
+    return {p for p in parts if not re.fullmatch(r"(?:asof|fromto|\d{8})", p, re.I)}
+
+
 def analyse(meta, wb, rules):
     out = []
     locator = labeler = None
@@ -391,10 +456,13 @@ def analyse(meta, wb, rules):
             ao.resolve(located, comp, _title_of(inst), wb, getattr(wb, "formulas", None))
             ro.place(located, rule.name, meta, wb)
             ev = fx.evaluate(comp, dict(by_var)) if comp else None
-            if isinstance(ev, dict):
-                presence = _presence(rule, expr, located, meta, wb)
-                if presence:
-                    ev["presence"] = presence
+            presence = _presence(rule, expr, located, meta, wb) if isinstance(ev, dict) else None
+            if presence:
+                ev["presence"] = presence
+            else:
+                counted = _count_missing(rule, expr, located, meta, wb)
+                if counted:
+                    ev = {**ev, **counted} if isinstance(ev, dict) else counted
             findings.append((inst, located, ev))
         if not findings:
             only = _message_only(rule, expr, meta, wb)
