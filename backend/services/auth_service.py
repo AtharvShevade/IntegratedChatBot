@@ -23,6 +23,9 @@ import time
 
 from backend import version_config
 from backend.config import (
+    APP_DB_ADMIN_ROLE_ID,
+    _db_path,
+    returns_xml_path,
     xml_dept_path,
     xml_user_path,
     xml_role_access_path,
@@ -200,6 +203,28 @@ def invalidate(login_id: str) -> None:
 # Internal lookup
 # ---------------------------------------------------------------------------
 
+def _is_admin_role(role_id: str | None) -> bool:
+    """True when *role_id* is the admin RoleId configured in .env
+    (APP_DB_ADMIN_ROLE_ID — the same variable the DB Q&A admin check uses)."""
+    admin = (os.getenv("APP_DB_ADMIN_ROLE_ID") or APP_DB_ADMIN_ROLE_ID or "").strip()
+    return bool(admin) and (role_id or "").strip() == admin
+
+
+def _all_return_ids(non_xbrl: bool) -> set[str]:
+    """Every return Id in the repo's return master: Returns.xml (XBRL) or
+    NonXBRLReturns.xml (non-XBRL; NonXBRLReturn.xml on 6.0)."""
+    if non_xbrl:
+        path = _db_path("NonXBRLReturn.xml" if version_config.IS_V6 else "NonXBRLReturns.xml")
+        name = os.path.basename(path)
+    else:
+        path, name = returns_xml_path(), os.path.basename(returns_xml_path())
+    root = load_xml_tree(path, name)
+    if root is None:
+        logger.warning("[AUTH] admin: cannot load %s — no returns resolved", path)
+        return set()
+    return {r.attrib.get("Id", "").strip() for r in root.iter("Return") if r.attrib.get("Id", "").strip()}
+
+
 def _lookup(login_id: str, forms_attr: str | None = None) -> set[str] | None:
     """Read XML files and resolve allowed FormIds. Not cached — use get_allowed_form_ids.
 
@@ -227,6 +252,15 @@ def _lookup(login_id: str, forms_attr: str | None = None) -> set[str] | None:
                 "[AUTH] Step 1 | LoginId: %r  →  DepartmentId (attr=%r): %r",
                 login_id, _USER_DEPT_ATTR, dept_id,
             )
+            # The admin role sees every return: the department's list (or the
+            # lack of a department / list) is not consulted for them.
+            if _is_admin_role(el.attrib.get(_USER_ROLE_ATTR, "")):
+                form_ids = _all_return_ids(forms_attr == _DEPT_NX_FORMS_ATTR)
+                logger.info(
+                    "[AUTH] SUMMARY | LoginId: %r has admin RoleId — all returns allowed (%d forms)",
+                    login_id, len(form_ids),
+                )
+                return form_ids
             break
 
     if dept_id is None:

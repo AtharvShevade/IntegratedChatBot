@@ -13,7 +13,7 @@ import pytest
 import backend.agent  # noqa: F401  (import order: loads the 6.0 config before guided)
 from backend import guided, guided_samples, version_config
 
-P55 = "Enter the report name, ReturnId, or short name (e.g. CIMS_ROR, R149, RAQ):"
+P55 = "Enter the report name, ReturnId, or short name (e.g. COREP_LR, RUBA_C, CBI_MMR):"
 P60 = ("Enter the report name, ReturnId, or short name "
        "(e.g. QCB_F013_Breakdown of exposures by geography, F013):")
 
@@ -33,7 +33,7 @@ def _status_prompt(monkeypatch, v6):
 
 class TestConfiguredSamples:
     def test_samples_per_version_from_the_json_file(self):
-        assert guided_samples.get_samples("check_report_status", "5.5") == ["CIMS_ROR", "R149", "RAQ"]
+        assert guided_samples.get_samples("check_report_status", "5.5") == ["COREP_LR", "RUBA_C", "CBI_MMR"]
         assert guided_samples.get_samples("check_report_status", "6.0") == [
             "QCB_F013_Breakdown of exposures by geography", "F013"]
 
@@ -64,10 +64,10 @@ class TestGuidedFlow:
         "Perform comparative analysis": " to compare",
     }
     EG55 = {
-        "Check report status": "CIMS_ROR, R149, RAQ",
-        "Generate instance for a report": "CIMS_FormGPB, R009",
-        "Schedule a report": "CIMS_RAQ, R162",
-        "Perform comparative analysis": "CIMS_RAQ, R009, RAQ",
+        "Check report status": "COREP_LR, RUBA_C, CBI_MMR",
+        "Generate instance for a report": "COREP_NSFR, FINREP9_IND_IFRS",
+        "Schedule a report": "MREL_TLAC, CREDITHAB",
+        "Perform comparative analysis": "COREP_LR, COREP_NSFR, R224",
     }
     EG60 = "QCB_F013_Breakdown of exposures by geography, F013"
 

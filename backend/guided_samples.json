@@ -2,22 +2,22 @@
   "_comment": "Sample names / example questions shown in the guided prompts, per chatbot version (APP_VERSION). Edit this file to change them - no code or frontend change is needed; it is re-read automatically when it changes. Each action maps to an ordered list. check_report_status, generate_instance, schedule_report and comparative_analysis hold return names / ReturnIds and read 'Enter the report name, ReturnId, or short name (e.g. <samples joined by comma>):' (comparative_analysis: '... short name to compare (e.g. ...):'). sql_agent holds the example questions listed under 'Retrieve data from database', one bullet each.",
   "5.5": {
     "check_report_status": [
-      "CIMS_ROR",
-      "R149",
-      "RAQ"
+      "COREP_LR",
+      "RUBA_C",
+      "CBI_MMR"
     ],
     "generate_instance": [
-      "CIMS_FormGPB",
-      "R009"
+      "COREP_NSFR",
+      "FINREP9_IND_IFRS"
     ],
     "schedule_report": [
-      "CIMS_RAQ",
-      "R162"
+      "MREL_TLAC",
+      "CREDITHAB"
     ],
     "comparative_analysis": [
-      "CIMS_RAQ",
-      "R009",
-      "RAQ"
+      "COREP_LR",
+      "COREP_NSFR",
+      "R224"
     ],
     "sql_agent": [
       "What is the credit equivalent current credit exposure for domestic derivatives from ale?",
