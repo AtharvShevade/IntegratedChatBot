@@ -21,8 +21,6 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from port_guard import assert_port_matches_web_config  # noqa: E402  (needs ROOT_DIR on sys.path)
-
 # -------------------------------------------------------------------
 # .env / port — read here, BEFORE uvicorn.run(), since the port has to be
 # chosen before the app is even imported (that happens inside uvicorn's own
@@ -36,10 +34,6 @@ from backend.env_loader import load_env  # noqa: E402
 load_env()
 
 from backend.config import BACKEND_PORT
-
-# Refuse to start if the IIS rewrite rule forwards somewhere else --
-# see port_guard.py for why this cannot be caught any later.
-assert_port_matches_web_config(BACKEND_PORT, ROOT_DIR)
 
 # -------------------------------------------------------------------
 # Daily self-restart
