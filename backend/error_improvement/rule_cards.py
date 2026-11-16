@@ -748,10 +748,10 @@ def _presence_view(card: dict, pres: dict) -> dict:
         req_names.append(name)
         if r.get("cell"):
             label = f"{name} · {r['sheet']}!{r['cell']}"
-            kv.append((label, "not reported in the filing", "bad"))
+            kv.append((label, "Not reported", "bad"))
             kv_cells[label] = (r["sheet"], r["cell"])
         else:
-            kv.append((name, "not reported in the filing", "bad"))
+            kv.append((name, "Not reported", "bad"))
     conds = pres.get("conditions", [])
     for c in conds:
         cname = _pretty(c["concept"])
@@ -1064,6 +1064,38 @@ def _rc_view(rc: dict, cmpd, fmt, card: dict) -> dict | None:
     return out
 
 
+def _precision_gap(comp, cmpd: dict, fmt) -> dict | None:
+    """When an equality rule fails but both sides read the same as shown (or differ only by floating-point noise), the cause is not
+    the figures: it is a value stored with more decimals than it displays. Returns the honest wording, or None for a real difference.
+    Rules that compare with <, >, <= or >= are never treated this way."""
+    if comp is None or getattr(comp, "operator", "") in ("<", ">", "<=", ">="):
+        return None
+    left, right = cmpd.get("left"), cmpd.get("right")
+    if not isinstance(left, Decimal) or not isinstance(right, Decimal):
+        return None
+    diff = abs(left - right)
+    if diff == 0:
+        return None
+    noise = diff <= Decimal("1e-9") * max(Decimal(1), abs(left), abs(right))
+    if not noise and fmt(left) != fmt(right):
+        return None
+    gap = format(diff, "f")
+    if "." in gap:
+        gap = gap.rstrip("0").rstrip(".") or "0"
+    if len(gap) > 24:
+        gap = format(diff, ".3e")
+    l, r = fmt(left), fmt(right)
+    return {
+        "left": l, "right": r, "gap": gap,
+        "wrong": (f"The reported value ({l}) and the calculated value ({r}) look the same, but the rule compares exact values "
+                  f"and they differ by {gap}."),
+        "why": ("The figures are correct to the decimals shown. One of them is stored with more decimals than it displays (usually a "
+                "calculated cell whose result was not rounded), so the exact comparison fails by a tiny gap."),
+        "steps": ["Round the reported cell to the precision of the return, for example =ROUND(formula, 2), or enter the rounded figure.",
+                  "Recalculate the workbook, save it and upload it again."],
+    }
+
+
 def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, comp=None, mine=None, wb=None, ev=None, rc=None,
                   findings=None) -> dict:
     pres = (ev or {}).get("presence") if isinstance(ev, dict) else None
@@ -1193,6 +1225,14 @@ def _compact_view(card: dict, data_groups: list, located: dict, cell_money_fn, c
                     for it in g["items"]:
                         if it.get("cell") == fix_cell:
                             it["status"] = "Root cause"
+    gap = _precision_gap(comp, cmpd, pct_fmt) if cmpd is not None else None
+    if gap:                                                      # generic: any equality rule whose two sides look the same when shown
+        wrong, why = gap["wrong"], gap["why"]
+        terms = [gap["left"], gap["right"]]
+        extras = {**extras, "steps": gap["steps"], "safety": "", "why_heading": "Why did it happen?"}
+        fix = " ".join(gap["steps"])
+        kv = [(l, (gap["gap"] if l == "Difference" else v), t) for l, v, t in kv]
+        related = []
     if not currency_known and kv:
         warnings.append("The currency could not be established from the filing, so amounts are shown without a currency.")
     extra = []

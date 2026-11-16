@@ -35,8 +35,16 @@ def _when(text: str):
 
 
 def _log_rows(db_folder: str) -> dict:
-    """{error file name (lower case): [(form id, upload time)]} from DataBase/XML_InstanceLog.xml; {} when there is no such file."""
-    path = os.path.join(db_folder, "XML_InstanceLog.xml")
+    """{error file name (lower case): [(form id, upload time)]} from DataBase/XML_InstanceLog.xml (5.5) or DataBase/InstanceLog.xml (6.0,
+    which names the same things ErrorDoc / CreateDT / ReturnId); {} when there is no such file."""
+    for fn in ("XML_InstanceLog.xml", "InstanceLog.xml"):
+        path = os.path.join(db_folder, fn)
+        if os.path.isfile(path):
+            return _read_log(path)
+    return {}
+
+
+def _read_log(path: str) -> dict:
     try:
         stamp = os.path.getmtime(path)
     except OSError:
@@ -47,10 +55,10 @@ def _log_rows(db_folder: str) -> dict:
     rows: dict = {}
     try:
         for el in ET.parse(path).getroot().iter("Row"):
-            name = os.path.basename((el.get("ErrorDocPath") or "").replace("\\", "/")).lower()
-            when = _when(el.get("FileUploadDT"))
+            name = os.path.basename((el.get("ErrorDocPath") or el.get("ErrorDoc") or "").replace("\\", "/")).lower()
+            when = _when(el.get("FileUploadDT") or el.get("CreateDT"))
             if name and when:
-                rows.setdefault(name, []).append(((el.get("FormId") or "").strip(), when))
+                rows.setdefault(name, []).append(((el.get("FormId") or el.get("ReturnId") or "").strip(), when))
     except (ET.ParseError, OSError):
         rows = {}
     _LOG_CACHE[path] = (stamp, rows)

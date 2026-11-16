@@ -474,3 +474,29 @@
 {"ts": "2026-10-27T11:16:13.924800+00:00", "query": "QCB_F013_Breakdown of exposures by geography", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-10-27T11:16:15.501266+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-10-27T11:16:15.503745+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-09T08:07:12.669931+00:00", "query": "QCB_F013_Breakdown of exposures by geography_Excel", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-09T08:07:12.676123+00:00", "query": "QCB_F013_Breakdown of exposures by geography_Excel", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-09T08:07:17.250283+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-09T08:07:17.258266+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-09T08:08:15.175282+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-09T08:08:15.180448+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:31:48.364701+00:00", "query": "QCB_F010_Maturity Ladder of Assets & Liabilities", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:31:48.376773+00:00", "query": "QCB_F010_Maturity Ladder of Assets & Liabilities", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:31:50.963174+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:31:50.979767+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:32:21.441227+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:32:21.448542+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:32:37.008209+00:00", "query": "QCB_F019_FX_Swap_Reporting", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:32:37.019474+00:00", "query": "QCB_F019_FX_Swap_Reporting", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:32:48.390441+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:32:48.397640+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:33:02.080756+00:00", "query": "No", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:33:02.093574+00:00", "query": "No", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:36:06.611227+00:00", "query": "QCB_F019_FX_Swap_Reporting_Excel", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:36:06.653091+00:00", "query": "QCB_F019_FX_Swap_Reporting_Excel", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:36:08.394600+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:36:08.403704+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:48:26.436509+00:00", "query": "QCB_F019_FX_Swap_Reporting_Excel", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:48:26.440849+00:00", "query": "QCB_F019_FX_Swap_Reporting_Excel", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:48:27.975862+00:00", "query": "Yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-11T11:48:27.988261+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}

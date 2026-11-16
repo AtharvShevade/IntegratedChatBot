@@ -38,6 +38,18 @@ def test_without_a_log_row_or_with_the_upload_gone_the_thirty_minute_rule_still_
     assert mu.match_upload(folder3, ERR) is None
 
 
+def test_the_6_0_log_names_are_understood(tmp_path):
+    err = "RBIN095622820260430F013D_261102122342_Instance.html"                                # no time in the name: only the log can pair it
+    db = tmp_path / "DataBase"
+    up = db / "2002" / "UploadedFiles" / "02-11-26-12-23-37"
+    up.mkdir(parents=True)
+    (up / "F013.xlsx").write_bytes(b"x")
+    (db / "InstanceLog.xml").write_text(
+        f'<Document><Row Id="953" ReturnId="2002" CreateDT="02-Nov-2026 12:23:37 PM" ErrorDoc="{err}"/></Document>', encoding="utf-8")
+    assert mu.match_upload(str(db / "2002"), err).endswith(os.path.join("02-11-26-12-23-37", "F013.xlsx"))
+    assert mu.log_upload(str(tmp_path / "DataBase" / "2003"), err) is None                     # another form's folder: not used
+
+
 def test_a_log_row_of_another_form_is_not_used(tmp_path):
     folder = _repo(tmp_path, "21-11-25-10-02-00", "21-Nov-2025 10:02:00 AM", form="2036")
     other = os.path.join(os.path.dirname(folder), "2041")
