@@ -44,6 +44,8 @@ SECTION KINDS
                                    "note"?, "emphasis"?}]}
     {"kind": "fix",      "heading": str, "steps": [str, ...]}
     {"kind": "details",  "heading": str, "sections": [ ...v1 sections... ]}
+    {"kind": "table",    "heading": str, "columns": [str, ...], "rows": [[str, ...], ...]}
+    {"kind": "issue_card", "title": str, "subtitle": str, "wrong"/"why"/"fix": {"heading","text"}, "kv": [...], "cells": {...}, "footer": str}
 
 `rule` is deliberately the SAME kind name the v1 schema already uses, so the
 existing frontend case renders it unchanged.
@@ -132,6 +134,13 @@ def row(label: str, expected: str, actual: str, status: str,
         # is the consequence of the rows above rather than a peer of them.
         entry["emphasis"] = True
     return entry
+
+
+def table(heading: str, columns: list[str], rows: list[list[str]]) -> dict:
+    """A plain table (used by the error-improvement card: "Cell details", "Calculation details").
+    `columns` are the header cells; each row is a list of the same length."""
+    return {"kind": "table", "heading": heading, "columns": list(columns),
+            "rows": [[str(c) for c in r] for r in rows]}
 
 
 def fix(steps: list[str], heading: str = "Fix") -> dict:
@@ -368,6 +377,69 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
         heading = section.get("heading", "")
         lines = [f"{indent}{heading}"] if heading else []
         lines += _matrix_lines(section, indent)
+        lines.append("")
+        return lines
+
+    if kind == "table":
+        cols = [str(c) for c in section.get("columns") or []]
+        rows = [[str(c) for c in r] for r in section.get("rows") or []]
+        lines = [f"{indent}{section.get('heading', '')}"] if section.get("heading") else []
+        if cols and rows:
+            widths = [max(len(cols[i]), *(len(r[i]) for r in rows if i < len(r))) for i in range(len(cols))]
+            fmt = lambda r: indent + "  " + "  ".join((r[i] if i < len(r) else "").ljust(widths[i]) for i in range(len(cols))).rstrip()  # noqa: E731
+            lines += [fmt(cols), indent + "  " + "  ".join("-" * w for w in widths)] + [fmt(r) for r in rows]
+        lines.append("")
+        return lines
+
+    if kind == "issue_card":
+        g = lambda k: section.get(k) or {}  # noqa: E731
+        title = section.get("title", "") + (f"  [{section['badge']}]" if section.get("badge") else "")
+        lines = [f"{indent}{title}", f"{indent}{section.get('subtitle', '')}", "",
+                 f"{indent}{g('wrong').get('heading', '')}", f"{indent}  {g('wrong').get('text', '')}"]
+        if section.get("kv_columns"):
+            lines += [f"{indent}  " + " | ".join(section["kv_columns"])]
+            keys = {"Sheet Name": "sheet", "Table": "table", "Column": "column", "Cell": "cell", "Value": "value"}
+            lines += [f"{indent}  " + (" | ".join(str(k.get(keys.get(c, ""), "")) for c in section["kv_columns"]) if k.get("cell")
+                                      else f"{k.get('label', '')} | | {k.get('value', '')}") for k in section.get("kv") or []]
+        else:
+            lines += [f"{indent}  {k.get('label', '')}: {k.get('value', '')}" + (f" ({k['caption']})" if k.get("caption") else "")
+                      for k in section.get("kv") or []]
+        lines += [f"{indent}  Warning: {w}" for w in section.get("warnings") or []]
+        lines += [f"{indent}  Related: {r}" for r in section.get("related") or []]
+        if g("why").get("text"):
+            lines += ["", f"{indent}{g('why').get('heading', '')}", f"{indent}  {g('why').get('text', '')}"]
+        fx = g("fix")
+        lines += ["", f"{indent}{fx.get('heading', '')}"]
+        steps = fx.get("steps") or []
+        lines += [f"{indent}  {i}. {t}" for i, t in enumerate(steps, 1)] if steps else [f"{indent}  {fx.get('text', '')}"]
+        if fx.get("note"):
+            lines.append(f"{indent}  {fx['note']}")
+        bd = section.get("breakdown") or {}
+        if bd:
+            lines += ["", f"{indent}{bd.get('heading', '')}"]
+            if bd.get("summary"):
+                lines.append(f"{indent}  {bd['summary']}")
+            if bd.get("formula"):
+                lines.append(f"{indent}  {bd['formula']}")
+            for grp in bd.get("groups") or []:
+                if grp.get("label"):
+                    lines.append(f"{indent}  {grp['label']}")
+                lines += [f"{indent}    {c.get('cell', '')}  {c.get('label', '')}  {c.get('value', '')}  {c.get('status', '')}".rstrip()
+                          for c in grp.get("items") or []]
+                if grp.get("more_text"):
+                    lines.append(f"{indent}    {grp['more_text']}")
+            if bd.get("note"):
+                lines.append(f"{indent}  {bd['note']}")
+        cells = g("cells")
+        if cells.get("groups") and not bd:
+            lines += ["", f"{indent}{cells.get('heading', '')}"]
+            for grp in cells["groups"]:
+                lines.append(f"{indent}  {grp.get('sheet', '')}")
+                lines += [f"{indent}    {c.get('cell', '')} - {c.get('label', '')}".rstrip(" -") for c in grp.get("cells") or []]
+            if cells.get("note"):
+                lines.append(f"{indent}  {cells['note']}")
+        if section.get("footer"):
+            lines += ["", f"{indent}{section['footer']}"]
         lines.append("")
         return lines
 

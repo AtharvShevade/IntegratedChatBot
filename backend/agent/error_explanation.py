@@ -167,9 +167,15 @@ async def explain_category_for_report(
     # formula_error/xbrl_schema) rather than re-deriving it here — same
     # numbers the summary panel already showed the user.
     total_count = next_offset
+    error_count = warning_count = None
     try:
         counts = count_errors_by_category(error_file_path, form_id=form_id or "")
         total_count = counts.get(category, next_offset)
+        if category == "formula_error":
+            # Only red rules are errors (counts["formula_error"]); yellow/orange rules are warnings, listed after the errors and
+            # paged through like them. The list the user pages through is errors + warnings, so that is the paging total.
+            error_count, warning_count = counts.get("formula_error", 0), counts.get("formula_warning", 0)
+            total_count = counts.get("formula_total", error_count + warning_count) or next_offset
     except Exception as exc:
         logger.warning("[EXPLAIN_CATEGORY] count lookup failed, falling back: %s", exc)
 
@@ -179,6 +185,11 @@ async def explain_category_for_report(
         if total_count else
         f"⚙ {category_label} — showing {n}"
     )
+    if warning_count:
+        text += f" ({error_count} error{'s' if error_count != 1 else ''}, {warning_count} warning{'s' if warning_count != 1 else ''})"
+    data = {"has_more": has_more, "next_offset": next_offset, "total_count": total_count}
+    if error_count is not None:
+        data.update(error_count=error_count, warning_count=warning_count)
 
     return _build(
         intent="explain_errors",
@@ -186,11 +197,7 @@ async def explain_category_for_report(
         response_text=text,
         result_type="final",
         error_details=explained,
-        data={
-            "has_more":    has_more,
-            "next_offset": next_offset,
-            "total_count": total_count,
-        },
+        data=data,
     )
 
 

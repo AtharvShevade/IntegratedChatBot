@@ -119,11 +119,16 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
   // filename, round-tripped with formId into /explain-category, which
   // rebuilds the real path server-side.
   const errorFilePath = counts?.filename ?? ''
+  // The numbers are ERROR counts: red items only. Yellow/orange items are warnings, shown as their own chip and never added in.
   const activeCategories = _CAT_ORDER.filter(
     (cat) => counts && counts[cat] && counts[cat] > 0
   )
-  const explainableActiveCategories = activeCategories.filter(
-    (cat) => explainableCategories.includes(cat)
+  const warningCount = counts?.formula_warning > 0 ? counts.formula_warning : 0
+  const showHint = counts?.formula_error > 0 && warningCount > 0
+  // A category stays explainable while anything is listed for it, so a file whose formula items are all warnings can still be opened.
+  const explainableActiveCategories = _CAT_ORDER.filter(
+    (cat) => explainableCategories.includes(cat) &&
+      ((counts && counts[cat] > 0) || (cat === 'formula_error' && counts?.formula_total > 0))
   )
 
   const handleExplain = async (cat) => {
@@ -140,8 +145,8 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
     <div className="error-summary-panel">
       <div className="error-summary-heading">⚠ {t('errors.summaryHeading')}</div>
       <div className="error-summary-body">
-        {activeCategories.length > 0 && (
-          <div className="error-summary-counts">
+        {(activeCategories.length > 0 || warningCount > 0) && (
+          <div className={'error-summary-counts' + (showHint ? ' has-hint' : '')}>
             {activeCategories.map((cat) => {
               const meta = summaryCatMeta(t)[cat]
               return (
@@ -152,8 +157,16 @@ function ErrorSummaryPanel({  counts, downloadUrl, downloadLabel, onExplainCateg
                 </div>
               )
             })}
+            {warningCount > 0 && (
+              <div className="error-count-chip formula is-warning">
+                <span>⚠</span>
+                <span>{t('errors.category.formulaWarnings')}:</span>
+                <span className="error-count-num">{warningCount}</span>
+              </div>
+            )}
           </div>
         )}
+        {showHint && <div className="error-summary-hint">{t('errors.warningsFollowErrors')}</div>}
         <div className="error-summary-actions">
           {explainableActiveCategories.map((cat) => {
             const meta = summaryCatMeta(t)[cat]
@@ -409,6 +422,209 @@ function ErrorCardMatrix({ section }) {
   )
 }
 
+// Generic table section: the error-improvement card's "Cell details" and "Calculation details".
+// Wide content scrolls inside its own box (same container as the matrix) so the chat bubble never scrolls sideways.
+function ErrorCardTable({ section }) {
+  const cols = Array.isArray(section.columns) ? section.columns : []
+  const rows = Array.isArray(section.rows) ? section.rows : []
+  if (cols.length === 0 || rows.length === 0) return null
+  return (
+    <div className="formula-error-section error-card-table-block">
+      {section.heading && <div className="formula-error-section-heading">{section.heading}</div>}
+      <div className="error-card-matrix-scroll">
+        <table className="error-card-table">
+          <thead>
+            <tr>{cols.map((c, i) => <th key={i}>{c}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>{cols.map((_, j) => <td key={j}>{r[j]}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// Compact error card (error-improvement): header with status, one-sentence problem, key-value tiles, a collapsible list of the
+// cells that make up a total, and the numbered things to check. All wording comes from the backend sections; only layout lives here.
+function _richText(text, bold, codes) {
+  if (!text) return text
+  const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const marks = [...(codes || []).filter(Boolean).map(t => ({ t, code: true })), ...(bold || []).filter(Boolean).map(t => ({ t, code: false }))]
+    .sort((x, y) => y.t.length - x.t.length)
+  if (marks.length === 0) return text
+  const re = new RegExp('(' + marks.map(m => esc(m.t)).join('|') + ')')
+  return text.split(re).map((part, i) => {
+    const m = marks.find(x => x.t === part)
+    if (!m) return part
+    return m.code ? <code key={i} className="issue-card-code">{part}</code> : <strong key={i}>{part}</strong>
+  })
+}
+
+function _safety(text) {
+  const i = text.indexOf('. ')
+  return i < 0 ? <strong>{text}</strong> : <><strong>{text.slice(0, i + 1)}</strong>{text.slice(i + 1)}</>
+}
+
+// The cell table's column titles (sent by the backend) and the field each one shows.
+const _KV_KEY = { 'Sheet Name': 'sheet', Table: 'table', Column: 'column', Cell: 'cell' }
+
+// Cell and Value stay narrow; Sheet Name, Table and Column share the rest evenly.
+const _KV_CLASS = { Column: 'kv-col-column', Cell: 'kv-col-cell', Value: 'kv-col-value' }
+
+function IssueCard({ section }) {
+  const wrong = section.wrong || {}
+  const why = section.why || {}
+  const fix = section.fix || {}
+  const cells = section.cells || {}
+  const groups = Array.isArray(cells.groups) ? cells.groups : []
+  const bd = section.breakdown || null
+  const kv = Array.isArray(section.kv) ? section.kv : []
+  const steps = Array.isArray(fix.steps) ? fix.steps : []
+  return (
+    <div className="issue-card">
+      <div className="issue-card-head">
+        <svg className="issue-card-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M12 3 2 21h20L12 3z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+          <path d="M12 10v5M12 18v.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+        <div className="issue-card-head-text">
+          <div className="issue-card-title">{section.title}</div>
+          {section.subtitle && <div className="issue-card-subtitle">{section.subtitle}</div>}
+        </div>
+        {section.badge && <span className={'issue-card-badge' + (section.tone === 'warning' ? ' is-warning' : '')}>{section.badge}</span>}
+      </div>
+      <div className="issue-card-block">
+        <div className="issue-card-heading">{wrong.heading}</div>
+        <p>{_richText(wrong.text, wrong.terms, wrong.codes)}</p>
+        {kv.length > 0 && Array.isArray(section.kv_columns) && section.kv_columns.length >= 3 && (
+          <table className="issue-card-table">
+            <thead>
+              <tr>{section.kv_columns.map((c, i) => <th key={i} className={_KV_CLASS[c] || ''}>{c}</th>)}</tr>
+            </thead>
+            <tbody>
+              {kv.map((k, i) => (
+                <tr key={i} className={k.tone === 'bad' ? 'is-bad' : ''}>
+                  {!k.cell && String(k.value).length > 16
+                    ? <td colSpan={section.kv_columns.length} className="issue-card-table-note">{k.label}: {k.value}</td>
+                    : k.cell
+                    ? section.kv_columns.slice(0, -1).map(c => (
+                        <td key={c} className={_KV_CLASS[c] || ''}>{c === 'Cell' ? <code className="issue-card-code">{k.cell}</code> : k[_KV_KEY[c]]}</td>
+                      ))
+                    : <td colSpan={section.kv_columns.length - 1}>{k.label}</td>}
+                  {(k.cell || String(k.value).length <= 16) && <td className="issue-card-table-value kv-col-value">{k.value}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {kv.length > 0 && !(Array.isArray(section.kv_columns) && section.kv_columns.length >= 3) && (
+          <div className="issue-card-rows">
+            {kv.map((k, i) => (
+              <div key={i} className={'issue-card-row' + (k.tone === 'bad' ? ' is-bad' : '')}>
+                <div className="issue-card-row-name">
+                  {k.code ? <code className="issue-card-code">{k.label}</code> : <span className="issue-card-row-label">{k.label}</span>}
+                  {k.caption && <span className="issue-card-row-caption">{k.caption}</span>}
+                </div>
+                <div className="issue-card-row-value">{k.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {Array.isArray(section.warnings) && section.warnings.map((w, i) => (
+          <div key={i} className="issue-card-warning" role="note">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M12 3 2 21h20L12 3z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M12 10v5M12 18v.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span>{w}</span>
+          </div>
+        ))}
+        {Array.isArray(section.related) && section.related.map((r, i) => (
+          <div key={'rel' + i} className="issue-card-related" role="note">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"
+                fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span>{r}</span>
+          </div>
+        ))}
+      </div>
+      {why.text && (
+        <div className="issue-card-block">
+          <div className="issue-card-heading">{why.heading}</div>
+          <p>{why.text}</p>
+        </div>
+      )}
+      {bd && (
+        <div className="issue-card-block">
+          <div className="issue-card-heading">{bd.heading}</div>
+          <details className="issue-card-details">
+            <summary>
+              <span className="issue-card-details-text">
+                <span className="issue-card-details-title">{bd.toggle}</span>
+                <span className="issue-card-details-sub">{bd.toggle_sub}</span>
+              </span>
+              <span className="issue-card-details-chevron" aria-hidden="true" />
+            </summary>
+            {bd.summary && <p>{bd.summary}</p>}
+            {bd.formula && <code className="issue-card-formula">{bd.formula}</code>}
+            {(bd.groups || []).map((g, i) => (
+              <div key={i} className="issue-card-parts">
+                {g.label && <div className="issue-card-sheet-name">{g.label}</div>}
+                {(g.items || []).map((c, j) => (
+                  <div key={j} className={'issue-card-part' + (c.state === 'empty' || c.state === 'zero' ? ' is-blank' : '')}>
+                    <span className="issue-card-part-name"><b>{c.cell}</b>{c.label && <span className="issue-card-part-label">{c.label}</span>}</span>
+                    <span className="issue-card-part-value">{c.value}</span>
+                    {c.status && <span className="issue-card-chip-status">{c.status}</span>}
+                  </div>
+                ))}
+                {g.more_text && <div className="issue-card-more">{g.more_text}</div>}
+              </div>
+            ))}
+            {bd.note && <div className="issue-card-footer">{bd.note}</div>}
+          </details>
+        </div>
+      )}
+      <div className="issue-card-block">
+        <div className="issue-card-heading">{fix.heading}</div>
+        {steps.length > 0
+          ? <ol className="issue-card-steps">{steps.map((t, i) => <li key={i}>{t}</li>)}</ol>
+          : <p>{fix.text}</p>}
+        {fix.note && (
+          <div className="issue-card-safety">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M12 3 5 6v5c0 4.5 3 8.2 7 10 4-1.8 7-5.5 7-10V6l-7-3z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{_safety(fix.note)}</span>
+          </div>
+        )}
+      </div>
+      {!bd && groups.length > 0 && (
+        <div className="issue-card-block">
+          <div className="issue-card-heading">{cells.heading}</div>
+          {groups.map((g, i) => (
+            <div key={i} className="issue-card-sheet">
+              <div className="issue-card-sheet-name">{g.sheet}</div>
+              <div className="issue-card-chips">
+                {(g.cells || []).map((c, j) => (
+                  <span key={j} className="issue-card-chip"><b>{c.cell}</b>{c.label ? ' · ' + c.label : ''}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+          {cells.more > 0 && <div className="issue-card-more">+{cells.more}</div>}
+        </div>
+      )}
+      {cells.note && <div className="issue-card-footer">{cells.note}</div>}
+      {section.footer && <div className="issue-card-footer">{section.footer}</div>}
+    </div>
+  )
+}
+
 // Renders the backend's structured sections directly. Every heading is a real
 // element, so no markdown emphasis markers are ever shown to the user — the
 // backend sends none, and none are reconstructed here.
@@ -422,7 +638,7 @@ function ErrorCardMatrix({ section }) {
 // v2-only section kinds. Their presence marks the container as a unified error
 // card, so card-level styling (vertical rhythm, spacing) can target it without
 // touching the legacy layout — which shares this component AND this container.
-const _CARD_KINDS = ['locator', 'matrix', 'fix', 'details']
+const _CARD_KINDS = ['locator', 'matrix', 'fix', 'details', 'table', 'issue_card']
 
 export function FormulaErrorSections({ sections }) {
   if (!Array.isArray(sections) || sections.length === 0) return null
@@ -481,6 +697,10 @@ export function FormulaErrorSections({ sections }) {
             )
           case 'matrix':
             return <ErrorCardMatrix key={i} section={s} />
+          case 'table':
+            return <ErrorCardTable key={i} section={s} />
+          case 'issue_card':
+            return <IssueCard key={i} section={s} />
           case 'fix':
             return (
               <div key={i} className="formula-error-section formula-error-fix">
@@ -1465,7 +1685,8 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
     }
     // No error file found -> no counts and no download link: the panel would be
     // an empty red block, so skip it (the "Error file not found." note stays in the text).
-    const hasErrorCounts = errorCategoryCounts && _CAT_ORDER.some((cat) => errorCategoryCounts[cat] > 0)
+    // formula_total also covers a file whose formula items are all warnings: they stay reachable, they are just not counted as errors.
+    const hasErrorCounts = errorCategoryCounts && (_CAT_ORDER.some((cat) => errorCategoryCounts[cat] > 0) || errorCategoryCounts.formula_total > 0)
     if (isFailed && errorCategoryCounts && (hasErrorCounts || downloadUrl)) {
       // 4000-series reports can explain formula_error, xbrl_schema, and
       // dimensional. Non-4000-series returns use a separate non-backtracking

@@ -3718,6 +3718,145 @@ html, body, #root {
 /* -- Bold echoed values (dates, times) never split across lines -- */
 .bubble strong { white-space: nowrap; }
 
+
+/* -- Generic table section (error-improvement card: Cell details / Calculation details) ----- */
+.error-card-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+.error-card-table thead th {
+  text-align: left;
+  font-size: 0.82em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #6b7280;
+  padding: 0 10px 5px 0;
+  border-bottom: 1px solid #e2e5ea;
+  white-space: nowrap;
+}
+
+.error-card-table td {
+  padding: 7px 10px 7px 0;
+  border-bottom: 1px solid #f0f1f4;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.error-card-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Amounts and cell addresses never break mid-value: a split number reads as a different number. */
+.error-card-table td:last-child {
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.error-card-table th:last-child {
+  text-align: right;
+}
+
+
+/* -- Compact error card (error-improvement) ------------------------------------------------- */
+.issue-card { display: flex; flex-direction: column; gap: 14px; font-size: 0.92em; line-height: 1.5; color: var(--text, #1f2937); }
+.issue-card-head { display: flex; gap: 10px; align-items: flex-start; }
+.issue-card-icon { color: #c0392b; flex: none; margin-top: 2px; }
+.issue-card-title { font-weight: 700; font-size: 1.08em; }
+.issue-card-subtitle { color: var(--text-muted, #6b7280); font-size: 0.9em; }
+.issue-card-heading { font-weight: 700; margin-bottom: 3px; }
+.issue-card-block p { margin: 0; }
+.issue-card-kv { margin: 8px 0 0; }
+.issue-card-kv-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--border, #e2e5ea); }
+.issue-card-kv-row:last-child { border-bottom: none; }
+.issue-card-kv dt { color: var(--text-muted, #6b7280); }
+.issue-card-kv dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.issue-card-kv-row.is-bad dd { color: #c0392b; }
+.issue-card-sheet { margin-top: 6px; }
+.issue-card-sheet-name { color: var(--text-muted, #6b7280); font-size: 0.9em; margin-bottom: 4px; }
+.issue-card-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.issue-card-chip { border: 1px solid var(--border, #e2e5ea); border-radius: 999px; padding: 2px 10px; font-size: 0.9em; overflow-wrap: anywhere; }
+.issue-card-more { color: var(--text-muted, #6b7280); font-size: 0.9em; margin-top: 4px; }
+.issue-card-footer { color: var(--text-muted, #6b7280); font-size: 0.82em; }
+.issue-card-formula { display: block; margin: 4px 0 6px; padding: 6px 8px; border-radius: 6px; background: var(--border, #eef0f3); font-size: 0.85em; overflow-wrap: anywhere; }
+.issue-card-parts { margin-top: 6px; }
+.issue-card-part { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--border, #e2e5ea); }
+.issue-card-part:last-of-type { border-bottom: none; }
+.issue-card-part-name { overflow-wrap: anywhere; }
+.issue-card-part-value { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+.issue-card-part.is-blank .issue-card-part-value { color: var(--text-muted, #6b7280); font-weight: 400; font-style: italic; }
+
+/* -- Compact error card v2: status badge, tiles, collapsible components, numbered checks -------- */
+.issue-card-head-text { flex: 1; min-width: 0; }
+.issue-card-badge { flex: none; align-self: flex-start; font-size: 0.78em; padding: 1px 9px; border-radius: 999px; color: #c0392b; background: rgba(192, 57, 43, 0.12); border: 1px solid rgba(192, 57, 43, 0.35); }
+.issue-card-code { font-size: 0.88em; padding: 1px 5px; border-radius: 4px; background: var(--border, #eef0f3); overflow-wrap: anywhere; }
+.issue-card-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 18px; margin-top: 10px; }
+.issue-card-tile-label { color: var(--text-muted, #6b7280); font-size: 0.85em; overflow-wrap: anywhere; }
+.issue-card-tile-value { font-size: 1.15em; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.issue-card-tile.is-bad .issue-card-tile-value { color: #c0392b; }
+.issue-card-tile-caption { color: var(--text-muted, #6b7280); font-size: 0.82em; }
+.issue-card-details { margin-top: 8px; border: 1px solid var(--border, #e2e5ea); border-radius: 8px; padding: 8px 12px; }
+.issue-card-details > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; list-style: none; }
+.issue-card-details > summary::-webkit-details-marker { display: none; }
+.issue-card-details > summary:hover .issue-card-details-title { text-decoration: underline; }
+.issue-card-details-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.issue-card-details-chevron { flex: none; width: 7px; height: 7px; margin-right: 4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform 0.15s ease; }
+.issue-card-details[open] > summary .issue-card-details-chevron { transform: rotate(-135deg); }
+.issue-card-details-title { font-weight: 700; }
+.issue-card-details-sub { color: var(--text-muted, #6b7280); font-size: 0.82em; }
+.issue-card-details[open] > summary { margin-bottom: 8px; }
+.issue-card-part { align-items: center; }
+.issue-card-part-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.issue-card-part-label { color: var(--text-muted, #6b7280); font-size: 0.85em; }
+.issue-card-chip-status { flex: none; margin-left: 10px; font-size: 0.78em; padding: 1px 8px; border-radius: 999px; background: var(--border, #eef0f3); }
+.issue-card-steps { margin: 4px 0 0; padding-left: 20px; }
+.issue-card-steps li { margin: 3px 0; }
+.issue-card-safety { margin-top: 8px; font-weight: 600; }
+
+/* -- Compact error card v3: value rows, evaluation status, safety note ------------------------ */
+.issue-card-rows { margin-top: 10px; border: 1px solid var(--border, #e2e5ea); border-radius: 8px; }
+.issue-card-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--border, #e2e5ea); }
+.issue-card-row:last-child { border-bottom: none; }
+.issue-card-row-name { display: flex; flex-direction: column; gap: 3px; min-width: 0; align-items: flex-start; }
+.issue-card-row-caption { color: var(--text-muted, #6b7280); font-size: 0.88em; }
+.issue-card-row-value { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.issue-card-row.is-bad .issue-card-row-value { color: #c0392b; }
+.issue-card-status { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; }
+.issue-card-status svg { flex: none; margin-top: 2px; }
+.issue-card-status-title { font-weight: 700; }
+.issue-card-status-sub { color: var(--text-muted, #6b7280); font-size: 0.85em; }
+.issue-card-safety { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+.issue-card-safety svg { flex: none; margin-top: 2px; }
+
+/* -- Compact error card: sheet / cell / value table ---------------------------------------- */
+.issue-card-table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 10px; font-size: 0.95em; }
+.issue-card-table th { text-align: left; color: var(--text-muted, #6b7280); font-weight: 600; font-size: 0.85em; padding: 0 10px 6px 0; border-bottom: 1px solid var(--border, #e2e5ea); }
+.issue-card-table th:last-child, .issue-card-table-value { text-align: right; }
+.issue-card-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border, #e2e5ea); vertical-align: top; overflow-wrap: anywhere; }
+.issue-card-table tr:last-child td { border-bottom: none; }
+.issue-card-table td.kv-col-column { font-weight: 700; color: #111; }
+.issue-card-table .kv-col-cell { width: 13%; }
+.issue-card-table .kv-col-value { width: 14%; }
+.issue-card-table-value { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.issue-card-table tr.is-bad .issue-card-table-value { color: #c0392b; }
+.issue-card-table td.issue-card-table-note { font-weight: 700; text-align: left; }
+.issue-card-table tr.is-bad td.issue-card-table-note { color: #c0392b; }
+
+/* -- Compact error card: warnings about what could not be verified ---------------------------- */
+.issue-card-warning { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; font-size: 0.9em; color: #b7791f; }
+.issue-card-warning svg { flex: none; margin-top: 2px; }
+.issue-card-related { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; font-size: 0.9em; color: var(--text-muted, #6b7280); }
+.issue-card-related svg { flex: none; margin-top: 2px; }
+
+/* -- Warnings (yellow/orange) are shown but never counted as errors -------------------------------- */
+.issue-card-badge.is-warning { background: rgba(214, 158, 46, 0.16); color: #b7791f; border-color: rgba(214, 158, 46, 0.45); }
+.error-summary-counts.has-hint { margin-bottom: 4px; }
+.error-summary-hint { margin: 0 0 8px; font-size: 0.85em; line-height: 1.2; color: var(--text-muted, #6b7280); }
+.error-count-chip.is-warning { background: rgba(214, 158, 46, 0.14); color: #b7791f; border-color: rgba(214, 158, 46, 0.4); }
+
 /* -- Report an issue (support request) ------------------------------------
    Inline form shown after a negative rating and from the footer link. Logical
    properties (inline-start/end) keep it correct in RTL Arabic without a

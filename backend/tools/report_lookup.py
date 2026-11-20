@@ -3763,7 +3763,17 @@ def count_errors_by_category(error_file_path: str, form_id: str = "") -> dict:
         else:
             rules = parse_formula_errors(error_file_path)
         if rules:
-            result["formula_error"] = len(rules)
+            # Only RED rules are errors. Yellow/orange rules are warnings: still listed and explainable (formula_total drives
+            # the paging), but never part of the error count. The severity comes from each panel's badge class, not from the
+            # number inside the badge (that number is how often the rule failed).
+            from backend.tools import error_severity as _esv
+            rules = _esv.annotate(rules, raw_html)           # parsers other than v2 do not read the badge themselves
+            n_errors, n_warnings = _esv.count_errors(rules), _esv.count_warnings(rules)
+            if n_errors:
+                result["formula_error"] = n_errors
+            if n_warnings:
+                result["formula_warning"] = n_warnings
+            result["formula_total"] = len(rules)
     except Exception as exc:
         logger.warning("[count_errors_by_category] formula parse failed: %s", exc)
 
