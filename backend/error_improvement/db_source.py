@@ -168,6 +168,27 @@ class DbReader:
     def __exit__(self, *exc):
         self.close()
 
+    def _fetch(self, provider_id: str, sql: str, binds: dict):
+        """Rows of one read-only lookup. A connection that has dropped (idle, timed out) is replaced once and the lookup repeated."""
+        pid = provider_id or self._provider
+        for attempt in (1, 2):
+            conn = self._connect(pid)
+            if conn is None:
+                return None
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, binds)
+                return cur.fetchall()
+            except Exception as exc:  # noqa: BLE001
+                logger.info("[db_source] lookup failed (%s), attempt %d", type(exc).__name__, attempt)
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._conns.pop(pid, None)
+                self._failed.discard(pid)
+        return None
+
     def read_row(self, cell: DbCell, columns: list[str], reporting_date: str) -> tuple[str, dict]:
         """("ok", {column: value}) for several columns of the ONE row the cell's key names; ("no-row", {}) when the database has no
         such row; ("several", {}) for more than one; ("unavailable", {}) for no connection or a failed lookup. Same safety rules as
@@ -178,19 +199,12 @@ class DbReader:
         ck = (cell.provider_id or self._provider, cell.table, tuple(cell.key.items()), reporting_date, tuple(columns))
         if ck in self._rows:
             return self._rows[ck]
-        conn = self._connect(cell.provider_id)
-        if conn is None:
-            return "unavailable", {}
         where = " AND ".join(f"TRIM({c}) = :k{i}" for i, c in enumerate(cell.key))
         sql = (f"SELECT {', '.join(columns)} FROM {cell.table} "
                f"WHERE TRUNC({cell.date_column}) = TO_DATE(:d, 'YYYY-MM-DD') AND {where} FETCH FIRST 2 ROWS ONLY")
         binds = {"d": reporting_date, **{f"k{i}": str(v).strip() for i, v in enumerate(cell.key.values())}}
-        try:
-            cur = conn.cursor()
-            cur.execute(sql, binds)
-            rows = cur.fetchall()
-        except Exception as exc:  # noqa: BLE001
-            logger.info("[db_source] row lookup failed (%s)", type(exc).__name__)
+        rows = self._fetch(cell.provider_id, sql, binds)
+        if rows is None:
             return "unavailable", {}
         result = ("no-row", {}) if not rows else ("several", {}) if len(rows) > 1 else ("ok", dict(zip(columns, rows[0])))
         self._rows[ck] = result

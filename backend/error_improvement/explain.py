@@ -180,7 +180,7 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
         # uploaded several times before the validator ran. Try the other uploads made before the error file and keep the one whose
         # values agree with the error file best. A tie keeps the nearest upload (the previous behaviour).
         weak = sum(n for k, n in reasons.items() if k.startswith(("reported value is not in the uploaded", "the mapped cell")))
-        if weak and weak >= 0.1 * max(1, sum(reasons.values())) and not basis.startswith(("template", "workbook given")):
+        if weak and weak >= 0.1 * max(1, sum(reasons.values())) and not basis.startswith(("template", "workbook given", "database return")):
             cur_ok, cur_bad = _evidence(analysed)
             best = (cur_ok - cur_bad, wb, analysed, basis, (cur_ok, cur_bad), None)
             tried = [{"upload": os.path.relpath(wb.path, folder).split(os.sep)[1], "confirmed": cur_ok, "contradicted": cur_bad}]

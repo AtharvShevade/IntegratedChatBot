@@ -41,6 +41,7 @@ def findings_enabled() -> bool:
 
 
 FINDINGS_HEADING = "What we found in your workbook"
+DB_FINDINGS_HEADING = "Where to look"
 
 
 def _repo_root() -> str | None:
@@ -144,10 +145,11 @@ def attach_findings(item: dict, findings: list[str]) -> dict:
     if not findings:
         return item
     out = dict(item)
+    heading = DB_FINDINGS_HEADING if all(f.startswith("Not confirmed") for f in findings) else FINDINGS_HEADING
     sections = list(out.get("explanation_sections") or [])
-    sections.append({"kind": "fix", "heading": FINDINGS_HEADING, "steps": list(findings)})
+    sections.append({"kind": "fix", "heading": heading, "steps": list(findings)})
     out["explanation_sections"] = sections
     text = (out.get("explanation") or "").rstrip()
-    out["explanation"] = text + chr(10) * 2 + FINDINGS_HEADING + chr(10) + chr(10).join(f"  - {f}" for f in findings)
+    out["explanation"] = text + chr(10) * 2 + heading + chr(10) + chr(10).join(f"  - {f}" for f in findings)
     out["_findings"] = True
     return out

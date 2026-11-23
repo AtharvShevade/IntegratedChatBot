@@ -252,7 +252,7 @@ def _calc_rows(verdict: str, kind: str, comp, ev, row) -> list[tuple[str, str]]:
 
 _DB_EVIDENCE_TEXT = {
     "CONFIRMED": "verified against the database (the table row holds exactly the filed value in that column)",
-    "MAPPED": "taken from the return's mapping and its database query; the table data was not read",
+    "MAPPED": "not confirmed in the database",
 }
 
 
@@ -272,11 +272,22 @@ _DB_PHRASES = (
 )
 
 
+_DB_REGEX = (
+    (re.compile(r"These cells are for one of the failing cases \(.*?\); the rule fails in (\d+) cases\."), r"Shown for one of \1 failing cases."),
+    (re.compile(r"operand not reported in the filing \(no such fact in the instance; the rule counts it as 0\).*", re.S),
+     "Not reported in the filing (counted as 0)"),
+    (re.compile(r"None of the (\d+) cell\(s\) behind the calculated value could be located; the value shown is the rule's own\."),
+     "The calculated side could not be located; its value is from the error file."),
+)
+
+
 def _db_words(obj):
     """The same text with Excel nouns replaced by database ones (strings inside dicts and lists too)."""
     if isinstance(obj, str):
         for old, new in _DB_PHRASES:
             obj = obj.replace(old, new)
+        for pattern, repl in _DB_REGEX:
+            obj = pattern.sub(repl, obj)
         return obj
     if isinstance(obj, list):
         return [_db_words(x) for x in obj]
@@ -285,6 +296,21 @@ def _db_words(obj):
     if isinstance(obj, dict):
         return {k: _db_words(v) for k, v in obj.items()}
     return obj
+
+
+def _db_guess_note(located) -> str:
+    """One short line naming the table cells to check (the first value of the rule the data could not confirm; its own candidates)."""
+    why = {"no-row": "row not found in the database", "differs": "the row holds another value", "unread": "table data not read"}
+    for lcs in located.values():
+        for lc in lcs:
+            addrs = [a for a in (getattr(getattr(lc, "res", None), "addresses", None) or []) if getattr(a, "is_db", False)]
+            if not addrs or addrs[0].verified:
+                continue
+            names = list(dict.fromkeys(
+                f"{a.table}.{a.column}" + (f" ({a.key_text})" if a.key_text else "") for a in addrs[:3]))
+            reason = why.get(addrs[0].state, "")
+            return "Not confirmed" + (f" ({reason})" if reason else "") + ". Check: " + " or ".join(names) + "."
+    return ""
 
 
 def _all_db(located) -> bool:
@@ -519,6 +545,9 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
             card["view"] = _db_words(card["view"])
             for key in ("problem", "cause", "fix"):
                 card[key] = _db_words(card[key])
+            guess = _db_guess_note(located)
+            if guess:
+                card["view"]["warnings"] = list(card["view"].get("warnings") or []) + [guess]
         if card["bt"] and card["bt_differs"]:
             card["view"]["warnings"] = list(card["view"].get("warnings") or []) + [
                 "The validator's backtracking record and our own search place a value in different cells: " + "; ".join(card["bt_differs"][:3])

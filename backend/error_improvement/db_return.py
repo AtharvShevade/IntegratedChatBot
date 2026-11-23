@@ -56,6 +56,26 @@ def _split_top_level(text: str, sep: str = ",") -> list[str]:
     return out
 
 
+def _unwrap(sql: str) -> tuple[str, str]:
+    """(inner union text, text after it) for  select * from ( ... ) [alias] [where ...] [order by ...]; else (sql, '')."""
+    m = re.match(r"\s*select\s+\*\s+from\s*\(", sql, flags=re.IGNORECASE)
+    if not m:
+        return sql, ""
+    depth, quote = 1, False
+    for i in range(m.end(), len(sql)):
+        ch = sql[i]
+        if ch == "'":
+            quote = not quote
+        elif not quote:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return sql[m.end():i], sql[i + 1:]
+    return sql, ""
+
+
 def _split_union(sql: str) -> list[str]:
     parts = re.split(r"\bunion\s+all\b|\bunion\b", sql, flags=re.IGNORECASE)
     return [p.strip() for p in parts if p.strip()]
@@ -166,10 +186,14 @@ def load_db_queries(folder: str) -> dict[str, list[DbQuery]]:
             continue                          # a switched-off query is not where the data came from
         if not _db_eligible(el.get("ProviderId", ""), types):
             continue                          # its provider says this is not a database (e.g. Excel)
-        wrapped = _WRAPPED.match(sql)
-        if wrapped:
-            sql = wrapped.group(1)
+        sql, tail = _unwrap(sql)
         branches = [b for b in (parse_branch(p) for p in _split_union(sql)) if b]
+        outer = re.search(r"(?is)\bwhere\b(.*?)(?:\border\s+by\b.*)?$", tail)
+        for br in branches:                   # "... ) where CountryName = 'ALL Countries'": a row filter on the alias's own column
+            for alias, lit in (_LITERAL_FILTER.findall(outer.group(1)) if outer else []):
+                src = br.items.get(alias.upper())
+                if src and _plain_column(src):
+                    br.filters.setdefault(src, lit)
         if not branches:
             continue
         q = DbQuery(el.get("QueryId", ""), el.get("QueryName", ""), el.get("TemplateId", ""),
@@ -236,14 +260,49 @@ def _plain_column(expr: str) -> str | None:
     return expr if is_identifier(expr) else None
 
 
-def locate_cell(queries: list[DbQuery], mapping: dict[str, dict], layout_id: str, code: str, typed: dict[str, str]) -> DbCell | None:
-    """The table cell behind a mapping row (layout id + Code) for a context with these typed members, or None."""
+_NOT_A_VALUE = re.compile(r"(NAME|DESC|ITEM|LABEL|COUNTRY|CODE|SR_?NO|RDATE|TYP_?ID|FLAG)", re.IGNORECASE)
+
+
+def _tokens(name: str) -> frozenset:
+    """Lower-case words of an axis ('CountryCodeAxis') or a column ('COUNTRY_CODE'), so the two can be compared."""
+    s = re.sub(r"(Axis|Member)$", "", name or "")
+    out = []
+    for part in re.split(r"[_\s]+", s):
+        out += re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", part)
+    return frozenset(t.lower() for t in out if t)
+
+
+def _typed_key(b: "Branch", typed: dict[str, str]) -> dict | None:
+    """{column: value} for the typed members of the context (an entry's country, ...); None when one cannot be tied to one column."""
+    key: dict[str, str] = {}
+    cols = {src for src in b.items.values() if _plain_column(src)}
+    for axis, value in typed.items():
+        hits = [c for c in cols if _tokens(c) == _tokens(axis)]
+        if len(hits) != 1:
+            return None
+        key[hits[0]] = value
+    return key
+
+
+def _code_parts(expr: str):
+    """(column, offset) for  CODE  /  CODE+999  /  CODE-65+10, else None."""
+    if _plain_column(expr):
+        return expr, 0
+    am = _CODE_ARITH.match(expr or "")
+    if am:
+        return am.group(1), sum(int(n.replace(" ", "")) for n in re.findall(r"[+-]\s*\d+", am.group(2)))
+    return None
+
+
+def _iter_cells(queries, mapping, layout_id, code, typed, loose):
     code_u = (code or "").upper()
     for q in queries:
         for b in q.branches:
             date_col = (mapping.get(b.table, {}).get("filter") or "RDATE")
             if not is_identifier(date_col):
                 continue
+            filters = {c: v for c, v in b.filters.items() if is_identifier(c)}
+            label = _label_col(b)
             # (1) code-row table:  CODE [|| '_SUFFIX'] as Code ,  <column> as Val
             code_expr, val_expr = b.items.get("CODE"), b.items.get("VAL") or b.items.get("VALUE")
             if code_expr and val_expr and _plain_column(val_expr):
@@ -262,27 +321,32 @@ def locate_cell(queries: list[DbQuery], mapping: dict[str, dict], layout_id: str
                     offset = sum(int(n.replace(" ", "")) for n in re.findall(r"[+-]\s*\d+", am.group(2)))
                     source = int(code) - offset
                     rng = b.ranges.get(am.group(1))
-                    if rng is None and len(q.branches) > 1:
-                        continue                      # several UNION branches and nothing says which owns this code: never guess
+                    if rng is None and len(q.branches) > 1 and not loose:
+                        continue                      # several UNION branches and nothing says which owns this code
                     if rng and not (rng[0] <= source <= rng[1]):
                         continue
                     key_col, key_val = am.group(1), str(source)
                 if key_col and is_identifier(key_col):
-                    key = {key_col: key_val, **{c: v for c, v in b.filters.items() if is_identifier(c)}}
-                    return DbCell(b.table, val_expr, key, date_col, layout_id, "code-row", provider_id=q.provider_id, label_column=_label_col(b))
-            # (3) one row per CODE with several value columns (current quarter / year, domestic / overseas / global ...): the mapping
-            #     Code is the CODE value, and which column holds the fact is decided by reading the row (see resolve_db)
-            code_src = b.items.get("CODE")
-            if code_src and _plain_column(code_src) and code.strip().isdigit():
-                skip = {"CODE", "RDATE", "DESCRIPTION", "ITEM", "SR_NO", date_col}
+                    yield DbCell(b.table, val_expr, {key_col: key_val, **filters}, date_col, layout_id, "code-row",
+                                 provider_id=q.provider_id, label_column=label)
+                    continue
+            # (3) one row per CODE with several value columns (quarter / year, domestic / overseas / global, counts / amounts ...):
+            #     the mapping Code is the CODE value (plus the query's offset); which column holds the fact is decided by the data
+            parts = _code_parts(b.items.get("CODE", ""))
+            if parts and code.strip().lstrip("-").isdigit():
+                col, offset = parts
                 values = [src for alias, src in b.items.items()
-                          if alias not in skip and _plain_column(src) and src not in skip and alias != "CODE"]
-                rng = b.ranges.get(code_src)
-                in_range = rng is None or rng[0] <= int(code) <= rng[1]
-                if len(values) >= 2 and in_range:
-                    key = {code_src: code.strip(), **{c: v for c, v in b.filters.items() if is_identifier(c)}}
-                    return DbCell(b.table, values[0], key, date_col, layout_id, "code-multi", provider_id=q.provider_id,
-                                  alternatives=values, label_column=_label_col(b))
+                          if _plain_column(src) and not _NOT_A_VALUE.search(src) and not _NOT_A_VALUE.search(alias) and alias != "CODE"]
+                source = int(code) - offset
+                rng = b.ranges.get(col)
+                if rng is None and offset and len(q.branches) > 1 and not loose:
+                    continue
+                in_range = rng is None or rng[0] <= source <= rng[1]
+                tk = _typed_key(b, typed) if typed else {}
+                if len(values) >= 2 and in_range and tk is not None and is_identifier(col):
+                    yield DbCell(b.table, values[0], {col: str(source), **tk, **filters}, date_col, layout_id, "code-multi",
+                                 provider_id=q.provider_id, alternatives=values, label_column=label)
+                    continue
             # (2) wide table: the mapping Code is a column alias; rows are told apart by the typed member(s)
             src = b.items.get(code_u)
             if src and _plain_column(src) and code_u not in ("CODE", "VAL", "VALUE", "DESCRIPTION"):
@@ -296,10 +360,20 @@ def locate_cell(queries: list[DbQuery], mapping: dict[str, dict], layout_id: str
                         notes.append("row key not fully determined by the context")
                     else:
                         key = dict(zip(primary, typed.values()))
-                key.update({c: v for c, v in b.filters.items() if is_identifier(c)})
+                key.update(filters)
                 if key and not notes:
-                    return DbCell(b.table, src, key, date_col, layout_id, "wide-row", provider_id=q.provider_id, label_column=_label_col(b))
-    return None
+                    yield DbCell(b.table, src, key, date_col, layout_id, "wide-row", provider_id=q.provider_id, label_column=label)
+
+
+def locate_cells(queries, mapping, layout_id, code, typed, loose=True) -> list["DbCell"]:
+    """Every table cell the mapping row (layout id + Code) could be, most specific first. loose=False keeps only the cells the query
+    itself settles (the old locate_cell); loose=True also lists a UNION branch the query does not narrow down."""
+    return list(_iter_cells(queries, mapping, layout_id, code, typed, loose))[:8]
+
+
+def locate_cell(queries: list[DbQuery], mapping: dict[str, dict], layout_id: str, code: str, typed: dict[str, str]) -> DbCell | None:
+    """The one table cell the query settles for a mapping row (layout id + Code) and these typed members, or None."""
+    return next(iter(_iter_cells(queries, mapping, layout_id, code, typed, False)), None)
 
 
 def pick_column(row_values: dict, instance_value: str, multiplier: int = 1) -> tuple[str | None, str]:
@@ -347,6 +421,7 @@ class DbAddress(_fa.Address):
     reporting_date: str = ""
     kind: str = ""
     verified: bool = False
+    state: str = ""                       # unread | no-row | differs (why a location is not confirmed)
 
     is_db = True
 
@@ -415,9 +490,34 @@ def _context_of(meta, ctx_id: str):
     return _cl.Context(ctx_id, frozenset(dims.items()), frozenset(rep.typed_values(ctx_id).items()))
 
 
+def _key_text(key: dict) -> str:
+    """'CODE = 1, SG - Singapore': the code, then the entries' own values, without a value that is only the start of another."""
+    code = [f"{c} = {v}" for c, v in key.items() if c.upper() == "CODE"]
+    rest = [str(v) for c, v in key.items() if c.upper() != "CODE"]
+    rest = [v for v in rest if not any(o != v and o.startswith(v) for o in rest)]
+    return ", ".join(code + list(dict.fromkeys(rest)))
+
+
+def _rank_columns(columns: list[str], ctx) -> list[str]:
+    """The columns of a row, the ones whose words best match the context's members first ('MediumServicesMember' -> SER_MEDIUM)."""
+    words = set()
+    for _axis, member in (ctx.explicit if ctx else ()):
+        words |= _tokens(member)
+
+    def score(col: str) -> int:
+        return sum(1 for w in words for c in _tokens(col) if len(c) >= 2 and (w.startswith(c) or c.startswith(w)))
+    return sorted(columns, key=lambda c: -score(c))
+
+
 def resolve_db(meta, concept: str, ctx_id: str, value: str):
-    """A Resolved("MAPPED", [DbAddress]) for a fact whose layout reads a database table, else None. Never guesses: a query
-    shape or row key it cannot pin down gives None and the fact stays unlocated, as before."""
+    """Where a fact lives in its database table, in three tiers:
+
+      1. CONFIRMED  - the table row holds the filed value (the column is the one that holds it);
+      2. MAPPED     - not confirmed, but the metadata names a few table cells (at most 3, best first): "check this or this". Each
+                      address says why it is not confirmed (state: differs / no-row / unread);
+      3. None       - nothing to name: the caller falls back to the ordinary explanation.
+
+    Nothing is claimed beyond the tier: a cell is only called confirmed when the data says so."""
     if not enabled():
         return None
     st = _state(meta)
@@ -425,55 +525,62 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
         return None
     ctx = _context_of(meta, ctx_id)
     typed = dict(ctx.typed) if ctx else {}
-    found = []
-    for loc in _cl.resolve(meta, concept, ctx):
-        cell = locate_cell(st["queries"].get(loc.layout_id, []), st["mapping"], loc.layout_id, loc.cell_code, typed)
-        if cell is None:
-            continue
-        confirmed_by_db, db_label, state = False, "", "unread"
-        mult0 = next((m.multiplier for m in meta.rows_by_concept.get(_cl.local(concept), [])
-                      if m.layout_id == loc.layout_id and m.code == loc.cell_code), 1)
-        reader, date = _reader_of(meta), reporting_date(ctx_id)
-        cols = list(cell.alternatives) or [cell.column]
-        want = cols + ([cell.label_column] if cell.label_column and cell.label_column not in cols else [])
-        if reader is not None and date:
-            state, row = reader.read_row(cell, want, date)
-            if state == "ok":
-                db_label = str(row.get(cell.label_column) or "").strip() if cell.label_column else ""
-                column, _why = pick_column({c: row.get(c) for c in cols}, value, mult0)
-                if column is not None:
-                    cell.column, confirmed_by_db = column, True
-                else:
-                    state = "differs"
-        if cell.alternatives and not confirmed_by_db:
-            continue                                       # several value columns and the data did not settle it: never guess one
-        if state == "no-row":
-            continue                                       # the database has no such row: this is not where the fact lives
+    reader, date = _reader_of(meta), reporting_date(ctx_id)
+    target = _fa._dec(value)
+    verified, guesses = [], []
+
+    def address(loc, cell, column, mult, label, ok, state):
         rowmap = st["rows"].setdefault(cell.table, {})
         colmap = st["cols"].setdefault(cell.table, {})
-        key_text = ", ".join(f"{c} = {v}" for c, v in cell.key.items())
+        key_text = _key_text(cell.key)
+        a = DbAddress(loc.layout_id, meta.layouts.get(loc.layout_id, ""), cell.table, _slot(rowmap, tuple(cell.key.items())),
+                      _slot(colmap, column) - 1, loc.cell_code, mult, None, None,
+                      table=cell.table, column=column, key=dict(cell.key), key_text=key_text,
+                      row_label=label or meta.staging.get((loc.layout_id, loc.cell_code), ""),
+                      reporting_date=date or "", kind=cell.kind)
+        a.verified, a.state = ok, state
+        if target is not None and mult:
+            a.workbook_value = float(target / mult)       # the filed value: the location rests on the mapping (or the row, if confirmed)
+        return a
+
+    for loc in _cl.resolve(meta, concept, ctx):
         mult = next((m.multiplier for m in meta.rows_by_concept.get(_cl.local(concept), [])
                      if m.layout_id == loc.layout_id and m.code == loc.cell_code), 1)
-        a = DbAddress(loc.layout_id, meta.layouts.get(loc.layout_id, ""), cell.table, _slot(rowmap, tuple(cell.key.items())),
-                      _slot(colmap, cell.column) - 1, loc.cell_code, mult, None, None,
-                      table=cell.table, column=cell.column, key=dict(cell.key), key_text=key_text,
-                      row_label=db_label or meta.staging.get((loc.layout_id, loc.cell_code), ""),
-                      reporting_date=reporting_date(ctx_id) or "", kind=cell.kind)
-        target = _fa._dec(value)
-        if target is not None and mult:
-            a.workbook_value = float(target / mult)        # the fact's own value, as for a template: the location rests on the mapping
-        a.verified = confirmed_by_db
-        if all((x.table, x.column, tuple(x.key.items())) != (a.table, a.column, tuple(a.key.items())) for x in found):
-            found.append(a)
-    if not found:
-        return None
-    verified = [x for x in found if x.verified]
+        for cell in locate_cells(st["queries"].get(loc.layout_id, []), st["mapping"], loc.layout_id, loc.cell_code, typed):
+            cols = list(cell.alternatives) or [cell.column]
+            want = cols + ([cell.label_column] if cell.label_column and cell.label_column not in cols else [])
+            state, row, label = "unread", {}, ""
+            if reader is not None and date:
+                state, row = reader.read_row(cell, want, date)
+                if state in ("several", "unavailable"):
+                    state = "unread"
+                if state == "ok":
+                    label = str(row.get(cell.label_column) or "").strip() if cell.label_column else ""
+                    column, _why = pick_column({c: row.get(c) for c in cols}, value, mult)
+                    if column is not None:
+                        verified.append(address(loc, cell, column, mult, label, True, ""))
+                        continue
+                    state = "differs"
+            for column in (_rank_columns(cols, ctx)[:3] if cell.alternatives else [cell.column]):
+                guesses.append(address(loc, cell, column, mult, label, False, state))
     if verified:
-        found = verified                                   # a candidate the data confirms beats the ones it does not
-    note = "" if len(found) == 1 else f"{len(found)} candidate table cells; best by mapping rank first"
-    if all(getattr(x, "verified", False) for x in found):
-        return _fa.Resolved("CONFIRMED", found[:6], (note + " " if note else "") + "the database row holds this value")
-    return _fa.Resolved("MAPPED", found[:6], note)
+        unique = {(a.table, a.column, tuple(a.key.items())): a for a in verified}
+        found = list(unique.values())[:6]
+        note = "" if len(found) == 1 else f"{len(found)} candidate table cells; best by mapping rank first"
+        return _fa.Resolved("CONFIRMED", found, (note + " " if note else "") + "the database row holds this value")
+    if not guesses:
+        return None
+    order = {"differs": 0, "unread": 1, "no-row": 2}
+    guesses.sort(key=lambda a: order.get(a.state, 1))               # stable: the mapping's own rank breaks ties
+    unique = {(a.table, a.column, tuple(a.key.items())): a for a in guesses}
+    cands = list(unique.values())
+    if len(cands) == 1 and cands[0].state in ("unread", "differs") and cands[0].kind != "code-multi":
+        # the metadata names exactly one cell and the data neither confirms nor excludes it (not readable, or it holds another
+        # value): that is the location, shown as not confirmed
+        return _fa.Resolved("MAPPED", cands, "not confirmed in the database")
+    # GUESS, not MAPPED: several cells, or a column the data did not settle, or a row the database does not have. These cells are
+    # named to look at; they are not used as the fact's location (no culprit, no correction amount from an unconfirmed cell).
+    return _fa.Resolved("GUESS", cands[:3], "not confirmed in the database")
 
 
 def _reader_of(meta):

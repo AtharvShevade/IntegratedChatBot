@@ -226,3 +226,100 @@ def test_excel_nouns_become_database_nouns_only_on_a_database_card():
     got = _rc._db_words(text)
     assert got["a"] == ["1 operand(s) could not be located in the table (they are 0, empty or not in the database)"]
     assert got["b"] == "(the first could not be placed in the table)" and got["c"] == "verified against the database"
+
+
+# ── three tiers: confirmed / "check this or this" / nothing ─────────────────
+SEC_C = ("select * from ( select COUNTRY_NAME as CountryName, COUNTRY_CODE as CountryCode, LINE_ITEM as Description, OVR_BR_NO as OB, "
+         "TOTAL_NO as GrandTot, RDATE, CODE+999 as Code from T_C union select COUNTRY_NAME as CountryName, COUNTRY_CODE as CountryCode, "
+         "LINE_ITEM as Description, OVR_BR_AMT as OB, TOTAL_AMT as GrandTot, RDATE, CODE+1018 as Code from T_C ) "
+         "where CountryName {op} 'ALL Countries' and TO_DATE(RDATE,'DD-MON-RR') = ## order by CODE")
+
+
+def _sec_c(tmp_path, op):
+    xml = f'<Document><Row QueryId="1" TemplateId="5" ProviderId="9"><SelectQuery>{SEC_C.format(op=op)}</SelectQuery></Row></Document>'
+    return dr.load_db_queries(_folder(tmp_path, xml))["5"]
+
+
+def test_a_wrapped_union_with_code_offsets_gives_one_candidate_per_branch_and_the_entry_key(tmp_path):
+    q = _sec_c(tmp_path, "!=")
+    typed = {"CountryCodeAxis": "SG", "CountryNameAxis": "SG - Singapore"}
+    assert dr.locate_cell(q, {}, "5", "1019", typed) is None                       # strict: nothing says which branch owns 1019
+    cells = dr.locate_cells(q, {}, "5", "1019", typed)
+    assert [c.key["CODE"] for c in cells] == ["20", "1"]                             # CODE+999 and CODE+1018
+    assert cells[1].key == {"CODE": "1", "COUNTRY_CODE": "SG", "COUNTRY_NAME": "SG - Singapore"}
+    assert cells[1].alternatives == ["OVR_BR_AMT", "TOTAL_AMT"]
+
+
+def test_an_equality_on_the_outer_where_picks_the_total_row(tmp_path):
+    cell = dr.locate_cells(_sec_c(tmp_path, "="), {}, "9", "1019", {})[1]
+    assert cell.key == {"CODE": "1", "COUNTRY_NAME": "ALL Countries"}
+
+
+def test_a_typed_member_that_matches_no_column_gives_no_candidate(tmp_path):
+    assert dr.locate_cells(_sec_c(tmp_path, "!="), {}, "5", "1019", {"SomethingElseAxis": "x"}) == []
+
+
+def test_columns_whose_words_match_the_members_come_first():
+    ctx = _cl.Context("c", frozenset({("IndustryAndServicesAxis", "MediumServicesMember")}), frozenset())
+    assert dr._rank_columns(["IND_MICRO", "IND_MEDIUM", "SER_MEDIUM", "TOT_MEDIUM"], ctx)[0] == "SER_MEDIUM"
+
+
+def test_the_row_text_is_short():
+    assert dr._key_text({"CODE": "1", "COUNTRY_CODE": "SG", "COUNTRY_NAME": "SG - Singapore"}) == "CODE = 1, SG - Singapore"
+
+
+class _FakeReader:
+    def __init__(self, state, row=None):
+        self.state, self.row = state, row or {}
+
+    def read_row(self, cell, columns, date):
+        return self.state, dict(self.row)
+
+
+def _meta_with_one_cell(tmp_path, reader):
+    xml = ('<Document><Row QueryId="1" TemplateId="10" ProviderId="9"><SelectQuery>Select ITEM as Description, DOM_Q as CQ_DO, '
+           "OVR_Q as CQ_OS, CODE, RDATE From T1 where CODE between 1000 and 1110 and TO_DATE(RDATE,'DD-MON-RR') = ##"
+           "</SelectQuery></Row></Document>")
+    meta = _cl.FormMeta("4100", _folder(tmp_path, xml))
+    meta.layouts = {"10": "L"}
+    meta.layout_axes = {"10": set()}
+    meta.rows_by_concept = {"Concept": [_cl.MapRow("10", "1~1", "1028", "Concept", frozenset(), frozenset(), 100000)]}
+    meta.__dict__["_db_reader"] = reader
+    return meta
+
+
+def test_tier_one_a_row_that_holds_the_value_confirms_the_column(tmp_path):
+    res = dr.resolve_db(_meta_with_one_cell(tmp_path, _FakeReader("ok", {"DOM_Q": 1, "OVR_Q": 260299.2, "ITEM": "x"})),
+                        "Concept", "asof_20250331", "26029920000")
+    assert res.status == "CONFIRMED" and res.addresses[0].column == "OVR_Q" and res.addresses[0].verified
+
+
+def test_tier_two_a_row_without_the_value_names_cells_to_check_but_confirms_nothing(tmp_path):
+    res = dr.resolve_db(_meta_with_one_cell(tmp_path, _FakeReader("ok", {"DOM_Q": 1, "OVR_Q": 2})), "Concept", "asof_20250331", "999")
+    assert res.status == "GUESS" and 1 <= len(res.addresses) <= 3
+    assert all(not a.verified and a.state == "differs" for a in res.addresses)
+    assert _rc._db_guess_note({"V1": [_types.SimpleNamespace(res=res)]}).startswith("Not confirmed (the row holds another value). Check: T1.")
+
+
+def test_tier_two_also_applies_when_the_database_cannot_be_read_and_the_column_is_open(tmp_path):
+    res = dr.resolve_db(_meta_with_one_cell(tmp_path, _FakeReader("unavailable")), "Concept", "asof_20250331", "5")
+    assert res.status == "GUESS" and res.addresses[0].state == "unread"        # two value columns: the metadata cannot pick one
+
+
+def test_one_clear_cell_is_the_location_even_when_it_cannot_be_confirmed(tmp_path):
+    xml = ("<Document><Row QueryId=\"1\" TemplateId=\"10\" ProviderId=\"9\"><SelectQuery>Select CODE as Code, VALUE as Val "
+           "From T1 Where RDATE = ##</SelectQuery></Row></Document>")
+    (tmp_path / "x").mkdir()
+    (tmp_path / "y").mkdir()
+    meta = _meta_with_one_cell(tmp_path / "x", _FakeReader("unavailable"))
+    meta.__dict__["_db_state"] = {"queries": dr.load_db_queries(_folder(tmp_path / "y", xml)), "mapping": {}, "rows": {}, "cols": {}}
+    res = dr.resolve_db(meta, "Concept", "asof_20250331", "5")
+    assert res.status == "MAPPED" and len(res.addresses) == 1 and res.addresses[0].state == "unread"
+    meta.__dict__["_db_reader"] = _FakeReader("no-row")                          # the database says the row is not there: only a guess
+    meta.__dict__["_db_state"]["rows"] = {}
+    assert dr.resolve_db(meta, "Concept", "asof_20250331", "5").status == "GUESS"
+
+
+def test_tier_three_nothing_to_name_gives_none(tmp_path):
+    meta = _meta_with_one_cell(tmp_path, _FakeReader("ok"))
+    assert dr.resolve_db(meta, "NoSuchConcept", "asof_20250331", "5") is None

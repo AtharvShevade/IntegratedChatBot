@@ -95,6 +95,8 @@ def _prefer_sibling_layout(located) -> None:
 def _value_known(wb, value) -> bool:
     """Is this reported value anywhere in the workbook (any sheet, any template multiplier)?"""
     t = fa._dec(value)
+    if not hasattr(wb, "_cache"):
+        return False                                   # no workbook at all (a database return): the value is in no sheet
     keys = wb._cache.get("all_keys")
     if keys is None:
         keys = set()

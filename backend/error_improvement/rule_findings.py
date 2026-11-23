@@ -139,6 +139,9 @@ def findings(located: dict, wb, comp, ev, dp, names: dict | None = None) -> list
     """Proven statements about this rule, in plain words. [] when nothing is proven."""
     from . import rule_cards as rc
     out: list[str] = []
+    guess = rc._db_guess_note(located)                      # database return: the table cells to look at, named but not confirmed
+    if guess:
+        out.append(guess)
     user_book = wb is not None and not getattr(wb, "is_template", False) and getattr(wb, "path", "")
     mapped, absent = [], []
     for lcs in located.values():
