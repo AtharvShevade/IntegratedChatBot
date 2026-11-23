@@ -278,3 +278,32 @@ class TestRealSchemaReturnNameResolution:
         entries = _load_table_entries(["cims_raq_q_sec1_part_c_o"])
         assert "cims_raq_q_sec1_part_c_o" in entries
         assert entries["cims_raq_q_sec1_part_c_o"].get("return_name") == "CIMS_RAQ(Quarterly)"
+
+
+class TestSharedFrequencyReturnNames:
+    """A table shared by several frequencies lists them in one return_name field."""
+
+    def _resolve(self, return_name, exact_ids):
+        from unittest.mock import patch
+        import backend.sql_agent.query_handler as qh
+        from backend.tools.report_lookup import MATCH_EXACT
+
+        def _find(name):
+            fid = exact_ids.get(name)
+            return ([{"Id": fid}], MATCH_EXACT) if fid else ([], "none")
+
+        with patch("sqlcore.sql_generator._load_table_entries",
+                   lambda names: {"t": {"return_name": return_name}}), \
+             patch("backend.tools.report_lookup.find_matching_reports_tiered", _find):
+            return qh._resolve_target_return_form_ids(["t"])
+
+    def test_comma_separated_names_each_resolve(self):
+        ids = {"CIMS_RAQ(Annually)": "2065", "CIMS_RAQ(Monthly)": "2042", "CIMS_RAQ(Quarterly)": "2041"}
+        form_ids, unresolved = self._resolve("CIMS_RAQ(Annually), CIMS_RAQ(Monthly), CIMS_RAQ(Quarterly)", ids)
+        assert form_ids == {"2065", "2042", "2041"}
+        assert unresolved == []
+
+    def test_one_unknown_name_keeps_the_whole_entry_unresolved(self):
+        ids = {"CIMS_RAQ(Annually)": "2065", "CIMS_RAQ(Monthly)": "2042"}
+        form_ids, unresolved = self._resolve("CIMS_RAQ(Annually), CIMS_RAQ(Monthly), CIMS_RAQ(Quarterly)", ids)
+        assert unresolved == ["CIMS_RAQ(Annually), CIMS_RAQ(Monthly), CIMS_RAQ(Quarterly)"]

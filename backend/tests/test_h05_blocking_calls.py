@@ -26,11 +26,12 @@ import backend.guided as guided
 from backend.services import auth_service
 
 
-class TestGuidedDbQueryRunsOffEventLoop:
-    """guided.py's STAGE_DB_QUERY path -- one of the 4 handle_db_qa_query
-    call sites wrapped for H-05."""
+class TestGuidedDbQueryGoesStraightToSqlAgent:
+    """guided.py's STAGE_DB_QUERY: the user chose "Retrieve data from
+    database", so the question goes to the SQL agent only -- never through the
+    XML-QA / regex intent matchers used by free-text chat."""
 
-    SESSION = "test-h05-guided-db-query"
+    SESSION = "test-guided-db-query-sql-only"
 
     def setup_method(self):
         guided._guided_sessions[self.SESSION] = {"stage": guided.STAGE_DB_QUERY}
@@ -38,29 +39,28 @@ class TestGuidedDbQueryRunsOffEventLoop:
     def teardown_method(self):
         guided._guided_sessions.pop(self.SESSION, None)
 
-    def test_return_value_unchanged_and_runs_in_worker_thread(self, monkeypatch):
+    def test_question_goes_to_sql_agent_and_skips_xml_qa(self, monkeypatch):
         monkeypatch.setenv("REQUIRE_AUTH", "false")
-        main_thread = threading.current_thread()
         seen = {}
 
-        def _fake_handle_db_qa_query(**kwargs):
-            seen["thread"] = threading.current_thread()
-            seen["kwargs"] = kwargs
-            return {"result": "stub answer", "db_found": True, "result_type": "db_qa_result"}
+        async def _fake_sql_agent(msg, session_id=None, login_id=None):
+            seen["msg"] = msg
+            return {"result_type": "db_result", "response_text": "sql answer"}
 
-        monkeypatch.setattr(
-            "backend.agent.db_qa_router.check_new_taxonomy_intent", lambda msg: ("user_profile", {}),
-        )
-        monkeypatch.setattr("backend.agent.db_qa_router.handle_db_qa_query", _fake_handle_db_qa_query)
+        def _must_not_run(*a, **k):
+            raise AssertionError("XML-QA must not run inside the guided database stage")
 
-        result = asyncio.run(guided.guided_step("what is my role", self.SESSION, None, login_id=None))
+        monkeypatch.setattr("backend.sql_agent.handle_db_query", _fake_sql_agent)
+        monkeypatch.setattr("backend.agent.db_qa_router.check_new_taxonomy_intent", _must_not_run)
+        monkeypatch.setattr("backend.agent.db_qa_router.check_db_qa_intent", _must_not_run)
+        monkeypatch.setattr("backend.agent.db_qa_router.handle_db_qa_query", _must_not_run)
 
-        # The mocked handler's return value must reach the caller unchanged.
-        assert seen["kwargs"]["message"] == "what is my role"
-        # It must have run in a DIFFERENT thread than the event loop's own --
-        # proof asyncio.to_thread is actually being used, not a plain call.
-        assert seen["thread"] is not main_thread
-        assert seen["thread"].name != main_thread.name or seen["thread"] is not main_thread
+        # A sentence the XML-QA regex used to answer with the user list.
+        question = "Show all exposure measures for code 1010 top defaulter account"
+        result = asyncio.run(guided.guided_step(question, self.SESSION, None, login_id=None))
+
+        assert seen["msg"] == question
+        assert result["result_type"] == "db_result"
 
 
 class TestSemanticClassifierRunsOffEventLoop:

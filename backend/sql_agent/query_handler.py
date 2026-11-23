@@ -198,13 +198,25 @@ def _resolve_target_return_form_ids(table_names: list[str]) -> tuple[set[str], l
         if (entry.get("return_name") or "").strip()
     })
 
+    def _exact_form_id(name: str) -> str:
+        matches, tier = find_matching_reports_tiered(name)
+        return matches[0].get("Id", "").strip() if (tier == MATCH_EXACT and len(matches) == 1) else ""
+
     form_ids: set[str] = set()
     unresolved: list[str] = []
     for name in return_names:
-        matches, tier = find_matching_reports_tiered(name)
-        fid = matches[0].get("Id", "").strip() if (tier == MATCH_EXACT and len(matches) == 1) else ""
+        fid = _exact_form_id(name)
         if fid:
             form_ids.add(fid)
+            continue
+        # A table shared by several frequencies lists them in one field, e.g.
+        # "CIMS_RAQ(Annually), CIMS_RAQ(Monthly), CIMS_RAQ(Quarterly)". Resolve
+        # each name on its own; every one must match a return exactly, otherwise
+        # the whole entry stays unresolved (still never guess).
+        parts = [p.strip() for p in name.split(",") if p.strip()]
+        part_ids = [_exact_form_id(p) for p in parts] if len(parts) > 1 else []
+        if part_ids and all(part_ids):
+            form_ids.update(part_ids)
         else:
             unresolved.append(name)
 
@@ -908,8 +920,51 @@ async def handle_db_query(
         )
 
     used = [t["table"] for t in tables if re.search(rf"\b{re.escape(t['table'])}\b", sql, re.IGNORECASE)]
-    return await _finish(
+
+    # -- Step 4.5: nothing found -> try the line-item label spelled differently --
+    # The same label is often written differently across reporting dates
+    # ("(iii)Term Loans" / "Term Loans"). See label_match.py: it asks the user when
+    # several different labels fit, otherwise retries once with the labels that
+    # really exist. Never runs when rows came back.
+    label_note = None
+    if not rows and len(used) == 1:
+        try:
+            from backend.sql_agent.label_match import plan_label_fix
+            from sqlcore.sql_generator import _load_table_entries
+            entries = _load_table_entries(used)
+            entry = entries.get(used[0]) or entries.get(used[0].lower()) or {}
+            fix = await asyncio.to_thread(plan_label_fix, sql, used[0], entry, execute_query)
+            if fix and fix.ask:
+                return _build_result(
+                    response_text=(
+                        "I found more than one line item that fits your question:\n"
+                        + "\n".join(f"• {label}" for label in fix.labels)
+                        + "\nWhich one do you mean? Please repeat the question with the exact line item, "
+                          "and mention the return name or table if you can."
+                    ),
+                    result_type="db_result",
+                    needs_more_info=True,
+                    more_info_hint="Mention the exact line item, and the return name or table.",
+                    accuracy_hint=accuracy_hint,
+                )
+            if fix and fix.sql:
+                ok, why = validate_sql(fix.sql, tables, columns)
+                if ok:
+                    c2, r2, e2 = await asyncio.to_thread(execute_query, fix.sql)
+                    if not e2 and r2:
+                        logger.info("[SQL_AGENT] label match applied labels=%s sql=\n%s", fix.labels, fix.sql)
+                        sql, col_names, rows = fix.sql, c2, r2
+                        label_note = "Matched the line item as: " + "; ".join(sorted({v.strip() for v in fix.labels})) + "."
+                else:
+                    logger.warning("[SQL_AGENT] label-match SQL rejected by validation: %s", why)
+        except Exception as exc:  # noqa: BLE001 -- the retry must never break the normal answer
+            logger.warning("[SQL_AGENT] label match skipped: %s", exc)
+
+    result = await _finish(
         q=q, sql=sql, col_names=col_names, rows=rows,
         tables_used=used or [t["table"] for t in tables],
         period=period, session_id=session_id, base_hint=accuracy_hint,
     )
+    if label_note:
+        result["accuracy_hint"] = (result.get("accuracy_hint") + " " if result.get("accuracy_hint") else "") + label_note
+    return result

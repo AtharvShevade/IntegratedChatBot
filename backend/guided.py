@@ -338,47 +338,12 @@ async def guided_step(
         return await _handle_compare(report_ident=msg, session_id=session_id, allowed_form_ids=allowed_form_ids)
 
     if stage == STAGE_DB_QUERY:
-        logger.info("[GUIDED_DB_QUERY] input=%r session=%s", msg, session_id)
-        from backend.agent.db_qa_router import (
-            check_db_qa_intent, check_new_taxonomy_intent, handle_db_qa_query,
-        )
-        db_intent, db_params = check_new_taxonomy_intent(msg)
-        if not db_intent:
-            db_intent, db_params = check_db_qa_intent(msg)
-        if db_intent:
-            logger.info(
-                "[GUIDED_DB_QUERY] XML-QA intent=%s params=%s session=%s",
-                db_intent, db_params, session_id,
-            )
-            # H-05: same blocking-call concern as router.py's handle_db_qa_query
-            # call sites -- run it in a worker thread rather than directly on
-            # the event loop.
-            db_result = await asyncio.to_thread(
-                handle_db_qa_query,
-                message=msg,
-                intent=db_intent,
-                params=db_params,
-                user_id=login_id or "0",
-                role_id="0",
-                login_id=login_id,
-            )
-            # A partial return name (e.g. "cims") can match many returns.
-            # The frontend hands off to /chat -> decide() for every message
-            # after this one (isGuidedFlow flips off on any non-guided
-            # result_type), so the pending-options state must be stashed in
-            # agent/__init__.py's _session_context — the same store
-            # decide()'s own STEP2 disambiguation branch uses — or decide()
-            # has no memory of this prompt and misroutes the user's pick.
-            if db_result.get("result_type") == "disambiguation" and session_id:
-                from backend.agent import _session_context, STAGE_RETURN_QA
-                _session_context[session_id] = {
-                    "awaiting":        STAGE_RETURN_QA,
-                    "pending_options": db_result.get("options", []),
-                    "db_intent":       db_intent,
-                    "db_params":       db_params,
-                }
-            return db_result
-        logger.info("[GUIDED_DB_QUERY] no XML-QA match, falling back to SQL agent session=%s", session_id)
+        # The user chose "Retrieve data from database", so the question is a
+        # database question and nothing else: it goes straight to the SQL agent.
+        # It is NOT run through the XML-QA / regex intent matchers (users, roles,
+        # bank info ...) that free-text chat uses -- those could answer a
+        # database question with an unrelated system table.
+        logger.info("[GUIDED_DB_QUERY] input=%r -> SQL agent session=%s", msg, session_id)
         from backend.sql_agent import handle_db_query
         return await handle_db_query(msg, session_id=session_id, login_id=login_id)
 
