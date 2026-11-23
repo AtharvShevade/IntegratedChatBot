@@ -100,3 +100,6 @@ backend/db_qa/intents/output/*.json
 
 # ── Sentence-transformer model cache ──────────────────────────────────────────
 sentence_transformers_cache/
+
+# ── error-improvement: converted binary templates (rebuilt on demand) ─────────
+backend/error_improvement/.template_cache/

@@ -44,6 +44,8 @@ export default defineConfig(({ mode }) => {
 
     server: {
       port: 3000,
+      // The host app loads the chatbot from this exact port (ChatbotUrl); fail loudly instead of moving to 3001.
+      strictPort: true,
       proxy: Object.fromEntries(proxiedPaths.map((path) => [path, target])),
     },
   }
