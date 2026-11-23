@@ -240,7 +240,20 @@ def _authorize_sql_agent_access(login_id: str | None, table_names: list[str]) ->
             "Please reload and try again."
         )
 
-    from backend.db_qa.access_control import resolve_allowed_form_ids
+    from backend.db_qa.access_control import is_admin, resolve_allowed_form_ids
+
+    # Admin role (APP_DB_ADMIN_ROLE_ID, same check the DB Q&A layer uses) has
+    # access to every return, so no per-return check is needed -- and none can
+    # be made reliably: many tables carry composite return names
+    # ("CIMS_RAQ(Annually), CIMS_RAQ(Monthly), ...") that match no single
+    # Returns.xml entry. Non-admin users still go through the check below.
+    try:
+        if is_admin(login_id):
+            logger.info("[SQL_AGENT] H-02: login_id=%r is admin -- all returns allowed.", login_id)
+            return True, None
+    except Exception as exc:
+        logger.warning("[SQL_AGENT] H-02: admin check failed for login_id=%r (%s) -- using normal check.", login_id, exc)
+
     try:
         allowed_form_ids = resolve_allowed_form_ids(login_id)
     except PermissionError as exc:

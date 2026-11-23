@@ -594,3 +594,13 @@
 {"ts": "2026-11-23T09:11:06.879139+00:00", "query": "CIMS_RAQ(Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-11-23T09:12:16.693545+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-11-23T09:12:16.697687+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.221098+00:00", "query": "Show all exposure measures for code 1010 (Sub-standard) top defaulter account, Sec5 Top Credits", "tier": "regex_new_taxonomy", "intent": "user_list", "found": true}
+{"ts": "2026-11-23T05:43:36.224718+00:00", "query": "Show all exposure measures for code 1010 (Sub-standard) top defaulter account, Sec5 Top Credits", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.229249+00:00", "query": "Compare domestic vs overseas Loss provision Total in this period", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.232534+00:00", "query": "Compare domestic vs overseas Loss provision Total in this period", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.235423+00:00", "query": "Compare Total Advances gross advances vs gross NPA", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.237494+00:00", "query": "Compare Total Advances gross advances vs gross NPA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.242036+00:00", "query": "What is the total interest not recognised on Government & Government guaranteed loans (domestic amount)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.245759+00:00", "query": "What is the total interest not recognised on Government & Government guaranteed loans (domestic amount)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.250544+00:00", "query": "In Section 4 NPA recoveries, what is the latest figure for DRT - Cumulative since Inception", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T05:43:36.253722+00:00", "query": "In Section 4 NPA recoveries, what is the latest figure for DRT - Cumulative since Inception", "tier": "regex_legacy", "intent": null, "found": false}
