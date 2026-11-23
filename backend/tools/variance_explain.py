@@ -866,6 +866,24 @@ def template_sentence(f: dict) -> str:
 
 # ── Factual pattern (optional extra line) ────────────────────────────────────
 
+def intro_line(facts: list[dict], count: int) -> str:
+    """One line above the bullets: what the list is.
+
+    The facts shown are the most important ones (see select_facts_ex), not every
+    change, so say that and say which directions they go. Only counts what is
+    shown here.
+    """
+    ups = sum(1 for f in facts if f.get("direction") == "increased")
+    downs = sum(1 for f in facts if f.get("direction") == "decreased")
+    if count <= 1:
+        return "Most important change:"
+    if ups and not downs:
+        return f"Top {count} most important increased changes:"
+    if downs and not ups:
+        return f"Top {count} most important decreased changes:"
+    return f"Top {count} most important changes (increased and decreased):"
+
+
 def pattern_line(facts: list[dict]) -> str:
     """One factual observation across the selected set, or ''.
 
@@ -1322,6 +1340,9 @@ async def generate_explanations(
         # cross-cutting observation is appended as its own labelled block so
         # it can never be mistaken for, or displace, a concept explanation.
         body = "\n".join(f"• {s}" for s in sentences)
+        # A one-line header says what the list is, so the reader knows these are
+        # the most important changes and not every change (it is not a bullet).
+        body = f"{intro_line(facts, len(sentences))}\n\n{body}"
         if pattern:
             body += f"\n\nOverall pattern: {pattern}"
         logger.info(

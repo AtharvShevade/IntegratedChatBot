@@ -604,3 +604,4 @@
 {"ts": "2026-11-23T05:43:36.245759+00:00", "query": "What is the total interest not recognised on Government & Government guaranteed loans (domestic amount)", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-11-23T05:43:36.250544+00:00", "query": "In Section 4 NPA recoveries, what is the latest figure for DRT - Cumulative since Inception", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-11-23T05:43:36.253722+00:00", "query": "In Section 4 NPA recoveries, what is the latest figure for DRT - Cumulative since Inception", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T09:28:54.607527+00:00", "query": "banana apple orange zzz nonsense phrase", "tier": "none", "intent": null, "found": false}

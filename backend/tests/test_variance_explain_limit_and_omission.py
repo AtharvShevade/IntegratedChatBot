@@ -223,3 +223,29 @@ class TestGeneratedText:
     def test_missing_json_means_no_tiers_and_no_explanation(self):
         rows = [_row("", f"x{i}", matched=False) for i in range(6)]      # what a missing/invalid JSON produces
         assert _run_generate(rows, limit=8) == ""
+
+
+class TestIntroLine:
+    """A one-line header above the bullets says what the list is."""
+
+    def test_header_names_the_count_and_is_not_a_bullet(self):
+        rows = [_row("High", f"Concept{i}", priority=50 - i) for i in range(5)]
+        text = _run_generate(rows, limit=8)
+        lines = text.splitlines()
+        assert lines[0] == "AI Summary:"
+        assert lines[1].startswith("Top 5 most important ")
+        assert not lines[1].startswith("•")
+        assert len([l for l in lines if l.startswith("•")]) == 5
+
+    def test_direction_wording(self):
+        up = [{"direction": "increased"}] * 3
+        down = [{"direction": "decreased"}] * 3
+        mixed = up + down
+        assert ve.intro_line(up, 3) == "Top 3 most important increased changes:"
+        assert ve.intro_line(down, 3) == "Top 3 most important decreased changes:"
+        assert ve.intro_line(mixed, 6) == "Top 6 most important changes (increased and decreased):"
+        assert ve.intro_line(up[:1], 1) == "Most important change:"
+
+    def test_nothing_to_explain_still_returns_empty(self):
+        rows = [_row("", f"x{i}", matched=False) for i in range(3)]
+        assert _run_generate(rows, limit=8) == ""
