@@ -31,7 +31,10 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["query_implies_period", "apply_latest_date_default", "apply_explicit_date"]
+__all__ = [
+    "query_implies_period", "apply_latest_date_default", "apply_explicit_date",
+    "asks_for_prior_period", "uses_prior_period_pattern", "collapse_unasked_prior_period",
+]
 
 # Words that mean "more than one period" or name a time reference. Any of them
 # means the user did NOT leave the period open, so the default must not apply.
@@ -219,4 +222,47 @@ def apply_explicit_date(sql: str, tables, start: date, end: date) -> tuple[str, 
     if count == 0:
         return sql, False
     logger.info("[SQL_AGENT] explicit period %s..%s applied to %d table reference(s)", start, end, count)
+    return new_sql, True
+
+
+# ── "Previous period" pattern the model copies from stored examples ───────────
+# Stored QA pairs such as "... in the prior reporting period?" use
+#   RDATE = (SELECT MAX(RDATE) FROM t WHERE RDATE < (SELECT MAX(RDATE) FROM t))
+# i.e. the SECOND-latest reporting date. A model imitating them can emit it for a
+# question that never asked for a previous period; on a table holding a single
+# reporting date the inner query is NULL and the answer is silently empty.
+
+_PRIOR_WORDS = re.compile(
+    r"\b(previous|prior|preceding|earlier|before|last\s+(?:reporting\s+)?(?:period|quarter|month|year|date)|"
+    r"second\s+latest|one\s+(?:period|quarter|month|year)\s+ago|compared?\s+(?:to|with)\s+(?:the\s+)?last)\b",
+    re.IGNORECASE,
+)
+
+_PRIOR_PERIOD_SUBQUERY = re.compile(
+    r"\(\s*SELECT\s+MAX\s*\(\s*(?:[A-Za-z_]\w*\.)?RDATE\s*\)\s+FROM\s+\"?(?P<name>[A-Za-z_][\w$#]*)\"?"
+    r"(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s+WHERE\s+(?:[A-Za-z_]\w*\.)?RDATE\s*<\s*"
+    r"\(\s*SELECT\s+MAX\s*\(\s*(?:[A-Za-z_]\w*\.)?RDATE\s*\)\s+FROM\s+\"?(?P=name)\"?"
+    r"(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s*\)\s*\)",
+    re.IGNORECASE,
+)
+
+
+def asks_for_prior_period(query: str) -> bool:
+    """True when the question itself asks for a previous / earlier period."""
+    return bool(_PRIOR_WORDS.search(query or ""))
+
+
+def uses_prior_period_pattern(sql: str) -> bool:
+    return bool(_PRIOR_PERIOD_SUBQUERY.search(sql or ""))
+
+
+def collapse_unasked_prior_period(sql: str, question: str) -> tuple[str, bool]:
+    """Replace the "date before the latest" subquery with the plain latest date
+    when the question did not ask for a previous period. Returns (sql, changed)."""
+    if not sql or asks_for_prior_period(question) or not uses_prior_period_pattern(sql):
+        return sql, False
+    new_sql = _PRIOR_PERIOD_SUBQUERY.sub(lambda m: f"(SELECT MAX(RDATE) FROM {m.group('name')})", sql)
+    if new_sql == sql:
+        return sql, False
+    logger.info("[SQL_AGENT] question did not ask for a previous period -- using the latest RDATE instead")
     return new_sql, True

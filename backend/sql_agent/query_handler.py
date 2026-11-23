@@ -543,6 +543,22 @@ def _pin_period(sql: str, tables, columns, period, validate_sql) -> str:
     return sql
 
 
+def _date_stats(table: str):
+    """(distinct reporting dates, earliest, latest) for *table*, or None on failure."""
+    t = _safe_ident(table)
+    if not t:
+        return None
+    from backend.sql_agent.executor import execute_query
+    try:
+        _c, rows, err = execute_query(f"SELECT COUNT(DISTINCT RDATE), MIN(RDATE), MAX(RDATE) FROM {t}")
+    except Exception as exc:
+        logger.debug("[SQL_AGENT] date stats failed: %s", exc)
+        return None
+    if err or not rows:
+        return None
+    return int(rows[0][0] or 0), rows[0][1], rows[0][2]
+
+
 async def _date_hint(sql: str, primary_table: str | None, period, row_count: int) -> tuple[str | None, str | None]:
     """(accuracy_hint, more_info_hint) describing which reporting date the
     answer is for — or, for an explicit period with no rows, which dates exist."""
@@ -562,6 +578,24 @@ async def _date_hint(sql: str, primary_table: str | None, period, row_count: int
         if actual is not None and not period.is_single_day:
             return f"Showing data for reporting date {_fmt_date(actual)} ({period.label}).", None
         return f"Showing data for reporting date {_fmt_date(actual) or period.label}.", None
+    if row_count == 0:
+        stats = await asyncio.to_thread(_date_stats, primary_table)
+        if stats:
+            count, first, last = stats
+            from backend.sql_agent.latest_date import uses_prior_period_pattern
+            if count == 0:
+                return None, "The table has no data at all."
+            if uses_prior_period_pattern(sql) and count < 2:
+                return None, (
+                    f"There is no previous reporting period to compare with: this table has data for only one "
+                    f"reporting date ({_fmt_date(last)})."
+                )
+            span = f"{_fmt_date(first)} to {_fmt_date(last)}" if count > 1 else _fmt_date(last)
+            return None, (
+                f"No rows matched. This table has {count} reporting date{'s' if count != 1 else ''} "
+                f"({span}); the latest is {_fmt_date(last)}. The question may refer to a row or "
+                f"period that is not in the data."
+            )
     if re.search(r"MAX\s*\(\s*(?:\w+\.)?RDATE\s*\)", sql or "", re.IGNORECASE):
         latest = await asyncio.to_thread(_latest_rdate, primary_table)
         if latest is not None:
@@ -586,7 +620,9 @@ async def _finish(
     result = _rows_result(col_names, serialized_rows, sql, date_hint or base_hint)
     if no_data_hint:
         result["response_text"] = no_data_hint
-        result["more_info_hint"] = no_data_hint + " Ask again with one of those dates."
+        # Only suggest re-asking with a date when the hint actually lists dates to pick from.
+        _lists_dates = "nearest earlier" in no_data_hint or "latest available" in no_data_hint
+        result["more_info_hint"] = no_data_hint + (" Ask again with one of those dates." if _lists_dates else "")
 
     session_context.save_result(
         session_id, question=q, returns=returns_for_tables(tables_used), tables=tables_used,
@@ -865,6 +901,23 @@ async def handle_db_query(
                 result_type="db_result",
                 db_error=None,
             )
+
+    # ── Step 2.4: undo an unasked "previous period" ────────────────────────────
+    # The model sometimes copies the "second-latest RDATE" idiom from stored
+    # examples for a question that never asked for it; on a table with one
+    # reporting date that returns nothing. Use the latest date instead.
+    try:
+        from backend.sql_agent.latest_date import collapse_unasked_prior_period
+        _fixed_sql, _fixed = collapse_unasked_prior_period(sql, q)
+        if _fixed:
+            _ok, _why = validate_sql(_fixed_sql, tables, columns)
+            if _ok:
+                sql = _fixed_sql
+                logger.info("[SQL_AGENT] sql (unasked previous-period removed)=\n%s", sql)
+            else:
+                logger.warning("[SQL_AGENT] previous-period rewrite rejected (%s); keeping model SQL", _why)
+    except Exception as exc:
+        logger.warning("[SQL_AGENT] previous-period check skipped: %s", exc)
 
     # ── Step 2.5: pin the reporting period ────────────────────────────────────
     # A named date/period: rewrite the latest-RDATE idiom (or wrap the tables)
