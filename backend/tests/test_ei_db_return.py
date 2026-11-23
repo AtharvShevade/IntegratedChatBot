@@ -177,9 +177,10 @@ def test_a_database_cell_table_is_table_name_column_row_value():
 
     view = {"kv_cells": {"x": ("CIMS_ROR_Q_SEC_A", a.a1)}}
     _rc._mark_db(view, {"V1": [_Lc()]})
-    assert _rc.kv_columns(view) == ["Table Name", "Column", "Row", "Value"]
-    assert _rc.kv_fields(view) == ["sheet", "column", "cell", "value"]
-    assert view["kv_cells"]["x"] == ("CIMS_ROR_Q_SEC_A", "CODE = 1028 · (ii) Non-SLR Investments")
+    assert _rc.kv_columns(view) == ["Table Name", "Column", "Code", "Row", "Value"]
+    assert _rc.kv_fields(view) == ["sheet", "column", "row_code", "row", "value"]
+    assert view["kv_where"]["x"] == {"table": "", "column": "DOM_CURR_QTR", "code": "1028", "row": "(ii) Non-SLR Investments"}
+    assert view["kv_cells"]["x"] == ("CIMS_ROR_Q_SEC_A", "(ii) Non-SLR Investments")
 
 
 def test_an_excel_cell_table_keeps_its_columns():

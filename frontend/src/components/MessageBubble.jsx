@@ -506,9 +506,9 @@ function IssueCard({ section }) {
         <div className="issue-card-heading">{wrong.heading}</div>
         <p>{_richText(wrong.text, wrong.terms, wrong.codes)}</p>
         {kv.length > 0 && Array.isArray(section.kv_columns) && section.kv_columns.length >= 3 && (
-          <table className="issue-card-table">
+          <table className={'issue-card-table' + (section.kv_equal ? ' kv-equal' : '')}>
             <thead>
-              <tr>{section.kv_columns.map((c, i) => <th key={i} className={_KV_FIELD_CLASS[kvFields[i]] || _KV_CLASS[c] || ''}>{c}</th>)}</tr>
+              <tr>{section.kv_columns.map((c, i) => <th key={i} className={section.kv_equal ? '' : (_KV_FIELD_CLASS[kvFields[i]] || _KV_CLASS[c] || '')}>{c}</th>)}</tr>
             </thead>
             <tbody>
               {kv.map((k, i) => (
@@ -517,7 +517,7 @@ function IssueCard({ section }) {
                     ? <td colSpan={section.kv_columns.length} className="issue-card-table-note">{k.label}: {k.value}</td>
                     : k.cell
                     ? section.kv_columns.slice(0, -1).map((c, i) => (
-                        <td key={c} className={_KV_FIELD_CLASS[kvFields[i]] || _KV_CLASS[c] || ''}>{kvFields[i] === 'cell' ? <code className="issue-card-code">{k.cell}</code> : k[kvFields[i]]}</td>
+                        <td key={c} className={section.kv_equal ? '' : (_KV_FIELD_CLASS[kvFields[i]] || _KV_CLASS[c] || '')}>{kvFields[i] === 'cell' ? <code className="issue-card-code">{k.cell}</code> : k[kvFields[i]]}</td>
                       ))
                     : <td colSpan={section.kv_columns.length - 1}>{k.label}</td>}
                   {(k.cell || String(k.value).length <= 16) && <td className="issue-card-table-value kv-col-value">{k.value}</td>}

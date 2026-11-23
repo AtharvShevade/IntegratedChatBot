@@ -399,7 +399,7 @@ def _section_lines(section: dict, indent: str = "") -> list[str]:
         if section.get("kv_columns"):
             lines += [f"{indent}  " + " | ".join(section["kv_columns"])]
             keys = {"Sheet Name": "sheet", "Table": "table", "Column": "column", "Cell": "cell", "Value": "value",
-                    "Table Name": "sheet", "Row": "cell"}
+                    "Table Name": "sheet", "Code": "row_code", "Row": "row"}
             lines += [f"{indent}  " + (" | ".join(str(k.get(keys.get(c, ""), "")) for c in section["kv_columns"]) if k.get("cell")
                                       else f"{k.get('label', '')} | | {k.get('value', '')}") for k in section.get("kv") or []]
         else:

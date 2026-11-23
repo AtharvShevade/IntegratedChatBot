@@ -1432,13 +1432,17 @@ def _mark_db(view: dict, located: dict) -> None:
     where = {}
     for label, key in list(cells.items()):
         a = db[key]
-        where[label] = {"table": "", "column": a.column}
-        cells[label] = (a.table, _row_text(a))
+        code = next((str(v) for c, v in a.key.items() if c.upper() == "CODE"), "")
+        entries = [str(v) for c, v in a.key.items() if c.upper() != "CODE"]
+        entries = [v for v in entries if not any(o != v and o.startswith(v) for o in entries)]
+        row = " \u00b7 ".join(x for x in (", ".join(dict.fromkeys(entries)), getattr(a, "row_label", "")) if x)
+        where[label] = {"table": "", "column": a.column, "code": code, "row": row}
+        cells[label] = (a.table, row or code)
     view["kv_where"] = where
 
 
-_KV_FIELD = {"Sheet Name": "sheet", "Table": "table", "Column": "column", "Cell": "cell", "Table Name": "sheet", "Row": "cell",
-             "Value": "value"}
+_KV_FIELD = {"Sheet Name": "sheet", "Table": "table", "Column": "column", "Cell": "cell", "Table Name": "sheet", "Code": "row_code",
+             "Row": "row", "Value": "value"}
 
 
 def kv_fields(view: dict) -> list[str]:
@@ -1452,7 +1456,7 @@ def kv_columns(view: dict) -> list[str]:
     if not view.get("kv_cells"):
         return []
     if view.get("kv_db"):
-        return ["Table Name", "Column", "Row", "Value"]
+        return ["Table Name", "Column", "Code", "Row", "Value"]
     where = view.get("kv_where") or {}
     return (["Sheet Name"] + (["Table"] if any(w["table"] for w in where.values()) else [])
             + (["Column"] if any(w["column"] for w in where.values()) else []) + ["Cell", "Value"])
@@ -1463,7 +1467,7 @@ def _kv_row(view: dict, label: str, value: str) -> list[str]:
     sheet, cell = view["kv_cells"].get(label, ("", ""))
     w = (view.get("kv_where") or {}).get(label, {})
     by_name = {"Sheet Name": sheet, "Table": w.get("table", ""), "Column": w.get("column", ""), "Cell": cell, "Value": value,
-               "Table Name": sheet, "Row": cell}
+               "Table Name": sheet, "Code": w.get("code", ""), "Row": w.get("row", cell)}
     return [by_name[c] for c in kv_columns(view)]
 
 
@@ -1522,9 +1526,10 @@ def card_to_sections(card: dict) -> list[dict]:
              "wrong": {"heading": "What went wrong?", "text": v["wrong"], "terms": v["terms"], "codes": v.get("codes", [])},
              "kv": [{"label": l, "value": val, "tone": tone, "caption": v.get("captions", {}).get(l, ""), "code": l in v.get("kv_code", []),
                      "sheet": v.get("kv_cells", {}).get(l, ("", ""))[0], "cell": v.get("kv_cells", {}).get(l, ("", ""))[1],
-                     "table": v.get("kv_where", {}).get(l, {}).get("table", ""), "column": v.get("kv_where", {}).get(l, {}).get("column", "")}
+                     "table": v.get("kv_where", {}).get(l, {}).get("table", ""), "column": v.get("kv_where", {}).get(l, {}).get("column", ""),
+                     "row_code": v.get("kv_where", {}).get(l, {}).get("code", ""), "row": v.get("kv_where", {}).get(l, {}).get("row", "")}
                     for l, val, tone in v["kv"]],
-             "kv_columns": kv_columns(v), "kv_fields": kv_fields(v),
+             "kv_columns": kv_columns(v), "kv_fields": kv_fields(v), "kv_equal": bool(v.get("kv_db")),
              "why": {"heading": v.get("why_heading", "Why did it happen?"), "text": v["why"]},
              "fix": {"heading": "What should you check?", "text": v["fix"], "steps": v.get("steps", []), "note": v.get("safety", "")},
              "cells": {"heading": "Relevant cells", "groups": v["groups"], "more": v["more_cells"], "note": v.get("cells_note", "")},

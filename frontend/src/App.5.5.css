@@ -3499,6 +3499,8 @@ html, body, #root {
 .issue-card-table td.kv-col-column { font-weight: 700; color: #111; }
 .issue-card-table .kv-col-cell { width: 13%; }
 .issue-card-table .kv-col-value { width: 14%; }
+/* a database table card: every column the same width (the columns carry the database's own names and codes) */
+.issue-card-table.kv-equal th, .issue-card-table.kv-equal td { width: 20%; }
 .issue-card-table-value { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .issue-card-table tr.is-bad .issue-card-table-value { color: #c0392b; }
 .issue-card-table td.issue-card-table-note { font-weight: 700; text-align: left; }
