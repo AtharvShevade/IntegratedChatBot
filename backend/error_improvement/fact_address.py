@@ -322,25 +322,21 @@ def rank_hits(meta: cl.FormMeta, wb: Workbook, cands: list, hits: list) -> list:
 
 
 def resolve_fact(meta: cl.FormMeta, wb: Workbook, concept: str, ctx_id: str, value: str, decimals=None) -> Resolved:
-    # Returns.xml says what kind of return this is (IsExcel): a database return is located in its tables only; an Excel return is
-    # located in the workbook only. When the row says nothing (older repositories) the old rule applies: a layout whose data comes
-    # from a database table is located there when there is no filed workbook, so nothing an Excel return could place is changed.
+    # The Excel approach is untouched whenever a workbook was filed: its cells are confirmed against that workbook, exactly as
+    # before. Only when there is NO filed workbook (a blank template, or nothing) is a layout whose queries read a database table
+    # located in that table (db_return) - and then only if the return is not an Excel return (see db_return.return_kind).
     from . import db_return as dbr
-    kind = dbr.return_kind(meta)
-    if kind is False:
-        found = dbr.resolve_db(meta, concept, ctx_id, value)
-        return found if found is not None else Resolved("UNRESOLVED", [], "database return: no table cell found for this item in the return's queries")
-    if kind is None and (getattr(wb, "is_template", False) or not getattr(wb, "sheets", None)):
-        first = dbr.resolve_db(meta, concept, ctx_id, value)
-        if first is not None:
-            return first
+    filed = not getattr(wb, "is_template", False) and bool(getattr(wb, "sheets", None))
+    if not filed:
+        kind = dbr.return_kind(meta)
+        if kind is not True:
+            found = dbr.resolve_db(meta, concept, ctx_id, value)
+            if found is not None:
+                return found
+            if kind is False:
+                return Resolved("UNRESOLVED", [], "database return: no table cell found for this item in the return's queries")
     cands = candidates(meta, wb, concept, ctx_id)
     if not cands:
-        # Nothing in any workbook range: the layout may read a database table instead (db_return). Only then, so every fact
-        # the Excel path can place is placed exactly as before.
-        db = dbr.resolve_db(meta, concept, ctx_id, value) if kind is None else None
-        if db is not None:
-            return db
         return Resolved("UNRESOLVED", [], "no mapping row carries this concept with these members")
     target = _dec(value)
     if getattr(wb, "is_template", False):

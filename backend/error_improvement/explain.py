@@ -125,12 +125,12 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
     wb, basis = None, "none"
     if workbook:
         wb, basis = Workbook(workbook), "workbook given"
-    elif folder and dbr.return_kind(meta) is False:
-        wb, basis = EmptyWorkbook(), "database return (every active query reads a database table): locations come from the return's queries and mapping"
     elif folder:
         up = mu.match_upload(folder, error_file)
-        if up:
+        if up:                                    # a filed workbook always wins: the Excel approach, unchanged
             wb, basis = Workbook(up), f"user upload {os.path.relpath(up, folder).split(os.sep)[1]}"
+        elif dbr.enabled() and dbr.return_kind(meta) is False:   # no workbook and every active query reads a table: a database return
+            wb, basis = EmptyWorkbook(), "database return (every active query reads a database table): locations come from the return's queries and mapping"
         else:
             wb = pick_template(meta, folder)
             basis = "template only (no user workbook found)" if wb else "none"
