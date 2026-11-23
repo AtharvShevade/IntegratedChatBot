@@ -153,13 +153,15 @@ def test_an_unknown_or_ambiguous_provider_falls_back_on_what_the_sql_says(tmp_pa
 def test_the_provider_row_gives_the_connection_and_a_wrong_key_gives_nothing(tmp_path, monkeypatch):
     from backend.error_improvement import db_source as ds
     cs = "User Id=scott;Password=tiger;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1521))(CONNECT_DATA=(SID=xe)));"
-    _meta, folder = _repo(tmp_path, [("1", "Oracle", cs), ("2", "Excel", "C:/x.xls"), ("3", "Oracle", cs), ("3", "Excel", "y")],
-                          [("1", DBQ)])
+    other = cs.replace("scott", "other")
+    _meta, folder = _repo(tmp_path, [("1", "Oracle", cs), ("2", "Excel", "C:/x.xls"), ("3", "Oracle", cs), ("3", "Excel", "y"),
+                                     ("4", "Oracle", cs), ("4", "Oracle", other)], [("1", DBQ)])
     monkeypatch.setenv("IDEAL_AES_PASSPHRASE", PASS)
     got = ds.provider_connection(folder, "1")
     assert got == {"user": "scott", "password": "tiger", "dsn": "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1521))(CONNECT_DATA=(SID=xe)))"}
     assert ds.provider_connection(folder, "2") is None          # an Excel provider is not a database
-    assert ds.provider_connection(folder, "3") is None          # ambiguous: never guessed
+    assert ds.provider_connection(folder, "3") == got           # the id is also an Excel source: the Oracle row serves a table query
+    assert ds.provider_connection(folder, "4") is None          # two different databases under one id: never guessed
     monkeypatch.setenv("IDEAL_AES_PASSPHRASE", "z" * 44)
     assert ds.provider_connection(folder, "1") is None          # the wrong key decrypts nothing
     monkeypatch.delenv("IDEAL_AES_PASSPHRASE")

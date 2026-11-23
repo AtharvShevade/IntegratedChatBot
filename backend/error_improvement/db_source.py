@@ -73,8 +73,9 @@ def provider_connection(db_folder: str, provider_id: str) -> dict | None:
 
     The ProviderId of the fact's XML_Query row is looked up in XML_Providers.xml (next to the return folders). A row whose
     ProviderType is Oracle holds the database's connection string, AES-GCM encrypted by the iDEAL application; it is decrypted
-    here with IDEAL_AES_PASSPHRASE (environment only) and never written or logged. A provider id whose rows disagree on the type
-    (the same id listed for an Oracle and an Excel source) is not resolved: nothing is guessed.
+    here with IDEAL_AES_PASSPHRASE (environment only) and never written or logged. The same id is sometimes listed for an Oracle and
+    an Excel source: only the Oracle row can serve a table query, so that one is used. Two Oracle rows with different connection
+    strings under one id are not resolved: nothing is guessed.
 
     EI_DB_PROVIDER_<id>="user|password|dsn" (process environment only) names the database for one provider id outright, for a
     machine whose provider file does not carry it.
@@ -89,11 +90,12 @@ def provider_connection(db_folder: str, provider_id: str) -> dict | None:
     if not passphrase or not provider_id or not os.path.isfile(path):
         return None
     try:
-        rows = [el for el in ET.parse(path).getroot().iter("Row") if el.get("ProviderId") == provider_id]
-        if len({(el.get("ProviderType") or "").lower() for el in rows}) != 1 or (rows[0].get("ProviderType") or "").lower() != "oracle":
-            return None
-        token = (rows[0].findtext("ConnectionString") or "").strip()
-        return parse_oracle_connection(decrypt(token, passphrase)) if token else None
+        rows = [el for el in ET.parse(path).getroot().iter("Row")
+                if el.get("ProviderId") == provider_id and (el.get("ProviderType") or "").strip().lower() == "oracle"]
+        tokens = {(el.findtext("ConnectionString") or "").strip() for el in rows} - {""}
+        if len(tokens) != 1:
+            return None                       # no Oracle row, or two different databases under one id: never guess
+        return parse_oracle_connection(decrypt(next(iter(tokens)), passphrase))
     except Exception as exc:  # noqa: BLE001 - an unreadable provider is just "not resolved"; never expose why in detail
         logger.info("[db_source] provider %s not resolved (%s)", provider_id, type(exc).__name__)
     return None
