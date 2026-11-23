@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -44,11 +45,39 @@ def decrypt(token: str, passphrase: str) -> str:
     return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode("utf-8")
 
 
+def parse_oracle_connection(text: str) -> dict | None:
+    """{"user","password","dsn"} from an Oracle connection string such as
+    'User Id=x;Password=y;Data Source=(DESCRIPTION=(ADDRESS=...)(CONNECT_DATA=(SID=xe)))', or None."""
+    def part(names: str):
+        m = re.search(r"(?:^|;)\s*(?:%s)\s*=\s*" % names, text, flags=re.IGNORECASE)
+        if not m:
+            return None
+        i, depth, out = m.end(), 0, []
+        while i < len(text):
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == ";" and depth <= 0:
+                break
+            out.append(ch)
+            i += 1
+        return "".join(out).strip() or None
+    user, pwd, dsn = part("user id|uid|user"), part("password|pwd"), part("data source|datasource")
+    return {"user": user, "password": pwd, "dsn": dsn} if user and pwd and dsn else None
+
+
 def provider_connection(db_folder: str, provider_id: str) -> dict | None:
     """{"user","password","dsn"} for a provider id, or None when it cannot be resolved. Never raises.
 
-    EI_DB_PROVIDER_<id>="user|password|dsn" (process environment only) names the database for one provider id outright - for a
-    machine that can reach the return database but cannot decrypt the repository's provider file.
+    The ProviderId of the fact's XML_Query row is looked up in XML_Providers.xml (next to the return folders). A row whose
+    ProviderType is Oracle holds the database's connection string, AES-GCM encrypted by the iDEAL application; it is decrypted
+    here with IDEAL_AES_PASSPHRASE (environment only) and never written or logged. A provider id whose rows disagree on the type
+    (the same id listed for an Oracle and an Excel source) is not resolved: nothing is guessed.
+
+    EI_DB_PROVIDER_<id>="user|password|dsn" (process environment only) names the database for one provider id outright, for a
+    machine whose provider file does not carry it.
     """
     override = os.environ.get(f"EI_DB_PROVIDER_{provider_id}", "") if provider_id else ""
     if override.count("|") == 2:
@@ -56,24 +85,15 @@ def provider_connection(db_folder: str, provider_id: str) -> dict | None:
         if user and pwd and dsn:
             return {"user": user, "password": pwd, "dsn": dsn}
     passphrase = os.environ.get("IDEAL_AES_PASSPHRASE", "")
-    path = os.path.join(db_folder, "XML_OracleProviderDtl.xml")
+    path = os.path.join(os.path.dirname(db_folder.rstrip("\\/")), "XML_Providers.xml") if db_folder else ""
     if not passphrase or not provider_id or not os.path.isfile(path):
         return None
     try:
-        for el in ET.parse(path).getroot().iter("Row"):
-            if el.get("ProviderId") != provider_id:
-                continue
-            user = decrypt(el.get("UserNameOrac", ""), passphrase)
-            pwd = decrypt(el.get("PasswordOrac", ""), passphrase)
-            host = decrypt(el.get("HostNameOrac", ""), passphrase)
-            port = el.get("PortOrac") or "1521"
-            service = el.get("ServiceNameOrac") or ""
-            sid = el.get("SSidOrac") or ""
-            if service:
-                dsn = f"{host}:{port}/{service}"
-            else:
-                dsn = f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SID={sid})))"
-            return {"user": user, "password": pwd, "dsn": dsn}
+        rows = [el for el in ET.parse(path).getroot().iter("Row") if el.get("ProviderId") == provider_id]
+        if len({(el.get("ProviderType") or "").lower() for el in rows}) != 1 or (rows[0].get("ProviderType") or "").lower() != "oracle":
+            return None
+        token = (rows[0].findtext("ConnectionString") or "").strip()
+        return parse_oracle_connection(decrypt(token, passphrase)) if token else None
     except Exception as exc:  # noqa: BLE001 - an unreadable provider is just "not resolved"; never expose why in detail
         logger.info("[db_source] provider %s not resolved (%s)", provider_id, type(exc).__name__)
     return None
@@ -97,6 +117,7 @@ class DbReader:
         self._folder, self._provider = db_folder, provider_id
         self._conns: dict = {}
         self._failed: set = set()
+        self._rows: dict = {}          # one lookup per (database, table, key, date, columns): many facts share a row
         self.source = ""          # "provider" | "environment" | ""
 
     def _connect(self, provider_id: str = ""):
@@ -145,15 +166,19 @@ class DbReader:
     def __exit__(self, *exc):
         self.close()
 
-    def read_row(self, cell: DbCell, columns: list[str], reporting_date: str) -> dict | None:
-        """{column: value} for several columns of the ONE row the cell's key names, or None (no connection, no row, or more than
-        one row). Same safety rules as read()."""
+    def read_row(self, cell: DbCell, columns: list[str], reporting_date: str) -> tuple[str, dict]:
+        """("ok", {column: value}) for several columns of the ONE row the cell's key names; ("no-row", {}) when the database has no
+        such row; ("several", {}) for more than one; ("unavailable", {}) for no connection or a failed lookup. Same safety rules as
+        read(): identifier-checked names, bound values, read-only."""
         names = [cell.table, cell.date_column, *columns, *cell.key.keys()]
         if not reporting_date or not columns or not all(is_identifier(n) for n in names):
-            return None
+            return "unavailable", {}
+        ck = (cell.provider_id or self._provider, cell.table, tuple(cell.key.items()), reporting_date, tuple(columns))
+        if ck in self._rows:
+            return self._rows[ck]
         conn = self._connect(cell.provider_id)
         if conn is None:
-            return None
+            return "unavailable", {}
         where = " AND ".join(f"TRIM({c}) = :k{i}" for i, c in enumerate(cell.key))
         sql = (f"SELECT {', '.join(columns)} FROM {cell.table} "
                f"WHERE TRUNC({cell.date_column}) = TO_DATE(:d, 'YYYY-MM-DD') AND {where} FETCH FIRST 2 ROWS ONLY")
@@ -164,8 +189,10 @@ class DbReader:
             rows = cur.fetchall()
         except Exception as exc:  # noqa: BLE001
             logger.info("[db_source] row lookup failed (%s)", type(exc).__name__)
-            return None
-        return dict(zip(columns, rows[0])) if len(rows) == 1 else None
+            return "unavailable", {}
+        result = ("no-row", {}) if not rows else ("several", {}) if len(rows) > 1 else ("ok", dict(zip(columns, rows[0])))
+        self._rows[ck] = result
+        return result
 
     def read(self, cell: DbCell, reporting_date: str) -> Reading:
         names = [cell.table, cell.column, cell.date_column, *cell.key.keys()]

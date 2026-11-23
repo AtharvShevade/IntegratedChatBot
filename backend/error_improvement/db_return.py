@@ -122,6 +122,31 @@ def parse_branch(sql: str) -> Branch | None:
     return Branch(table.upper(), items, filters, ranges)
 
 
+def provider_types(folder: str) -> dict[str, set]:
+    """{ProviderId: {'oracle'|'excel'|...}} from XML_Providers.xml (next to the return folders). More than one type for an id means
+    the file is ambiguous about it."""
+    base = os.path.dirname((folder or "").rstrip(os.sep + "/"))
+    path = os.path.join(base, "XML_Providers.xml")
+    out: dict[str, set] = {}
+    if not os.path.isfile(path):
+        return out
+    try:
+        for el in ET.parse(path).getroot().iter("Row"):
+            out.setdefault(el.get("ProviderId", ""), set()).add((el.get("ProviderType") or "").strip().lower())
+    except ET.ParseError:
+        pass
+    return out
+
+
+def _db_eligible(provider_id: str, types: dict[str, set]) -> bool:
+    """A query written against a table is used as a database query unless its provider is, unambiguously, not a database
+    (e.g. an Excel provider). Unknown or ambiguous providers fall back on what the SQL itself says."""
+    if provider_id and os.environ.get(f"EI_DB_PROVIDER_{provider_id}"):
+        return True                           # someone named the database for this id outright
+    t = types.get(provider_id)
+    return not t or len(t) > 1 or "oracle" in t
+
+
 def load_db_queries(folder: str) -> dict[str, list[DbQuery]]:
     """{template id: its DB queries} from XML_Query.xml; Excel-range rows are skipped (the Excel path owns those)."""
     path = os.path.join(folder, "XML_Query.xml")
@@ -132,12 +157,15 @@ def load_db_queries(folder: str) -> dict[str, list[DbQuery]]:
         root = ET.parse(path).getroot()
     except ET.ParseError:
         return out
+    types = provider_types(folder)
     for el in root.iter("Row"):
         sql = el.findtext("SelectQuery") or ""
         if not sql.strip() or _EXCEL_RANGE.search(sql):
             continue
         if (el.get("IsActive") or "true").strip().lower() == "false":
             continue                          # a switched-off query is not where the data came from
+        if not _db_eligible(el.get("ProviderId", ""), types):
+            continue                          # its provider says this is not a database (e.g. Excel)
         wrapped = _WRAPPED.match(sql)
         if wrapped:
             sql = wrapped.group(1)
@@ -332,31 +360,29 @@ class DbAddress(_fa.Address):
 
 
 def return_kind(meta) -> bool | None:
-    """True = Excel return, False = database return, None = the return's row says nothing (older repositories).
+    """True = Excel return, False = database return, None = both kinds of query (or nothing to go on).
 
-    Read from the repository's Returns.xml (5.5) / Return.xml (6.0): the `IsExcel` attribute of the row whose Id is this return.
-    An Excel return is filed from an uploaded workbook; a database return has no workbook and is read from its tables.
+    Decided from the return's active XML_Query rows: each is a database query (its SQL reads a table and its provider is an Oracle
+    source, or is not known to be anything else) or an Excel query (its SQL reads a sheet range, or its provider is an Excel
+    source). Only database queries -> a database return, located in its tables and with no workbook to look for. Only Excel
+    queries -> an Excel return. Both -> None: each layout is decided by its own query.
     """
     if "_return_kind" in meta.__dict__:
         return meta.__dict__["_return_kind"]
-    kind = None
     folder = getattr(meta, "folder", "") or ""
-    form = str(getattr(meta, "form_id", "") or os.path.basename(folder.rstrip(os.sep + "/")))
-    base = os.path.dirname(folder.rstrip(os.sep + "/"))
-    for name in ("Returns.xml", "Return.xml"):
-        path = os.path.join(base, name)
-        if not os.path.isfile(path):
-            continue
+    path = os.path.join(folder, "XML_Query.xml")
+    kinds: set = set()
+    if os.path.isfile(path):
+        types = provider_types(folder)
         try:
-            for el in ET.parse(path).getroot().iter():
-                if el.get("Id") == form:
-                    flag = el.get("IsExcel")
-                    if flag is not None:
-                        kind = flag.strip().lower() == "true"
-                    break
+            for el in ET.parse(path).getroot().iter("Row"):
+                sql = el.findtext("SelectQuery") or ""
+                if not sql.strip() or (el.get("IsActive") or "true").strip().lower() == "false":
+                    continue
+                kinds.add("db" if (not _EXCEL_RANGE.search(sql) and _db_eligible(el.get("ProviderId", ""), types)) else "excel")
         except ET.ParseError:
             pass
-        break
+    kind = False if kinds == {"db"} else True if kinds == {"excel"} else None
     meta.__dict__["_return_kind"] = kind
     return kind
 
@@ -404,20 +430,25 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
         cell = locate_cell(st["queries"].get(loc.layout_id, []), st["mapping"], loc.layout_id, loc.cell_code, typed)
         if cell is None:
             continue
-        confirmed_by_db, db_label = False, ""
+        confirmed_by_db, db_label, state = False, "", "unread"
         mult0 = next((m.multiplier for m in meta.rows_by_concept.get(_cl.local(concept), [])
                       if m.layout_id == loc.layout_id and m.code == loc.cell_code), 1)
         reader, date = _reader_of(meta), reporting_date(ctx_id)
         cols = list(cell.alternatives) or [cell.column]
         want = cols + ([cell.label_column] if cell.label_column and cell.label_column not in cols else [])
-        row = reader.read_row(cell, want, date) if reader is not None and date else None
-        if row:
-            db_label = str(row.get(cell.label_column) or "").strip() if cell.label_column else ""
-            column, _why = pick_column({c: row.get(c) for c in cols}, value, mult0)
-            if column is not None:
-                cell.column, confirmed_by_db = column, True
+        if reader is not None and date:
+            state, row = reader.read_row(cell, want, date)
+            if state == "ok":
+                db_label = str(row.get(cell.label_column) or "").strip() if cell.label_column else ""
+                column, _why = pick_column({c: row.get(c) for c in cols}, value, mult0)
+                if column is not None:
+                    cell.column, confirmed_by_db = column, True
+                else:
+                    state = "differs"
         if cell.alternatives and not confirmed_by_db:
             continue                                       # several value columns and the data did not settle it: never guess one
+        if state == "no-row":
+            continue                                       # the database has no such row: this is not where the fact lives
         rowmap = st["rows"].setdefault(cell.table, {})
         colmap = st["cols"].setdefault(cell.table, {})
         key_text = ", ".join(f"{c} = {v}" for c, v in cell.key.items())
@@ -436,6 +467,9 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
             found.append(a)
     if not found:
         return None
+    verified = [x for x in found if x.verified]
+    if verified:
+        found = verified                                   # a candidate the data confirms beats the ones it does not
     note = "" if len(found) == 1 else f"{len(found)} candidate table cells; best by mapping rank first"
     if all(getattr(x, "verified", False) for x in found):
         return _fa.Resolved("CONFIRMED", found[:6], (note + " " if note else "") + "the database row holds this value")

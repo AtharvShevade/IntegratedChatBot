@@ -107,18 +107,63 @@ def test_inactive_queries_are_ignored(tmp_path):
 from backend.error_improvement import calc_view as _cv, cell_locator as _cl, rule_cards as _rc
 
 
-def _repo(tmp_path, flag):
+import base64
+
+PASS = "x9" * 22          # a made-up 44-character key for the tests (the real one is never stored in the repository)
+
+
+def _encrypt(text: str) -> str:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    iv, key = PASS[:12].encode(), PASS[12:44].encode()
+    return base64.b64encode(iv + AESGCM(key).encrypt(iv, text.encode(), None)).decode()
+
+
+def _repo(tmp_path, providers, queries):
+    """A repository: DataBase/XML_Providers.xml (id, type) and DataBase/4100/XML_Query.xml (provider id, sql)."""
     db = tmp_path / "DataBase"
     (db / "4100").mkdir(parents=True)
-    attr = "" if flag is None else f' IsExcel="{flag}"'
-    (db / "Returns.xml").write_text(f'<Returns><Return Id="4100" Name="X"{attr}/><Return Id="9"/></Returns>', encoding="utf-8")
-    return _cl.FormMeta("4100", str(db / "4100"))
+    rows = "".join(f'<Row ProviderId="{i}" ProviderName="n{i}" ProviderType="{t}" IsActive="true">'
+                   f"<ConnectionString>{_encrypt(cs)}</ConnectionString></Row>" for i, t, cs in providers)
+    (db / "XML_Providers.xml").write_text(f"<Document>{rows}</Document>", encoding="utf-8")
+    qrows = "".join(f'<Row QueryId="{n}" TemplateId="{n}" ProviderId="{pid}"><SelectQuery>{sql}</SelectQuery></Row>'
+                    for n, (pid, sql) in enumerate(queries, 1))
+    (db / "4100" / "XML_Query.xml").write_text(f"<Document>{qrows}</Document>", encoding="utf-8")
+    return _cl.FormMeta("4100", str(db / "4100")), str(db / "4100")
 
 
-def test_returns_xml_says_whether_a_return_is_excel_or_database(tmp_path):
-    assert dr.return_kind(_repo(tmp_path / "a", "true")) is True
-    assert dr.return_kind(_repo(tmp_path / "b", "False")) is False
-    assert dr.return_kind(_repo(tmp_path / "c", None)) is None          # older repository: the row says nothing
+DBQ = "Select CODE as Code, VALUE as Val From T1 Where RDATE = ##"
+XLQ = "Select F1 As A From [Sheet1$A1:B5]"
+
+
+def test_the_providers_of_the_queries_say_whether_a_return_is_excel_or_database(tmp_path):
+    prov = [("1", "Oracle", "User Id=u;Password=p;Data Source=d"), ("2", "Excel", "C:/x.xls")]
+    assert dr.return_kind(_repo(tmp_path / "a", prov, [("1", DBQ)])[0]) is False          # only database queries
+    assert dr.return_kind(_repo(tmp_path / "b", prov, [("2", XLQ)])[0]) is True           # only Excel queries
+    assert dr.return_kind(_repo(tmp_path / "c", prov, [("1", DBQ), ("2", XLQ)])[0]) is None   # both: decided per layout
+    assert dr.return_kind(_repo(tmp_path / "d", prov, [("2", DBQ)])[0]) is True           # table SQL but an Excel provider: not a database
+
+
+def test_an_unknown_or_ambiguous_provider_falls_back_on_what_the_sql_says(tmp_path):
+    prov = [("3", "Oracle", "x"), ("3", "Excel", "y")]                                     # the same id listed for both kinds
+    meta, folder = _repo(tmp_path, prov, [("3", DBQ), ("9", DBQ)])                         # 9 is not in the provider file at all
+    assert set(dr.load_db_queries(folder)) == {"1", "2"}
+    assert dr.return_kind(meta) is False
+
+
+def test_the_provider_row_gives_the_connection_and_a_wrong_key_gives_nothing(tmp_path, monkeypatch):
+    from backend.error_improvement import db_source as ds
+    cs = "User Id=scott;Password=tiger;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1521))(CONNECT_DATA=(SID=xe)));"
+    _meta, folder = _repo(tmp_path, [("1", "Oracle", cs), ("2", "Excel", "C:/x.xls"), ("3", "Oracle", cs), ("3", "Excel", "y")],
+                          [("1", DBQ)])
+    monkeypatch.setenv("IDEAL_AES_PASSPHRASE", PASS)
+    got = ds.provider_connection(folder, "1")
+    assert got == {"user": "scott", "password": "tiger", "dsn": "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1521))(CONNECT_DATA=(SID=xe)))"}
+    assert ds.provider_connection(folder, "2") is None          # an Excel provider is not a database
+    assert ds.provider_connection(folder, "3") is None          # ambiguous: never guessed
+    monkeypatch.setenv("IDEAL_AES_PASSPHRASE", "z" * 44)
+    assert ds.provider_connection(folder, "1") is None          # the wrong key decrypts nothing
+    monkeypatch.delenv("IDEAL_AES_PASSPHRASE")
+    assert ds.provider_connection(folder, "1") is None          # no key at all
 
 
 def test_a_database_cell_table_is_table_name_column_row_value():
