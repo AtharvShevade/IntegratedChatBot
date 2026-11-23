@@ -163,11 +163,36 @@ def _col_n(col: str) -> int:
     return n
 
 
+_DBREF = re.compile(r"^([A-Za-z_][\w$#]*) \(([A-Za-z_][\w$#]*) = ([^)]*)\)$")
+
+
+def _runs(values: list[str]) -> str:
+    """['1029','1030','1031','1034'] -> '1029-1031, 1034' (non-numeric values are listed as they are)."""
+    if not all(v.strip().lstrip("-").isdigit() for v in values):
+        return ", ".join(values[:6]) + (f" +{len(values) - 6} more" if len(values) > 6 else "")
+    nums = sorted({int(v) for v in values})
+    out, start, prev = [], nums[0], nums[0]
+    for n in nums[1:] + [None]:
+        if n is not None and n == prev + 1:
+            prev = n
+            continue
+        out.append(str(start) if start == prev else f"{start}-{prev}")
+        if n is not None:
+            start = prev = n
+    return ", ".join(out)
+
+
 def cell_ref(cells: list[tuple[str, str]], limit: int = 6) -> tuple[str, str]:
     """([(sheet, a1)]) -> (sheet text, cell text): 'B3:B12' when the cells are consecutive in one column or row, else a short list."""
     sheets = list(dict.fromkeys(s for s, _a in cells))
     one = len(sheets) == 1
     a1s = [a for _s, a in cells]
+    dbm = [_DBREF.match(a) for a in a1s]
+    if cells and all(dbm) and one:                          # database cells: one column, a run of CODE values -> 'COL (CODE = 1029-1034)'
+        cols = list(dict.fromkeys(x.group(1) for x in dbm))
+        keys = list(dict.fromkeys(x.group(2) for x in dbm))
+        if len(cols) == 1 and len(keys) == 1:
+            return sheets[0], f"{cols[0]} ({keys[0]} = {_runs([x.group(3) for x in dbm])})"
     m = [_A1.match(a) for a in a1s]
     if len(a1s) > 1 and all(m) and one:
         cols, rows = [x.group(1) for x in m], [int(x.group(2)) for x in m]

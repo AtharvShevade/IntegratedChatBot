@@ -78,6 +78,18 @@ def apply(located: dict, meta, wb) -> int:
     for lcs in located.values():
         for lc in lcs:
             ex = getattr(lc.fact, "extra", None) or {}
+            if getattr(lc.addr, "is_db", False):
+                # A database location of ours: the validator's own record is only compared with it. Agreement is evidence; a
+                # difference makes our location uncertain (it is not silently replaced and not asserted).
+                tbl, cc = _norm(ex.get("DB TableName")), _norm(ex.get("Cell Code"))
+                if tbl and cc:
+                    if tbl == _norm(lc.addr.table) and cc == _norm(lc.addr.cell_code):
+                        lc.bt = True
+                    else:
+                        lc.bt_db_other = f"{ex.get('DB TableName')} / cell code {ex.get('Cell Code')}"
+                        lc.uncertain = ("the validator's backtracking record names " + lc.bt_db_other
+                                        + ", which is not the table and cell code found from the return's metadata")
+                continue
             code, sheet = _norm(ex.get("Cell Code")), _norm(ex.get("Excel SheetName"))
             layouts = table_layouts(meta, ex.get("DB TableName")) if not sheet and ex.get("DB TableName") else set()
             if not code or not (sheet or layouts) or not lc.fact.concept:

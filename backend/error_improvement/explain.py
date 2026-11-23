@@ -121,9 +121,12 @@ def explain_file(error_file: str, repo: str | None = None, workbook: str | None 
         meta.layout_ranges = tt.layout_ranges(meta)
         info["sources"] = {"instance": meta.reported is not None, "rule_definitions": len(meta.formula_defs)}
 
+    from . import db_return as dbr
     wb, basis = None, "none"
     if workbook:
         wb, basis = Workbook(workbook), "workbook given"
+    elif folder and dbr.return_kind(meta) is False:
+        wb, basis = EmptyWorkbook(), "database return (IsExcel is false): locations come from the return's database queries and mapping"
     elif folder:
         up = mu.match_upload(folder, error_file)
         if up:
