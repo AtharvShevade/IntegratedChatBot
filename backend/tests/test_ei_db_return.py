@@ -323,3 +323,7 @@ def test_one_clear_cell_is_the_location_even_when_it_cannot_be_confirmed(tmp_pat
 def test_tier_three_nothing_to_name_gives_none(tmp_path):
     meta = _meta_with_one_cell(tmp_path, _FakeReader("ok"))
     assert dr.resolve_db(meta, "NoSuchConcept", "asof_20250331", "5") is None
+
+def test_summed_database_cells_of_several_entries_read_short():
+    cells = [("T", "COL (CODE = 1, SG - Singapore)"), ("T", "COL (CODE = 1, AU - Australia)")]
+    assert _cv.cell_ref(cells) == ("T", "COL (CODE = 1: SG - Singapore + AU - Australia)")
