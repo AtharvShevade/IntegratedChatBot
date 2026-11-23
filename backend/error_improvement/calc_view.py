@@ -197,7 +197,7 @@ def cell_ref(cells: list[tuple[str, str]], limit: int = 6) -> tuple[str, str]:
         if len(cols) == 1 and len(keys) == 1:
             return sheets[0], f"{cols[0]} ({keys[0]} = {_runs([x.group(3) for x in dbm])})"
     ent = [_DBENTRY.match(a) for a in a1s]
-    if cells and all(ent) and one:                          # one column and CODE, several entries -> 'COL (CODE = 1: SG - Singapore + AU - Australia)'
+    if len(cells) > 1 and all(ent) and one:                 # one column and CODE, several entries -> 'COL (CODE = 1: SG - Singapore + AU - Australia)'
         if len({(x.group(1), x.group(2)) for x in ent}) == 1:
             names = list(dict.fromkeys(x.group(3).strip() for x in ent))
             return sheets[0], f"{ent[0].group(1)} (CODE = {ent[0].group(2)}: " + " + ".join(names[:6]) + (f" +{len(names) - 6} more" if len(names) > 6 else "") + ")"

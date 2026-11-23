@@ -327,3 +327,7 @@ def test_tier_three_nothing_to_name_gives_none(tmp_path):
 def test_summed_database_cells_of_several_entries_read_short():
     cells = [("T", "COL (CODE = 1, SG - Singapore)"), ("T", "COL (CODE = 1, AU - Australia)")]
     assert _cv.cell_ref(cells) == ("T", "COL (CODE = 1: SG - Singapore + AU - Australia)")
+
+def test_one_database_cell_keeps_its_own_text_so_the_table_stays_a_database_table():
+    one = [("T", "COL (CODE = 1, ALL Countries)")]
+    assert _cv.cell_ref(one) == ("T", "COL (CODE = 1, ALL Countries)")
