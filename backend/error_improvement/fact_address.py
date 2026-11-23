@@ -322,6 +322,19 @@ def rank_hits(meta: cl.FormMeta, wb: Workbook, cands: list, hits: list) -> list:
 
 
 def resolve_fact(meta: cl.FormMeta, wb: Workbook, concept: str, ctx_id: str, value: str, decimals=None) -> Resolved:
+    # The Excel approach is untouched whenever a workbook was filed: its cells are confirmed against that workbook, exactly as
+    # before. Only when there is NO filed workbook (a blank template, or nothing) is a layout whose queries read a database table
+    # located in that table (db_return) - and then only if the return is not an Excel return (see db_return.return_kind).
+    from . import db_return as dbr
+    filed = not getattr(wb, "is_template", False) and bool(getattr(wb, "sheets", None))
+    if not filed:
+        kind = dbr.return_kind(meta)
+        if kind is not True:
+            found = dbr.resolve_db(meta, concept, ctx_id, value)
+            if found is not None:
+                return found
+            if kind is False:
+                return Resolved("UNRESOLVED", [], "database return: no table cell found for this item in the return's queries")
     cands = candidates(meta, wb, concept, ctx_id)
     if not cands:
         return Resolved("UNRESOLVED", [], "no mapping row carries this concept with these members")

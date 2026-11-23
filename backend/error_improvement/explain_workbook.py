@@ -65,6 +65,8 @@ class Located:
 
     @property
     def where(self) -> str:
+        if self.addr is not None and getattr(self.addr, "is_db", False):
+            return self.addr.display                          # "TABLE › COLUMN (CODE = X010)" for a database table
         return f"{self.addr.sheet}!{self.addr.a1}" if self.addr else "(cell not confirmed)"
 
     @property
@@ -73,6 +75,8 @@ class Located:
 
 
 def _label(wb: Workbook, a: fa.Address) -> str:
+    if getattr(a, "is_db", False):
+        return (a.row_label or "")[:60]            # a database row has no sheet text; its own description, when the query gives one
     return wb.text_row(a.sheet, a.row, 1, 2)[:60]
 
 
@@ -91,6 +95,8 @@ def _prefer_sibling_layout(located) -> None:
 def _value_known(wb, value) -> bool:
     """Is this reported value anywhere in the workbook (any sheet, any template multiplier)?"""
     t = fa._dec(value)
+    if not hasattr(wb, "_cache"):
+        return False                                   # no workbook at all (a database return): the value is in no sheet
     keys = wb._cache.get("all_keys")
     if keys is None:
         keys = set()
@@ -199,6 +205,8 @@ def _flag_uncertain(located, comp, title: str, wb, rule_name: str = "", layouts:
         return
     for var, seg in zip(order, terms):
         for lc in located.get(var, []):
+            if getattr(lc.addr, "is_db", False):
+                continue                                   # the row-label check compares sheet text; a database row has none
             if lc.addr and not lc.inferred and not getattr(lc, "bt", False) and not ao._agree(ao._row_label(wb, lc.addr.sheet, lc.addr.row), seg):
                 import re
                 names = re.sub(r"[^a-z0-9]", "", (lc.addr.sheet + (layouts or {}).get(lc.addr.layout_id, "")).lower())

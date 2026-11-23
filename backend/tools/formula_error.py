@@ -3589,13 +3589,34 @@ def explain_formula_error_file(
     batch = rules[offset:offset + max_rules]
     improved = _explain_with_error_improvement(batch, rules, html_path, form_id, lang)
     if not improved:
-        return explain_formula_rules(batch, form_id=form_id, error_file_path=html_path, lang=lang)
+        old_all = explain_formula_rules(batch, form_id=form_id, error_file_path=html_path, lang=lang)
+        return _with_where_to_look(old_all, batch, rules, html_path, lang)
     pending = [i for i, r in enumerate(batch) if r.get("rule_name") not in improved]
     old = explain_formula_rules(
         [batch[i] for i in pending], form_id=form_id, error_file_path=html_path, lang=lang,
     ) if pending else []
+    old = _with_where_to_look(old, [batch[i] for i in pending], rules, html_path, lang)
     old_by_index = dict(zip(pending, old))
     return [old_by_index[i] if i in old_by_index else improved[r.get("rule_name")] for i, r in enumerate(batch)]
+
+
+def _with_where_to_look(items: list[dict], batch: list[dict], all_rules: list[dict], html_path: str, lang: str) -> list[dict]:
+    """The existing explanation of a database-return rule the engine could not confirm, plus a small 'Where to look' table (table,
+    column, code, row: up to 3 cells) right after the rule and its condition. Nothing else about the existing explanation changes.
+    Never raises."""
+    try:
+        from backend.error_improvement import adapter
+        if not items or not adapter.findings_enabled():
+            return items
+        numbering: dict[str, int] = {}
+        for position, rule in enumerate(all_rules, 1):
+            numbering.setdefault(rule.get("rule_name", ""), position)
+        where = adapter.where_to_look_batch(batch, html_path, numbering=numbering, lang=lang)
+        return [adapter.attach_where_to_look(item, where[rule["rule_name"]]) if rule.get("rule_name") in where else item
+                for item, rule in zip(items, batch)]
+    except Exception as exc:  # noqa: BLE001 - the existing explanation stands without the note
+        logger.warning("[formula_error] where-to-look skipped: %s: %s", type(exc).__name__, exc)
+        return items
 
 
 def _explain_with_error_improvement(batch: list[dict], all_rules: list[dict], html_path: str,

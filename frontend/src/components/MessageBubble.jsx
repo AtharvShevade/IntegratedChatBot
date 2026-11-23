@@ -473,6 +473,8 @@ const _KV_KEY = { 'Sheet Name': 'sheet', Table: 'table', Column: 'column', Cell:
 
 // Cell and Value stay narrow; Sheet Name, Table and Column share the rest evenly.
 const _KV_CLASS = { Column: 'kv-col-column', Cell: 'kv-col-cell', Value: 'kv-col-value' }
+// The backend also sends which field each column shows (kv_fields), so a database table's own column titles need no mapping here.
+const _KV_FIELD_CLASS = { column: 'kv-col-column', cell: 'kv-col-cell', value: 'kv-col-value' }
 
 function IssueCard({ section }) {
   const wrong = section.wrong || {}
@@ -482,6 +484,10 @@ function IssueCard({ section }) {
   const groups = Array.isArray(cells.groups) ? cells.groups : []
   const bd = section.breakdown || null
   const kv = Array.isArray(section.kv) ? section.kv : []
+  const kvCols = Array.isArray(section.kv_columns) ? section.kv_columns : []
+  const kvFields = Array.isArray(section.kv_fields) && section.kv_fields.length === kvCols.length
+    ? section.kv_fields
+    : kvCols.map(c => _KV_KEY[c] || (c === 'Value' ? 'value' : ''))
   const steps = Array.isArray(fix.steps) ? fix.steps : []
   return (
     <div className="issue-card">
@@ -500,9 +506,9 @@ function IssueCard({ section }) {
         <div className="issue-card-heading">{wrong.heading}</div>
         <p>{_richText(wrong.text, wrong.terms, wrong.codes)}</p>
         {kv.length > 0 && Array.isArray(section.kv_columns) && section.kv_columns.length >= 3 && (
-          <table className="issue-card-table">
+          <table className={'issue-card-table' + (section.kv_equal ? ' kv-equal' : '')}>
             <thead>
-              <tr>{section.kv_columns.map((c, i) => <th key={i} className={_KV_CLASS[c] || ''}>{c}</th>)}</tr>
+              <tr>{section.kv_columns.map((c, i) => <th key={i} className={section.kv_equal ? '' : (_KV_FIELD_CLASS[kvFields[i]] || _KV_CLASS[c] || '')}>{c}</th>)}</tr>
             </thead>
             <tbody>
               {kv.map((k, i) => (
@@ -510,8 +516,8 @@ function IssueCard({ section }) {
                   {!k.cell && String(k.value).length > 16
                     ? <td colSpan={section.kv_columns.length} className="issue-card-table-note">{k.label}: {k.value}</td>
                     : k.cell
-                    ? section.kv_columns.slice(0, -1).map(c => (
-                        <td key={c} className={_KV_CLASS[c] || ''}>{c === 'Cell' ? <code className="issue-card-code">{k.cell}</code> : k[_KV_KEY[c]]}</td>
+                    ? section.kv_columns.slice(0, -1).map((c, i) => (
+                        <td key={c} className={section.kv_equal ? '' : (_KV_FIELD_CLASS[kvFields[i]] || _KV_CLASS[c] || '')}>{kvFields[i] === 'cell' ? <code className="issue-card-code">{k.cell}</code> : k[kvFields[i]]}</td>
                       ))
                     : <td colSpan={section.kv_columns.length - 1}>{k.label}</td>}
                   {(k.cell || String(k.value).length <= 16) && <td className="issue-card-table-value kv-col-value">{k.value}</td>}
