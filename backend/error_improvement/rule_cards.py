@@ -256,6 +256,37 @@ _DB_EVIDENCE_TEXT = {
 }
 
 
+_DB_PHRASES = (
+    ("could not be located in the workbook (they are 0, or their cell is not shown)",
+     "could not be located in the table (they are 0, empty or not in the database)"),
+    ("could not be located in the workbook", "could not be located in the table"),
+    ("Not located in the workbook", "Not located in the table"),
+    ("not located in the workbook", "not located in the table"),
+    ("could be placed in the workbook", "could be placed in the table"),
+    ("could not be placed in the workbook", "could not be placed in the table"),
+    ("The workbook and the error file may disagree", "The table data and the error file may disagree"),
+    ('Locate the operands marked "Not located" in the workbook; they could not be placed automatically.',
+     'Check the operands marked "Not located" against your source data; they could not be placed in the table automatically.'),
+    ("from the return's mapping, workbook values not checked", "from the return's mapping; the table data was not read"),
+    ("workbook verified", "verified against the database"),
+)
+
+
+def _db_words(obj):
+    """The same text with Excel nouns replaced by database ones (strings inside dicts and lists too)."""
+    if isinstance(obj, str):
+        for old, new in _DB_PHRASES:
+            obj = obj.replace(old, new)
+        return obj
+    if isinstance(obj, list):
+        return [_db_words(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_db_words(x) for x in obj)
+    if isinstance(obj, dict):
+        return {k: _db_words(v) for k, v in obj.items()}
+    return obj
+
+
 def _all_db(located) -> bool:
     addrs = [lc.addr for lcs in located.values() for lc in lcs if lc.addr]
     return bool(addrs) and all(getattr(a, "is_db", False) for a in addrs)
@@ -286,7 +317,7 @@ def _phrase_rhs(terms: list[str]) -> str:
     return f"the sum of {shown}"
 
 
-def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev):
+def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev, db=False):
     """(problem, cause, fix) for one table row of a rule."""
     k = r.facts.get("kind", "")
     sol = _clean(r.solution)
@@ -311,6 +342,12 @@ def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev):
                         "difference cannot be pinned on one cell." if missing else ""))
             fix = ("Compare the cells in the table with your source data and fill any operand that should not be 0; "
                    "the two sides must be equal." if missing else "Make the cells add up.")
+            if db:                                         # a database table: say what to do with the data
+                fix = ("Check both values against your source data, correct the one that is wrong in the data, then regenerate the "
+                       "instance and validate it again.")
+                if missing:
+                    fix = ("Fill any value of this rule that is missing or 0 in the data, and check the values in the table against "
+                           "your source data. Then regenerate the instance and validate it again.")
     elif k == "rule behaviour":
         problem = f"The rule's comparison fails for these values ({_clean(r.error).split(':')[0][:120]})."
         cause = sol.replace("No data change.", "").strip()
@@ -451,7 +488,9 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
         elif mine:
             triples = []
             for r in mine:
-                t = _row_triple(r, lhs_term, terms_list, eq_problem, located, ev)
+                used = {v for v in order}                           # a variable the rule's formula does not use cannot be a missing operand
+                t = _row_triple(r, lhs_term, terms_list, eq_problem,
+                                {k: v for k, v in located.items() if k in used} if used else located, ev, db=_all_db(located))
                 if t:
                     triples.append(t)
             if triples:
@@ -476,6 +515,10 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
         card["view"] = _compact_view(card, data_groups, located, cell_money, comp, mine, wb, ev, rc=card["root_cause"], findings=findings)
         card["view"]["kv_where"] = _kv_where(card["view"], wb, located)
         _mark_db(card["view"], located)
+        if card["db"]:
+            card["view"] = _db_words(card["view"])
+            for key in ("problem", "cause", "fix"):
+                card[key] = _db_words(card[key])
         if card["bt"] and card["bt_differs"]:
             card["view"]["warnings"] = list(card["view"].get("warnings") or []) + [
                 "The validator's backtracking record and our own search place a value in different cells: " + "; ".join(card["bt_differs"][:3])

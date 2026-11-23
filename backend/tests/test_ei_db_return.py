@@ -191,3 +191,38 @@ def test_an_excel_cell_table_keeps_its_columns():
 def test_summed_database_cells_read_as_one_column_and_a_run_of_codes():
     cells = [("T", f"COL (CODE = {n})") for n in (1029, 1030, 1031, 1034)]
     assert _cv.cell_ref(cells) == ("T", "COL (CODE = 1029-1031, 1034)")
+
+
+# ── wording of a database card ───────────────────────────────────────────────
+import types as _types
+
+
+def _mismatch_row():
+    return _types.SimpleNamespace(facts={"kind": "total mismatch"}, solution="", error="")
+
+
+class _NoCell:
+    addr = None
+
+
+def test_a_variable_the_formula_does_not_use_is_not_a_missing_operand():
+    ev = {"lhs_value": 150, "rhs_value": 160}
+    located = {"V4": [_NoCell()]}                       # V4 is reported but the formula only compares V2 and V3
+    _p, cause, _f = _rc._row_triple(_mismatch_row(), "x", [], "", {}, ev)
+    assert "could not be located" not in cause
+    _p, cause, _f = _rc._row_triple(_mismatch_row(), "x", [], "", located, ev)          # a used operand with no cell is reported
+    assert "could not be located in the workbook" in cause
+
+
+def test_a_database_card_says_check_the_data_and_regenerate():
+    ev = {"lhs_value": 150, "rhs_value": 160}
+    _p, _c, fix = _rc._row_triple(_mismatch_row(), "x", [], "", {}, ev, db=True)
+    assert "regenerate the instance" in fix and "workbook" not in fix and "Make the cells add up" not in fix
+
+
+def test_excel_nouns_become_database_nouns_only_on_a_database_card():
+    text = {"a": ["1 operand(s) could not be located in the workbook (they are 0, or their cell is not shown)"],
+            "b": "(the first could not be placed in the workbook)", "c": "workbook verified"}
+    got = _rc._db_words(text)
+    assert got["a"] == ["1 operand(s) could not be located in the table (they are 0, empty or not in the database)"]
+    assert got["b"] == "(the first could not be placed in the table)" and got["c"] == "verified against the database"
