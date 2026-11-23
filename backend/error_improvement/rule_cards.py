@@ -477,6 +477,7 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
                    if data_groups else None)
         card["cells"] = _cell_rows(wb, located, comp, culprit)
         card["db"] = _all_db(located)
+        card["where_to_look"] = _db_where_to_look(located)
         lhs_raw, _, rhs_raw = checks.partition("=")
         eq_problem = (f"{lhs_raw.strip()} does not equal {rhs_raw.strip()}." if rhs_raw.strip() else "")
 
@@ -1414,6 +1415,37 @@ def _row_text(a) -> str:
     return a.key_text + (f" · {a.row_label}" if getattr(a, "row_label", "") else "")
 
 
+def _code_and_row(a) -> tuple[str, str]:
+    """('1028', '(ii) Non-SLR Investments') for a database cell: the code alone, then the entry's name and the row's description."""
+    code = next((str(v) for c, v in a.key.items() if c.upper() == "CODE"), "")
+    entries = [str(v) for c, v in a.key.items() if c.upper() != "CODE"]
+    entries = [v for v in entries if not any(o != v and o.startswith(v) for o in entries)]
+    row = " \u00b7 ".join(x for x in (", ".join(dict.fromkeys(entries)), getattr(a, "row_label", "")) if x)
+    return code, row
+
+
+def _db_where_to_look(located) -> dict | None:
+    """{'reason', 'rows': [[table, column, code, row], ...]} for the first value of the rule the data could not confirm (at most 3
+    candidate cells, best first), or None."""
+    why = {"no-row": "row not found in the database", "differs": "the row holds another value", "unread": "table data not read"}
+    for lcs in located.values():
+        for lc in lcs:
+            addrs = [a for a in (getattr(getattr(lc, "res", None), "addresses", None) or []) if getattr(a, "is_db", False)]
+            if not addrs or addrs[0].verified:
+                continue
+            rows = []
+            for a in [x for x in addrs if x.state == addrs[0].state][:3]:
+                code, row = _code_and_row(a)
+                held = getattr(a, "db_value", None)
+                shown = "" if held is None else (f"{float(held):,.2f}".rstrip("0").rstrip(".") if isinstance(held, (int, float)) else str(held))
+                if [a.table, a.column, code, row, shown] not in rows:
+                    rows.append([a.table, a.column, code, row, shown])
+            if not any(r[4] for r in rows):
+                rows = [r[:4] for r in rows]                  # a 'Table holds' column only when the table's value is known
+            return {"reason": why.get(addrs[0].state, ""), "rows": rows}
+    return None
+
+
 def _mark_db(view: dict, located: dict) -> None:
     """When every cell of the card's table is a database cell, show it as a database table: Table Name | Column | Row | Value. The
     same four-column shape the Excel table has (container | column | where in it | value), with the database's own names."""
@@ -1432,10 +1464,7 @@ def _mark_db(view: dict, located: dict) -> None:
     where = {}
     for label, key in list(cells.items()):
         a = db[key]
-        code = next((str(v) for c, v in a.key.items() if c.upper() == "CODE"), "")
-        entries = [str(v) for c, v in a.key.items() if c.upper() != "CODE"]
-        entries = [v for v in entries if not any(o != v and o.startswith(v) for o in entries)]
-        row = " \u00b7 ".join(x for x in (", ".join(dict.fromkeys(entries)), getattr(a, "row_label", "")) if x)
+        code, row = _code_and_row(a)
         where[label] = {"table": "", "column": a.column, "code": code, "row": row}
         cells[label] = (a.table, row or code)
     view["kv_where"] = where

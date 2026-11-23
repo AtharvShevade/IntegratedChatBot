@@ -153,3 +153,59 @@ def attach_findings(item: dict, findings: list[str]) -> dict:
     out["explanation"] = text + chr(10) * 2 + heading + chr(10) + chr(10).join(f"  - {f}" for f in findings)
     out["_findings"] = True
     return out
+
+
+
+def where_to_look_batch(rules: list[dict], error_file: str, numbering: dict | None = None, lang: str = "en") -> dict[str, dict]:
+    """{rule_name: {'reason', 'rows'}} for the database-return rules that keep the existing explanation but have table cells worth
+    checking. {} when off, not English, or nothing to name. Reads the same cached analysis; never raises."""
+    if not findings_enabled() or not gate_enabled() or not rules or not error_file or not os.path.isfile(error_file):
+        return {}
+    if (lang or "en").strip().lower() not in ("", "en", "english"):
+        return {}
+    try:
+        cards = (_result_for(error_file, _repo_root(), numbering) or {}).get("cards") or {}
+        out = {}
+        for rule in rules:
+            card = cards.get(rule.get("rule_name", ""))
+            if card and not card.get("full", True) and card.get("where_to_look"):
+                out[rule["rule_name"]] = dict(card["where_to_look"])
+        return out
+    except Exception as exc:                        # noqa: BLE001 - the existing explanation stands without the table
+        logger.warning("[error_improvement] where-to-look skipped for %s: %s: %s", os.path.basename(error_file), type(exc).__name__, exc)
+        return {}
+
+
+WHERE_TO_LOOK_COLUMNS = ["Table Name", "Column", "Code", "Row"]
+
+
+def attach_where_to_look(item: dict, where: dict) -> dict:
+    """The existing explanation with a 'Where to look' table right after its rule and condition, before the values:
+
+        title / problem / Validation Rule / Satisfactory condition / i.e. ...
+        Where to look (not confirmed: <reason>)   Table Name | Column | Code | Row
+        This rule failed for N items ... / Values / Fix
+    """
+    rows = [list(r) for r in (where or {}).get("rows") or []]
+    if not rows:
+        return item
+    reason = (where or {}).get("reason") or ""
+    heading = "Where to look (not confirmed" + (f": {reason})" if reason else ")")
+    columns = list(WHERE_TO_LOOK_COLUMNS) + (["Table holds"] if rows and len(rows[0]) > 4 else [])
+    out = dict(item)
+    sections = list(out.get("explanation_sections") or [])
+    table = {"kind": "table", "heading": heading, "columns": columns, "rows": rows}
+    at = next((i + 1 for i, s in enumerate(sections) if s.get("kind") == "rule" and not s.get("heading")), None)
+    if at is None:
+        at = next((i for i, s in enumerate(sections) if s.get("kind") in ("note", "matrix")), len(sections))
+    sections.insert(at, table)
+    out["explanation_sections"] = sections
+    text = (out.get("explanation") or "")
+    block = heading + chr(10) + "  " + " | ".join(columns) + chr(10) + chr(10).join("  " + " | ".join(r) for r in rows)
+    marker = text.find("This rule failed for")
+    if marker < 0:
+        marker = text.find(chr(10) + "Values")
+        marker = marker + 1 if marker >= 0 else -1
+    out["explanation"] = (text[:marker] + block + chr(10) * 2 + text[marker:]) if marker >= 0 else text.rstrip() + chr(10) * 2 + block
+    out["_where_to_look"] = True
+    return out

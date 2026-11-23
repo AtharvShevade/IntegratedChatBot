@@ -354,7 +354,11 @@ def _iter_cells(queries, mapping, layout_id, code, typed, loose):
                 key: dict[str, str] = {}
                 notes: list[str] = []
                 if primary and len(typed) == 1 and len(primary) == 1:
-                    key[primary[0]] = next(iter(typed.values()))
+                    # a user-entered row of a table keyed by CODE is told apart by its name, in the description column
+                    kcol = primary[0]
+                    if kcol.upper() in ("CODE", "SR_NO", "SRNO", "ID") and label:
+                        kcol = label
+                    key[kcol] = next(iter(typed.values()))
                 elif primary:
                     if len(typed) != len(primary):
                         notes.append("row key not fully determined by the context")
@@ -368,7 +372,7 @@ def _iter_cells(queries, mapping, layout_id, code, typed, loose):
 def locate_cells(queries, mapping, layout_id, code, typed, loose=True) -> list["DbCell"]:
     """Every table cell the mapping row (layout id + Code) could be, most specific first. loose=False keeps only the cells the query
     itself settles (the old locate_cell); loose=True also lists a UNION branch the query does not narrow down."""
-    return list(_iter_cells(queries, mapping, layout_id, code, typed, loose))[:8]
+    return list(_iter_cells(queries, mapping, layout_id, code, typed, loose))[:24]
 
 
 def locate_cell(queries: list[DbQuery], mapping: dict[str, dict], layout_id: str, code: str, typed: dict[str, str]) -> DbCell | None:
@@ -421,6 +425,7 @@ class DbAddress(_fa.Address):
     reporting_date: str = ""
     kind: str = ""
     verified: bool = False
+    db_value: object = None
     state: str = ""                       # unread | no-row | differs (why a location is not confirmed)
 
     is_db = True
@@ -529,7 +534,7 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
     target = _fa._dec(value)
     verified, guesses = [], []
 
-    def address(loc, cell, column, mult, label, ok, state):
+    def address(loc, cell, column, mult, label, ok, state, held=None):
         rowmap = st["rows"].setdefault(cell.table, {})
         colmap = st["cols"].setdefault(cell.table, {})
         key_text = _key_text(cell.key)
@@ -541,6 +546,7 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
         a.verified, a.state = ok, state
         if target is not None and mult:
             a.workbook_value = float(target / mult)       # the filed value: the location rests on the mapping (or the row, if confirmed)
+        a.db_value = held                                 # what the table holds when it differs from the filing (else None)
         return a
 
     for loc in _cl.resolve(meta, concept, ctx):
@@ -559,10 +565,11 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
                     column, _why = pick_column({c: row.get(c) for c in cols}, value, mult)
                     if column is not None:
                         verified.append(address(loc, cell, column, mult, label, True, ""))
-                        continue
+                        break                                   # the data settled this fact: no need to read the other candidates
                     state = "differs"
             for column in (_rank_columns(cols, ctx)[:3] if cell.alternatives else [cell.column]):
-                guesses.append(address(loc, cell, column, mult, label, False, state))
+                held = row.get(column) if (state == "differs" and not cell.alternatives) else None
+                guesses.append(address(loc, cell, column, mult, label, False, state, held))
     if verified:
         unique = {(a.table, a.column, tuple(a.key.items())): a for a in verified}
         found = list(unique.values())[:6]
@@ -572,11 +579,12 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
         return None
     order = {"differs": 0, "unread": 1, "no-row": 2}
     guesses.sort(key=lambda a: order.get(a.state, 1))               # stable: the mapping's own rank breaks ties
+    guesses = [a for a in guesses if a.state == guesses[0].state]   # a row that exists beats cells the database does not have
     unique = {(a.table, a.column, tuple(a.key.items())): a for a in guesses}
     cands = list(unique.values())
-    if len(cands) == 1 and cands[0].state in ("unread", "differs") and cands[0].kind != "code-multi":
-        # the metadata names exactly one cell and the data neither confirms nor excludes it (not readable, or it holds another
-        # value): that is the location, shown as not confirmed
+    if len(cands) == 1 and cands[0].state == "unread" and cands[0].kind != "code-multi":
+        # the metadata names exactly one cell and the data could not be read: that is the location, shown as not confirmed
+        # (a row that exists but holds another value is never the location: the table and the filing disagree, see Where to look)
         return _fa.Resolved("MAPPED", cands, "not confirmed in the database")
     # GUESS, not MAPPED: several cells, or a column the data did not settle, or a row the database does not have. These cells are
     # named to look at; they are not used as the fact's location (no culprit, no correction amount from an unconfirmed cell).

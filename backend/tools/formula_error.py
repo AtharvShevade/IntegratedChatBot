@@ -3601,9 +3601,9 @@ def explain_formula_error_file(
 
 
 def _with_where_to_look(items: list[dict], batch: list[dict], all_rules: list[dict], html_path: str, lang: str) -> list[dict]:
-    """The existing explanation of a database-return rule the engine could not confirm, plus one short 'Where to look' line naming the
-    table cells to check ("Not confirmed (...). Check: TABLE.COLUMN (CODE = n) or ..."). Only that line is added; nothing else about the
-    existing explanation changes. Never raises."""
+    """The existing explanation of a database-return rule the engine could not confirm, plus a small 'Where to look' table (table,
+    column, code, row: up to 3 cells) right after the rule and its condition. Nothing else about the existing explanation changes.
+    Never raises."""
     try:
         from backend.error_improvement import adapter
         if not items or not adapter.findings_enabled():
@@ -3611,12 +3611,9 @@ def _with_where_to_look(items: list[dict], batch: list[dict], all_rules: list[di
         numbering: dict[str, int] = {}
         for position, rule in enumerate(all_rules, 1):
             numbering.setdefault(rule.get("rule_name", ""), position)
-        notes = adapter.findings_batch(batch, html_path, numbering=numbering, lang=lang)
-        out = []
-        for item, rule in zip(items, batch):
-            lines = [n for n in notes.get(rule.get("rule_name", ""), []) if n.startswith("Not confirmed")]
-            out.append(adapter.attach_findings(item, lines) if lines else item)
-        return out
+        where = adapter.where_to_look_batch(batch, html_path, numbering=numbering, lang=lang)
+        return [adapter.attach_where_to_look(item, where[rule["rule_name"]]) if rule.get("rule_name") in where else item
+                for item, rule in zip(items, batch)]
     except Exception as exc:  # noqa: BLE001 - the existing explanation stands without the note
         logger.warning("[formula_error] where-to-look skipped: %s: %s", type(exc).__name__, exc)
         return items

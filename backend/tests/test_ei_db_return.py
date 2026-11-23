@@ -332,3 +332,86 @@ def test_summed_database_cells_of_several_entries_read_short():
 def test_one_database_cell_keeps_its_own_text_so_the_table_stays_a_database_table():
     one = [("T", "COL (CODE = 1, ALL Countries)")]
     assert _cv.cell_ref(one) == ("T", "COL (CODE = 1, ALL Countries)")
+
+
+# ── the two cases that were not resolved: the 9th UNION branch, and a user-entered row named in the description column ──
+def _msme_sql():
+    cols = ["IND_MICRO", "IND_SMALL", "IND_MEDIUM", "SER_MICRO", "SER_SMALL", "SER_MEDIUM", "TOT_MICRO", "TOT_SMALL", "TOT_MEDIUM"]
+    parts = [f"Select CATEGORY as Description, {c} as Val, Code{'+' + str(7 * i) if i else ''} as code From T2 Where RDATE = ##"
+             for i, c in enumerate(cols)]
+    return " UNION ALL ".join(parts)
+
+
+def test_a_code_in_the_last_of_nine_union_branches_is_still_a_candidate(tmp_path):
+    xml = f'<Document><Row QueryId="1" TemplateId="81" ProviderId="9"><SelectQuery>{_msme_sql()}</SelectQuery></Row></Document>'
+    q = dr.load_db_queries(_folder(tmp_path, xml))["81"]
+    cells = dr.locate_cells(q, {}, "81", "1061", {})
+    assert len(cells) == 9 and cells[-1].column == "VAL" or cells[-1].column == "TOT_MEDIUM"
+    assert cells[-1].key["CODE"] == "1005"                                           # 1061 - 56
+
+
+def test_the_data_picks_the_right_branch_of_nine(tmp_path):
+    xml = f'<Document><Row QueryId="1" TemplateId="81" ProviderId="9"><SelectQuery>{_msme_sql()}</SelectQuery></Row></Document>'
+
+    class Reader:
+        def read_row(self, cell, columns, date):
+            return (("ok", {c: (532 if c == "TOT_MEDIUM" else 1) for c in columns}) if cell.key.get("CODE") == "1005" else ("no-row", {}))
+    meta = _cl.FormMeta("4100", _folder(tmp_path, xml))
+    meta.layouts, meta.layout_axes = {"81": "L"}, {"81": set()}
+    meta.rows_by_concept = {"N": [_cl.MapRow("81", "1~1", "1061", "N", frozenset(), frozenset(), 1)]}
+    meta.__dict__["_db_reader"] = Reader()
+    res = dr.resolve_db(meta, "N", "asof_20250331", "532")
+    assert res.status == "CONFIRMED" and res.addresses[0].key == {"CODE": "1005"} and res.addresses[0].column == "TOT_MEDIUM"
+
+
+def test_a_user_entered_row_is_told_apart_by_its_name_not_by_its_code(tmp_path):
+    xml = ('<Document><Row QueryId="1" TemplateId="56" ProviderId="9"><SelectQuery>Select INDUSTRY_NAME As Description, GROSS_NPA_BEG As GNPABegg, '
+           "GROSS_NPA_END As GNPAEnd, RDATE From T3 Where TO_DATE(RDATE,'DD-MON-RR') = ##</SelectQuery></Row></Document>")
+    folder = _folder(tmp_path, xml, '<Document><Row PriID="56" TableName="T3" PrimaryColumn="CODE|RDATE" FilterColumn="RDATE"/></Document>')
+    cell = dr.locate_cell(dr.load_db_queries(folder)["56"], dr.load_table_mapping(folder), "56", "GNPABegg", {"OtherInfrastructureAxis": "OTherIHSD"})
+    assert cell.table == "T3" and cell.column == "GROSS_NPA_BEG" and cell.key == {"INDUSTRY_NAME": "OTherIHSD"}
+
+
+# ── "Where to look" table: placed after the rule and its condition, before the values ───────────────────────────────
+from backend.error_improvement import adapter as _ad
+
+
+def _old_item():
+    return {"explanation": ("\u2699 Formula Error \u2014 R\n\n[X] A is lower than B.\n\nValidation Rule\n  A = B\n\nSatisfactory condition\n  v1 = v2\n\n"
+                            "i.e. A must be equal to B\n\nThis rule failed for 3 reported items; the first is shown above.\n\nValues\n  ...\n\nFix\n  - check"),
+            "explanation_sections": [{"kind": "headline"}, {"kind": "labeled_text", "heading": "Validation Rule"},
+                                     {"kind": "labeled_text", "heading": "Satisfactory condition"}, {"kind": "rule", "heading": ""},
+                                     {"kind": "note"}, {"kind": "matrix", "heading": "Values"}, {"kind": "fix", "heading": "Fix"}]}
+
+
+def test_where_to_look_is_a_table_right_after_the_condition_and_before_the_values():
+    where = {"reason": "row not found in the database", "rows": [["T1", "GROSS_NPA_BEG", "", "OTherIHSD"], ["T1", "GROSS_NPA_END", "1057", "Other"]]}
+    out = _ad.attach_where_to_look(_old_item(), where)
+    kinds = [s["kind"] for s in out["explanation_sections"]]
+    assert kinds == ["headline", "labeled_text", "labeled_text", "rule", "table", "note", "matrix", "fix"]
+    table = out["explanation_sections"][4]
+    assert table["heading"] == "Where to look (not confirmed: row not found in the database)"
+    assert table["columns"] == ["Table Name", "Column", "Code", "Row"] and table["rows"][0] == ["T1", "GROSS_NPA_BEG", "", "OTherIHSD"]
+    text = out["explanation"]
+    assert text.index("i.e. A must be equal to B") < text.index("Where to look") < text.index("This rule failed for") < text.index("Values")
+    assert "T1 | GROSS_NPA_END | 1057 | Other" in text
+
+
+def test_nothing_to_name_leaves_the_explanation_untouched():
+    item = _old_item()
+    assert _ad.attach_where_to_look(item, {"reason": "", "rows": []}) is item and _ad.attach_where_to_look(item, None) is item
+
+
+def test_a_row_that_holds_another_value_is_named_with_what_it_holds_and_is_not_the_location(tmp_path):
+    xml = ("<Document><Row QueryId=\"1\" TemplateId=\"10\" ProviderId=\"9\"><SelectQuery>Select CODE as Code, VALUE as Val "
+           "From T1 Where RDATE = ##</SelectQuery></Row></Document>")
+    (tmp_path / "x").mkdir()
+    (tmp_path / "y").mkdir()
+    meta = _meta_with_one_cell(tmp_path / "x", _FakeReader("ok", {"VALUE": 532, "ITEM": "Doubtful"}))
+    meta.__dict__["_db_state"] = {"queries": dr.load_db_queries(_folder(tmp_path / "y", xml)), "mapping": {}, "rows": {}, "cols": {}}
+    res = dr.resolve_db(meta, "Concept", "asof_20250331", "5320")
+    assert res.status == "GUESS" and res.addresses[0].state == "differs" and res.addresses[0].db_value == 532
+    where = _rc._db_where_to_look({"V1": [_types.SimpleNamespace(res=res)]})
+    assert where["reason"] == "the row holds another value" and where["rows"][0][4] == "532"
+    out = _ad.attach_where_to_look(_old_item(), where)
+    assert out["explanation_sections"][4]["columns"] == ["Table Name", "Column", "Code", "Row", "Table holds"]
