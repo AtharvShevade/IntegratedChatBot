@@ -973,6 +973,25 @@ async def decide(
                 _probe_intent, _ = check_db_qa_intent(user_query)
             _looks_like_db_qa = bool(_probe_intent)
 
+        # ── SQL-agent follow-up ───────────────────────────────────────────────
+        # The previous answer in this session came from the SQL agent (or it
+        # asked "which return?"), and this message continues it ("which is the
+        # highest?", "same for F013", the picked return). Only fires when the
+        # SQL agent holds live context for this session and no workflow / XML
+        # DB-QA signal matched, so every other route is unaffected.
+        if (
+            convo_reply is None and session_id and not _has_workflow
+            and not _looks_like_db_qa_shape and not _looks_like_db_qa
+        ):
+            from backend.sql_agent import session_context as _sql_session
+            if _sql_session.looks_like_followup(session_id, user_query):
+                logger.info("[INTENT:SQL_FOLLOWUP] routing follow-up to SQL agent session=%s", session_id)
+                from backend.sql_agent import handle_db_query
+                return await handle_db_query(
+                    user_query, session_id=session_id, login_id=login_id,
+                    conversation_history=conversation_history,
+                )
+
         if convo_reply is None and not _has_workflow and not _has_sql and not _looks_like_db_qa:
             convo_category = await _classify_conversational(
                 user_query,
@@ -1144,7 +1163,10 @@ async def decide(
             if _has_sql:
                 logger.info("[INTENT:STEP3] SQL keyword fast-path session=%s", session_id)
                 from backend.sql_agent import handle_db_query
-                return await handle_db_query(user_query, session_id=session_id, login_id=login_id)
+                return await handle_db_query(
+                    user_query, session_id=session_id, login_id=login_id,
+                    conversation_history=conversation_history,
+                )
 
             debug_log(
                 "DECIDE — STEP3 SQL+QA MISS → LLM fallback",
@@ -1206,7 +1228,10 @@ async def decide(
     if intent == "query_database":
         logger.info("[INTENT] routing to SQL agent for session=%s", session_id)
         from backend.sql_agent import handle_db_query
-        return await handle_db_query(user_query, session_id=session_id, login_id=login_id)
+        return await handle_db_query(
+            user_query, session_id=session_id, login_id=login_id,
+            conversation_history=conversation_history,
+        )
 
     if intent == "unknown":
         # Only attempt report lookup for unknown queries when the message

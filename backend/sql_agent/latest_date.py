@@ -31,7 +31,7 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["query_implies_period", "apply_latest_date_default"]
+__all__ = ["query_implies_period", "apply_latest_date_default", "apply_explicit_date"]
 
 # Words that mean "more than one period" or name a time reference. Any of them
 # means the user did NOT leave the period open, so the default must not apply.
@@ -100,6 +100,46 @@ def _table_names(tables) -> list[str]:
     return sorted(names, key=len, reverse=True)
 
 
+def _wrap_table_refs(sql: str, names: list[str], inline_for) -> tuple[str, int]:
+    """Replace each FROM/JOIN reference to one of *names* with the inline view
+    ``inline_for(name)``. Returns ``(new_sql, count)``; count 0 means nothing
+    could be rewritten safely and *sql* is returned unchanged."""
+    alt = "|".join(re.escape(n) for n in names)
+    ref = re.compile(
+        rf"\b(?P<kw>from|join)(?P<sp>\s+)(?P<q>\"?)(?P<name>{alt})(?P=q)(?![\w$#.])",
+        re.IGNORECASE,
+    )
+    if not ref.search(sql):
+        return sql, 0
+
+    # A comma join ("FROM a, b") cannot be rewritten reference by reference.
+    if re.search(rf"\bfrom\s+\"?(?:{alt})\"?(?:\s+(?:as\s+)?[A-Za-z_]\w*)?\s*,", sql, re.IGNORECASE):
+        return sql, 0
+    if re.search(rf",\s*\"?(?:{alt})\"?(?![\w$#.(])", sql, re.IGNORECASE):
+        # a bare ", TABLE" that is not a column list element is a comma join;
+        # a column list never contains an unqualified selected-table name
+        return sql, 0
+
+    count = 0
+
+    def _wrap(m: re.Match) -> str:
+        nonlocal count
+        name = m.group("name")
+        tail = sql[m.end():]
+        alias_m = re.match(r"\s+(?:as\s+)?([A-Za-z_][\w$#]*)", tail, re.IGNORECASE)
+        has_alias = bool(alias_m) and alias_m.group(1).lower() not in _NOT_AN_ALIAS
+        count += 1
+        inline = inline_for(name)
+        # Without an alias the view takes the table's own name, so qualified
+        # references (TABLE.COLUMN) elsewhere in the query keep working.
+        return f"{m.group('kw')}{m.group('sp')}{inline}" + ("" if has_alias else f" {name}")
+
+    new_sql = ref.sub(_wrap, sql)
+    if new_sql == sql:
+        return sql, 0
+    return new_sql, count
+
+
 def apply_latest_date_default(sql: str, tables, query_names_period: bool) -> tuple[str, bool]:
     """Return ``(sql, changed)``: *sql* with every selected-table reference
     limited to that table's latest RDATE, or the original SQL untouched when
@@ -113,41 +153,70 @@ def apply_latest_date_default(sql: str, tables, query_names_period: bool) -> tup
     if not names:
         return sql, False
 
-    alt = "|".join(re.escape(n) for n in names)
-    ref = re.compile(
-        rf"\b(?P<kw>from|join)(?P<sp>\s+)(?P<q>\"?)(?P<name>{alt})(?P=q)(?![\w$#.])",
-        re.IGNORECASE,
+    new_sql, count = _wrap_table_refs(
+        sql, names,
+        lambda name: f"(SELECT * FROM {name} WHERE RDATE = (SELECT MAX(RDATE) FROM {name}))",
     )
-    if not ref.search(sql):
-        return sql, False
-
-    # A comma join ("FROM a, b") cannot be rewritten reference by reference.
-    if re.search(rf"\bfrom\s+\"?(?:{alt})\"?(?:\s+(?:as\s+)?[A-Za-z_]\w*)?\s*,", sql, re.IGNORECASE):
-        return sql, False
-    if re.search(rf",\s*\"?(?:{alt})\"?(?![\w$#.(])", sql, re.IGNORECASE):
-        # a bare ", TABLE" that is not a column list element is a comma join;
-        # a column list never contains an unqualified selected-table name
-        return sql, False
-
-    count = 0
-
-    def _wrap(m: re.Match) -> str:
-        nonlocal count
-        name = m.group("name")
-        tail = sql[m.end():]
-        alias_m = re.match(r"\s+(?:as\s+)?([A-Za-z_][\w$#]*)", tail, re.IGNORECASE)
-        has_alias = bool(alias_m) and alias_m.group(1).lower() not in _NOT_AN_ALIAS
-        count += 1
-        inline = f"(SELECT * FROM {name} WHERE RDATE = (SELECT MAX(RDATE) FROM {name}))"
-        # Without an alias the view takes the table's own name, so qualified
-        # references (TABLE.COLUMN) elsewhere in the query keep working.
-        return f"{m.group('kw')}{m.group('sp')}{inline}" + ("" if has_alias else f" {name}")
-
-    new_sql = ref.sub(_wrap, sql)
-    if count == 0 or new_sql == sql:
+    if count == 0:
         return sql, False
     logger.info(
         "[SQL_AGENT] no period named in the question -> latest RDATE default applied "
         "to %d table reference(s)", count,
     )
+    return new_sql, True
+
+
+def _period_rdate_expr(name: str, start: date, end: date) -> str:
+    """Latest RDATE of *name* inside [start, end] — an exact date when
+    start == end, the period's last reporting date for a month/quarter/year."""
+    return (
+        f"(SELECT MAX(RDATE) FROM {name} WHERE RDATE BETWEEN "
+        f"TO_DATE('{start.isoformat()}', 'YYYY-MM-DD') AND TO_DATE('{end.isoformat()}', 'YYYY-MM-DD'))"
+    )
+
+
+# "(SELECT MAX(RDATE) FROM <table> [alias])" — the latest-period idiom the
+# prompt, the stored QA pairs and apply_latest_date_default all produce.
+_MAX_RDATE_SUBQUERY = re.compile(
+    r"\(\s*SELECT\s+MAX\s*\(\s*(?:[A-Za-z_]\w*\.)?RDATE\s*\)\s+FROM\s+\"?(?P<name>[A-Za-z_][\w$#]*)\"?"
+    r"(?:\s+(?:AS\s+)?[A-Za-z_]\w*)?\s*\)",
+    re.IGNORECASE,
+)
+
+
+def apply_explicit_date(sql: str, tables, start: date, end: date) -> tuple[str, bool]:
+    """Pin *sql* to the reporting period the user named.
+
+    * every latest-period subquery ``(SELECT MAX(RDATE) FROM t)`` becomes the
+      latest RDATE of t inside [start, end];
+    * SQL that never mentions RDATE gets each selected table wrapped in an
+      inline view restricted to that date (same mechanism as the latest
+      default);
+    * SQL that already filters RDATE some other way (a literal the model
+      derived from the question, a range) is left as written.
+
+    Returns ``(sql, changed)``."""
+    if not sql or start is None or end is None:
+        return sql, False
+
+    if _MAX_RDATE_SUBQUERY.search(sql):
+        new_sql = _MAX_RDATE_SUBQUERY.sub(lambda m: _period_rdate_expr(m.group("name"), start, end), sql)
+        changed = new_sql != sql
+        if changed:
+            logger.info("[SQL_AGENT] explicit period %s..%s applied to latest-RDATE subquery", start, end)
+        return new_sql, changed
+
+    if re.search(r"\brdate\b", sql, re.IGNORECASE):
+        return sql, False
+
+    names = _table_names(tables)
+    if not names:
+        return sql, False
+    new_sql, count = _wrap_table_refs(
+        sql, names,
+        lambda name: f"(SELECT * FROM {name} WHERE RDATE = {_period_rdate_expr(name, start, end)})",
+    )
+    if count == 0:
+        return sql, False
+    logger.info("[SQL_AGENT] explicit period %s..%s applied to %d table reference(s)", start, end, count)
     return new_sql, True

@@ -30,6 +30,11 @@ from fastapi.responses import JSONResponse
 from backend.env_loader import load_env, describe as _describe_env  # noqa: E402
 load_env()
 
+# HOST_OVERRIDES: resolve named hosts (e.g. the Ollama proxy's *.irisregtech.com
+# name) to fixed IPs, so HTTPS certificates verify by name. No-op when unset.
+from backend import host_overrides  # noqa: E402
+host_overrides.install()
+
 # Initialise centralised logging before any other backend import so that
 # module-level loggers in agent, guided, tools, etc. are already wired up.
 from backend.utils.logger import log_exception, setup_logging  # noqa: E402

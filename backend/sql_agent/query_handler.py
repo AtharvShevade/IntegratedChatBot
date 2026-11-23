@@ -106,15 +106,17 @@ def _build_result(
     accuracy_hint:  str | None       = None,
     needs_more_info: bool            = False,
     more_info_hint: str | None       = None,
+    need_clarification: bool         = False,
+    options:        list[str]        = None,
 ) -> dict[str, Any]:
     db_error = _safe_client_error(db_error)
     return {
         "intent":             "query_database",
         "report_name":        None,
         "response_text":      response_text,
-        "need_clarification": False,
+        "need_clarification": need_clarification,
         "result_type":        result_type,
-        "options":            [],
+        "options":            options or [],
         "variance_data":      [],
         "variance_label_a":   "",
         "variance_label_b":   "",
@@ -269,29 +271,63 @@ def _authorize_sql_agent_access(login_id: str | None, table_names: list[str]) ->
     return True, None
 
 
-def _retrieve(query: str):
+def _retrieve(query: str, return_names: list[str] | None = None):
     """Steps 0-3, all blocking — run as one unit on a worker thread.
 
     Returns (tables, columns, matched_labels, qa_example, exact) where `exact` is
     a verified stored question/SQL pair when the user typed essentially the same
     sentence (in which case the other four are empty and no LLM is involved).
+
+    `return_names`: the return(s) the question explicitly names. When given,
+    retrieval is scoped to those returns' tables only (the return name is also
+    added to the retrieval text to pull their tables into the shortlist). If the
+    scoped shortlist ends up empty, the unscoped result is used unchanged.
     """
     from backend.sql_agent import config
+    from backend.sql_agent.context_resolver import load_returns, tables_for_returns
     from backend.sql_agent.retriever import (
         compute_query_embedding, find_exact_qa_match, get_relevant_schema,
     )
 
+    scope = tables_for_returns(return_names) if return_names else set()
+
     query_vec = compute_query_embedding(query)
 
     exact = find_exact_qa_match(query, query_vec=query_vec)
-    if exact:
+    if exact and (not scope or str(exact.get("table", "")).lower() in scope):
         return [], [], [], None, exact
 
+    retrieval_text, retrieval_vec = query, query_vec
+    shortlist_k = config.SRC_CONFIG.SHORTLIST_K
+    if scope:
+        catalogue = load_returns()
+        titles = " ".join(catalogue[r].title for r in return_names if r in catalogue)
+        if titles and titles.lower() not in query.lower():
+            retrieval_text = f"{query} {titles}"
+            retrieval_vec = compute_query_embedding(retrieval_text)
+        shortlist_k = max(shortlist_k or 0, len(scope), 5)
+
     retrieval = get_relevant_schema(
-        query, query_vec=query_vec, shortlist_k=config.SRC_CONFIG.SHORTLIST_K,
+        retrieval_text, query_vec=retrieval_vec, shortlist_k=shortlist_k,
     )
     tables, columns = retrieval.tables, retrieval.columns
     matched_labels, qa_example = retrieval.matched_labels, retrieval.qa_example
+
+    if scope and tables:
+        scoped = [t for t in tables if str(t["table"]).lower() in scope]
+        if scoped:
+            kept = {t["table"] for t in scoped}
+            tables = scoped
+            columns = [c for c in columns if c["table"] in kept]
+            matched_labels = [l for l in matched_labels if l["table"] in kept]
+            if qa_example and qa_example.get("table") not in kept:
+                qa_example = None
+            logger.info("[SQL_AGENT] retrieval scoped to return(s) %s -> %s", return_names, sorted(kept))
+        else:
+            logger.info(
+                "[SQL_AGENT] no shortlisted table belongs to return(s) %s -- using unscoped retrieval",
+                return_names,
+            )
     if not tables:
         return [], [], [], None, None
 
@@ -311,16 +347,264 @@ def _retrieve(query: str):
     return tables, columns, matched_labels, (qa_example, selection), None
 
 
+# ── Follow-up handling (previous SQL-agent answer in this session) ────────────
+
+_FOLLOWUP_SYSTEM = """You help a database assistant understand follow-up messages.
+The assistant previously answered a database question and showed a result table.
+Classify the user's NEW message into exactly one type:
+  "data_question" - asks about the result already shown (highest/lowest value, explain, summarise,
+                    compare rows of it, total of the shown rows) and can be answered from that table alone.
+  "refine"        - wants the same kind of query again with something changed (a different date or period,
+                    a different return/table, an extra filter, more or other columns, "same for ...").
+  "new"           - an unrelated, self-contained new question.
+For "refine", also write "question": ONE standalone question that combines the previous question with the
+change, keeping the previous return name and reporting period unless the user changed them.
+Reply with JSON only, e.g. {"type": "refine", "question": "..."} or {"type": "data_question"}."""
+
+_ANSWER_SYSTEM = """You are a regulatory-reporting data assistant. Answer the user's question using ONLY
+the result table provided. Quote the exact numbers and row labels from the table. If the table does not
+contain what is needed, say so plainly and suggest how to ask for it. Be concise (at most 6 sentences).
+Never invent values."""
+
+
+def _context_brief(ctx: dict[str, Any]) -> str:
+    return (
+        f"Previous question: {ctx.get('question')}\n"
+        f"Return(s): {', '.join(ctx.get('returns') or []) or 'unknown'}\n"
+        f"Reporting period: {ctx.get('period_label') or 'latest available'}\n"
+        f"Result columns: {', '.join(map(str, ctx.get('columns') or []))}\n"
+        f"Rows returned: {ctx.get('row_count', 0)}"
+    )
+
+
+def _result_table_text(ctx: dict[str, Any], max_cell: int = 60) -> str:
+    cols = [str(c) for c in ctx.get("columns") or []]
+    lines = [" | ".join(cols)]
+    for row in ctx.get("rows") or []:
+        lines.append(" | ".join(str(v)[:max_cell] if v is not None else "" for v in row))
+    if ctx.get("row_count", 0) > len(ctx.get("rows") or []):
+        lines.append(f"... ({ctx['row_count']} rows in total, first {len(ctx['rows'])} shown)")
+    return "\n".join(lines)
+
+
+def _parse_json_obj(text: str) -> dict[str, Any] | None:
+    import json
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+async def _classify_followup(message: str, ctx: dict[str, Any], history) -> tuple[str, str | None]:
+    """("data_question" | "refine" | "new", standalone question for refine)."""
+    from backend.services.llm_service import _call_ollama
+    prompt = f"{_context_brief(ctx)}\n\nNEW message: {message}"
+    try:
+        raw = await _call_ollama(prompt, _FOLLOWUP_SYSTEM, history=(history or [])[-4:], temperature=0.0)
+    except Exception as exc:
+        logger.warning("[SQL_AGENT] follow-up classification failed (%s) -- treating as new question", exc)
+        return "new", None
+    obj = _parse_json_obj(raw) or {}
+    kind = str(obj.get("type", "")).strip().lower()
+    if kind not in ("data_question", "refine", "new"):
+        kind = "new"
+    standalone = (obj.get("question") or "").strip() or None
+    if kind == "refine" and not standalone:
+        standalone = f"{ctx.get('question')} — {message}"
+    logger.info("[SQL_AGENT] follow-up type=%s standalone=%r", kind, standalone)
+    return kind, standalone
+
+
+async def _answer_from_previous(message: str, ctx: dict[str, Any], history) -> dict[str, Any] | None:
+    """Answer a question about the result already shown, without new SQL."""
+    from backend.services.llm_service import _call_ollama
+    prompt = (
+        f"{_context_brief(ctx)}\n\nResult table:\n{_result_table_text(ctx)}\n\n"
+        f"User question: {message}"
+    )
+    try:
+        answer = (await _call_ollama(prompt, _ANSWER_SYSTEM, history=(history or [])[-4:], temperature=0.1)).strip()
+    except Exception as exc:
+        logger.warning("[SQL_AGENT] answering from previous result failed: %s", exc)
+        return None
+    if not answer:
+        return None
+    return _build_result(response_text=answer, result_type="db_result")
+
+
+def _pick_pending_option(message: str, options: list[str]) -> str | None:
+    from backend.sql_agent.context_resolver import detect_returns
+    low = message.strip().lower()
+    for o in options:
+        if low == o.lower():
+            return o
+    if low.isdigit() and 1 <= int(low) <= len(options):
+        return options[int(low) - 1]
+    hits = [o for o in options if o in detect_returns(message)]
+    if len(hits) == 1:
+        return hits[0]
+    contains = [o for o in options if low and (low in o.lower() or o.lower() in low)]
+    return contains[0] if len(contains) == 1 else None
+
+
+# ── Reporting-date helpers ────────────────────────────────────────────────────
+
+def _fmt_date(v) -> str | None:
+    if v is None:
+        return None
+    try:
+        return v.strftime("%d-%b-%Y")
+    except AttributeError:
+        return str(v)[:10]
+
+
+def _scalar(sql: str):
+    """First cell of a tiny lookup query, or None on any failure."""
+    from backend.sql_agent.executor import execute_query
+    try:
+        _cols, rows, err = execute_query(sql)
+    except Exception as exc:
+        logger.debug("[SQL_AGENT] date lookup failed: %s", exc)
+        return None
+    if err or not rows:
+        return None
+    return rows[0][0]
+
+
+def _safe_ident(name: str) -> str | None:
+    return name if re.fullmatch(r"[A-Za-z_][\w$#]*", name or "") else None
+
+
+def _latest_rdate(table: str, period=None):
+    t = _safe_ident(table)
+    if not t:
+        return None
+    if period is None:
+        return _scalar(f"SELECT MAX(RDATE) FROM {t}")
+    return _scalar(
+        f"SELECT MAX(RDATE) FROM {t} WHERE RDATE BETWEEN "
+        f"TO_DATE('{period.start.isoformat()}', 'YYYY-MM-DD') AND TO_DATE('{period.end.isoformat()}', 'YYYY-MM-DD')"
+    )
+
+
+def _nearest_rdate_before(table: str, d) -> Any:
+    t = _safe_ident(table)
+    if not t:
+        return None
+    return _scalar(f"SELECT MAX(RDATE) FROM {t} WHERE RDATE <= TO_DATE('{d.isoformat()}', 'YYYY-MM-DD')")
+
+
+def _pin_period(sql: str, tables, columns, period, validate_sql) -> str:
+    """Pin *sql* to the explicitly named period (no-op when *period* is None),
+    keeping the model's own SQL whenever the rewrite fails validation."""
+    if period is None:
+        return sql
+    from backend.sql_agent.latest_date import apply_explicit_date
+    label = f"explicit period {period.label}"
+    try:
+        new_sql, changed = apply_explicit_date(sql, tables, period.start, period.end)
+        if changed:
+            ok, why = validate_sql(new_sql, tables, columns)
+            if ok:
+                logger.info("[SQL_AGENT] sql (%s applied)=\n%s", label, new_sql)
+                return new_sql
+            logger.warning("[SQL_AGENT] %s rejected by validation (%s); keeping model SQL", label, why)
+    except Exception as exc:
+        logger.warning("[SQL_AGENT] period pinning skipped: %s", exc)
+    return sql
+
+
+async def _date_hint(sql: str, primary_table: str | None, period, row_count: int) -> tuple[str | None, str | None]:
+    """(accuracy_hint, more_info_hint) describing which reporting date the
+    answer is for — or, for an explicit period with no rows, which dates exist."""
+    if not primary_table:
+        return None, None
+    if period is not None:
+        if row_count == 0:
+            nearest = await asyncio.to_thread(_nearest_rdate_before, primary_table, period.end)
+            latest = await asyncio.to_thread(_latest_rdate, primary_table)
+            parts = [f"No data is available for {period.label}."]
+            if nearest is not None:
+                parts.append(f"The nearest earlier reporting date is {_fmt_date(nearest)}.")
+            if latest is not None:
+                parts.append(f"The latest available reporting date is {_fmt_date(latest)}.")
+            return None, " ".join(parts)
+        actual = await asyncio.to_thread(_latest_rdate, primary_table, period)
+        if actual is not None and not period.is_single_day:
+            return f"Showing data for reporting date {_fmt_date(actual)} ({period.label}).", None
+        return f"Showing data for reporting date {_fmt_date(actual) or period.label}.", None
+    if re.search(r"MAX\s*\(\s*(?:\w+\.)?RDATE\s*\)", sql or "", re.IGNORECASE):
+        latest = await asyncio.to_thread(_latest_rdate, primary_table)
+        if latest is not None:
+            return (
+                f"No date was mentioned, so this shows the latest available reporting date: "
+                f"{_fmt_date(latest)}. Mention a date (e.g. 31-Mar-2025) for another period."
+            ), None
+    return None, None
+
+
+async def _finish(
+    *, q: str, sql: str, col_names, rows, tables_used: list[str], period,
+    session_id: str | None, base_hint: str | None,
+) -> dict[str, Any]:
+    from backend.sql_agent.context_resolver import returns_for_tables
+    from backend.sql_agent import session_context
+    from backend.sql_agent.utils import serialize_rows
+
+    serialized_rows = serialize_rows(rows)
+    primary = tables_used[0] if tables_used else None
+    date_hint, no_data_hint = await _date_hint(sql, primary, period, len(serialized_rows))
+    result = _rows_result(col_names, serialized_rows, sql, date_hint or base_hint)
+    if no_data_hint:
+        result["response_text"] = no_data_hint
+        result["more_info_hint"] = no_data_hint + " Ask again with one of those dates."
+
+    session_context.save_result(
+        session_id, question=q, returns=returns_for_tables(tables_used), tables=tables_used,
+        sql=sql, columns=list(col_names or []), rows=serialized_rows,
+        period_label=period.label if period is not None else None,
+    )
+    return result
+
+
+_MULTI_RETURN_OK_RE = re.compile(r"\b(compar\w*|both|versus|vs\.?|across|each\s+return|all\s+returns)\b", re.IGNORECASE)
+
+
+def _clarify_return(q: str, candidates: list[str], session_id: str | None) -> dict[str, Any]:
+    from backend.sql_agent import session_context
+    session_context.save_pending_clarification(session_id, question=q, options=candidates)
+    return _build_result(
+        response_text=(
+            "Your question matches data in more than one return. "
+            "Which return should I look in? Pick one below, or ask again mentioning the return name."
+        ),
+        result_type="db_result",
+        need_clarification=True,
+        options=candidates,
+    )
+
+
 async def handle_db_query(
     message: str, session_id: str | None = None, login_id: str | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     Full NL → SQL → Execute pipeline.
 
     Steps:
+      0. Session context — resolve a pending "which return?" answer, or a
+         follow-up on the previous SQL answer (answered from the shown rows,
+         or rewritten into a standalone question).
       1. Length guard — ask for more detail if query is too short
+      1.5 Context — named return(s) (scope retrieval to their tables) and the
+         named reporting date/period (no date = latest available RDATE)
       2. Retrieve + select relevant schema (FAISS + selector), or short-circuit
-         on a verified stored question
+         on a verified stored question; ask which return when the matched
+         tables span several returns and none was named
       2.5. H-02: identify the target return(s) and authorize login_id against
            them using the existing 5.5 department/return access check, BEFORE
            any SQL is generated.
@@ -331,11 +615,41 @@ async def handle_db_query(
 
     Returns a dict that can be passed directly to ChatResponse(**result).
     """
+    from backend.sql_agent import session_context
+    from backend.sql_agent.context_resolver import (
+        detect_returns, extract_report_date, returns_for_tables,
+    )
+
     q = message.strip()
+    forced_returns: list[str] | None = None
+    resolved_from_context = False
+
+    # ── Step 0: session context ───────────────────────────────────────────────
+    ctx = session_context.get(session_id)
+    if ctx and ctx.get("pending"):
+        pending = ctx["pending"]
+        chosen = _pick_pending_option(q, pending["options"])
+        session_context.clear_pending(session_id)
+        if chosen:
+            q = f"{pending['question']} in return {chosen}"
+            forced_returns = [chosen]
+            resolved_from_context = True
+            logger.info("[SQL_AGENT] clarification resolved -> return=%s question=%r", chosen, q)
+    elif ctx and ctx.get("sql") and session_context.looks_like_followup(session_id, q):
+        kind, standalone = await _classify_followup(q, ctx, conversation_history)
+        if kind == "data_question":
+            answered = await _answer_from_previous(q, ctx, conversation_history)
+            if answered is not None:
+                return answered
+        elif kind == "refine" and standalone:
+            q = standalone
+            resolved_from_context = True
+            if not detect_returns(q) and ctx.get("returns"):
+                forced_returns = list(ctx["returns"])
 
     # ── Guard 1: minimum word count ────────────────────────────────────────────
     word_count = len(q.split())
-    if word_count < MIN_QUERY_WORDS:
+    if word_count < MIN_QUERY_WORDS and not resolved_from_context:
         return _build_result(
             response_text=(
                 f"Your query is too short ({word_count} word{'s' if word_count != 1 else ''}). "
@@ -351,9 +665,16 @@ async def handle_db_query(
             ),
         )
 
+    # ── Step 1.5: named return(s) and reporting period ────────────────────────
+    named_returns = forced_returns or detect_returns(q)
+    if len(named_returns) > 1 and not _MULTI_RETURN_OK_RE.search(q):
+        return _clarify_return(q, named_returns, session_id)
+    period = extract_report_date(q)
+    logger.info("[SQL_AGENT] context returns=%s period=%s", named_returns, period)
+
     # ── Soft hint when no time context detected ───────────────────────────────
     accuracy_hint = None
-    if not _has_time_context(q):
+    if period is None and not _has_time_context(q):
         accuracy_hint = (
             "Tip: For more accurate results, try specifying a time period — "
             "e.g. a specific date (01-Mar-2025), month (March 2025), "
@@ -362,7 +683,6 @@ async def handle_db_query(
 
     from backend.sql_agent.executor import execute_query
     from backend.sql_agent.sql_generator import generate_sql, validate_sql
-    from backend.sql_agent.utils import serialize_rows
 
     # ── Step 1: retrieval + selection ─────────────────────────────────────────
     # Run on a worker thread (not directly on the event loop) so this
@@ -372,7 +692,10 @@ async def handle_db_query(
     # and it keeps this session's blocking work from stalling every other
     # session sharing the single event loop in the meantime.
     try:
-        tables, columns, matched_labels, gen_context, exact = await asyncio.to_thread(_retrieve, q)
+        _retrieve_args = (q, named_returns) if named_returns else (q,)
+        tables, columns, matched_labels, gen_context, exact = await asyncio.to_thread(
+            _retrieve, *_retrieve_args,
+        )
     except Exception as exc:
         logger.error("[SQL_AGENT] Schema retrieval failed: %s", exc)
         return _build_result(
@@ -403,7 +726,11 @@ async def handle_db_query(
                 accuracy_hint=accuracy_hint,
             )
 
-        is_valid, reason = validate_sql(sql, [{"table": exact["table"]}], [])
+        exact_tables = [{"table": exact["table"]}]
+        # Stored SQL defaults to the latest RDATE; pin it to a named period.
+        sql = _pin_period(sql, exact_tables, [], period, validate_sql)
+
+        is_valid, reason = validate_sql(sql, exact_tables, [])
         if not is_valid:
             logger.warning("[SQL_AGENT] stored SQL failed validation: %s", reason)
             return _build_result(
@@ -433,7 +760,10 @@ async def handle_db_query(
                 db_error=None,
                 accuracy_hint=accuracy_hint,
             )
-        return _rows_result(col_names, serialize_rows(rows), sql, accuracy_hint)
+        return await _finish(
+            q=q, sql=sql, col_names=col_names, rows=rows, tables_used=[exact["table"]],
+            period=period, session_id=session_id, base_hint=accuracy_hint,
+        )
 
     if not tables:
         return _build_result(
@@ -444,6 +774,13 @@ async def handle_db_query(
 
     qa_example, selection = gen_context
     logger.info("[SQL_AGENT] selected=%s", [t["table"] for t in tables])
+
+    # ── Ambiguity: no return named and the selected tables span several ───────
+    if not named_returns:
+        owners = returns_for_tables([t["table"] for t in tables])
+        if len(owners) > 1 and not _MULTI_RETURN_OK_RE.search(q):
+            logger.info("[SQL_AGENT] selected tables span returns %s -- asking user", owners)
+            return _clarify_return(q, owners, session_id)
 
     # ── Step 1.5: H-02 authorization ──────────────────────────────────────────
     # Identify the target return(s) from the final selected tables and
@@ -504,27 +841,32 @@ async def handle_db_query(
                 db_error=None,
             )
 
-    # ── Step 2.5: no period named -> default to the latest one ────────────────
-    # The prompt asks for this already; this is the mechanical backstop for a
-    # model that ignored it (see latest_date.py for exactly when it applies).
-    # The rewritten SQL must itself pass validation, otherwise the model's own
-    # SQL is kept unchanged.
-    try:
-        from backend.sql_agent.latest_date import apply_latest_date_default, query_implies_period
-        _names_period = _has_time_context(q) or query_implies_period(q)
-        _latest_sql, _latest_changed = apply_latest_date_default(sql, tables, _names_period)
-        if _latest_changed:
-            _latest_ok, _latest_why = validate_sql(_latest_sql, tables, columns)
-            if _latest_ok:
-                sql = _latest_sql
-                logger.info("[SQL_AGENT] sql (latest-period default applied)=\n%s", sql)
-            else:
-                logger.warning(
-                    "[SQL_AGENT] latest-period default rejected by validation (%s); keeping model SQL",
-                    _latest_why,
-                )
-    except Exception as exc:
-        logger.warning("[SQL_AGENT] latest-period default skipped: %s", exc)
+    # ── Step 2.5: pin the reporting period ────────────────────────────────────
+    # A named date/period: rewrite the latest-RDATE idiom (or wrap the tables)
+    # so the answer is for exactly that period. No period named: default to the
+    # latest one. The prompt asks for this already; this is the mechanical
+    # backstop for a model that ignored it (see latest_date.py for exactly when
+    # it applies). The rewritten SQL must itself pass validation, otherwise the
+    # model's own SQL is kept unchanged.
+    if period is not None:
+        sql = _pin_period(sql, tables, columns, period, validate_sql)
+    else:
+        try:
+            from backend.sql_agent.latest_date import apply_latest_date_default, query_implies_period
+            _names_period = _has_time_context(q) or query_implies_period(q)
+            _latest_sql, _latest_changed = apply_latest_date_default(sql, tables, _names_period)
+            if _latest_changed:
+                _latest_ok, _latest_why = validate_sql(_latest_sql, tables, columns)
+                if _latest_ok:
+                    sql = _latest_sql
+                    logger.info("[SQL_AGENT] sql (latest-period default applied)=\n%s", sql)
+                else:
+                    logger.warning(
+                        "[SQL_AGENT] latest-period default rejected by validation (%s); keeping model SQL",
+                        _latest_why,
+                    )
+        except Exception as exc:
+            logger.warning("[SQL_AGENT] latest-period default skipped: %s", exc)
 
     # ── Step 3: validation ────────────────────────────────────────────────────
     # generate_sql already validated (and tried to correct) this; re-checking is
@@ -544,7 +886,6 @@ async def handle_db_query(
     # ── Step 4: execution (worker thread — see note above on Step 1) ──────────
     try:
         col_names, rows, db_error = await asyncio.to_thread(execute_query, sql)
-        serialized_rows = serialize_rows(rows)
         logger.info("[SQL_AGENT] rows=%d db_error=%s", len(rows), db_error)
     except Exception as exc:
         logger.error("[SQL_AGENT] Execution error: %s", exc)
@@ -566,4 +907,9 @@ async def handle_db_query(
             accuracy_hint=accuracy_hint,
         )
 
-    return _rows_result(col_names, serialized_rows, sql, accuracy_hint)
+    used = [t["table"] for t in tables if re.search(rf"\b{re.escape(t['table'])}\b", sql, re.IGNORECASE)]
+    return await _finish(
+        q=q, sql=sql, col_names=col_names, rows=rows,
+        tables_used=used or [t["table"] for t in tables],
+        period=period, session_id=session_id, base_hint=accuracy_hint,
+    )

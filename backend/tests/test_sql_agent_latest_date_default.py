@@ -147,10 +147,12 @@ class TestHandlerIntegration:
                       "SELECT code FROM cims_ale_q_anx_1_a")
         assert "WHERE RDATE = (SELECT MAX(RDATE) FROM cims_ale_q_anx_1_a)" in r["db_sql"]
 
-    def test_a_date_in_the_question_leaves_the_sql_alone(self, monkeypatch):
+    def test_a_date_in_the_question_pins_the_sql_to_that_date(self, monkeypatch):
         r = self._run(monkeypatch, "show me the total exposure for 31 March 2026",
                       "SELECT code FROM cims_ale_q_anx_1_a")
-        assert r["db_sql"] == "SELECT code FROM cims_ale_q_anx_1_a"
+        assert "MAX(RDATE)) FROM cims_ale_q_anx_1_a)" not in r["db_sql"]
+        assert ("RDATE BETWEEN TO_DATE('2026-03-31', 'YYYY-MM-DD') "
+                "AND TO_DATE('2026-03-31', 'YYYY-MM-DD')") in r["db_sql"]
 
     def test_if_the_rewrite_fails_validation_the_model_sql_is_kept(self, monkeypatch):
         def validate(sql, t, c):

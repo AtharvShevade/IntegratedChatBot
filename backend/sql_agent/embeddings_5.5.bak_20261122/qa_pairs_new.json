@@ -1,0 +1,212 @@
+[
+  {
+    "table": "CIMS_RAQ_Q_GEN_INFO",
+    "question": "Show the general information section of this return",
+    "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_Q_GEN_INFO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_GEN_INFO)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_GEN_INFO",
+    "question": "What is the reporting period of the latest RAQ return?",
+    "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_Q_GEN_INFO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_GEN_INFO) AND UPPER(DESCRIPTION) LIKE '%PERIOD%'"
+  },
+  {
+    "table": "CIMS_RAQ_Q_GEN_INFO",
+    "question": "Give me the bank name and general details reported in the quarterly RAQ",
+    "sql": "SELECT CODE, RDATE, DESCRIPTION, VALUE FROM CIMS_RAQ_Q_GEN_INFO WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_GEN_INFO)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SIGNATORY",
+    "question": "Who are the signatories for the latest reporting period?",
+    "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_Q_SIGNATORY WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SIGNATORY)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SIGNATORY",
+    "question": "Show the signatory details and designation for the RAQ return",
+    "sql": "SELECT CODE, RDATE, DESCRIPTION, VALUE FROM CIMS_RAQ_Q_SIGNATORY WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SIGNATORY)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "What is the country risk exposure by country?",
+    "sql": "SELECT COUNTRY_BRW_CUNTR_PARTY, COUNTRY_RISK, TOTAL FROM CIMS_RAQ_Q_SEC11 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC11) ORDER BY TOTAL DESC"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "Show the provision held on country risk exposure",
+    "sql": "SELECT COUNTRY_BRW_CUNTR_PARTY, PROV_HELD_COUNTRY, PRO_AS_NET_FUND FROM CIMS_RAQ_Q_SEC11 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC11)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "Top 5 countries by total exposure",
+    "sql": "SELECT COUNTRY_BRW_CUNTR_PARTY, TOTAL FROM CIMS_RAQ_Q_SEC11 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC11) ORDER BY TOTAL DESC FETCH FIRST 5 ROWS ONLY"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "Break up country risk exposure into standard, sub-standard, doubtful and loss",
+    "sql": "SELECT COUNTRY_BRW_CUNTR_PARTY, STD, SUB_STD, DOUBTFUL, LOSS, TOTAL FROM CIMS_RAQ_Q_SEC11 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC11)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "What is the short term country exposure and net funded exposure?",
+    "sql": "SELECT COUNTRY_BRW_CUNTR_PARTY, OF_SHRT_TR_EXP, NET_FUND_TOTAL, NET_FUND_OF_SHRT_TR_EXP FROM CIMS_RAQ_Q_SEC11 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC11)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "Show non funded country risk exposure sector wise",
+    "sql": "SELECT SECTOR, COUNTRY_BRW_CUNTR_PARTY, GR_NONFUND_EXP FROM CIMS_RAQ_Q_SEC11 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC11)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC2_PART_C",
+    "question": "Show the asset classification breakup by item, domestic and overseas",
+    "sql": "SELECT ITEM, TOTAL_DOM, TOTAL_O FROM CIMS_RAQ_Q_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC2_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC2_PART_C",
+    "question": "What are the standard and sub-standard amounts by item for domestic operations?",
+    "sql": "SELECT ITEM, STANDARD_DOM, SUBSTANDARD_DOM FROM CIMS_RAQ_Q_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC2_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC2_PART_C",
+    "question": "Give me combined domestic and overseas total by item in section 2 part C",
+    "sql": "SELECT ITEM, (TOTAL_DOM + TOTAL_O) AS TOTAL_COMBINED FROM CIMS_RAQ_Q_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC2_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC3_PART_A",
+    "question": "Show restructured accounts by category, domestic",
+    "sql": "SELECT CATEGORY, DESCRIPTION, ACC_RES_DOM, OUT_ACC_RES_DOM FROM CIMS_RAQ_Q_SEC3_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC3_PART_A)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC3_PART_A",
+    "question": "How many restructured accounts slipped, domestic versus overseas?",
+    "sql": "SELECT CATEGORY, ACC_SLIP_DOM, ACC_SLIP_OS, OUT_ACC_SLIP_DOM, OUT_ACC_SLIP_OS FROM CIMS_RAQ_Q_SEC3_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC3_PART_A)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC3_PART_A",
+    "question": "Show CDR restructured accounts and outstanding amounts",
+    "sql": "SELECT CATEGORY, ACC_RES_CDR_DOM, OUT_ACC_RES_CDR_DOM, ACC_RES_CDR_OS, OUT_ACC_RES_CDR_OS FROM CIMS_RAQ_Q_SEC3_PART_A WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC3_PART_A)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC4_PART_C",
+    "question": "Show section 4 part C figures for domestic, overseas and global",
+    "sql": "SELECT DESCRIPTION, DOMESTIC, OVERSEAS, GLODAL FROM CIMS_RAQ_Q_SEC4_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC4_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC4_PART_C",
+    "question": "What is the global figure reported in section 4 part C?",
+    "sql": "SELECT DESCRIPTION, GLODAL FROM CIMS_RAQ_Q_SEC4_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC4_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC4_PART_D",
+    "question": "How many cases and what amount are reported in section 4 part D?",
+    "sql": "SELECT DESCRIPTION, NO_OF_CASE, AMOUNT FROM CIMS_RAQ_Q_SEC4_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC4_PART_D)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC4_PART_D",
+    "question": "Show the number of cases reported with the highest amount",
+    "sql": "SELECT DESCRIPTION, NO_OF_CASE, AMOUNT FROM CIMS_RAQ_Q_SEC4_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC4_PART_D) ORDER BY AMOUNT DESC"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR",
+    "question": "Show the top credit exposures with borrower names",
+    "sql": "SELECT SR_NO, NAME_DEFAULTER, TOTAL_CR_EXP, RISK_CLASSIFICATION FROM CIMS_RAQ_Q_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR) ORDER BY TOTAL_CR_EXP DESC"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR",
+    "question": "Top 10 borrowers by total exposure",
+    "sql": "SELECT NAME_DEFAULTER, TOTAL_EXP FROM CIMS_RAQ_Q_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR) ORDER BY TOTAL_EXP DESC FETCH FIRST 10 ROWS ONLY"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR",
+    "question": "What is the funded and non funded credit exposure of the largest borrowers?",
+    "sql": "SELECT NAME_DEFAULTER, FUND_CR_EXP, NONFUND_CR_EXP, TOTAL_CR_EXP FROM CIMS_RAQ_Q_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR) ORDER BY TOTAL_CR_EXP DESC"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR",
+    "question": "Show loss provision held and interest in arrears for top credit exposures",
+    "sql": "SELECT NAME_DEFAULTER, LOSS_PRO_HELD, INTR_ARREARS FROM CIMS_RAQ_Q_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR",
+    "question": "Which top borrowers are classified as NPA?",
+    "sql": "SELECT NAME_DEFAULTER, RISK_CLASSIFICATION, TOTAL_CR_EXP FROM CIMS_RAQ_Q_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR) AND UPPER(RISK_CLASSIFICATION) NOT LIKE '%STANDARD%'"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR_TL",
+    "question": "Show the total of top credit exposures",
+    "sql": "SELECT DESCRIPTION, FUND_CR_EXP, NONFUND_CR_EXP, TOTAL_CR_EXP, TOTAL_EXP FROM CIMS_RAQ_Q_SEC5_TOP_CR_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR_TL)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR_TL",
+    "question": "What is the aggregate investment exposure of the top borrowers?",
+    "sql": "SELECT DESCRIPTION, TOTAL_INV_EXP_IF, TOTAL_EXP FROM CIMS_RAQ_Q_SEC5_TOP_CR_TL WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR_TL)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_B",
+    "question": "Show investment amounts credited for the quarter and the year",
+    "sql": "SELECT ITEM, AMT_CR_QTR, AMT_CR_YR FROM CIMS_RAQ_Q_SEC6_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_B)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_B",
+    "question": "What is the total credited during the quarter in section 6 part B?",
+    "sql": "SELECT ITEM, TOTAL_CR_QTR, TOTAL_CR_YR FROM CIMS_RAQ_Q_SEC6_PART_B WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_B)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_C",
+    "question": "Show rated and unrated investment holdings by category",
+    "sql": "SELECT CATEGORY, ITEM, TL_HLD_RATE, TL_HLD_UNRATE FROM CIMS_RAQ_Q_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_C",
+    "question": "What are the investment holdings of borrower and non borrower entities?",
+    "sql": "SELECT CATEGORY, ITEM, TL_HLD_BRWR, TL_HLD_NONBRWR FROM CIMS_RAQ_Q_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_C",
+    "question": "Show NPA and provision held on the investment portfolio",
+    "sql": "SELECT CATEGORY, ITEM, TOTAL_NPA, TOTAL_PRO_HELD FROM CIMS_RAQ_Q_SEC6_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_C)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_C_2",
+    "question": "Show the additional investment details reported in section 6 part C",
+    "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_Q_SEC6_PART_C_2 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_C_2)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_D",
+    "question": "Show section 6 part D investment figures for domestic, overseas and global",
+    "sql": "SELECT DESCRIPTION, DOMESTIC, OVERSEAS, GLOBAL FROM CIMS_RAQ_Q_SEC6_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_D)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_D",
+    "question": "What is the global investment position in section 6 part D?",
+    "sql": "SELECT DESCRIPTION, GLOBAL FROM CIMS_RAQ_Q_SEC6_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_D)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC6_PART_D",
+    "question": "Compare domestic and overseas investments in section 6",
+    "sql": "SELECT DESCRIPTION, DOMESTIC, OVERSEAS FROM CIMS_RAQ_Q_SEC6_PART_D WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC6_PART_D)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC8_SEC_CREDIT_1",
+    "question": "Show the additional sectoral credit details",
+    "sql": "SELECT DESCRIPTION, VALUE FROM CIMS_RAQ_Q_SEC8_SEC_CREDIT_1 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC8_SEC_CREDIT_1)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC8_SEC_CREDIT_1",
+    "question": "What supplementary sector credit values are reported for the latest quarter?",
+    "sql": "SELECT CODE, RDATE, DESCRIPTION, VALUE FROM CIMS_RAQ_Q_SEC8_SEC_CREDIT_1 WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC8_SEC_CREDIT_1)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC11",
+    "question": "Show country wise exposure trend over the last four quarters",
+    "sql": "SELECT RDATE, COUNTRY_BRW_CUNTR_PARTY, TOTAL FROM CIMS_RAQ_Q_SEC11 WHERE RDATE IN (SELECT RDATE FROM (SELECT DISTINCT RDATE FROM CIMS_RAQ_Q_SEC11 ORDER BY RDATE DESC) WHERE ROWNUM <= 4) ORDER BY RDATE ASC"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC5_TOP_CR",
+    "question": "Show top credit exposures sanctioned with their PAN and sanction date",
+    "sql": "SELECT NAME_DEFAULTER, PAN_DEFAULTER, DATE_SANCTION, TOTAL_CR_EXP FROM CIMS_RAQ_Q_SEC5_TOP_CR WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC5_TOP_CR)"
+  },
+  {
+    "table": "CIMS_RAQ_Q_SEC2_PART_C",
+    "question": "Show loss and doubtful amounts by item for overseas operations",
+    "sql": "SELECT ITEM, DOUBTFUL_O, LOSS_O FROM CIMS_RAQ_Q_SEC2_PART_C WHERE RDATE = (SELECT MAX(RDATE) FROM CIMS_RAQ_Q_SEC2_PART_C)"
+  }
+]
