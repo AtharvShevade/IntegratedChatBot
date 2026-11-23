@@ -95,6 +95,15 @@ MINIMAL_MULTIPART_NUM_PREDICT = _env_int("MINIMAL_MULTIPART_NUM_PREDICT", 1024)
 #   remote proxy : OLLAMA_URL=http://3.109.51.228/OllamaProxy/api/generate
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "")
 
+# Check the Ollama proxy's HTTPS certificate (default: yes). Set to false to
+# connect without a valid certificate -- e.g. a proxy reached by IP whose
+# certificate names a domain. Traffic stays encrypted but the server is not
+# authenticated, so only do this on a network you trust. Covers this agent's
+# own Ollama call only. The chatbot .env key is SQL_OLLAMA_VERIFY_SSL.
+OLLAMA_VERIFY_SSL = os.environ.get("OLLAMA_VERIFY_SSL", "true").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
 # Set the active Ollama-served model here. Change only this value to swap models
 # without modifying sqlcore/sql_generator.py.
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "hf.co/defog/sqlcoder-7b-2:Q5_K_M")

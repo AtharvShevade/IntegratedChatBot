@@ -17,6 +17,13 @@ from sqlcore.token_budget import enforce_token_budget
 
 log = logging.getLogger("sql_generator")
 
+if not config.OLLAMA_VERIFY_SSL:
+    # Deliberate (SQL_OLLAMA_VERIFY_SSL=false): say so once at startup instead of
+    # a urllib3 warning on every call.
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    log.warning("Ollama HTTPS certificate verification is OFF (SQL_OLLAMA_VERIFY_SSL=false)")
+
 BANNED_KEYWORDS = [
     "delete", "update", "drop", "insert", "truncate", "alter", "create", "exec",
     # C-05 hardening: the original list missed these, all of which are real,
@@ -1374,6 +1381,7 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
                 config.OLLAMA_URL, json=payload,
                 timeout=(_OLLAMA_CONNECT_TIMEOUT_S, 300),  # (connect, read) — fail fast if unreachable
                 stream=True,
+                verify=config.OLLAMA_VERIFY_SSL,
             )
             response.raise_for_status()
             _ollama_outage_until = 0.0  # connection succeeded — clear any stale outage marker

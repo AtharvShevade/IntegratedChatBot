@@ -208,6 +208,8 @@ def ensure() -> None:
     base = (env("OLLAMA_BASE_URL") or "").rstrip("/")
     if base:
         _setenv("OLLAMA_URL", f"{base}/api/generate", override=False)
+    # Certificate check for this agent's Ollama call only (default: verify).
+    _setenv("OLLAMA_VERIFY_SSL", env("SQL_OLLAMA_VERIFY_SSL"), override=False)
     if "OLLAMA_MODEL" not in agent_env:
         _setenv("OLLAMA_MODEL", env("SQL_OLLAMA_MODEL"), override=True)
 
