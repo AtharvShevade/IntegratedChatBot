@@ -35,12 +35,18 @@ load_env()
 from backend import host_overrides  # noqa: E402
 host_overrides.install()
 
+# Ollama proxy only: no certificate check and http->https redirects keep the POST
+# (see backend/ollama_tls.py). Must run before any httpx client is created.
+from backend import ollama_tls  # noqa: E402
+ollama_tls.install()
+
 # Initialise centralised logging before any other backend import so that
 # module-level loggers in agent, guided, tools, etc. are already wired up.
 from backend.utils.logger import log_exception, setup_logging  # noqa: E402
 setup_logging(console_level=logging.INFO)
 logging.getLogger(__name__).info(_describe_env())
 logging.getLogger(__name__).info(host_overrides.describe())
+logging.getLogger(__name__).info(ollama_tls.describe())
 
 from backend.utils import request_context  # noqa: E402
 from backend import version_config  # noqa: E402
