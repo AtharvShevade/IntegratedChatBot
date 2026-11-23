@@ -358,3 +358,111 @@
 {"ts": "2026-11-09T06:38:31.559474+00:00", "query": "Yes", "tier": "regex_legacy", "intent": null, "found": false}
 {"ts": "2026-11-09T06:48:34.938827+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_new_taxonomy", "intent": null, "found": false}
 {"ts": "2026-11-09T06:48:34.942362+00:00", "query": "CIMS_LR (Quarterly)", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.185722+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.187690+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.408096+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.409958+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.693534+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.696013+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.971205+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:55.973641+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:56.580645+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:56.583682+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:58.405925+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:58.408214+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:58.420984+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:58.422981+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:59.777923+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:59.780397+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:59.789008+00:00", "query": "CIMS_FORMX_M_NEW", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:59.791432+00:00", "query": "CIMS_FORMX_M_NEW", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:59.809200+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:24:59.812069+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:01.411514+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:01.413892+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:01.420795+00:00", "query": "1", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:01.423209+00:00", "query": "1", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:01.431433+00:00", "query": "ror", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:01.433753+00:00", "query": "ror", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:02.921450+00:00", "query": "ror", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:02.923553+00:00", "query": "ror", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:02.933800+00:00", "query": "CIMS_ROR", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:02.936229+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:04.456025+00:00", "query": "CIMS_ROR", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:04.457756+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:04.467527+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:04.469508+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:05.868844+00:00", "query": "CIMS_CRILC_RFA", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:05.871432+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:06.266159+00:00", "query": "show all users", "tier": "regex_legacy", "intent": "db_list_users", "found": true, "raw_intent": "USER_LIST"}
+{"ts": "2026-11-23T12:25:29.124902+00:00", "query": "Oui", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.126750+00:00", "query": "Oui", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.134957+00:00", "query": "Non", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.136749+00:00", "query": "Non", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.145610+00:00", "query": "yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.147406+00:00", "query": "yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.154277+00:00", "query": "no", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:29.156862+00:00", "query": "no", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:32.120946+00:00", "query": "banana apple orange zzz nonsense phrase", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:32.377053+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:32.379349+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:34.104018+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:25:34.106862+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:26:25.082463+00:00", "query": "show pending submissions", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:26:25.086455+00:00", "query": "show approved submissions", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:26:26.768378+00:00", "query": "hi there", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:26:26.771006+00:00", "query": "hi there", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.221260+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.223239+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.449851+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.451715+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.688857+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.691824+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.971542+00:00", "query": "some gibberish query xyzzy", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:45.974293+00:00", "query": "some gibberish query xyzzy", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:46.594582+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:46.597064+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:48.203799+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:48.205846+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:48.216904+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:48.218523+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:49.616944+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:49.619933+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:49.627958+00:00", "query": "CIMS_FORMX_M_NEW", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:49.630196+00:00", "query": "CIMS_FORMX_M_NEW", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:49.642859+00:00", "query": "cims", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:49.645001+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:51.104048+00:00", "query": "cims", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:51.106802+00:00", "query": "cims", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:51.112301+00:00", "query": "1", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:51.114315+00:00", "query": "1", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:51.121601+00:00", "query": "ror", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:51.123850+00:00", "query": "ror", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:52.546641+00:00", "query": "ror", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:52.548731+00:00", "query": "ror", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:52.558856+00:00", "query": "CIMS_ROR", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:52.560933+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:54.097998+00:00", "query": "CIMS_ROR", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:54.099800+00:00", "query": "CIMS_ROR", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:54.110968+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:54.112748+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:55.502504+00:00", "query": "CIMS_CRILC_RFA", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:55.505347+00:00", "query": "CIMS_CRILC_RFA", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:34:55.871906+00:00", "query": "show all users", "tier": "regex_legacy", "intent": "db_list_users", "found": true, "raw_intent": "USER_LIST"}
+{"ts": "2026-11-23T12:35:18.557441+00:00", "query": "Oui", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.559336+00:00", "query": "Oui", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.567643+00:00", "query": "Non", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.569463+00:00", "query": "Non", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.579144+00:00", "query": "yes", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.580960+00:00", "query": "yes", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.588865+00:00", "query": "no", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:18.590885+00:00", "query": "no", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:21.589750+00:00", "query": "banana apple orange zzz nonsense phrase", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:21.851835+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:21.855129+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:23.579578+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "none", "intent": null, "found": false}
+{"ts": "2026-11-23T12:35:23.582318+00:00", "query": "some totally novel phrasing the regex classifiers all miss", "tier": "regex_legacy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:36:11.389930+00:00", "query": "show pending submissions", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:36:11.393324+00:00", "query": "show approved submissions", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:36:13.138653+00:00", "query": "hi there", "tier": "regex_new_taxonomy", "intent": null, "found": false}
+{"ts": "2026-11-23T12:36:13.140328+00:00", "query": "hi there", "tier": "regex_legacy", "intent": null, "found": false}
