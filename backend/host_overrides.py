@@ -52,5 +52,17 @@ def install() -> dict[str, str]:
 
     socket.getaddrinfo = getaddrinfo
     _installed = True
-    logger.info("[host_overrides] Resolving %s", ", ".join(f"{k} -> {v}" for k, v in mapping.items()))
+    _active.update(mapping)
     return mapping
+
+
+_active: dict[str, str] = {}
+
+
+def describe() -> str:
+    """One log line saying what is overridden. install() runs before logging is
+    configured (it must run before any HTTP client is created), so main.py logs
+    this afterwards instead of install() logging for itself."""
+    if not _active:
+        return "[host_overrides] none"
+    return "[host_overrides] Resolving " + ", ".join(f"{k} -> {v}" for k, v in _active.items())

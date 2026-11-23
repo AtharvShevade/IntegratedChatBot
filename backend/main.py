@@ -40,6 +40,7 @@ host_overrides.install()
 from backend.utils.logger import log_exception, setup_logging  # noqa: E402
 setup_logging(console_level=logging.INFO)
 logging.getLogger(__name__).info(_describe_env())
+logging.getLogger(__name__).info(host_overrides.describe())
 
 from backend.utils import request_context  # noqa: E402
 from backend import version_config  # noqa: E402
