@@ -17,6 +17,43 @@ from sqlcore.token_budget import enforce_token_budget
 
 log = logging.getLogger("sql_generator")
 
+if not config.OLLAMA_VERIFY_SSL:
+    # Deliberate default (see config.OLLAMA_VERIFY_SSL): say so once instead of
+    # a urllib3 warning on every call.
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    log.info("Ollama HTTPS certificate verification is OFF (set SQL_OLLAMA_VERIFY_SSL=true to enable)")
+
+# configured URL -> the URL it redirected to (http -> https), so only the first
+# call after a start pays for the redirect.
+_ollama_url_resolved: dict = {}
+
+
+def _post_following_redirects(url: str, max_hops: int = 3, **kwargs):
+    """requests.post that keeps the POST (and its body) across a redirect.
+
+    requests turns a POST into a GET on a 301/302/303, and Ollama answers a GET
+    on /api/generate with 405 -- which is what an http:// URL redirected to
+    https:// by the proxy's IIS produced. Only redirects to the SAME host are
+    followed (that is http -> https), so the prompt is never re-sent elsewhere."""
+    from urllib.parse import urljoin, urlparse
+
+    url = _ollama_url_resolved.get(url, url)
+    origin = url
+    for _ in range(max_hops + 1):
+        response = requests.post(url, allow_redirects=False, **kwargs)
+        location = response.headers.get("Location")
+        if response.status_code not in (301, 302, 303, 307, 308) or not location:
+            if url != origin:
+                _ollama_url_resolved[origin] = url
+            return response
+        target = urljoin(url, location)
+        if urlparse(target).hostname != urlparse(url).hostname:
+            return response          # different host: do not forward the prompt
+        response.close()
+        url = target
+    return response
+
 BANNED_KEYWORDS = [
     "delete", "update", "drop", "insert", "truncate", "alter", "create", "exec",
     # C-05 hardening: the original list missed these, all of which are real,
@@ -1370,10 +1407,11 @@ def generate_sql(user_query, tables, columns, dialect="Oracle", today_date=None,
             )
 
         try:
-            response = requests.post(
+            response = _post_following_redirects(
                 config.OLLAMA_URL, json=payload,
                 timeout=(_OLLAMA_CONNECT_TIMEOUT_S, 300),  # (connect, read) — fail fast if unreachable
                 stream=True,
+                verify=config.OLLAMA_VERIFY_SSL,
             )
             response.raise_for_status()
             _ollama_outage_until = 0.0  # connection succeeded — clear any stale outage marker
