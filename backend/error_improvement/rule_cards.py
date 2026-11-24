@@ -250,10 +250,83 @@ def _calc_rows(verdict: str, kind: str, comp, ev, row) -> list[tuple[str, str]]:
     return [("Left side", money(l)), ("Right side", money(r)), ("Difference", money(l - r))]
 
 
+_DB_EVIDENCE_TEXT = {
+    "CONFIRMED": "verified against the database (the table row holds exactly the filed value in that column)",
+    "MAPPED": "not confirmed in the database",
+}
+
+
+_DB_PHRASES = (
+    ("could not be located in the workbook (they are 0, or their cell is not shown)",
+     "could not be located in the table (they are 0, empty or not in the database)"),
+    ("could not be located in the workbook", "could not be located in the table"),
+    ("Not located in the workbook", "Not located in the table"),
+    ("not located in the workbook", "not located in the table"),
+    ("could be placed in the workbook", "could be placed in the table"),
+    ("could not be placed in the workbook", "could not be placed in the table"),
+    ("The workbook and the error file may disagree", "The table data and the error file may disagree"),
+    ('Locate the operands marked "Not located" in the workbook; they could not be placed automatically.',
+     'Check the operands marked "Not located" against your source data; they could not be placed in the table automatically.'),
+    ("from the return's mapping, workbook values not checked", "from the return's mapping; the table data was not read"),
+    ("workbook verified", "verified against the database"),
+)
+
+
+_DB_REGEX = (
+    (re.compile(r"These cells are for one of the failing cases \(.*?\); the rule fails in (\d+) cases\."), r"Shown for one of \1 failing cases."),
+    (re.compile(r"operand not reported in the filing \(no such fact in the instance; the rule counts it as 0\).*", re.S),
+     "Not reported in the filing (counted as 0)"),
+    (re.compile(r"None of the (\d+) cell\(s\) behind the calculated value could be located; the value shown is the rule's own\."),
+     "The calculated side could not be located; its value is from the error file."),
+)
+
+
+def _db_words(obj):
+    """The same text with Excel nouns replaced by database ones (strings inside dicts and lists too)."""
+    if isinstance(obj, str):
+        for old, new in _DB_PHRASES:
+            obj = obj.replace(old, new)
+        for pattern, repl in _DB_REGEX:
+            obj = pattern.sub(repl, obj)
+        return obj
+    if isinstance(obj, list):
+        return [_db_words(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_db_words(x) for x in obj)
+    if isinstance(obj, dict):
+        return {k: _db_words(v) for k, v in obj.items()}
+    return obj
+
+
+def _db_guess_note(located) -> str:
+    """One short line naming the table cells to check (the first value of the rule the data could not confirm; its own candidates)."""
+    why = {"no-row": "row not found in the database", "differs": "the row holds another value", "unread": "table data not read"}
+    for lcs in located.values():
+        for lc in lcs:
+            addrs = [a for a in (getattr(getattr(lc, "res", None), "addresses", None) or []) if getattr(a, "is_db", False)]
+            if not addrs or addrs[0].verified:
+                continue
+            names = list(dict.fromkeys(
+                f"{a.table}.{a.column}" + (f" ({a.key_text})" if a.key_text else "") for a in addrs[:3]))
+            reason = why.get(addrs[0].state, "")
+            return "Not confirmed" + (f" ({reason})" if reason else "") + ". Check: " + " or ".join(names) + "."
+    return ""
+
+
+def _all_db(located) -> bool:
+    addrs = [lc.addr for lcs in located.values() for lc in lcs if lc.addr]
+    return bool(addrs) and all(getattr(a, "is_db", False) for a in addrs)
+
+
 def _evidence(located) -> tuple[str, str]:
     st = [lc.res.status for lcs in located.values() for lc in lcs if lc.addr]
     if not st:
         return "none", "the cells could not be located in the workbook"
+    if _all_db(located):
+        key = "CONFIRMED" if all(x == "CONFIRMED" for x in st) else "MAPPED"
+        if all(getattr(lc, "bt", False) for lcs in located.values() for lc in lcs if lc.addr):
+            return key, _DB_EVIDENCE_TEXT[key] + "; the validator's own backtracking record names the same table and cell code"
+        return key, _DB_EVIDENCE_TEXT[key]
     for k in ("LIKELY", "INFERRED", "MAPPED"):
         if k in st:
             return k, _EVIDENCE_TEXT[k]
@@ -270,7 +343,7 @@ def _phrase_rhs(terms: list[str]) -> str:
     return f"the sum of {shown}"
 
 
-def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev):
+def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev, db=False):
     """(problem, cause, fix) for one table row of a rule."""
     k = r.facts.get("kind", "")
     sol = _clean(r.solution)
@@ -295,6 +368,12 @@ def _row_triple(r, lhs_term, terms_list, eq_problem, located, ev):
                         "difference cannot be pinned on one cell." if missing else ""))
             fix = ("Compare the cells in the table with your source data and fill any operand that should not be 0; "
                    "the two sides must be equal." if missing else "Make the cells add up.")
+            if db:                                         # a database table: say what to do with the data
+                fix = ("Check both values against your source data, correct the one that is wrong in the data, then regenerate the "
+                       "instance and validate it again.")
+                if missing:
+                    fix = ("Fill any value of this rule that is missing or 0 in the data, and check the values in the table against "
+                           "your source data. Then regenerate the instance and validate it again.")
     elif k == "rule behaviour":
         problem = f"The rule's comparison fails for these values ({_clean(r.error).split(':')[0][:120]})."
         cause = sol.replace("No data change.", "").strip()
@@ -397,6 +476,8 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
         culprit = ((data_groups[0].facts["culprit_info"][0]["sheet"], data_groups[0].facts["culprit_info"][0]["a1"])
                    if data_groups else None)
         card["cells"] = _cell_rows(wb, located, comp, culprit)
+        card["db"] = _all_db(located)
+        card["where_to_look"] = _db_where_to_look(located)
         lhs_raw, _, rhs_raw = checks.partition("=")
         eq_problem = (f"{lhs_raw.strip()} does not equal {rhs_raw.strip()}." if rhs_raw.strip() else "")
 
@@ -434,7 +515,9 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
         elif mine:
             triples = []
             for r in mine:
-                t = _row_triple(r, lhs_term, terms_list, eq_problem, located, ev)
+                used = {v for v in order}                           # a variable the rule's formula does not use cannot be a missing operand
+                t = _row_triple(r, lhs_term, terms_list, eq_problem,
+                                {k: v for k, v in located.items() if k in used} if used else located, ev, db=_all_db(located))
                 if t:
                     triples.append(t)
             if triples:
@@ -458,12 +541,21 @@ def build_cards(analysed, wb, rows, numbering: dict | None = None) -> dict[str, 
             card["cells"] = _case_cell_rows(wb, findings) or card["cells"]
         card["view"] = _compact_view(card, data_groups, located, cell_money, comp, mine, wb, ev, rc=card["root_cause"], findings=findings)
         card["view"]["kv_where"] = _kv_where(card["view"], wb, located)
+        _mark_db(card["view"], located)
+        if card["db"]:
+            card["view"] = _db_words(card["view"])
+            for key in ("problem", "cause", "fix"):
+                card[key] = _db_words(card[key])
+            guess = _db_guess_note(located)
+            if guess:
+                card["view"]["warnings"] = list(card["view"].get("warnings") or []) + [guess]
         if card["bt"] and card["bt_differs"]:
             card["view"]["warnings"] = list(card["view"].get("warnings") or []) + [
                 "The validator's backtracking record and our own search place a value in different cells: " + "; ".join(card["bt_differs"][:3])
                 + ". The backtracking record is shown."]
-        card["note"] = ("Explanation: generated by automated analysis of the error file and the workbook; "
-                        f"location evidence: {ev_text}. The suggested correction should be verified against the underlying components.")
+        card["note"] = ("Explanation: generated by automated analysis of the error file and "
+                        + ("the return's database metadata" if _all_db(located) else "the workbook")
+                        + f"; location evidence: {ev_text}. The suggested correction should be verified against the underlying components.")
         if _presence_named(pres) and ((ev or {}).get("message_only") or (ev or {}).get("count_missing")):           # the missing value's cell is the whole answer
             card["full"], card["why_not_full"] = True, ""
         else:
@@ -486,7 +578,8 @@ def card_to_sections_detailed(card: dict) -> list[dict]:
         secs.append({"kind": "labeled_text", "heading": "Other cases of this rule", "text": card["other_cases"]})
     if card["cells"]:
         secs.append({"kind": "table", "heading": "Cell details",
-                     "columns": ["Item", "Sheet", "Cell", "Row label", "Current value"],
+                     "columns": (["Item", "Table Name", "Column (Row)", "Row label", "Current value"] if card.get("db")
+                                 else ["Item", "Sheet", "Cell", "Row label", "Current value"]),
                      "rows": [[c["item"], c["sheet"], c["cell"], c["row_label"], c["current"]] for c in card["cells"]]})
     if card["calc"]:
         secs.append({"kind": "table", "heading": "Calculation details", "columns": ["Description", "Amount"],
@@ -503,7 +596,8 @@ def card_to_text_detailed(card: dict) -> str:
     if card.get("other_cases"):
         L.append(card["other_cases"])
     if card["cells"]:
-        L += ["", "Cell details", "Item | Sheet | Cell | Row label | Current value"]
+        L += ["", "Cell details", ("Item | Table Name | Column (Row) | Row label | Current value" if card.get("db")
+                                   else "Item | Sheet | Cell | Row label | Current value")]
         L += [" | ".join([c["item"], c["sheet"], c["cell"], c["row_label"], c["current"]]) for c in card["cells"]]
     if card["calc"]:
         L += ["", "Calculation details"] + [f"{d}: {a}" for d, a in card["calc"]]
@@ -1316,10 +1410,82 @@ def _kv_where(view: dict, wb, located: dict | None = None) -> dict:
     return out
 
 
+def _row_text(a) -> str:
+    """A database cell's row: its key ('CODE = 1028') and, when the table says so, the row's own description."""
+    return a.key_text + (f" · {a.row_label}" if getattr(a, "row_label", "") else "")
+
+
+def _code_and_row(a) -> tuple[str, str]:
+    """('1028', '(ii) Non-SLR Investments') for a database cell: the code alone, then the entry's name and the row's description."""
+    code = next((str(v) for c, v in a.key.items() if c.upper() == "CODE"), "")
+    entries = [str(v) for c, v in a.key.items() if c.upper() != "CODE"]
+    entries = [v for v in entries if not any(o != v and o.startswith(v) for o in entries)]
+    row = " \u00b7 ".join(x for x in (", ".join(dict.fromkeys(entries)), getattr(a, "row_label", "")) if x)
+    return code, row
+
+
+def _db_where_to_look(located) -> dict | None:
+    """{'reason', 'rows': [[table, column, code, row], ...]} for the first value of the rule the data could not confirm (at most 3
+    candidate cells, best first), or None."""
+    why = {"no-row": "row not found in the database", "differs": "the row holds another value", "unread": "table data not read"}
+    for lcs in located.values():
+        for lc in lcs:
+            addrs = [a for a in (getattr(getattr(lc, "res", None), "addresses", None) or []) if getattr(a, "is_db", False)]
+            if not addrs or addrs[0].verified:
+                continue
+            rows = []
+            for a in [x for x in addrs if x.state == addrs[0].state][:3]:
+                code, row = _code_and_row(a)
+                held = getattr(a, "db_value", None)
+                shown = "" if held is None else (f"{float(held):,.2f}".rstrip("0").rstrip(".") if isinstance(held, (int, float)) else str(held))
+                if [a.table, a.column, code, row, shown] not in rows:
+                    rows.append([a.table, a.column, code, row, shown])
+            if not any(r[4] for r in rows):
+                rows = [r[:4] for r in rows]                  # a 'Table holds' column only when the table's value is known
+            return {"reason": why.get(addrs[0].state, ""), "rows": rows}
+    return None
+
+
+def _mark_db(view: dict, located: dict) -> None:
+    """When every cell of the card's table is a database cell, show it as a database table: Table Name | Column | Row | Value. The
+    same four-column shape the Excel table has (container | column | where in it | value), with the database's own names."""
+    cells = view.get("kv_cells") or {}
+    if not cells:
+        return
+    db = {}
+    for lcs in located.values():
+        for lc in lcs:
+            for a in ([lc.addr] if getattr(lc, "addr", None) else []) + list(getattr(getattr(lc, "res", None), "addresses", []) or []):
+                if getattr(a, "is_db", False):
+                    db[(a.sheet, a.a1)] = a
+    if not db or not all(v in db for v in cells.values()):
+        return
+    view["kv_db"] = True
+    where = {}
+    for label, key in list(cells.items()):
+        a = db[key]
+        code, row = _code_and_row(a)
+        where[label] = {"table": "", "column": a.column, "code": code, "row": row}
+        cells[label] = (a.table, row or code)
+    view["kv_where"] = where
+
+
+_KV_FIELD = {"Sheet Name": "sheet", "Table": "table", "Column": "column", "Cell": "cell", "Table Name": "sheet", "Code": "row_code",
+             "Row": "row", "Value": "value"}
+
+
+def kv_fields(view: dict) -> list[str]:
+    """The field each column of kv_columns shows (so the chat does not have to know the column titles)."""
+    return [_KV_FIELD.get(c, "") for c in kv_columns(view)]
+
+
 def kv_columns(view: dict) -> list[str]:
-    """The columns of the cell table: Sheet Name, Table and Column only when the workbook gave some, then Cell and Value."""
+    """The columns of the cell table: Sheet Name, Table and Column only when the workbook gave some, then Cell and Value. A database
+    table is Table Name | Column | Row | Value."""
     if not view.get("kv_cells"):
         return []
+    if view.get("kv_db"):
+        return ["Table Name", "Column", "Code", "Row", "Value"]
     where = view.get("kv_where") or {}
     return (["Sheet Name"] + (["Table"] if any(w["table"] for w in where.values()) else [])
             + (["Column"] if any(w["column"] for w in where.values()) else []) + ["Cell", "Value"])
@@ -1329,7 +1495,8 @@ def _kv_row(view: dict, label: str, value: str) -> list[str]:
     """The cell values of one table row, in kv_columns order ('' where there is nothing to show)."""
     sheet, cell = view["kv_cells"].get(label, ("", ""))
     w = (view.get("kv_where") or {}).get(label, {})
-    by_name = {"Sheet Name": sheet, "Table": w.get("table", ""), "Column": w.get("column", ""), "Cell": cell, "Value": value}
+    by_name = {"Sheet Name": sheet, "Table": w.get("table", ""), "Column": w.get("column", ""), "Cell": cell, "Value": value,
+               "Table Name": sheet, "Code": w.get("code", ""), "Row": w.get("row", cell)}
     return [by_name[c] for c in kv_columns(view)]
 
 
@@ -1388,9 +1555,10 @@ def card_to_sections(card: dict) -> list[dict]:
              "wrong": {"heading": "What went wrong?", "text": v["wrong"], "terms": v["terms"], "codes": v.get("codes", [])},
              "kv": [{"label": l, "value": val, "tone": tone, "caption": v.get("captions", {}).get(l, ""), "code": l in v.get("kv_code", []),
                      "sheet": v.get("kv_cells", {}).get(l, ("", ""))[0], "cell": v.get("kv_cells", {}).get(l, ("", ""))[1],
-                     "table": v.get("kv_where", {}).get(l, {}).get("table", ""), "column": v.get("kv_where", {}).get(l, {}).get("column", "")}
+                     "table": v.get("kv_where", {}).get(l, {}).get("table", ""), "column": v.get("kv_where", {}).get(l, {}).get("column", ""),
+                     "row_code": v.get("kv_where", {}).get(l, {}).get("code", ""), "row": v.get("kv_where", {}).get(l, {}).get("row", "")}
                     for l, val, tone in v["kv"]],
-             "kv_columns": kv_columns(v),
+             "kv_columns": kv_columns(v), "kv_fields": kv_fields(v), "kv_equal": bool(v.get("kv_db")),
              "why": {"heading": v.get("why_heading", "Why did it happen?"), "text": v["why"]},
              "fix": {"heading": "What should you check?", "text": v["fix"], "steps": v.get("steps", []), "note": v.get("safety", "")},
              "cells": {"heading": "Relevant cells", "groups": v["groups"], "more": v["more_cells"], "note": v.get("cells_note", "")},

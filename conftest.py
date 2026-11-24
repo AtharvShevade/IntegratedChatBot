@@ -34,3 +34,15 @@ os.environ.setdefault(
     "BASE_REPO_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "tests", "fixtures", "sample_repo"),
 )
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _tests_never_open_a_return_database(monkeypatch):
+    """The error engine reads return databases (read-only) when IDEAL_AES_PASSPHRASE or EI_DB_PROVIDER_<id> is set - as it is on a
+    developer's .env. A test must never do that: tests that exercise it set their own key (monkeypatch.setenv) and use fakes."""
+    monkeypatch.delenv("IDEAL_AES_PASSPHRASE", raising=False)
+    for name in [n for n in os.environ if n.startswith("EI_DB_PROVIDER_")]:
+        monkeypatch.delenv(name, raising=False)
