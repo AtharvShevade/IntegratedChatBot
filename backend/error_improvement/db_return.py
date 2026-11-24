@@ -568,7 +568,7 @@ def resolve_db(meta, concept: str, ctx_id: str, value: str):
                         break                                   # the data settled this fact: no need to read the other candidates
                     state = "differs"
             for column in (_rank_columns(cols, ctx)[:3] if cell.alternatives else [cell.column]):
-                held = row.get(column) if (state == "differs" and not cell.alternatives) else None
+                held = row.get(column) if state == "differs" else None
                 guesses.append(address(loc, cell, column, mult, label, False, state, held))
     if verified:
         unique = {(a.table, a.column, tuple(a.key.items())): a for a in verified}

@@ -298,6 +298,21 @@ def _db_words(obj):
     return obj
 
 
+def _num(x) -> str:
+    return f"{float(x):,.2f}".rstrip("0").rstrip(".") if isinstance(x, (int, float)) else str(x)
+
+
+def _held_sentence(addrs) -> str:
+    """'. The return has 523.88; the table holds 523.48 in COL' when the row exists but holds another number: the cell whose number
+    is nearest the filed one. It only reports both numbers; it does not say which is wrong."""
+    filed = getattr(addrs[0], "workbook_value", None)
+    held = [(a, a.db_value) for a in addrs if getattr(a, "state", "") == "differs" and isinstance(getattr(a, "db_value", None), (int, float))]
+    if filed is None or not held:
+        return ""
+    a, v = min(held, key=lambda t: abs(float(t[1]) - float(filed)))
+    return f". The return has {_num(filed)}; the table holds {_num(v)} in {a.column}"
+
+
 def _db_guess_note(located) -> str:
     """One short line naming the table cells to check (the first value of the rule the data could not confirm; its own candidates)."""
     why = {"no-row": "row not found in the database", "differs": "the row holds another value", "unread": "table data not read"}
@@ -309,7 +324,7 @@ def _db_guess_note(located) -> str:
             names = list(dict.fromkeys(
                 f"{a.table}.{a.column}" + (f" ({a.key_text})" if a.key_text else "") for a in addrs[:3]))
             reason = why.get(addrs[0].state, "")
-            return "Not confirmed" + (f" ({reason})" if reason else "") + ". Check: " + " or ".join(names) + "."
+            return "Not confirmed" + (f" ({reason})" if reason else "") + _held_sentence(addrs) + ". Check: " + " or ".join(names) + "."
     return ""
 
 
