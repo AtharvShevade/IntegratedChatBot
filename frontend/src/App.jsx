@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow.jsx'
+import ErrorResolutionPanel from './components/ErrorResolutionPanel.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
 import { SupportReportContext, SupportReportForm } from './components/SupportReport.jsx'
 import { LanguageContext, makeT, isRtl } from './i18n.js'
@@ -220,6 +221,8 @@ export default function App() {
     try { localStorage.setItem('chat_lang', lang) } catch { /* private mode */ }
   }, [lang])
   const [isLoading, setIsLoading]     = useState(false)
+  // 'chat' | 'errors' -- both stay mounted (only hidden), so switching tabs never loses the conversation or an uploaded file's results.
+  const [view, setView]               = useState('chat')
   const [isGuidedFlow, setIsGuidedFlow] = useState(false)
   const inputRef       = useRef(null)
   const sessionId      = useRef(_uid || crypto.randomUUID())
@@ -936,7 +939,22 @@ const pollForErrors = (jobId) => {
     <LanguageContext.Provider value={lang}>
     <SupportReportContext.Provider value={{ getMessages: () => messagesRef.current, aspSession: _aspSession, restoreMenu }}>
     <div className="app-shell" dir={isRtl(lang) ? 'rtl' : 'ltr'}>
-      <main className="chat-area">
+      <div className="app-tabs" role="tablist">
+        <button type="button" role="tab" className="app-tab" aria-selected={view === 'chat'} onClick={() => setView('chat')}>{t('errorResolution.chatTab')}</button>
+        <button type="button" role="tab" className="app-tab" aria-selected={view === 'errors'} onClick={() => setView('errors')}>{t('errorResolution.tab')}</button>
+      </div>
+
+      <main className="chat-area" hidden={view !== 'errors'}>
+        <ErrorResolutionPanel
+          lang={lang}
+          loginId={_loginId || null}
+          tenantId={_tenantId || null}
+          domain={_domain || null}
+          jwtRef={jwtRef}
+        />
+      </main>
+
+      <main className="chat-area" hidden={view !== 'chat'}>
         <ChatWindow
           messages={messages}
           isLoading={isLoading}
@@ -956,7 +974,7 @@ const pollForErrors = (jobId) => {
         />
       </main>
 
-      <footer className="input-bar">
+      <footer className="input-bar" hidden={view !== 'chat'}>
         {supportOpen && (
           <div className="support-report-panel">
             <SupportReportForm onClose={() => setSupportOpen(false)} />

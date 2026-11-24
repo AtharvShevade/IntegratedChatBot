@@ -315,4 +315,23 @@ export const UI = {
   'voice.transcribing': { en: 'Transcribing…', fr: 'Transcription…', ar: 'جارٍ التفريغ…', hi: 'ट्रांसक्राइब हो रहा है…' },
   'voice.stopTranscribing': { en: 'Stop transcribing', fr: 'Arrêter la transcription', ar: 'إيقاف التفريغ', hi: 'ट्रांसक्रिप्शन रोकें' },
   'voice.speakNow':        { en: 'Speak now…', fr: 'Parlez maintenant…', ar: 'تحدّث الآن…', hi: 'अब बोलें…' },
+
+  // ── Error Resolution tab (upload an error file) ──────────────────────────
+  'errorResolution.tab': { en: 'Error Resolution', fr: 'Résolution des erreurs', ar: 'حل الأخطاء', hi: 'त्रुटि समाधान' },
+  'errorResolution.chatTab': { en: 'Chat', fr: 'Discussion', ar: 'الدردشة', hi: 'चैट' },
+  'errorResolution.title': { en: 'Upload the error file', fr: 'Téléversez le fichier d’erreurs', ar: 'حمّل ملف الأخطاء', hi: 'त्रुटि फ़ाइल अपलोड करें' },
+  'errorResolution.hint': { en: 'After a generation fails, upload the error file the validator produced. You get a short explanation and the fix for each error.', fr: 'Après l’échec d’une génération, téléversez le fichier d’erreurs produit par le validateur. Vous obtenez une explication courte et la correction de chaque erreur.', ar: 'بعد فشل الإنشاء، حمّل ملف الأخطاء الذي أنتجه المدقق. ستحصل على شرح موجز وحل لكل خطأ.', hi: 'जनरेशन विफल होने के बाद, वैलिडेटर द्वारा बनाई गई त्रुटि फ़ाइल अपलोड करें। आपको हर त्रुटि का संक्षिप्त स्पष्टीकरण और समाधान मिलेगा।' },
+  'errorResolution.choose': { en: 'Choose error file', fr: 'Choisir le fichier', ar: 'اختر الملف', hi: 'फ़ाइल चुनें' },
+  'errorResolution.dropHere': { en: 'or drop a .html / .xml file here', fr: 'ou déposez un fichier .html / .xml ici', ar: 'أو أسقط ملف .html / .xml هنا', hi: 'या यहाँ .html / .xml फ़ाइल छोड़ें' },
+  'errorResolution.analysing': { en: 'Reading the error file…', fr: 'Lecture du fichier d’erreurs…', ar: 'جارٍ قراءة ملف الأخطاء…', hi: 'त्रुटि फ़ाइल पढ़ी जा रही है…' },
+  'errorResolution.uploadFailed': { en: 'We could not read that file. Please check it and try again.', fr: 'Nous n’avons pas pu lire ce fichier. Vérifiez-le et réessayez.', ar: 'تعذّرت قراءة الملف. تحقق منه وحاول مرة أخرى.', hi: 'यह फ़ाइल नहीं पढ़ी जा सकी। कृपया जाँचकर पुनः प्रयास करें।' },
+  'errorResolution.whichReturn': { en: 'Which return is this error file for?', fr: 'À quelle déclaration ce fichier correspond-il ?', ar: 'لأي إقرار هذا الملف؟', hi: 'यह त्रुटि फ़ाइल किस रिटर्न की है?' },
+  'errorResolution.whichReturnHint': { en: 'We could not tell from the file. Enter the return id (for example 4046), or pick a suggestion.', fr: 'Nous n’avons pas pu le déterminer. Saisissez l’identifiant (par exemple 4046) ou choisissez une suggestion.', ar: 'تعذّر التحديد من الملف. أدخل رقم الإقرار (مثل 4046) أو اختر اقتراحًا.', hi: 'फ़ाइल से पता नहीं चला। रिटर्न आईडी (जैसे 4046) डालें या सुझाव चुनें।' },
+  'errorResolution.returnId': { en: 'Return id', fr: 'Identifiant', ar: 'رقم الإقرار', hi: 'रिटर्न आईडी' },
+  'errorResolution.continue': { en: 'Continue', fr: 'Continuer', ar: 'متابعة', hi: 'जारी रखें' },
+  'errorResolution.another': { en: 'Upload another file', fr: 'Téléverser un autre fichier', ar: 'حمّل ملفًا آخر', hi: 'दूसरी फ़ाइल अपलोड करें' },
+  'errorResolution.matched': { en: 'Return', fr: 'Déclaration', ar: 'الإقرار', hi: 'रिटर्न' },
+  'errorResolution.noErrors': { en: 'No errors could be read from this file.', fr: 'Aucune erreur n’a pu être lue dans ce fichier.', ar: 'تعذّرت قراءة أي أخطاء من هذا الملف.', hi: 'इस फ़ाइल से कोई त्रुटि नहीं पढ़ी जा सकी।' },
+  'errorResolution.summary': { en: 'Errors found in', fr: 'Erreurs trouvées dans', ar: 'الأخطاء الموجودة في', hi: 'में मिली त्रुटियाँ' },
+  'errorResolution.pick': { en: 'Choose a category to explain.', fr: 'Choisissez une catégorie à expliquer.', ar: 'اختر فئة لشرحها.', hi: 'स्पष्टीकरण के लिए श्रेणी चुनें।' },
 }

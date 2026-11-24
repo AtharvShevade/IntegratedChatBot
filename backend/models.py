@@ -230,3 +230,26 @@ class FeedbackRequest(BaseModel):
 
 
 
+
+
+class ErrorUploadFormRequest(BaseModel):
+    """Error Resolution tab: the user picked / typed the return an uploaded error file belongs to."""
+    upload_id:   str = Field(..., max_length=64)
+    form_id:     str = Field(..., max_length=16)
+    login_id:    Optional[str] = Field(None, max_length=128)
+    tenant_id:   Optional[str] = Field(None, max_length=64)
+    domain:      Optional[str] = Field(None, max_length=256)
+    jwt:         Optional[str] = Field(None, max_length=4096)
+
+
+class ErrorUploadExplainRequest(BaseModel):
+    """Error Resolution tab: explain one batch of one category of an uploaded error file (same paging as /explain-category)."""
+    upload_id:   str = Field(..., max_length=64)
+    category:    str = Field(..., max_length=64)   # formula_error | xbrl_schema | dimensional
+    offset:      int = Field(0, ge=0)
+    login_id:    Optional[str] = Field(None, max_length=128)
+    request_id:  Optional[str] = Field(None, max_length=64)
+    lang:        Optional[str] = Field(None, max_length=8)
+    tenant_id:   Optional[str] = Field(None, max_length=64)
+    domain:      Optional[str] = Field(None, max_length=256)
+    jwt:         Optional[str] = Field(None, max_length=4096)

@@ -522,6 +522,56 @@ export async function explainErrorCategory(errorFilePath, category, formId = nul
 }
 
 /**
+ * Error Resolution tab: upload a validator error file and get the summary (counts per category) plus the return it was matched to.
+ * Multipart, so it does not use _postJson (which sends JSON). A 422 `detail` is a message the user can act on (wrong type, too big).
+ *
+ * @param {File} file
+ * @param {object} [opts] - { formId, loginId, tenantId, domain, jwt, signal }
+ * @returns {Promise<object>} { upload_id, filename, form_id, report_name, identified_by, needs_form, candidates, error_category_counts, is_4000_series }
+ */
+export async function uploadErrorFile(file, opts = {}) {
+  const { formId, loginId, tenantId, domain, jwt, signal } = opts
+  const body = new FormData()
+  body.append('file', file)
+  if (formId)   body.append('form_id', formId)
+  if (loginId)  body.append('login_id', loginId)
+  if (tenantId) body.append('tenant_id', tenantId)
+  if (domain)   body.append('domain', domain)
+  if (jwt)      body.append('jwt', jwt)
+  const res = await fetch(`${BASE_URL}/error-resolution/upload`, { method: 'POST', body, signal })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw _err(err.detail, 'errorResolution.uploadFailed')
+  }
+  return res.json()
+}
+
+/** The user picked the return for an upload that could not be placed. Same response shape as uploadErrorFile. */
+export async function setErrorUploadForm(uploadId, formId, opts = {}) {
+  const { loginId, tenantId, domain, jwt, signal } = opts
+  const body = { upload_id: uploadId, form_id: formId }
+  if (loginId)  body.login_id = loginId
+  if (tenantId) body.tenant_id = tenantId
+  if (domain)   body.domain = domain
+  if (jwt)      body.jwt = jwt
+  return _postJson('/error-resolution/form', body, signal, 'errorResolution.uploadFailed')
+}
+
+/** One batch of one category of an uploaded error file. Same response shape as explainErrorCategory. */
+export async function explainUploadedError(uploadId, category, opts = {}) {
+  const { signal, requestId, offset, lang, loginId, tenantId, domain, jwt } = opts
+  const body = { upload_id: uploadId, category }
+  if (lang && lang !== 'en') body.lang = lang
+  if (requestId) body.request_id = requestId
+  if (offset)    body.offset = offset
+  if (loginId)   body.login_id = loginId
+  if (tenantId)  body.tenant_id = tenantId
+  if (domain)    body.domain = domain
+  if (jwt)       body.jwt = jwt
+  return _postJson('/error-resolution/explain', body, signal, 'errors.explanationFailed')
+}
+
+/**
  * Poll the status of an async error-enrichment job.
  *
  * Must go through BASE_URL like every other call: in production the app is

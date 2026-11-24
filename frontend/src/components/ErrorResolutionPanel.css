@@ -1,0 +1,57 @@
+/* Error Resolution tab. Uses the app's own tokens (--surface, --border, ...) with fallbacks, so it follows the 5.5 and 6.0 themes. */
+.app-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px 0;
+  background: var(--surface, #fff);
+  border-bottom: 1px solid var(--border, #e2e5ea);
+}
+.app-tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text-muted, #5b6472);
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.app-tab:hover { color: var(--text, #1f2933); }
+.app-tab[aria-selected="true"] { color: var(--primary, #1a56db); border-bottom-color: var(--primary, #1a56db); }
+.app-tab:focus-visible { outline: 2px solid var(--primary, #1a56db); outline-offset: -2px; }
+
+.er-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.er-top { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px 16px 8px 32px; }
+.er-drop, .er-pick {
+  flex: 1 1 320px;
+  border: 1.5px dashed var(--border, #cfd5dd);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--surface, #fff);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+}
+.er-pick { border-style: solid; }
+.er-drop-over { border-color: var(--primary, #1a56db); background: rgba(26, 86, 219, 0.05); }
+.er-title { font-weight: 700; }
+.er-hint { margin: 0; color: var(--text-muted, #5b6472); font-size: 0.9em; line-height: 1.45; }
+.er-drop-text { color: var(--text-muted, #5b6472); font-size: 0.85em; }
+.er-btn {
+  appearance: none; border: 0; border-radius: 8px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--primary, #1a56db); color: #fff;
+}
+.er-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.er-status { font-size: 0.9em; color: var(--text-muted, #5b6472); }
+.er-error { font-size: 0.9em; color: #b42318; background: #fef3f2; border: 1px solid #fecdca; border-radius: 6px; padding: 6px 10px; }
+.er-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.er-form { display: flex; gap: 8px; }
+.er-input { width: 9em; padding: 8px 10px; border: 1px solid var(--border, #cfd5dd); border-radius: 8px; font: inherit; }
+.er-results { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+@media (max-width: 640px) {
+  .er-top { padding: 12px 10px 4px; }
+  .app-tabs { padding: 6px 10px 0; }
+}
+
+/* The chat/error views are toggled with the hidden attribute; the shell sets display:flex on them, which would beat the browser default. */
+.chat-area[hidden], .input-bar[hidden] { display: none !important; }

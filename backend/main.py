@@ -60,6 +60,7 @@ from backend.stt import config as stt_config, vocabulary as stt_vocabulary  # no
 from backend.models import (  # noqa: E402
     ChatRequest, ChatResponse, CompareRequest, CompareSummaryRequest,
     ExplainCategoryRequest, FeedbackRequest,
+    ErrorUploadFormRequest, ErrorUploadExplainRequest,
 )
 from backend.utils.intent_log import log_feedback  # noqa: E402
 from backend.tools.support_request import SupportRequest, SupportResponse, submit as submit_support_request  # noqa: E402
@@ -353,6 +354,7 @@ app.add_middleware(
 _RATE_LIMITED_PATHS = {
     "/chat", "/compare-execute", "/compare-summary",
     "/explain-category", "/speech-to-text", "/guided",
+    "/error-resolution/upload", "/error-resolution/explain",
     "/feedback",  # L-16: /feedback has no auth check (see submit_feedback's
                   # docstring) -- rate limiting is its abuse-control mechanism.
     "/support-request",  # each call can queue an email to the support team (WebiDEAL also limits per user)
@@ -1022,6 +1024,85 @@ async def explain_category(request: ExplainCategoryRequest) -> ChatResponse:
         _repo_scope.__exit__(None, None, None)
 
 
+# ── Error Resolution tab: the user uploads an error file and gets the same explanation check-status gives ────────
+# Logic lives in backend/agent/error_upload.py; this block only does HTTP, access control and the repo scope.
+def _upload_denied(login_id: str | None, form_id: str | None) -> bool:
+    """Same fail-closed contract as /download-file: a known return needs that form in the caller's allowed set; an unknown one
+    still needs a resolvable caller."""
+    return not (_caller_may_access_form(login_id, form_id) if form_id else _caller_is_authenticated(login_id))
+
+
+@app.post("/error-resolution/upload", status_code=status.HTTP_200_OK)
+async def error_resolution_upload(
+    file: UploadFile = File(...),
+    form_id: str | None = Form(None),
+    login_id: str | None = Form(None),
+    tenant_id: str | None = Form(None),
+    domain: str | None = Form(None),
+    jwt: str | None = Form(None),
+) -> dict:
+    """Receive an error file, work out which return it belongs to, and return the summary (counts per category)."""
+    from backend.agent import error_upload as eu
+    try:
+        name = eu.safe_filename(file.filename)
+        data = await _read_upload_with_limit(file, eu.MAX_BYTES, "That file is too large to explain here.")
+        eu.check_content(data, name)
+    except eu.UploadError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    with _make_repo_scope(tenant_id, domain, jwt, login_id):
+        try:
+            ident = await asyncio.to_thread(eu.identify, name, data, (form_id or "").strip() or None)
+            if _upload_denied(login_id, ident["form_id"]):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this return.")
+            upload_id = eu.store(data, name, ident["form_id"], login_id, ident)
+            meta = eu.load_meta(upload_id, login_id)
+            summary = await asyncio.to_thread(eu.summarise, upload_id, meta)
+        except eu.UploadError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    summary["candidates"] = ident["candidates"]
+    summary["needs_form"] = not ident["form_id"]
+    logger.info("[ERROR_UPLOAD] file=%s form=%s by=%s", name, ident["form_id"] or "-", ident["method"])
+    return summary
+
+
+@app.post("/error-resolution/form", status_code=status.HTTP_200_OK)
+async def error_resolution_form(request: ErrorUploadFormRequest) -> dict:
+    """The user chose the return for an upload we could not place: re-file it and return the refreshed summary."""
+    from backend.agent import error_upload as eu
+    if _upload_denied(request.login_id, request.form_id.strip()):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this return.")
+    with _make_repo_scope(request.tenant_id, request.domain, request.jwt, request.login_id):
+        try:
+            meta = eu.set_form(request.upload_id, request.login_id, request.form_id.strip())
+            summary = await asyncio.to_thread(eu.summarise, request.upload_id, meta)
+        except eu.UploadError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    summary["candidates"], summary["needs_form"] = [], False
+    return summary
+
+
+@app.post("/error-resolution/explain", response_model=ChatResponse, status_code=status.HTTP_200_OK)
+async def error_resolution_explain(request: ErrorUploadExplainRequest) -> ChatResponse:
+    """One batch of one category of an uploaded error file, shaped like /explain-category (the same cards, the same paging)."""
+    from backend.agent import error_upload as eu
+    with _make_repo_scope(request.tenant_id, request.domain, request.jwt, request.login_id):
+        try:
+            meta = eu.load_meta(request.upload_id, request.login_id)
+            if _upload_denied(request.login_id, meta.get("form_id")):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this return.")
+            result = await _run_cancellable(request.request_id, eu.explain_batch(
+                request.upload_id, request.login_id, request.category, request.offset, request.lang or "en"))
+            translator = PlaceholderSafeTranslator(
+                i18n.boundary.get_translator(timeout=i18n.config.error_explanation_translation_timeout()))
+            result = await _run_cancellable(request.request_id, i18n.translate_outbound(
+                result, request.lang, translator, english_message=request.category))
+            return ChatResponse(**result)
+        except eu.UploadError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except RequestStopped:
+            return _stopped_response()
+
+
 #: M-24. The upload is whatever format the browser's MediaRecorder produced
 #: (api.js records as webm/opus; other browsers may use mp4/ogg/wav). Content
 #: type is checked against this allowlist before transcription is attempted;
@@ -1050,7 +1131,8 @@ def _safe_recording_filename(original: str | None) -> str:
     return f"recording{ext}"
 
 
-async def _read_upload_with_limit(file: UploadFile, limit: int) -> bytes:
+async def _read_upload_with_limit(file: UploadFile, limit: int,
+                                  too_large: str = "That recording is too long. Please record a shorter message.") -> bytes:
     """Stream *file* in bounded chunks, rejecting as soon as *limit* is
     exceeded instead of reading an arbitrarily large upload fully into
     memory first (the previous ``await file.read()`` had no cap until after
@@ -1065,7 +1147,7 @@ async def _read_upload_with_limit(file: UploadFile, limit: int) -> bytes:
         if total > limit:
             raise HTTPException(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail="That recording is too long. Please record a shorter message.",
+                detail=too_large,
             )
         chunks.append(chunk)
     return b"".join(chunks)
