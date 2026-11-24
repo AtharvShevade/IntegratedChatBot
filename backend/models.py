@@ -86,6 +86,10 @@ class ChatResponse(BaseModel):
     accuracy_hint:   Optional[str]   = None  # soft tip to add time context
     needs_more_info: bool            = False # True when query is too vague
     more_info_hint:  Optional[str]   = None  # guidance for the user
+    # Set only when the SQL agent request FAILED (llm_timeout, llm_unavailable,
+    # db_timeout, db_unavailable, pipeline_timeout, internal, error). The UI then
+    # shows response_text as a short error instead of an empty result table.
+    db_error_type:   Optional[str]   = None
 
     # ── App Database (XML) Q&A result fields ──────────────────────────────────
     db_intent:       str             = ""   # detected intent (e.g., USER_LIST, DEPT_INFO)

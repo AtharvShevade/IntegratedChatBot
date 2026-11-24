@@ -68,6 +68,28 @@ def _split_return_name(name: str) -> tuple[list[str], str]:
     return codes, re.sub(r"\s+", " ", title).strip().lower()
 
 
+# A table's schema.json return_name can list several returns of one family that
+# differ only by filing frequency: "CIMS_RAQ(Annually), CIMS_RAQ(Monthly),
+# CIMS_RAQ(Quarterly)". Treated verbatim, each such string became its own "return"
+# with no usable code (its tokens were shared with the others), so "RAQ" resolved
+# to the single plain "CIMS_RAQ(Monthly)" entry (4 of 42 RAQ tables) and "LR" /
+# "ALE" resolved to nothing. Grouping by family fixes both. Names without a
+# frequency suffix or a list separator (e.g. all 6.0 "QCB_F010_..." names) are
+# returned unchanged.
+_RETURN_LIST_SPLIT = re.compile(r",\s*(?=[A-Za-z]{2,}_)")
+_FREQUENCY_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _return_families(return_name: str) -> list[str]:
+    """Distinct family names in a (possibly composite) schema.json return_name."""
+    families: list[str] = []
+    for part in _RETURN_LIST_SPLIT.split(return_name or ""):
+        family = _FREQUENCY_SUFFIX.sub("", part).strip()
+        if family and family not in families:
+            families.append(family)
+    return families
+
+
 def load_returns() -> dict[str, ReturnInfo]:
     """{return_name: ReturnInfo} for the active embedding folder (cached per folder)."""
     edir = _embedding_dir()
@@ -88,9 +110,10 @@ def load_returns() -> dict[str, ReturnInfo]:
         table = (entry.get("table") or "").strip()
         if not rname or not table or entry.get("is_backup"):
             continue
-        info = returns.setdefault(rname, ReturnInfo(name=rname))
-        if table not in info.tables:
-            info.tables.append(table)
+        for family in _return_families(rname):
+            info = returns.setdefault(family, ReturnInfo(name=family))
+            if table not in info.tables:
+                info.tables.append(table)
 
     # numeric return codes (4091 ...) where the build recorded them
     try:
@@ -98,8 +121,9 @@ def load_returns() -> dict[str, ReturnInfo]:
             cmap = json.load(f)
         for m in cmap.get("metrics") or []:
             rn, rc = (m.get("return_name") or "").strip(), str(m.get("return_code") or "").strip()
-            if rn in returns and rc:
-                returns[rn].codes.add(rc)
+            for family in _return_families(rn):
+                if family in returns and rc:
+                    returns[family].codes.add(rc)
     except FileNotFoundError:
         pass
     except Exception as exc:

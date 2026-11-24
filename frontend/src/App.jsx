@@ -388,6 +388,10 @@ const _pushResult = (result, extra = {}) => {
         accuracy_hint:     result.accuracy_hint   || null,
         needs_more_info:   result.needs_more_info || false,
         more_info_hint:    result.more_info_hint  || null,
+        // Set only when the request failed (timeout, service unavailable, ...):
+        // the card then shows the short message instead of an empty result.
+        error_type:        result.db_error_type   || null,
+        message:           result.response_text   || '',
       }
     : null
 

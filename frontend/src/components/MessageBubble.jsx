@@ -2184,7 +2184,12 @@ function SqlResultBlock({ data }) {
     accuracy_hint = null,
     needs_more_info = false,
     more_info_hint = null,
+    error_type = null,
+    message = '',
   } = data
+  // A failed request (timeout, service unavailable, ...) shows its short message
+  // in place of the result table / "no rows returned".
+  const failed = !!error_type && !db_error && is_valid
   return (
     <div className="sql-result-block">
       {matched_tables.length > 0 && (
@@ -2205,7 +2210,8 @@ function SqlResultBlock({ data }) {
       )}
       {!is_valid && <div className="sql-invalid-msg">⚠ {validation_reason || t('errors.sqlValidationFailed')}</div>}
       {db_error  && <div className="sql-db-error">⚠ A database error occurred. Please try again.</div>}
-      {is_valid && !db_error && columns.length > 0 && (
+      {failed && message && <div className="sql-db-error">⚠ {message}</div>}
+      {is_valid && !db_error && !failed && columns.length > 0 && (
         <div>
           <div className="sql-result-label">{t('sql.queryResults')}</div>
           <div className="sql-table-wrapper">
@@ -2227,7 +2233,7 @@ function SqlResultBlock({ data }) {
           <div className="sql-row-count">{rows.length} row{rows.length !== 1 ? 's' : ''} returned</div>
         </div>
       )}
-      {is_valid && !db_error && columns.length === 0 && (
+      {is_valid && !db_error && !failed && columns.length === 0 && (
         <div className="sql-db-error" style={{ color: 'var(--text-muted)', background: 'transparent', border: 'none' }}>
           {t('sql.noRowsReturned')}
         </div>
