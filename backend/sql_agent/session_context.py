@@ -18,7 +18,7 @@ from typing import Any
 
 __all__ = [
     "save_result", "save_pending_clarification", "get", "clear_pending",
-    "has_context", "looks_like_followup", "MAX_ROWS",
+    "has_context", "looks_like_followup", "is_self_contained_question", "MAX_ROWS",
 ]
 
 TTL_SEC = 30 * 60
@@ -106,6 +106,29 @@ _FOLLOWUP_RE = re.compile(
     r"(previous|last|prior|next)\s+(quarter|month|year|period|date))\b",
     re.IGNORECASE,
 )
+
+
+# Words that point back at the previously shown result. A message containing any
+# of them is a follow-up even when it also names a return ("same for LR").
+_REFERENTIAL_RE = re.compile(
+    r"\b(it|its|this|that|these|those|them|they|above|previous|same|also|again|instead|"
+    r"what\s+about|how\s+about|and\s+for|now\s+for|shown|result|results)\b",
+    re.IGNORECASE,
+)
+
+
+def is_self_contained_question(message: str) -> bool:
+    """True for a NEW question that names its own return and does not refer back
+    to the shown result -- e.g. "show the total loan for cims raq". Such a message
+    must be answered with fresh SQL, never from the previous result table."""
+    msg = (message or "").strip()
+    if not msg or _REFERENTIAL_RE.search(msg):
+        return False
+    try:
+        from backend.sql_agent.context_resolver import detect_returns
+        return bool(detect_returns(msg))
+    except Exception:  # pragma: no cover - never let this guard break routing
+        return False
 
 
 def looks_like_followup(session_id: str | None, message: str) -> bool:

@@ -95,6 +95,25 @@ def _safe_client_error(db_error: str | None) -> str | None:
     return db_error
 
 
+from backend.sql_agent import errors as _errors
+
+
+def _error_kind(error) -> str:
+    return _errors.classify(error)
+
+
+def _error_type(error) -> str:
+    """Kind reported to the UI for a failed request ("error" when unclassified)."""
+    kind = _errors.classify(error)
+    return "error" if kind == _errors.OTHER else kind
+
+
+def _infra_text(error, default: str) -> str:
+    """Short message for a timeout / unreachable-service failure; *default* (the
+    pipeline's existing wording) for anything else. Raw detail is never returned."""
+    return _errors.message_for(_errors.classify(error)) or default
+
+
 def _build_result(
     response_text: str,
     result_type:   str,
@@ -108,6 +127,7 @@ def _build_result(
     more_info_hint: str | None       = None,
     need_clarification: bool         = False,
     options:        list[str]        = None,
+    error_type:     str | None       = None,
 ) -> dict[str, Any]:
     db_error = _safe_client_error(db_error)
     return {
@@ -130,6 +150,7 @@ def _build_result(
         "accuracy_hint":      accuracy_hint,
         "needs_more_info":    needs_more_info,
         "more_info_hint":     more_info_hint,
+        "db_error_type":      error_type,
     }
 
 
@@ -389,7 +410,8 @@ Reply with JSON only, e.g. {"type": "refine", "question": "..."} or {"type": "da
 _ANSWER_SYSTEM = """You are a regulatory-reporting data assistant. Answer the user's question using ONLY
 the result table provided. Quote the exact numbers and row labels from the table. If the table does not
 contain what is needed, say so plainly and suggest how to ask for it. Be concise (at most 6 sentences).
-Never invent values."""
+Never invent values. Copy numbers exactly as they appear in the table: do not add currency symbols, units
+or scaling that the table does not show, and only mention row labels or column names that appear in it."""
 
 
 def _context_brief(ctx: dict[str, Any]) -> str:
@@ -649,7 +671,7 @@ def _clarify_return(q: str, candidates: list[str], session_id: str | None) -> di
     )
 
 
-async def handle_db_query(
+async def _handle_db_query_impl(
     message: str, session_id: str | None = None, login_id: str | None = None,
     conversation_history: list[dict] | None = None,
 ) -> dict[str, Any]:
@@ -696,7 +718,12 @@ async def handle_db_query(
             forced_returns = [chosen]
             resolved_from_context = True
             logger.info("[SQL_AGENT] clarification resolved -> return=%s question=%r", chosen, q)
-    elif ctx and ctx.get("sql") and session_context.looks_like_followup(session_id, q):
+    elif (
+        ctx and ctx.get("sql") and session_context.looks_like_followup(session_id, q)
+        # "show the total loan for cims raq" names its own return and does not
+        # point back at the shown result: it is a new question, not a follow-up.
+        and not session_context.is_self_contained_question(q)
+    ):
         kind, standalone = await _classify_followup(q, ctx, conversation_history)
         if kind == "data_question":
             answered = await _answer_from_previous(q, ctx, conversation_history)
@@ -806,7 +833,8 @@ async def handle_db_query(
         except Exception as exc:
             logger.error("[SQL_AGENT] Execution error: %s", exc)
             return _build_result(
-                response_text="Unable to retrieve the requested information. Please try again.",
+                response_text=_infra_text(exc, "Unable to retrieve the requested information. Please try again."),
+                error_type=_error_type(exc),
                 result_type="db_result",
                 db_sql=sql,
                 db_error=None,
@@ -815,7 +843,8 @@ async def handle_db_query(
         if db_error:
             logger.error("[SQL_AGENT] db_error=%s", db_error)
             return _build_result(
-                response_text="Unable to retrieve the requested information. Please try again.",
+                response_text=_infra_text(db_error, "Unable to retrieve the requested information. Please try again."),
+                error_type=_error_type(db_error),
                 result_type="db_result",
                 db_sql=sql,
                 db_error=None,
@@ -886,10 +915,13 @@ async def handle_db_query(
             # they get a second chance instead of failing outright on the very
             # first hiccup.
             logger.error("[SQL_AGENT] attempt=%d SQL generation failed: %s", attempt + 1, exc)
-            if attempt + 1 < MAX_SQL_RETRIES:
+            # A read timeout already cost the full wait (up to 300s): retrying would
+            # just double it. Only quick connection-level failures get a second chance.
+            if attempt + 1 < MAX_SQL_RETRIES and _error_kind(exc) != _errors.LLM_TIMEOUT:
                 continue
             return _build_result(
-                response_text="SQL generation failed. Please try again.",
+                response_text=_infra_text(exc, "SQL generation failed. Please try again."),
+                error_type=_error_type(exc),
                 result_type="db_result",
                 db_error=None,
                 accuracy_hint=accuracy_hint,
@@ -897,7 +929,8 @@ async def handle_db_query(
         except Exception as exc:
             logger.error("[SQL_AGENT] Unexpected error in generate_sql: %s", exc)
             return _build_result(
-                response_text="An unexpected error occurred while generating SQL. Please try again.",
+                response_text=_infra_text(exc, "An unexpected error occurred while generating SQL. Please try again."),
+                error_type=_error_type(exc),
                 result_type="db_result",
                 db_error=None,
             )
@@ -968,7 +1001,8 @@ async def handle_db_query(
     except Exception as exc:
         logger.error("[SQL_AGENT] Execution error: %s", exc)
         return _build_result(
-            response_text="Unable to retrieve the requested information. Please try again.",
+            response_text=_infra_text(exc, "Unable to retrieve the requested information. Please try again."),
+            error_type=_error_type(exc),
             result_type="db_result",
             db_sql=sql,
             db_error=None,
@@ -978,7 +1012,8 @@ async def handle_db_query(
     if db_error:
         logger.error("[SQL_AGENT] db_error=%s", db_error)
         return _build_result(
-            response_text="Unable to retrieve the requested information. Please try again.",
+            response_text=_infra_text(db_error, "Unable to retrieve the requested information. Please try again."),
+            error_type=_error_type(db_error),
             result_type="db_result",
             db_sql=sql,
             db_error=None,
@@ -1034,3 +1069,41 @@ async def handle_db_query(
     if label_note:
         result["accuracy_hint"] = (result.get("accuracy_hint") + " " if result.get("accuracy_hint") else "") + label_note
     return result
+
+
+async def handle_db_query(
+    message: str, session_id: str | None = None, login_id: str | None = None,
+    conversation_history: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Public entry point: _handle_db_query_impl() under a wall-clock limit, with a
+    last-resort safety net.
+
+    Whatever goes wrong inside the pipeline -- a timeout, an unreachable LLM or
+    database, or an unexpected bug -- the caller always gets a normal
+    ChatResponse-shaped dict with one short message, never an exception, so the
+    rest of the chat (menu, other flows, the next question) carries on unaffected.
+
+    A user "Stop" (asyncio.CancelledError) is deliberately NOT caught: it must keep
+    propagating so /stop still cancels the request immediately."""
+    try:
+        async with asyncio.timeout(_errors.PIPELINE_TIMEOUT_SEC):
+            return await _handle_db_query_impl(
+                message, session_id=session_id, login_id=login_id,
+                conversation_history=conversation_history,
+            )
+    except TimeoutError:
+        logger.error(
+            "[SQL_AGENT] request exceeded %ss and was stopped (session=%s)",
+            _errors.PIPELINE_TIMEOUT_SEC, session_id,
+        )
+        return _build_result(
+            response_text=_errors.MESSAGES[_errors.PIPELINE_TIMEOUT], result_type="db_result",
+            error_type=_errors.PIPELINE_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 -- last-resort net; the pipeline must never raise into /chat
+        logger.exception("[SQL_AGENT] unhandled error in SQL pipeline (session=%s): %s", session_id, exc)
+        return _build_result(
+            response_text=_infra_text(exc, _errors.MESSAGES[_errors.INTERNAL]),
+            error_type=(_errors.INTERNAL if _error_type(exc) == "error" else _error_type(exc)),
+            result_type="db_result",
+        )
