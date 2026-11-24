@@ -341,8 +341,6 @@ def comparison(comp, located: dict, ev: dict | None, fmt, names=("Reported", "Ca
             n, m = side["missing"], side["expected"]
             notes.append(f"{n} of {m} components of the {role.lower()} value could not be located, so the cells listed are incomplete.")
             if side["linear"] and not side["single"]:
-                info_rows.append({"label": f"Located cells only ({side['found']} of {m})", "sheet": "", "cell": "",
-                                  "value": fmt(side["partial"]), "tone": "", "code": False})
                 notes.append(f"The value above is the rule's own. The {side['found']} located cell(s) alone add up to {fmt(side['partial'])}, "
                              "so that is not the full total.")
         elif side["linear"] and not side["single"] and abs(side["partial"] - val) > max(

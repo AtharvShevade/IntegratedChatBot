@@ -299,7 +299,10 @@ def test_tier_two_a_row_without_the_value_names_cells_to_check_but_confirms_noth
     res = dr.resolve_db(_meta_with_one_cell(tmp_path, _FakeReader("ok", {"DOM_Q": 1, "OVR_Q": 2})), "Concept", "asof_20250331", "999")
     assert res.status == "GUESS" and 1 <= len(res.addresses) <= 3
     assert all(not a.verified and a.state == "differs" for a in res.addresses)
-    assert _rc._db_guess_note({"V1": [_types.SimpleNamespace(res=res)]}).startswith("Not confirmed (the row holds another value). Check: T1.")
+    assert _rc._db_guess_note({"V1": [_types.SimpleNamespace(res=res)]}).startswith("Not confirmed (the row holds another value).")
+    note = _rc._db_guess_note({"V1": [_types.SimpleNamespace(res=res)]})
+    assert "The return has" in note and "the table holds" in note and "Check: T1." in note   # both numbers, no verdict on which is wrong
+    assert "wrong" not in note and "incorrect" not in note
 
 
 def test_tier_two_also_applies_when_the_database_cannot_be_read_and_the_column_is_open(tmp_path):

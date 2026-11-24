@@ -618,8 +618,7 @@ def test_total_card_with_missing_components_never_presents_a_partial_sum_as_the_
     kv = {k[0]: k[1] for k in v["kv"]}
     calc_row = next(k for k in v["kv"] if k[0].endswith("Sum of B3:B9"))
     assert calc_row[1] == "₹61,419"                                                      # the rule's own value, not the located sum
-    part = next(k for k in v["kv"] if k[0] == "Located cells only (7 of 10)")
-    assert part[0] not in v["kv_cells"] and part[1] == "₹42,839"                       # 4172+4491+8498+8852+5791+7984+3051
+    assert not any(k[0].startswith("Located cells only") for k in v["kv"])               # no partial-sum row; the note says it once
     assert any("3 of 10 components of the calculated value could not be located" in w for w in v["warnings"])
     assert any("not the full total" in w for w in v["warnings"])
     assert next(k for k in v["kv"] if k[0] == "Difference")[1] == "₹69,938,581"          # difference stays the rule's own
