@@ -136,3 +136,33 @@ def test_real_error_file_gets_cards_through_the_chatbot_entry_point(monkeypatch)
     for o in improved:
         kinds = {s["kind"] for s in o["explanation_sections"]}
         assert "issue_card" in kinds
+
+
+# ── a card built from database reads is not kept for long; an Excel card is ──────────────────────────────────────
+def _cached_calls(monkeypatch, tmp_path, db, ttl, clock):
+    import time
+    from backend.error_improvement import explain as ex
+    f = tmp_path / "x_Instance.html"
+    f.write_text("x")
+    adapter._CACHE.clear()
+    calls = []
+    card = {"db": True} if db else {"db": False}
+    monkeypatch.setattr(ex, "explain_file", lambda *a, **k: calls.append(1) or {"cards": {"R": card}, "info": {}})
+    monkeypatch.setenv("EI_DB_CARD_CACHE_SECONDS", str(ttl))
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    adapter._result_for(str(f), "repo", None)
+    clock[0] += 31
+    adapter._result_for(str(f), "repo", None)
+    return len(calls)
+
+
+def test_database_card_is_read_again_after_the_short_window(monkeypatch, tmp_path):
+    assert _cached_calls(monkeypatch, tmp_path, db=True, ttl=30, clock=[1000.0]) == 2
+
+
+def test_excel_card_stays_cached(monkeypatch, tmp_path):
+    assert _cached_calls(monkeypatch, tmp_path, db=False, ttl=30, clock=[1000.0]) == 1
+
+
+def test_database_card_is_reused_inside_the_window(monkeypatch, tmp_path):
+    assert _cached_calls(monkeypatch, tmp_path, db=True, ttl=60, clock=[1000.0]) == 1

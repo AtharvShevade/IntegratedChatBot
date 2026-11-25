@@ -19,13 +19,28 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
-_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()       # key -> (stored at, result, read the database)
 _LOCK = threading.Lock()
 _MAX_ENTRIES = 3
+
+
+def _db_ttl() -> float:
+    """Seconds a card that was built from database reads may be reused (0 = never). An Excel card's inputs are files that
+    do not change, so it is kept; a database card must show a corrected table on the next view, so it is kept only briefly
+    (long enough that repeated clicks on one error file do not read the tables again)."""
+    try:
+        return max(0.0, float(os.getenv("EI_DB_CARD_CACHE_SECONDS", "30")))
+    except ValueError:
+        return 30.0
+
+
+def _read_database(cards: dict) -> bool:
+    return any(isinstance(c, dict) and (c.get("db") or c.get("where_to_look")) for c in (cards or {}).values())
 
 
 def enabled() -> bool:
@@ -59,14 +74,17 @@ def _result_for(error_file: str, repo: str | None, numbering: dict | None) -> di
     key = (os.path.abspath(error_file), os.path.getmtime(error_file), repo)
     with _LOCK:
         hit = _CACHE.get(key)
+        if hit is not None and hit[2] and time.monotonic() - hit[0] > _db_ttl():
+            _CACHE.pop(key, None)                  # built from the tables: read them again so a corrected table shows
+            hit = None
         if hit is not None:
             _CACHE.move_to_end(key)
-            return hit
+            return hit[1]
     from . import explain as ex                    # imported late: the engine is only loaded when it is used
     result = ex.explain_file(error_file, repo, numbering=numbering)
     slim = {"cards": result.get("cards") or {}, "info": result.get("info") or {}}
     with _LOCK:
-        _CACHE[key] = slim
+        _CACHE[key] = (time.monotonic(), slim, _read_database(slim["cards"]))
         while len(_CACHE) > _MAX_ENTRIES:
             _CACHE.popitem(last=False)
     return slim
