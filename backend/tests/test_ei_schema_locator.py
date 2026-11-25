@@ -32,12 +32,12 @@ def test_apply_fills_the_table_info_and_says_what_the_table_holds(monkeypatch):
     loc = {"table": "T1", "column": "DOMESTIC", "row_label": "Total Number of Staff", "cell": "DOMESTIC (CODE = 1000)",
            "context": "RegionOfBusinessAxis: DomesticMember", "state": "GUESS", "held": 11876, "candidates": 1}
     monkeypatch.setattr(sl, "locate_all", lambda *a, **k: {0: loc})
-    errs = [{"actualValue": "11887.55", "explanation": "Whole number needed.", "table_info": {"validation_error": "v"}},
+    errs = [{"actualValue": "11887.55", "explanation": "Whole number needed. For example, enter a value like 1000. Fix it.", "table_info": {"validation_error": "v"}},
             {"actualValue": "1", "explanation": "Other."}]
     out = sl.apply(errs, "f.html", "repo")
     ti = out[0]["table_info"]
     assert (ti["db_table_name"], ti["row_label"], ti["cell_code"], ti["validation_error"]) == ("T1", "Total Number of Staff", "DOMESTIC (CODE = 1000)", "v")
-    assert out[0]["explanation"].endswith("The return has 11,887.55; the table holds 11,876 in T1.DOMESTIC.")
+    assert out[0]["explanation"] == "Whole number needed. Fix it. **The return has 11,887.55; the table holds 11,876 in T1.DOMESTIC.**"
     assert out[1]["explanation"] == "Other." and "table_info" not in out[1]       # an error that cannot be placed is left alone
 
 

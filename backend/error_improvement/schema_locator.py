@@ -15,6 +15,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
+_EXAMPLE = re.compile(r"\s*For example, enter a value like [^.]*\.")
 _FACT = re.compile(r"<(?:[\w.-]+:)?([\w.-]+)\b[^>]*?\bcontextRef\s*=\s*['\"]([^'\"]+)['\"][^>]*>([^<]*)<", re.IGNORECASE)
 
 
@@ -126,14 +127,15 @@ def apply(errors: list[dict], error_file: str, repo: str | None = None) -> list[
                   cell_code=loc["cell"], context=loc["context"] or ti.get("context", ""))
         err["table_info"] = ti
         filed = _num(err.get("actualValue") or "")
-        if loc["state"] == "CONFIRMED":
-            sentence = f" Found in {loc['table']}.{loc['column']}: the table holds the same value."
+        if loc["state"] == "CONFIRMED":                 # the table holds what the return has
+            sentence = f"The return has {filed}; the table holds {filed} in {loc['table']}.{loc['column']}."
         elif loc["candidates"] > 1:                      # which of the columns it is depends on the context: name them, do not pick
-            sentence = f" The return has {filed}. Check {loc['table']}: {loc['cell']}."
+            sentence = f"The return has {filed}. Check {loc['table']}: {loc['cell']}."
         elif loc["held"] is not None:
-            sentence = f" The return has {filed}; the table holds {_num(loc['held'])} in {loc['table']}.{loc['column']}."
+            sentence = f"The return has {filed}; the table holds {_num(loc['held'])} in {loc['table']}.{loc['column']}."
         else:
-            sentence = f" The return has {filed}. Check {loc['table']}.{loc['column']} (not confirmed in the table)."
-        err["explanation"] = (err.get("explanation") or "").rstrip() + sentence
+            sentence = f"The return has {filed}. Check {loc['table']}.{loc['column']} (not confirmed in the table)."
+        base = _EXAMPLE.sub("", err.get("explanation") or "").rstrip()      # the generic example line is dropped once the cell is named
+        err["explanation"] = f"{base} **{sentence}**".strip()                # the location line is shown in bold
         err["location"] = {k: loc[k] for k in ("table", "column", "state")}
     return errors
