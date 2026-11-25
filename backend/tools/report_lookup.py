@@ -4015,6 +4015,12 @@ def explain_errors_by_category(
                 logger.warning("[explain_errors_by_category] root-cause analysis failed: %s", exc)
 
             enriched = explain_validation_errors(trimmed)
+            try:                                        # a database return: name the table cell each failing item is read from
+                from backend.error_improvement import adapter as _ei, schema_locator as _sl
+                if _ei.enabled():
+                    _sl.apply(enriched, error_file_path)
+            except Exception as exc:                    # noqa: BLE001 - location is extra; the explanation stands without it
+                logger.warning("[explain_errors_by_category] schema location skipped: %s", exc)
             for err in enriched:
                 err.setdefault("_error_category", "xbrl_schema")
             logger.info(
