@@ -1236,7 +1236,12 @@ function ErrorDetailsPanel({ details, errorMessages, downloadUrl, downloadLabel 
     return <DownloadButton downloadUrl={downloadUrl} downloadLabel={downloadLabel} />
   }
   const category = detectErrorCategory(details)
-  if (category === 'xbrl_schema_4000') {
+  // Schema errors the backend placed in a table (table, row, cell) are shown as the table; others stay in the plain list.
+  const placedInTable = (category === 'xbrl_schema' || category === 'xbrl_schema_other') && details.some((d) => {
+    const ti = d?.table_info ?? {}
+    return ti.db_table_name || ti.row_label || ti.cell_code
+  })
+  if (category === 'xbrl_schema_4000' || placedInTable) {
     return (
       <ErrorDetailsTablePanel
         details={details}
@@ -1697,7 +1702,9 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
       // 4000-series reports can explain formula_error, xbrl_schema, and
       // dimensional. Non-4000-series returns use a separate non-backtracking
       // explain flow for formula errors (backend/tools/formula_error_generic.py)
-      // and have no xbrl_schema explainer, but dimensional is form_id-keyed,
+      // Schema errors are explained for every return: a database return names the table cell
+      // each failing item is read from (backend/error_improvement/schema_locator.py), any other
+      // return keeps the ordinary explanation. Dimensional is form_id-keyed,
       // not 4000-series-specific (backend/tools/dimension_taxonomy.py via
       // report_lookup.py's dimensional branch), so it's enabled for every
       // return whose error file actually has dimension errors.
@@ -1709,7 +1716,7 @@ const isFailed   = statusCode != null && FAILED_STATUS_CODES.has(Number(statusCo
           onExplainCategory={onExplainCategory}
           formId={data?.form_id}
           reportName={data?.report_name}
-          explainableCategories={is4000Series ? ['formula_error', 'xbrl_schema', 'dimensional'] : ['formula_error', 'dimensional']}
+          explainableCategories={['formula_error', 'xbrl_schema', 'dimensional']}
         />
       )
     }
